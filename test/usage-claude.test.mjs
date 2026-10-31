@@ -63,3 +63,50 @@ test('duplicate lines of one message and request count once with the final outpu
   assert.deepEqual(hourly, [{ app: 'claude', model: 'claude-test-5', hourMs: Date.parse('2026-08-07T04:00:00Z'),
     tokens: { uncached: 4, cacheRead: 2000, cacheWrite: 133636, output: 134 } }]);
 });
+
+const tierLine = (usage, { messageId = 'msg_t', requestId = 'req_t' } = {}) => JSON.stringify({ type: 'assistant', timestamp: '2026-08-07T04:05:13.944Z',
+  ...(requestId ? { requestId } : {}), message: { ...(messageId ? { id: messageId } : {}), model: 'claude-test-5', usage } });
+const AT = Date.parse('2026-08-07T04:05:13.944Z');
+
+test('a prompt above 200,000 or 272,000 tokens gets its size tag at or after the tier start, and none before it', () => {
+  const usage = { input_tokens: 1000, cache_read_input_tokens: 240_000, cache_creation_input_tokens: 9000, output_tokens: 7 };
+  assert.equal(parseClaudeLine(tierLine(usage), null, { tiersFromMs: AT }).model, 'claude-test-5[200k+]');
+  assert.equal(parseClaudeLine(tierLine({ ...usage, cache_read_input_tokens: 262_001 }), null, { tiersFromMs: AT }).model, 'claude-test-5[272k+]');
+  assert.equal(parseClaudeLine(tierLine({ ...usage, cache_read_input_tokens: 190_000 }), null, { tiersFromMs: AT }).model, 'claude-test-5');
+  assert.equal(parseClaudeLine(tierLine(usage), null, { tiersFromMs: AT + 1 }).model, 'claude-test-5');
+  assert.equal(parseClaudeLine(tierLine(usage)).model, 'claude-test-5');
+});
+
+test('1-hour cache writes are a part of their own with the 1h tag and their own key', () => {
+  const usage = { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 1000, output_tokens: 5,
+    cache_creation: { ephemeral_5m_input_tokens: 400, ephemeral_1h_input_tokens: 600 } };
+  const options = { tiersFromMs: AT };
+  assert.deepEqual(parseClaudeLine(tierLine(usage), null, options), [
+    { app: 'claude', timestampMs: AT, model: 'claude-test-5', tokens: { uncached: 10, cacheRead: 0, cacheWrite: 400, output: 5 }, dedupeKey: 'msg_t:req_t' },
+    { app: 'claude', timestampMs: AT, model: 'claude-test-5[1h]', tokens: { uncached: 0, cacheRead: 0, cacheWrite: 600, output: 0 }, dedupeKey: 'msg_t:req_t:1h' }]);
+  // With a size tag, the 1-hour part has both tags.
+  const long = parseClaudeLine(tierLine({ ...usage, cache_read_input_tokens: 280_000 }), null, options);
+  assert.deepEqual(long.map(({ model }) => model), ['claude-test-5[272k+]', 'claude-test-5[272k+,1h]']);
+  // A base part with no tokens is left out, and a record with no key keeps a null key.
+  assert.deepEqual(parseClaudeLine(tierLine({ cache_creation_input_tokens: 600, cache_creation: { ephemeral_1h_input_tokens: 600 } },
+    { messageId: null, requestId: null }), null, options),
+  [{ app: 'claude', timestampMs: AT, model: 'claude-test-5[1h]', tokens: { uncached: 0, cacheRead: 0, cacheWrite: 600, output: 0 }, dedupeKey: null }]);
+  // More 1-hour tokens than cache writes, or none: no split.
+  assert.equal(parseClaudeLine(tierLine({ ...usage, cache_creation: { ephemeral_1h_input_tokens: 1001 } }), null, options).tokens.cacheWrite, 1000);
+  assert.equal(parseClaudeLine(tierLine({ ...usage, cache_creation: { ephemeral_1h_input_tokens: 0 } }), null, options).model, 'claude-test-5');
+  // Before the tier start, or with no start: one untagged record.
+  assert.deepEqual(parseClaudeLine(tierLine(usage), null, { tiersFromMs: AT + 1 }).tokens, { uncached: 10, cacheRead: 0, cacheWrite: 1000, output: 5 });
+  assert.equal(Array.isArray(parseClaudeLine(tierLine(usage))), false);
+});
+
+test('the scan tags Claude records at or after its tier start and keeps the 1-hour part across repeated lines', async (t) => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-usage-claude-'));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const usage = { input_tokens: 10, cache_creation_input_tokens: 1000, output_tokens: 5, cache_creation: { ephemeral_1h_input_tokens: 600 } };
+  const file = path.join(folder, 'tiers.jsonl');
+  await fs.writeFile(file, `${[tierLine(usage), tierLine({ ...usage, output_tokens: 90 })].join('\n')}\n`);
+  const tagged = await scanFile(file, await fs.stat(file), undefined, 'claude', { tiersFromMs: AT });
+  assert.deepEqual(tagged.records.map((record) => record.slice(1, 6)), [['claude-test-5', 10, 0, 400, 90], ['claude-test-5[1h]', 0, 0, 600, 0]]);
+  const plain = await scanFile(file, await fs.stat(file), undefined, 'claude');
+  assert.deepEqual(plain.records.map((record) => record.slice(1, 6)), [['claude-test-5', 10, 0, 1000, 90]]);
+});

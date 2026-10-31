@@ -277,3 +277,21 @@ test('private files sync to disk before the rename, and a failed write leaves no
   assert.deepEqual((await fs.readdir(path.dirname(file))).sort(), ['ledger.json', 'usage-cache.json.gz']);
   assert.equal(await fs.readFile(file, 'utf8'), '{"a":1}');
 });
+
+test('the cache keeps its tier start and is dropped for another one', async (t) => {
+  const dir = await folder(t);
+  const transcript = path.join(dir, 'rollout.jsonl');
+  await fs.writeFile(transcript, `${[turn('gpt-test-1'), count(usage(300_000, 20), usage(300_000, 20))].join('\n')}\n`);
+  const entry = await scanFile(transcript, await fs.stat(transcript), undefined, 'codex', { tiersFromMs: 0 });
+  assert.deepEqual(entry.records.map((record) => record[1]), ['gpt-test-1[272k+]']);
+  const cache = new Map([[pathKey(transcript), entry]]);
+  const encoded = JSON.parse(JSON.stringify(encodeScanCache(cache, { tiersFromMs: at })));
+  assert.equal(encoded.t, at);
+  assert.deepEqual(decodeScanCache(encoded, { tiersFromMs: at }), cache);
+  assert.deepEqual(decodeScanCache(encoded, { tiersFromMs: 0 }), new Map());
+  assert.deepEqual(decodeScanCache({ ...encoded, t: undefined }, { tiersFromMs: at }), new Map());
+  const file = path.join(dir, 'cache', 'usage-cache.json.gz');
+  await saveUsageCache(file, cache, { tiersFromMs: at });
+  assert.deepEqual(await loadUsageCache(file, { tiersFromMs: at }), cache);
+  assert.deepEqual(await loadUsageCache(file, { tiersFromMs: at + 3_600_000 }), new Map());
+});

@@ -137,3 +137,20 @@ test('recognizes subagent spawns without forked_from_id', () => {
   parseCodexLine(turnContext('gpt-test-1', spawnInstant), state);
   assert.equal(parseCodexLine(counted({ ...counters(100, 10) }, undefined, {}, '2026-08-01T05:00:00.001Z'), state), null);
 });
+
+test('a request above 272,000 or 200,000 input tokens gets its size tag at or after the tier start, and none before it', () => {
+  const at = Date.parse('2026-08-01T05:17:49.919Z');
+  const parse = (input, options) => {
+    const state = initialCodexScanState();
+    parseCodexLine(turnContext('gpt-test-1'), state, options);
+    return parseCodexLine(counted({ ...counters(input, 10), cached_input_tokens: 1000 }, { ...counters(input, 10), cached_input_tokens: 1000 }), state, options);
+  };
+  // The size counts the cached input too.
+  assert.equal(parse(272_001, { tiersFromMs: at }).model, 'gpt-test-1[272k+]');
+  assert.deepEqual(parse(272_001, { tiersFromMs: at }).tokens, { uncached: 271_001, cacheRead: 1000, cacheWrite: 0, output: 10 });
+  assert.equal(parse(272_000, { tiersFromMs: at }).model, 'gpt-test-1[200k+]');
+  assert.equal(parse(200_001, { tiersFromMs: 0 }).model, 'gpt-test-1[200k+]');
+  assert.equal(parse(200_000, { tiersFromMs: 0 }).model, 'gpt-test-1');
+  assert.equal(parse(300_000, { tiersFromMs: at + 1 }).model, 'gpt-test-1');
+  assert.equal(parse(300_000).model, 'gpt-test-1');
+});

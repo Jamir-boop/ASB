@@ -9,12 +9,12 @@ import * as zlib from 'node:zlib';
 import { cacheDir as defaultCacheDir } from './platform-paths.mjs';
 import { aggregateBuckets, aggregateHourly, periodBuckets, USAGE_PERIODS } from './usage-aggregation.mjs';
 import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-antigravity.mjs';
-import { modelMaker } from './usage-pricing.mjs';
+import { modelMaker, TIER_TAG } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
 import { suggestName, validName } from './machine-group.mjs';
 import { encodeLedger, exportDocument, loadLedger, MACHINE_ID, mergeRecord, mergeRecords, readExport, recordKey, validRecord } from './usage-ledger.mjs';
-import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, saveUsageCache, scanFile, SCAN_REST_RATIO, writePrivateJson } from './usage-scan-cache.mjs';
+import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, readPrivateJson, saveUsageCache, scanFile, SCAN_REST_RATIO, writePrivateJson } from './usage-scan-cache.mjs';
 
 export { USAGE_PERIODS };
 const HOUR_MS = 60 * 60 * 1000;
@@ -25,6 +25,8 @@ export const SAVE_INTERVAL_MS = 5 * 60 * 1000;
 // The newest hourly records of a member reply.
 export const MAX_HOURLY_RECORDS = 50_000;
 const TOKEN_TYPES = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
+const COST_FIELDS = ['uncached', 'cacheRead', 'cacheWrite', 'output', 'total', 'savings'];
+const roundUsd = (value) => Math.round(value * 1e6) / 1e6;
 // The ledger: the first background scan, the next ones, and the idle time after the last usage request that frees the scan cache.
 export const LEDGER_FIRST_MS = 10 * 60 * 1000;
 export const LEDGER_REFRESH_MS = 60 * 60 * 1000;
@@ -57,6 +59,24 @@ function usageRoots(sources, homeDir, env) {
   add(piSessions ? expandHome(piSessions, homeDir)
     : path.resolve(expandHome(env.PI_CODING_AGENT_DIR?.trim() || path.join(homeDir, '.pi', 'agent'), homeDir), 'sessions'), 'pi');
   return { roots: [...roots.values()], databases };
+}
+
+// One record per machine, app, model without its tier tag, and bucket, in first-seen order: the sums of the tokens and
+// costs, and a null cost when a part has no price.
+function foldTiers(records) {
+  const folded = new Map();
+  for (const record of records) {
+    const model = record.model.replace(TIER_TAG, '');
+    const id = `${record.machineId}\0${record.app}\0${model}\0${record.bucket}`;
+    const kept = folded.get(id);
+    if (!kept) {
+      folded.set(id, { ...record, model, maker: modelMaker(model), tokens: { ...record.tokens }, cost: record.cost && { ...record.cost } });
+      continue;
+    }
+    for (const type of TOKEN_TYPES) kept.tokens[type] += record.tokens[type];
+    kept.cost = kept.cost && record.cost && Object.fromEntries(COST_FIELDS.map((field) => [field, roundUsd(kept.cost[field] + record.cost[field])]));
+  }
+  return [...folded.values()];
 }
 
 async function listTranscripts(root, app, files, pause, fileName) {
@@ -93,6 +113,10 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   let lastScanEndMs = null;
   let lastScanStartMs = null;
   let scanChanges = null;
+  // Tier tags start at this hour (usage-tiers.json); null until the ledger loads.
+  let tiersFromMs = ledgerFile ? null : 0;
+  const tiersFile = ledgerFile && path.join(path.dirname(ledgerFile), 'usage-tiers.json');
+  const cacheOptions = () => ({ platform, tiersFromMs });
   const rates = createRateLoader({ file: path.join(cacheDir, 'usage', 'usage-model-rates.json'), fetch, now, platform });
   let version = 0;
   let parts = null;
@@ -119,11 +143,12 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   async function runScan() {
     // The scan runs in the background (nobody waits for it), so it rests between its steps and leaves the CPU to other apps.
     const pause = createYielder(Date.now, { restRatio: SCAN_REST_RATIO });
+    // The cache needs the tier start of the ledger.
+    if (ledgerFile) await ensureLedger();
     if (!cache) {
-      cache = await loadUsageCache(cacheFile, { platform });
+      cache = await loadUsageCache(cacheFile, cacheOptions());
       version += 1;
     }
-    if (ledgerFile) await ensureLedger();
     const { roots, databases } = usageRoots(await readSources(), homeDir, env);
     let files = [];
     for (const { root, app, fileName } of roots) await listTranscripts(root, app, files, pause, fileName);
@@ -149,7 +174,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       seen.add(key);
       const previous = cache.get(key);
       try {
-        const entry = await scanFile(file, info, previous, app, { stats, pause });
+        const entry = await scanFile(file, info, previous, app, { stats, pause, tiersFromMs });
         if (entry !== previous) { cache.set(key, entry); changed = true; version += 1; }
       } catch {
         if (file.endsWith('.zst') && cache.delete(key)) { changed = true; version += 1; }
@@ -190,7 +215,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     if (dirty && (lastSavedAtMs === null || now() - lastSavedAtMs >= SAVE_INTERVAL_MS)) {
       lastSavedAtMs = now();
       dirty = false;
-      try { await saveUsageCache(cacheFile, cache, { platform }); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
+      try { await saveUsageCache(cacheFile, cache, cacheOptions()); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
     }
     if (ledgerFile) {
       const nowMs = now();
@@ -201,12 +226,32 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   }
 
   function ensureLedger() {
-    return ledgerLoad ||= loadLedger(ledgerFile, { platform, now, log }).then((loaded) => {
+    return ledgerLoad ||= loadLedger(ledgerFile, { platform, now, log }).then(async (loaded) => {
       ({ ledger } = loaded);
       ledgerBlocked = loaded.blocked;
       changeLedger(false);
       adoptSelf();
+      tiersFromMs = await loadTiersFrom();
     });
+  }
+  // The ledger merges by the larger value per hour, app, and model, so the tagged parts of an hour that the ledger has
+  // untagged would count two times: tags start after the last hour of an untagged ledger, or with its first tagged hour.
+  // shortcut: a backup of this machine imported after its ledger and cutoff file were lost can count the hours on one side of the cutoff two times (the larger-value merge cannot match tagged and untagged keys); keep the cutoff in the export format if that matters.
+  async function loadTiersFrom() {
+    const saved = await readPrivateJson(tiersFile, { platform });
+    if (saved?.version === 1 && Number.isSafeInteger(saved.fromMs) && saved.fromMs >= 0 && saved.fromMs % HOUR_MS === 0) return saved.fromMs;
+    let fromMs = 0;
+    if (ledger.self.records.size) {
+      fromMs = Infinity;
+      for (const record of ledger.self.records.values()) if (TIER_TAG.test(record.model) && record.hourMs < fromMs) fromMs = record.hourMs;
+      if (fromMs === Infinity) fromMs = Math.floor(now() / HOUR_MS) * HOUR_MS + HOUR_MS;
+    }
+    // A ledger that cannot be read now can still hold untagged hours for a later run.
+    if (ledgerBlocked) return fromMs;
+    try { await writePrivateJson(tiersFile, { version: 1, fromMs }, { platform }); } catch {
+      log('ASB cannot save the start of its usage price tiers. It keeps it for this run.');
+    }
+    return fromMs;
   }
   function changeLedger(dirty = true) {
     ledgerVersion += 1;
@@ -414,7 +459,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     if (dirty) {
       dirty = false;
       lastSavedAtMs = now();
-      try { await saveUsageCache(cacheFile, cache, { platform }); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
+      try { await saveUsageCache(cacheFile, cache, cacheOptions()); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
     }
     if (!running && cache && (lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS)) {
       cache = null;
@@ -507,7 +552,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         machines: [{ machineId, name, self: true, state: 'local', lastReportAtMs: 0 }, ...members.map((member) => ({
           machineId: member.machineId, name: member.name, self: false, state: member.state, lastReportAtMs: member.lastReportAtMs || 0 })),
         ...imported.map((machine) => ({ machineId: machine.machineId, name: machine.name, self: false, state: 'offline', lastReportAtMs: machine.exportedAtMs }))],
-        records,
+        records: foldTiers(records),
         prices: rates.pricing(),
         scan,
       };

@@ -16,7 +16,8 @@ test('the cost formula on fixed rates, with the savings', () => {
 
 test('a missing cache rate is null and falls back to the input rate', () => {
   const table = parseRateTable({ 'gpt-test-1': rate(1e-6) });
-  assert.deepEqual(lookupRate(table, 'gpt-test-1'), { input: 1e-6, output: 1e-6 * 5, cacheRead: null, cacheWrite: null });
+  assert.deepEqual(lookupRate(table, 'gpt-test-1'), { input: 1e-6, output: 1e-6 * 5, cacheRead: null, cacheWrite: null, cacheWrite1h: null,
+    above200k: null, above272k: null });
   const cost = priceTokens(table, 'gpt-test-1', tokens);
   assert.equal(cost.cacheRead, 0.054);
   assert.equal(cost.cacheWrite, 0.003);
@@ -119,4 +120,62 @@ test('a prefix that LiteLLM does not know takes the rate of the bare name, with 
   assert.equal(lookupRate(table, 'vendor/x-test'), null);
   assert.equal(lookupRate(table, 'vendor/kimi-test'), null);
   assert.equal(priceTokens(parseRateTable({ opus: rate(1) }), 'vendor/opus', tokens), null);
+});
+
+// A LiteLLM entry with the long-request bands and the 1-hour cache write rates.
+const TIERED = { input_cost_per_token: 1e-6, output_cost_per_token: 4e-6, cache_read_input_token_cost: 1e-7, cache_creation_input_token_cost: 1.25e-6,
+  cache_creation_input_token_cost_above_1hr: 2e-6,
+  input_cost_per_token_above_200k_tokens: 2e-6, output_cost_per_token_above_200k_tokens: 6e-6, cache_read_input_token_cost_above_200k_tokens: 2e-7,
+  cache_creation_input_token_cost_above_200k_tokens: 2.5e-6, cache_creation_input_token_cost_above_1hr_above_200k_tokens: 4e-6,
+  input_cost_per_token_above_272k_tokens: 3e-6, output_cost_per_token_above_272k_tokens: 8e-6 };
+const effective = (rate) => rate && { input: rate.input, output: rate.output, cacheRead: rate.cacheRead, cacheWrite: rate.cacheWrite };
+
+test('the tier fields of a LiteLLM entry are read, and a band needs its input and output rates', () => {
+  const table = parseRateTable({ m: TIERED, half: { ...rate(1e-6), input_cost_per_token_above_200k_tokens: 2e-6 } });
+  assert.deepEqual(table.get('m'), { input: 1e-6, output: 4e-6, cacheRead: 1e-7, cacheWrite: 1.25e-6, cacheWrite1h: 2e-6,
+    above200k: { input: 2e-6, output: 6e-6, cacheRead: 2e-7, cacheWrite: 2.5e-6, cacheWrite1h: 4e-6 },
+    above272k: { input: 3e-6, output: 8e-6, cacheRead: null, cacheWrite: null, cacheWrite1h: null } });
+  assert.equal(table.get('half').above200k, null);
+});
+
+test('a tagged model takes the rates of its band and its 1-hour cache write rate', () => {
+  const table = parseRateTable({ m: TIERED, p: { ...rate(1e-6), input_cost_per_token_above_200k_tokens: 2e-6, output_cost_per_token_above_200k_tokens: 6e-6 },
+    n: rate(1e-6, 1e-7) });
+  assert.deepEqual(effective(lookupRate(table, 'm')), { input: 1e-6, output: 4e-6, cacheRead: 1e-7, cacheWrite: 1.25e-6 });
+  assert.deepEqual(effective(lookupRate(table, 'm[272k+]')), { input: 3e-6, output: 8e-6, cacheRead: 1e-7, cacheWrite: 1.25e-6 });
+  assert.deepEqual(effective(lookupRate(table, 'm[200k+]')), { input: 2e-6, output: 6e-6, cacheRead: 2e-7, cacheWrite: 2.5e-6 });
+  assert.deepEqual(effective(lookupRate(table, 'm[1h]')), { input: 1e-6, output: 4e-6, cacheRead: 1e-7, cacheWrite: 2e-6 });
+  assert.deepEqual(effective(lookupRate(table, 'm[200k+,1h]')), { input: 2e-6, output: 6e-6, cacheRead: 2e-7, cacheWrite: 4e-6 });
+  // The 272k band has no 1-hour rate: the base one.
+  assert.deepEqual(effective(lookupRate(table, 'm[272k+,1h]')), { input: 3e-6, output: 8e-6, cacheRead: 1e-7, cacheWrite: 2e-6 });
+  // With no 272k band, the 200k band.
+  assert.equal(lookupRate(table, 'p[272k+]').input, 2e-6);
+  // A variant that is not a tag, and a tag that is not the last group, are the base rate.
+  assert.deepEqual(lookupRate(table, 'm[1m]'), lookupRate(table, 'm'));
+  assert.deepEqual(lookupRate(table, 'm[1h][1m]'), lookupRate(table, 'm'));
+  assert.equal(lookupRate(table, 'm[1m][200k+]').input, 2e-6);
+  // A model without tier fields: every tag has the base prices.
+  for (const tag of ['[200k+]', '[272k+]', '[1h]', '[200k+,1h]', '[272k+,1h]']) {
+    assert.deepEqual(priceTokens(table, `n${tag}`, tokens), priceTokens(table, 'n', tokens), tag);
+  }
+  assert.equal(priceTokens(table, 'unknown[1h]', tokens), null);
+  assert.deepEqual(priceTokens(table, 'm[200k+,1h]', tokens), { uncached: 0.0024, cacheRead: 0.0108, cacheWrite: 0.012, output: 0.0054, total: 0.0306, savings: 0.0972 });
+});
+
+test('the disk form keeps the tier fields, an old entry gets null tier fields, and a bad tier field drops the model', () => {
+  const table = parseRateTable({ m: TIERED, n: rate(1e-6) });
+  const models = JSON.parse(JSON.stringify(rateTableModels(table)));
+  assert.deepEqual(rateTableFromModels(models), table);
+  const old = rateTableFromModels({ n: { input: 1e-6, output: 5e-6, cacheRead: null, cacheWrite: null } });
+  assert.deepEqual(old.get('n'), { input: 1e-6, output: 5e-6, cacheRead: null, cacheWrite: null, cacheWrite1h: null, above200k: null, above272k: null });
+  for (const bad of [{ cacheWrite1h: 'x' }, { above200k: { input: 1 } }, { above272k: { input: 1, output: 2, cacheRead: 'x', cacheWrite: null, cacheWrite1h: null } }, { above200k: 5 }]) {
+    assert.equal(rateTableFromModels({ ...models, bad: { ...models.m, ...bad } }).size, 2, JSON.stringify(bad));
+  }
+});
+
+test('a bare alias needs the same tier rates too', () => {
+  const ambiguous = parseRateTable({ 'provider-a/tiered-model': TIERED, 'provider-b/tiered-model': { ...TIERED, output_cost_per_token_above_272k_tokens: 9e-6 } });
+  assert.equal(lookupRate(ambiguous, 'tiered-model'), null);
+  const same = parseRateTable({ 'provider-a/tiered-model': TIERED, 'provider-b/tiered-model': { ...TIERED } });
+  assert.deepEqual(lookupRate(same, 'tiered-model'), lookupRate(same, 'provider-a/tiered-model'));
 });

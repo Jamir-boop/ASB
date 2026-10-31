@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { createActivityUsage, LEDGER_FIRST_MS, LEDGER_REFRESH_MS, RELEASE_AFTER_MS, SAVE_INTERVAL_MS } from '../src/activity-usage.mjs';
 import { usageLedgerPath } from '../src/usage-ledger.mjs';
+import { parseRateTable, priceTokens } from '../src/usage-pricing.mjs';
 
 // Synthetic transcripts, models, and machines only. Tests never use the network: the price download is a fake fetch.
 const HOUR = 3_600_000;
@@ -183,7 +185,7 @@ test('a corrupt ledger is set aside unchanged and replaced; when that fails, no 
   await fs.writeFile(ledgerFile, corrupt, { mode: 0o600 });
   const usage = service();
   await usage.refresh();
-  const aside = (await fs.readdir(folder)).filter((name) => name !== 'usage-ledger.json');
+  const aside = (await fs.readdir(folder)).filter((name) => name !== 'usage-ledger.json' && name !== 'usage-tiers.json');
   assert.deepEqual(aside, [`usage-ledger.${BASE}.bad.json`]);
   assert.equal(await fs.readFile(path.join(folder, aside[0]), 'utf8'), corrupt);
   assert.deepEqual(logs, [`ASB set aside an unreadable usage ledger: usage-ledger.${BASE}.bad.json.`]);
@@ -203,7 +205,7 @@ test('a corrupt ledger is set aside unchanged and replaced; when that fails, no 
   await blocked.stop();
   assert.deepEqual(logs, ['ASB cannot set aside its unreadable usage ledger. It saves no usage history now.']);
   assert.equal(blocked.stats.ledgerSaves, 0);
-  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json']);
+  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json', 'usage-tiers.json']);
   assert.equal(await fs.readFile(ledgerFile, 'utf8'), '{');
   // The history still shows in this run.
   assert.equal(blocked.localHourly('all').usage.length, 2);
@@ -581,7 +583,7 @@ test('a ledger with open modes loads and becomes private; a linked ledger is kep
   const usage = service();
   await usage.refresh();
   assert.deepEqual(usage.localHourly('all').usage.map(({ hourMs }) => hourMs), [hourOf(BASE - 3 * DAY), hourOf(BASE - HOUR)]);
-  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json']);
+  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json', 'usage-tiers.json']);
   assert.equal((await fs.stat(ledgerFile)).mode & 0o777, 0o600);
   assert.equal(usage.stats.ledgerSaves, 1);
   assert.equal((await fs.stat(folder)).mode & 0o777, 0o700);
@@ -603,7 +605,7 @@ test('a ledger with open modes loads and becomes private; a linked ledger is kep
   assert.ok(!linked.localHourly('all').usage.some(({ hourMs }) => hourMs === hourOf(BASE - 2 * DAY)));
   assert.deepEqual(logs, ['ASB cannot read its usage ledger. It saves no usage history now.']);
   assert.equal(linked.stats.ledgerSaves, 0);
-  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json']);
+  assert.deepEqual(await fs.readdir(folder), ['usage-ledger.json', 'usage-tiers.json']);
   assert.equal(await fs.readlink(ledgerFile), target);
   assert.equal(await fs.readFile(target, 'utf8'), text);
 });
@@ -617,7 +619,7 @@ test('records after the clock in the ledger file load, and its export leaves the
     [{ machineId: OTHER, name: 'retired', exportedAtMs: BASE, records: [[early, 'codex', 'gpt-test-1', 1, 0, 0, 1], [late, 'codex', 'gpt-test-1', 1, 0, 0, 1]] }]), { mode: 0o600 });
   const usage = service();
   const document = await usage.exportAll([]);
-  assert.deepEqual(await fs.readdir(path.dirname(ledgerFile)), ['usage-ledger.json']);
+  assert.deepEqual(await fs.readdir(path.dirname(ledgerFile)), ['usage-ledger.json', 'usage-tiers.json']);
   assert.deepEqual(document.machines.map(({ machineId, records }) => [machineId, records.map((record) => record[0])]), [[SELF, [early]], [OTHER, [early]]]);
   assert.equal((await usage.importAll(document)).machines.length, 2);
 });
@@ -803,4 +805,117 @@ test('the ledger tick and export still scan while request scans are gated', asyn
   assert.equal(usage.stats.scans, 2);
   await usage.exportAll();
   assert.equal(usage.stats.scans, 3);
+});
+
+const usageLine = (atMs, id, usage, model = 'claude-test-5') => JSON.stringify({ type: 'assistant', timestamp: iso(atMs), requestId: `r-${id}`,
+  message: { id: `m-${id}`, model, content: [], usage } });
+const LONG = { input_tokens: 10, cache_read_input_tokens: 250_000, cache_creation_input_tokens: 50, output_tokens: 7 };
+const tiersOf = async (ledgerFile) => JSON.parse(await fs.readFile(path.join(path.dirname(ledgerFile), 'usage-tiers.json'), 'utf8'));
+
+test('the tier start: 0 for a ledger with no records of this machine, saved once and kept', async (t) => {
+  const { root, write, service, ledgerFile } = await setup(t);
+  await write('a.jsonl', [usageLine(BASE - HOUR, 1, LONG)]);
+  const usage = service();
+  await usage.refresh();
+  assert.deepEqual(await tiersOf(ledgerFile), { version: 1, fromMs: 0 });
+  assert.deepEqual(usage.localHourly('all').usage.map(({ model }) => model), ['claude-test-5[200k+]']);
+  // The scan cache was loaded and saved with the start.
+  assert.equal(JSON.parse(gunzipSync(await fs.readFile(path.join(root, 'cache', 'usage', 'usage-cache.json.gz'))).toString('utf8')).t, 0);
+  await usage.stop();
+  // The ledger now has records of this machine, but the saved start stays.
+  const next = service({ cacheDir: path.join(path.dirname(ledgerFile), 'next-cache') });
+  await next.refresh();
+  assert.deepEqual(await tiersOf(ledgerFile), { version: 1, fromMs: 0 });
+  assert.deepEqual(next.localHourly('all').usage.map(({ model }) => model), ['claude-test-5[200k+]']);
+});
+
+test('the tier start: the next UTC hour for an untagged ledger, the first tagged hour, and a new value for a bad file', async (t) => {
+  const { service, ledgerFile, clock } = await setup(t);
+  await fs.mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  const tiersFile = path.join(path.dirname(ledgerFile), 'usage-tiers.json');
+  // Imported machines do not count.
+  await fs.writeFile(ledgerFile, ledgerText([], [{ machineId: OTHER, name: 'retired', exportedAtMs: BASE, records: [[hourOf(BASE - DAY), 'codex', 'gpt-test-1', 1, 0, 0, 1]] }]), { mode: 0o600 });
+  let usage = service();
+  await usage.ready();
+  assert.deepEqual(await tiersOf(ledgerFile), { version: 1, fromMs: 0 });
+  await usage.stop();
+  await fs.rm(tiersFile);
+  await fs.writeFile(ledgerFile, ledgerText([[hourOf(BASE - DAY), 'claude', 'claude-test-5', 1, 0, 0, 1]]), { mode: 0o600 });
+  usage = service();
+  await usage.ready();
+  assert.deepEqual(await tiersOf(ledgerFile), { version: 1, fromMs: hourOf(clock.ms) + HOUR });
+  await usage.stop();
+  for (const bad of [{ version: 1, fromMs: hourOf(BASE) + 1 }, { version: 2, fromMs: 0 }, { version: 1, fromMs: -HOUR }, { fromMs: 0 }]) {
+    await fs.writeFile(tiersFile, JSON.stringify(bad), { mode: 0o600 });
+    await fs.writeFile(ledgerFile, ledgerText([[hourOf(BASE - DAY), 'claude', 'claude-test-5', 1, 0, 0, 1],
+      [hourOf(BASE - 3 * HOUR), 'claude', 'claude-test-5[1h]', 0, 0, 1, 0], [hourOf(BASE - 2 * HOUR), 'codex', 'gpt-test-1[272k+]', 1, 0, 0, 1]]), { mode: 0o600 });
+    usage = service();
+    await usage.ready();
+    assert.deepEqual(await tiersOf(ledgerFile), { version: 1, fromMs: hourOf(BASE - 3 * HOUR) }, JSON.stringify(bad));
+    await usage.stop();
+  }
+});
+
+test('a failed save of the tier start logs once and keeps the value for the run', async (t) => {
+  const { write, service, ledgerFile, logs } = await setup(t);
+  await write('a.jsonl', [usageLine(BASE - HOUR, 1, LONG)]);
+  const open = fs.open;
+  t.mock.method(fs, 'open', async (file, ...args) => {
+    if (String(file).includes('usage-tiers.json.')) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    return open(file, ...args);
+  });
+  const usage = service();
+  await usage.refresh();
+  await usage.refresh();
+  assert.deepEqual(logs, ['ASB cannot save the start of its usage price tiers. It keeps it for this run.']);
+  assert.deepEqual(usage.localHourly('all').usage.map(({ model }) => model), ['claude-test-5[200k+]']);
+});
+
+test('without a ledger file the tiers start at 0 and no tier file is written', async (t) => {
+  const { root, write, service } = await setup(t);
+  await write('a.jsonl', [usageLine(BASE - HOUR, 1, LONG)]);
+  const usage = service({ ledgerFile: '' });
+  await usage.refresh();
+  assert.deepEqual(usage.localHourly('all').usage.map(({ model }) => model), ['claude-test-5[200k+]']);
+  await assert.rejects(fs.access(path.join(root, 'config')), { code: 'ENOENT' });
+});
+
+test('no double count: an untagged ledger hour before the tier start and the live scan of the same transcript count once', async (t) => {
+  const { write, service, ledgerFile, clock } = await setup(t);
+  await fs.mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  // The ledger of the version before tier tags, and the transcript that it came from.
+  await fs.writeFile(ledgerFile, ledgerText([[hourOf(BASE - HOUR), 'claude', 'claude-test-5', 10, 250_000, 50, 7]]), { mode: 0o600 });
+  await write('a.jsonl', [usageLine(BASE - HOUR, 1, LONG)]);
+  const usage = service();
+  await settle(usage);
+  assert.deepEqual(usage.localHourly('all').usage.map(({ model, tokens: value }) => [model, value]), [['claude-test-5', tokens(10, 250_000, 50, 7)]]);
+  assert.deepEqual(sums(usage.report('30d')).map((record) => record[3]), [tokens(10, 250_000, 50, 7)]);
+  // A new request after the tier start is tagged.
+  clock.ms = hourOf(BASE) + HOUR + 60_000;
+  await write('b.jsonl', [usageLine(clock.ms - 1000, 2, LONG)]);
+  await usage.refresh();
+  assert.deepEqual(usage.localHourly('all').usage.map(({ model, hourMs }) => [model, hourMs]),
+    [['claude-test-5', hourOf(BASE - HOUR)], ['claude-test-5[200k+]', hourOf(BASE) + HOUR]]);
+});
+
+test('the report folds the tagged parts into their model with summed tokens and costs; localHourly and the export keep the tags', async (t) => {
+  const { write, service } = await setup(t);
+  const split = { input_tokens: 3, cache_creation_input_tokens: 1000, output_tokens: 2, cache_creation: { ephemeral_1h_input_tokens: 600 } };
+  await write('a.jsonl', [usageLine(BASE - HOUR, 1, LONG), usageLine(BASE - HOUR, 2, split), claudeLine(BASE - HOUR, 3, 9),
+    usageLine(BASE - HOUR, 4, LONG, 'unknown-test'), usageLine(BASE - HOUR, 5, split, 'unknown-test')]);
+  const usage = service();
+  await settle(usage);
+  const hourly = usage.localHourly('all').usage;
+  assert.deepEqual(hourly.map(({ model }) => model), ['claude-test-5', 'claude-test-5[1h]', 'claude-test-5[200k+]', 'unknown-test', 'unknown-test[1h]', 'unknown-test[200k+]']);
+  assert.deepEqual((await usage.exportAll()).machines[0].records.map((record) => record[2]), hourly.map(({ model }) => model));
+  const table = parseRateTable({ 'claude-test-5': { input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5,
+    cache_read_input_token_cost: 5e-7, cache_creation_input_token_cost: 6.25e-6 } });
+  const parts = hourly.filter(({ model }) => model.startsWith('claude-test-5')).map(({ model, tokens: value }) => priceTokens(table, model, value));
+  const records = usage.report('30d').records.filter((record) => record.machineId === SELF);
+  assert.deepEqual(records.map(({ model, maker, tokens: value }) => [model, maker, value]), [
+    ['claude-test-5', 'Anthropic', tokens(10 + 3 + 10, 250_000 + 1000, 50 + 400 + 600 + 50, 7 + 2 + 9)],
+    ['unknown-test', 'Other', tokens(13, 250_000, 1050, 9)]]);
+  assert.deepEqual(records[0].cost, Object.fromEntries(Object.keys(parts[0]).map((field) =>
+    [field, Math.round(parts.reduce((sum, cost) => sum + cost[field], 0) * 1e6) / 1e6])));
+  assert.equal(records[1].cost, null);
 });

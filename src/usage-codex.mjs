@@ -1,6 +1,7 @@
 // Ported from T3 Code (https://github.com/pingdotgg/t3code), apps/server/src/provider/Drivers/codexUsage.ts, commit 3cb16cf. MIT License, Copyright (c) 2026 T3 Tools Inc. See THIRD_PARTY_NOTICES.md.
-// ASB keeps the token_count deltas and the model carried forward from turn_context. It drops the service tiers:
-// ASB prices only the standard rates. Records hold tokens only, never message text.
+// ASB keeps the token_count deltas and the model carried forward from turn_context. It drops the service tiers (ASB prices
+// them at the standard rates), but tags a request above 200,000 or 272,000 input tokens. Records hold tokens only, never message text.
+import { tierModel } from './usage-pricing.mjs';
 
 const USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens',
   'reasoning_output_tokens', 'total_tokens'];
@@ -63,13 +64,14 @@ function isForkedSessionMeta(payload) {
 
 // Cumulative counters validate request deltas. Older events without cumulative counters use
 // normalized consecutive-request deduplication.
-export function parseCodexLine(line, state) {
+// Records at or after options.tiersFromMs get the size tag of their request in the model name.
+export function parseCodexLine(line, state, options = {}) {
   let parsed;
   try { parsed = JSON.parse(line); } catch { return null; }
-  return parseCodexRecord(parsed, state);
+  return parseCodexRecord(parsed, state, options);
 }
 
-function parseCodexRecord(record, state) {
+function parseCodexRecord(record, state, { tiersFromMs = Infinity } = {}) {
   if (typeof record !== 'object' || record === null) return null;
   const payload = record.payload;
   if (typeof payload !== 'object' || payload === null) return null;
@@ -175,7 +177,8 @@ function parseCodexRecord(record, state) {
     output: last.output_tokens,
   };
   if (tokens.uncached + tokens.cacheRead + tokens.cacheWrite + tokens.output === 0) return null;
-  return { app: 'codex', timestampMs, model: state.model, tokens, dedupeKey: null };
+  const model = timestampMs >= tiersFromMs ? tierModel(state.model, last.input_tokens) : state.model;
+  return { app: 'codex', timestampMs, model, tokens, dedupeKey: null };
 }
 
 export const codexUsageFormat = {

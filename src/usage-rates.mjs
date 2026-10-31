@@ -1,6 +1,7 @@
 // Ported from T3 Code (https://github.com/pingdotgg/t3code), apps/server/src/usage/UsageService.ts (the rate loading), commit 3cb16cf. MIT License, Copyright (c) 2026 T3 Tools Inc. See THIRD_PARTY_NOTICES.md.
 // The LiteLLM price list, downloaded at run time with a 24-hour disk cache. A load never blocks a reply: the caller gets
 // the rates it has now, and a download runs in the background. The disk cache holds only the parsed rates per model.
+// Version 2 has the tier rates; an older cache gives its rates until the download at once replaces it.
 import { parseRateTable, rateTableFromModels, rateTableModels } from './usage-pricing.mjs';
 import { readPrivateJson, writePrivateJson } from './usage-scan-cache.mjs';
 
@@ -40,6 +41,7 @@ export function createRateLoader({ file, fetch = globalThis.fetch, now = Date.no
   let lastFailedAtMs = null;
   let status = 'unavailable';
   let diskRead = false;
+  let oldCache = false;
   let running = null;
   // True only while the disk read or a download runs: a load that returns at once (TTL, retry floor) is not loading.
   let busy = false;
@@ -56,7 +58,7 @@ export function createRateLoader({ file, fetch = globalThis.fetch, now = Date.no
 
   async function loadRates() {
     const startMs = now();
-    if (fetchedAtMs !== null && startMs - fetchedAtMs < RATES_TTL_MS) return;
+    if (fetchedAtMs !== null && !oldCache && startMs - fetchedAtMs < RATES_TTL_MS) return;
     if (!diskRead) {
       diskRead = true;
       busy = true;
@@ -66,7 +68,8 @@ export function createRateLoader({ file, fetch = globalThis.fetch, now = Date.no
         rates = parsed;
         fetchedAtMs = saved.fetchedAtMs;
         status = 'cached';
-        if (startMs - fetchedAtMs < RATES_TTL_MS) return;
+        oldCache = saved.version !== 2;
+        if (!oldCache && startMs - fetchedAtMs < RATES_TTL_MS) return;
       }
     }
     if (lastFailedAtMs !== null && startMs - lastFailedAtMs < RATES_REFRESH_FLOOR_MS) return;
@@ -82,9 +85,10 @@ export function createRateLoader({ file, fetch = globalThis.fetch, now = Date.no
     }
     rates = fetched;
     fetchedAtMs = startMs;
+    oldCache = false;
     lastFailedAtMs = null;
     status = 'fresh';
-    await writePrivateJson(file, { fetchedAtMs: startMs, models: rateTableModels(fetched) }, { platform }).catch(() => {});
+    await writePrivateJson(file, { version: 2, fetchedAtMs: startMs, models: rateTableModels(fetched) }, { platform }).catch(() => {});
   }
 
   return {

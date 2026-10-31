@@ -79,7 +79,7 @@ function addRecord(entry, record, seen) {
 }
 
 // Only lines with a marker are parsed, in file order: the Codex reader state depends on the order.
-function readLines(data, format, entry, seen) {
+function readLines(data, format, entry, seen, options) {
   const starts = new Set();
   for (const marker of format.markerBytes ||= format.markers.map((text) => Buffer.from(text))) {
     let at = data.indexOf(marker);
@@ -89,7 +89,7 @@ function readLines(data, format, entry, seen) {
     }
   }
   for (const start of [...starts].sort((a, b) => a - b)) {
-    const record = format.parseLine(data.toString('utf8', start, data.indexOf(10, start)), entry.state);
+    const record = format.parseLine(data.toString('utf8', start, data.indexOf(10, start)), entry.state, options);
     if (Array.isArray(record)) {
       for (const part of record) addRecord(entry, part, seen);
     } else if (record) addRecord(entry, record, seen);
@@ -108,7 +108,7 @@ async function readExactly(handle, length, position, stats) {
   return buffer.subarray(0, done);
 }
 
-async function scanCompressed(file, info, format, handle, stats, pause) {
+async function scanCompressed(file, info, format, handle, stats, pause, options) {
   const entry = { app: format.app, size: info.size, mtimeMs: info.mtimeMs, offset: info.size,
     guardLength: Math.min(GUARD_LENGTH, info.size), state: format.initialState(), records: [] };
   const seen = new Map();
@@ -121,12 +121,12 @@ async function scanCompressed(file, info, format, handle, stats, pause) {
       if (newline === -1) pending.push(chunk);
       else {
         const data = pending.length ? Buffer.concat([...pending, chunk.subarray(0, newline + 1)]) : chunk.subarray(0, newline + 1);
-        readLines(data, format, entry, seen);
+        readLines(data, format, entry, seen, options);
         pending = newline + 1 < chunk.length ? [chunk.subarray(newline + 1)] : [];
       }
       await pause();
     }
-    if (pending.length) readLines(Buffer.concat([...pending, Buffer.from('\n')]), format, entry, seen);
+    if (pending.length) readLines(Buffer.concat([...pending, Buffer.from('\n')]), format, entry, seen, options);
   });
   entry.guardHash = guardHash(await readExactly(handle, entry.guardLength, 0, stats));
   return entry;
@@ -135,13 +135,15 @@ async function scanCompressed(file, info, format, handle, stats, pause) {
 // Reads the usage of one transcript. An unchanged file gives the old entry with no read. A grown file whose first bytes
 // did not change is read from its offset; a shorter file, or one whose first bytes changed, is read again from 0.
 // Live files need a newline for their last line; compressed files also count their last line at end of stream.
-export async function scanFile(file, info, previous, app, { stats = {}, pause = createYielder() } = {}) {
+// Codex and Claude records at or after tiersFromMs get tier tags in their model names (no tags without it).
+export async function scanFile(file, info, previous, app, { stats = {}, pause = createYielder(), tiersFromMs } = {}) {
   const format = FORMATS[app];
   const same = previous?.app === app;
   if (same && previous.size === info.size && previous.mtimeMs === info.mtimeMs) return previous;
   const handle = await fs.open(file, 'r');
   try {
-    if (file.endsWith('.zst')) return await scanCompressed(file, info, format, handle, stats, pause);
+    const options = { tiersFromMs };
+    if (file.endsWith('.zst')) return await scanCompressed(file, info, format, handle, stats, pause, options);
     let entry = null;
     if (same && previous.offset <= info.size && previous.guardLength <= previous.offset
       && guardHash(await readExactly(handle, previous.guardLength, 0, stats)) === previous.guardHash) {
@@ -159,7 +161,7 @@ export async function scanFile(file, info, previous, app, { stats = {}, pause = 
       const newline = chunk.lastIndexOf(10);
       if (newline === -1) { pending.push(chunk); continue; }
       const data = pending.length ? Buffer.concat([...pending, chunk.subarray(0, newline + 1)]) : chunk.subarray(0, newline + 1);
-      readLines(data, format, entry, seen);
+      readLines(data, format, entry, seen, options);
       entry.offset += data.length;
       pending = newline + 1 < chunk.length ? [chunk.subarray(newline + 1)] : [];
       await pause();
@@ -175,7 +177,8 @@ export async function scanFile(file, info, previous, app, { stats = {}, pause = 
   } finally { await handle.close(); }
 }
 
-export function encodeScanCache(cache) {
+// The cache keeps the tier start of its records: a cache of another start has other model names.
+export function encodeScanCache(cache, { tiersFromMs } = {}) {
   const models = [];
   const index = new Map();
   const intern = (model) => {
@@ -187,15 +190,15 @@ export function encodeScanCache(cache) {
     files[key] = { s: entry.size, m: entry.mtimeMs, o: entry.offset, gl: entry.guardLength, gh: entry.guardHash, a: entry.app,
       cs: entry.state, r: entry.records.map(([quarter, model, ...rest]) => [quarter, intern(model), ...(rest[4] === null ? rest.slice(0, 4) : rest)]) };
   }
-  return { version: USAGE_CACHE_VERSION, models, files };
+  return { version: USAGE_CACHE_VERSION, ...(tiersFromMs === undefined ? {} : { t: tiersFromMs }), models, files };
 }
 
 const count = (value) => Number.isSafeInteger(value) && value >= 0;
 
 // Rejects a whole entry that is not valid: a partial survivor would look warm and hide usage until the file changes.
-export function decodeScanCache(document) {
+export function decodeScanCache(document, { tiersFromMs } = {}) {
   const cache = new Map();
-  if (document?.version !== USAGE_CACHE_VERSION || !Array.isArray(document.models)
+  if (document?.version !== USAGE_CACHE_VERSION || document.t !== tiersFromMs || !Array.isArray(document.models)
     || !document.models.every((model) => typeof model === 'string') || typeof document.files !== 'object' || document.files === null) return cache;
   for (const [key, raw] of Object.entries(document.files)) {
     const format = FORMATS[raw?.a];
@@ -234,8 +237,8 @@ export async function readPrivateJson(file, options) {
 }
 
 export async function loadUsageCache(file, options) {
-  try { return decodeScanCache(JSON.parse(await readPrivateFile(file, options, gunzipText))); } catch (error) {
-    if (error.code === 'ENOENT') return decodeScanCache(await readPrivateJson(file.replace(/\.gz$/, ''), options));
+  try { return decodeScanCache(JSON.parse(await readPrivateFile(file, options, gunzipText)), options); } catch (error) {
+    if (error.code === 'ENOENT') return decodeScanCache(await readPrivateJson(file.replace(/\.gz$/, ''), options), options);
     return new Map();
   }
 }
@@ -254,7 +257,7 @@ function* slices(text) {
 
 // shortcut: the cache is one JSON document, so its encoding and parsing still block; use JSON lines with yields if that matters.
 export async function saveUsageCache(file, cache, options) {
-  const text = JSON.stringify(encodeScanCache(cache));
+  const text = JSON.stringify(encodeScanCache(cache, options));
   await writePrivateFile(file, () => Readable.from(slices(text)).pipe(zlib.createGzip()), options);
   await fs.rm(file.replace(/\.gz$/, ''), { force: true });
 }
