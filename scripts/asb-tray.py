@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """ASB tray icon: a StatusNotifierItem with a dbusmenu, for the ASB engine."""
+import ctypes
 import json
 import os
 import re
@@ -24,6 +25,16 @@ def unix_signal_add(priority, signum, callback):
     except (ImportError, ValueError, AttributeError):
         add = GLib.unix_signal_add
     return add(priority, signum, callback)
+
+
+def set_parent_death_signal():
+    """The kernel sends SIGTERM to the tray when its parent ends (prctl PR_SET_PDEATHSIG, 1)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        return ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        return False
 
 
 LOCAL_HTTP = build_opener(ProxyHandler({}))
@@ -325,9 +336,18 @@ class Tray:
                                          lambda *_args: self.show_status("Passive"), lambda *_args: self.show_status("Active"))
         GLib.timeout_add_seconds(60, self.give_up)
         GLib.timeout_add_seconds(30, self.refresh_tooltip)
-        GLib.timeout_add_seconds(5, self.check_engine)
+        # Only the engine as the parent makes its SIGTERM on exit sure; an engine that ended before prctl leaves another parent.
+        if not (set_parent_death_signal() and os.getppid() == self.engine_pid):
+            GLib.timeout_add_seconds(5, self.check_engine)
         unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.stop)
         self.refresh_tooltip()
+        # GLib forgets a quit that comes before run, so an engine that is gone already ends the tray here.
+        try:
+            os.kill(self.engine_pid, 0)
+        except ProcessLookupError:
+            return 0
+        except PermissionError:
+            pass
         self.loop.run()
         return 0
 

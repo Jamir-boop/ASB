@@ -216,15 +216,15 @@ test('the Windows engine writes its log with no console, or when the tray sets A
 
 // PowerShell names ignore case, and a parameter keeps its type: `$open = <menu item>` wrote to [switch]$Open, so the tray stopped before it started the engine.
 test('the tray script assigns no value to its switch parameter', async () => {
-  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const script = (await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   const switches = [...script.match(/^param\((.*)\)$/m)[1].matchAll(/\[switch\]\$(\w+)/gi)].map(([, name]) => name);
   assert.deepEqual(switches, ['Open']);
   for (const name of switches) assert.doesNotMatch(script, new RegExp(`\\$${name}\\s*=`, 'i'), name);
 });
 
 // The tray loads Windows Forms and Drawing slowly, and Start-Engine needs only System.Diagnostics, so the engine starts first.
-test('the tray script starts the engine once after the mutex and before Windows Forms, and the timer starts it again after a crash', async () => {
-  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+test('the tray script starts the engine once after the mutex and before Windows Forms, and the Exited handler starts it again after a crash', async () => {
+  const script = (await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   const calls = [...script.matchAll(/^( *)Start-Engine *$/gm)];
   assert.deepEqual(calls.map(([, indent]) => indent), ['', '  ']);
   const [first, restart] = calls.map((call) => call.index);
@@ -235,12 +235,47 @@ test('the tray script starts the engine once after the mutex and before Windows 
   const addTypes = [...script.matchAll(/Add-Type/g)].map((match) => match.index);
   assert.deepEqual(addTypes.map((index) => open < index && index < script.indexOf('\n}', open)), [true, false]);
   assert.ok(script.indexOf('.WaitOne(0)') < definition && definition < first && first < addTypes[1]);
-  assert.ok(restart > script.indexOf('.add_Tick('));
+  const handler = script.indexOf('$engineExited = {');
+  assert.ok(0 < handler && handler < restart);
+});
+
+// A 1 s timer polled what the Exited event tells. A hidden control is the SynchronizingObject, so each handler runs on the tray thread.
+test('the tray script watches the engine and the launcher with Exited events on the tray thread, and has no poll timer', async () => {
+  const script = (await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+  assert.doesNotMatch(script, /Interval = 1000\b|\$timer\b/);
+  const body = (start) => script.slice(script.indexOf(start), script.indexOf('\n}', script.indexOf(start)));
+  const forms = script.indexOf('\nAdd-Type -AssemblyName System.Windows.Forms, System.Drawing\n');
+  const control = script.indexOf('\n$sync = New-Object System.Windows.Forms.Control\n');
+  const handle = script.indexOf('\n$null = $sync.Handle\n');
+  const watches = [...script.matchAll(/^ *Watch-Exit \$script:(\w+) \$(\w+)$/gm)].map(([line, process, handler]) => [line.trim(), process, handler]);
+  assert.deepEqual(watches.map(([, process, handler]) => [process, handler]), [['board', 'boardExited'], ['engine', 'engineExited'], ['engine', 'engineExited']]);
+  const first = script.indexOf('Watch-Exit $script:');
+  assert.ok(0 < forms && forms < control && control < handle && handle < first);
+  // A HasExited read that sees the exit raises Exited once, so the handler must be there before EnableRaisingEvents.
+  const watch = body('function Watch-Exit(');
+  const order = ['$process.SynchronizingObject = $sync', '$process.add_Exited($onExit)', '$process.EnableRaisingEvents = $true'].map((text) => watch.indexOf(text));
+  assert.ok(order[0] > 0 && order[0] < order[1] && order[1] < order[2], String(order));
+  assert.doesNotMatch(watch, /HasExited/);
+  assert.match(body('function Show-Window('), /\n    \$script:board = Start-Launcher \$window\n    Watch-Exit \$script:board \$boardExited\n/);
+  // The first engine starts before Windows Forms loads; it is watched before the message loop, and a restarted engine at once.
+  assert.match(script, /^Start-Engine\nAdd-Type /m);
+  const engine = body('$engineExited = {');
+  assert.match(engine, /\n  Start-Engine\n  Watch-Exit \$script:engine \$engineExited$/);
+  const top = script.indexOf('\nWatch-Exit $script:engine $engineExited\n');
+  assert.ok(script.indexOf('$engineExited = {') < top && top < script.indexOf('[System.Windows.Forms.Application]::Run()'));
+  assert.match(engine, /^  if \(\$process -ne \$script:engine -or \$script:quitting\) \{ return \}$/m);
+  assert.match(engine, /^  if \(\$process\.ExitCode -eq 0\) \{ Stop-Tray; return \}$/m);
+  assert.match(engine, /\(\$now - \$_\)\.TotalMinutes -lt 10/);
+  assert.match(engine, /if \(\$script:failures\.Count -gt 5\) \{\n    \$script:quitting = \$true\n    \$icon\.ShowBalloonTip\(10000, 'ASB', 'ASB stopped after repeated failures\.', \[System\.Windows\.Forms\.ToolTipIcon\]::Error\)\n/);
+  assert.match(engine, /\$end\.Interval = 10000\n.*\n    \$end\.add_Tick\(\{ param\(\$tick\) \$tick\.Stop\(\); Stop-Tray \}\)\n    \$end\.Start\(\)/);
+  const board = body('$boardExited = {');
+  assert.match(board, /^  if \(\$process -eq \$script:board\) \{ \$script:board = \$null \}$/m);
+  assert.match(board, /^  \$code = \$process\.ExitCode\n  if \(\$code -eq 3\) \{ \$icon\.ShowBalloonTip\(10000, 'ASB', 'ASB has no window on this PC\. Run asb doctor\.', \[System\.Windows\.Forms\.ToolTipIcon\]::Warning\) \}$/m);
 });
 
 // With no board packages the launcher exits with code 3, and a Start menu open without the tray showed nothing.
 test('the -Open branch waits 30 s for the launcher and shows the text of the tray balloon in a message box on exit code 3', async () => {
-  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const script = (await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   const start = script.indexOf('if ($Open) {');
   const branch = script.slice(start, script.indexOf('\n}', start));
   assert.match(branch, /^  if \(\$launcher\.WaitForExit\(30000\) -and \$launcher\.ExitCode -eq 3\) \{$/m);
@@ -284,7 +319,7 @@ test('the tray menu has Messages and Usage, and Show-Window asks the engine befo
 // The V8 flag makes the young generation of the engine smaller (src/memory-trim.mjs). Windows has no glibc, so it gets no MALLOC setting.
 // The launcher start is short, so it gets no flag. This test reads the script text: the real tray runs only on Windows.
 test('the tray script starts the engine with the V8 flag, keeps its other arguments, and gives the launcher no flag', async () => {
-  const script = await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8');
+  const script = (await readFile(new URL('../scripts/asb-tray.ps1', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   const argumentsOf = (name) => {
     const start = script.indexOf(`function ${name}`);
     return script.slice(start, script.indexOf('\n}', start)).match(/^ *\$info\.Arguments = (.*)$/m)[1];

@@ -55,6 +55,16 @@ function Start-Engine {
 # The engine starts first. Windows Forms and Drawing load slowly, and Start-Engine needs only System.Diagnostics.
 Start-Engine
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+# Without a SynchronizingObject, .NET raises Exited on a thread-pool thread, where a script block cannot run.
+$sync = New-Object System.Windows.Forms.Control
+$null = $sync.Handle
+
+# A HasExited read that sees the exit raises Exited only once, so the handler comes before EnableRaisingEvents.
+function Watch-Exit($process, [scriptblock]$onExit) {
+  $process.SynchronizingObject = $sync
+  $process.add_Exited($onExit)
+  $process.EnableRaisingEvents = $true
+}
 
 # An open board comes to the front; without one, a new board opens.
 function Open-Board { Show-Window 'board' }
@@ -79,12 +89,14 @@ function Show-Window([string]$kind) {
   if ($script:board -and -not $script:board.HasExited) { return }
   # The board kind starts the launcher with no window.
   $window = if ($kind -eq 'board') { '' } else { $kind }
-  try { $script:board = Start-Launcher $window }
+  try {
+    $script:board = Start-Launcher $window
+    Watch-Exit $script:board $boardExited
+  }
   catch { $icon.ShowBalloonTip(5000, 'ASB', 'ASB cannot open its window.', [System.Windows.Forms.ToolTipIcon]::Warning) }
 }
 
 function Stop-Tray {
-  $timer.Stop()
   $icon.Visible = $false
   $icon.Dispose()
   [System.Windows.Forms.Application]::ExitThread()
@@ -128,34 +140,38 @@ $quit.add_Click({
   Stop-Tray
 })
 
+# Exit code 3: the launcher found no way to open the board (see asb doctor).
+$boardExited = {
+  param($process)
+  if ($process -eq $script:board) { $script:board = $null }
+  $code = $process.ExitCode
+  if ($code -eq 3) { $icon.ShowBalloonTip(10000, 'ASB', 'ASB has no window on this PC. Run asb doctor.', [System.Windows.Forms.ToolTipIcon]::Warning) }
+}
+
 # A stop (exit code 0) ends the tray too; a crash starts the engine again, at most 5 times in 10 minutes.
-$timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 1000
-$timer.add_Tick({
-  # Exit code 3: the launcher found no way to open the board (see asb doctor).
-  if ($script:board -and $script:board.HasExited) {
-    $code = $script:board.ExitCode
-    $script:board = $null
-    if ($code -eq 3) { $icon.ShowBalloonTip(10000, 'ASB', 'ASB has no window on this PC. Run asb doctor.', [System.Windows.Forms.ToolTipIcon]::Warning) }
-  }
-  if ($script:quitting -or -not $script:engine.HasExited) { return }
-  if ($script:engine.ExitCode -eq 0) { Stop-Tray; return }
+$engineExited = {
+  param($process)
+  if ($process -ne $script:engine -or $script:quitting) { return }
+  if ($process.ExitCode -eq 0) { Stop-Tray; return }
   $now = Get-Date
   $script:failures = @($script:failures | Where-Object { ($now - $_).TotalMinutes -lt 10 }) + $now
   if ($script:failures.Count -gt 5) {
     $script:quitting = $true
     $icon.ShowBalloonTip(10000, 'ASB', 'ASB stopped after repeated failures.', [System.Windows.Forms.ToolTipIcon]::Error)
-    $timer.Stop()
     $end = New-Object System.Windows.Forms.Timer
     $end.Interval = 10000
-    $end.add_Tick({ $end.Stop(); Stop-Tray })
+    # The sender, not $end: this handler has returned when the tick comes.
+    $end.add_Tick({ param($tick) $tick.Stop(); Stop-Tray })
     $end.Start()
     return
   }
   Start-Engine
-})
+  Watch-Exit $script:engine $engineExited
+}
+
+# An engine that ended before this line still raises Exited, inside the message loop.
+Watch-Exit $script:engine $engineExited
 
 $icon.Visible = $true
-$timer.Start()
 [System.Windows.Forms.Application]::Run()
 $mutex.ReleaseMutex()

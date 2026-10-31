@@ -2,6 +2,11 @@ import builtins
 import importlib.util
 import json
 import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -34,7 +39,7 @@ class TrayLogicTest(unittest.TestCase):
         connection.call_sync.return_value = tray.GLib.Variant("(u)", (1,))
         with patch.object(tray.GLib, "MainLoop") as loop, patch.object(tray.GLib, "timeout_add_seconds"), \
                 patch.object(tray, "unix_signal_add"), patch.object(tray.Gio, "bus_watch_name_on_connection") as watch, \
-                patch.object(tray.Tray, "refresh_tooltip"):
+                patch.object(tray.Tray, "refresh_tooltip"), patch.object(tray.os, "kill"):
             item = tray.Tray(connection, (42, "http://127.0.0.1:4731", "a" * 64, "/opt/asb/bin/asb"), {})
             self.assertEqual(item.run(), 0)
         self.assertEqual(connection.register_object.call_count, 2)
@@ -48,6 +53,92 @@ class TrayLogicTest(unittest.TestCase):
         self.assertEqual(item.item_property("Status").unpack(), "Passive")
         args[4](connection, tray.PANEL_NAME)
         self.assertEqual(item.item_property("Status").unpack(), "Active")
+
+    def run_tray(self, death_signal=True, parent=42, kill=None):
+        connection = Mock()
+        connection.call_sync.return_value = tray.GLib.Variant("(u)", (1,))
+        with patch.object(tray.GLib, "MainLoop") as loop, patch.object(tray.GLib, "timeout_add_seconds") as timeout, \
+                patch.object(tray, "unix_signal_add"), patch.object(tray.Gio, "bus_watch_name_on_connection"), \
+                patch.object(tray.Tray, "refresh_tooltip"), patch.object(tray, "set_parent_death_signal", return_value=death_signal), \
+                patch.object(tray.os, "getppid", return_value=parent), patch.object(tray.os, "kill", side_effect=kill) as signal_zero:
+            item = tray.Tray(connection, (42, "http://127.0.0.1:4731", "a" * 64, "/opt/asb/bin/asb"), {})
+            result = item.run()
+        signal_zero.assert_called_once_with(42, 0)
+        return result, loop.return_value.run, [call.args for call in timeout.call_args_list], item
+
+    def test_run_adds_the_5_s_engine_check_only_without_a_parent_death_signal_from_the_engine(self):
+        result, run, timeouts, item = self.run_tray()
+        self.assertEqual(result, 0)
+        run.assert_called_once_with()
+        self.assertEqual([seconds for seconds, _callback in timeouts], [60, 30])
+        self.assertNotIn((5, item.check_engine), timeouts)
+        for death_signal, parent in ((False, 42), (True, 1), (False, 1)):
+            result, run, timeouts, item = self.run_tray(death_signal, parent)
+            self.assertEqual(result, 0)
+            run.assert_called_once_with()
+            self.assertIn((5, item.check_engine), timeouts, (death_signal, parent))
+
+    def test_run_returns_0_without_the_loop_when_the_engine_is_gone(self):
+        # GLib forgets a quit before run, so the engine check comes before the loop.
+        result, run, _timeouts, _item = self.run_tray(kill=ProcessLookupError())
+        self.assertEqual(result, 0)
+        run.assert_not_called()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "prctl PR_SET_PDEATHSIG is Linux only")
+    def test_the_parent_death_signal_sends_sigterm_to_the_tray_when_its_parent_is_killed(self):
+        child = (
+            "import importlib.util, os, signal, sys, time\n"
+            "spec = importlib.util.spec_from_file_location('asb_tray', sys.argv[1])\n"
+            "tray = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(tray)\n"
+            "def on_term(*_args):\n"
+            "    open(sys.argv[2], 'w').close()\n"
+            "    os._exit(0)\n"
+            "signal.signal(signal.SIGTERM, on_term)\n"
+            "print(os.getpid(), tray.set_parent_death_signal(), flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        parent = "import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c'] + sys.argv[1:])\ntime.sleep(30)\n"
+        with tempfile.TemporaryDirectory() as folder:
+            os.chmod(folder, 0o700)
+            marker = os.path.join(folder, "term")
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": folder, "XDG_RUNTIME_DIR": folder}
+            helper = subprocess.Popen([sys.executable, "-c", parent, child, SPEC.origin, marker], stdout=subprocess.PIPE, text=True, env=env)
+            pid = None
+            try:
+                pid, ready = helper.stdout.readline().split()
+                self.assertEqual(ready, "True")
+                helper.kill()
+                helper.wait()
+                deadline = time.monotonic() + 2
+                while not os.path.exists(marker) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(os.path.exists(marker))
+            finally:
+                helper.kill()
+                helper.wait()
+                helper.stdout.close()
+                if pid:
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_set_parent_death_signal_returns_false_off_linux_and_on_errors(self):
+        with patch.object(tray.sys, "platform", "win32"), patch.object(tray.ctypes, "CDLL") as cdll:
+            self.assertIs(tray.set_parent_death_signal(), False)
+            cdll.assert_not_called()
+        with patch.object(tray.sys, "platform", "linux"):
+            for error in (OSError("no libc"), AttributeError("no prctl")):
+                with patch.object(tray.ctypes, "CDLL", side_effect=error):
+                    self.assertIs(tray.set_parent_death_signal(), False)
+            with patch.object(tray.ctypes, "CDLL") as cdll:
+                cdll.return_value.prctl.return_value = -1
+                self.assertIs(tray.set_parent_death_signal(), False)
+                cdll.return_value.prctl.return_value = 0
+                self.assertIs(tray.set_parent_death_signal(), True)
+                cdll.assert_called_with(None, use_errno=True)
+                cdll.return_value.prctl.assert_called_with(1, signal.SIGTERM, 0, 0, 0)
 
     def test_a_passive_item_reads_no_tooltip_and_the_change_to_active_reads_once(self):
         item = tray.Tray(Mock(), (42, "http://127.0.0.1:4731", "a" * 64, "/opt/asb/bin/asb"), {})
