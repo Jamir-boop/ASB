@@ -44,6 +44,7 @@ REMOTION_BROWSER_EXECUTABLE=/absolute/path/to/chromium FFMPEG_EXECUTABLE=/absolu
 | [Messages window](../docs/media/messages-window.svg) | 8.4-second loop, 968 × 760, animated SVG |
 | [Usage window](../docs/media/usage-window.svg) | 12-second loop, 948 × 700, animated SVG |
 | [README hero](../docs/media/asb-hero.svg) | 30-second loop, 960 × 540, animated SVG |
+| [Top bar and phone](../docs/media/top-bar-phone.svg) | 14-second loop, 960 × 540, animated SVG |
 
 The GIF uses a 128-color palette to limit its download size. Use the MP4 for full motion quality. Use the static banner or poster when animation is unsuitable.
 
@@ -64,6 +65,10 @@ The GIF uses a 128-color palette to limit its download size. Use the MP4 for ful
 - `hero-smil.mjs` has the SMIL helpers: the timeline, the camera, and the size and safety checks.
 
 In the animation, a prompt in each app makes its card Working. The sessions of two other machines join the board. The copy button of a card copies a relative and then an absolute session reference, and the absolute reference goes into a Claude chat. Lights fly between sessions. A click on a card that asks a question opens its chat in ChatGPT. The SVG uses SMIL, so it moves in a README. When the system asks for reduced motion, it shows the board at rest.
+
+## Top bar and phone
+
+`node top-bar-phone.mjs` writes `../docs/media/top-bar-phone.svg`. It needs no packages and uses the SMIL helpers of `hero-smil.mjs`. The SVG shows the GNOME top-bar extension and the Android app with made-up sessions. A line goes from each count of the top bar to the phone part that shows the same count: Needs you to the island and the result notifications, Working to the Live Update chip and the live notification, and the total to the session list. A session finishes and another asks a question: the top bar changes first, and the phone shows each change at its next read. Read on a notification removes it, the Needs you count on the PC goes down, and the phone shows the same count at its next read. The texts, the sort order, and the read times follow the Android app and the extension. The SVG uses SMIL, so it moves in a README. When the system asks for reduced motion, it shows one still frame.
 
 ## Story
 

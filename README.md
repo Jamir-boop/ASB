@@ -27,6 +27,10 @@ The Usage window shows the cost and the tokens by machine, app, and day:
 
 ![ASB Usage window: the view switches from cost to tokens, and a pointer reads the daily chart and the round chart](docs/media/usage-window.svg)
 
+The GNOME top bar and the Android app show the same counts, and Read on the phone clears the mark on the PC:
+
+![GNOME top bar and ASB Android app with made-up sessions: a line goes from each count of the top bar to the phone part that shows it; a session finishes and another asks a question, the phone shows each change at its next read, and Read on the phone makes the Needs you count go down on the PC](docs/media/top-bar-phone.svg)
+
 ## Support by app
 
 | App | Cards | Status | Questions | Approvals | Open | Messages | Rename | Archive | Windows |
