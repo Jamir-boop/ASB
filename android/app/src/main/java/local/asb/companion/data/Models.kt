@@ -145,6 +145,10 @@ data class Thread(
     val key: String get() = globalId.ifEmpty { id }
 }
 
+/** The saved attention bits of a row and its result times; a time of 0 is not known. */
+@Serializable
+data class Mark(val bits: Int, val doneAtMs: Long = 0, val failedAtMs: Long = 0)
+
 @Serializable
 data class Provider(
     val id: String = "",

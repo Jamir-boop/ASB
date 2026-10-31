@@ -2,6 +2,7 @@ package local.asb.companion
 
 import kotlinx.serialization.json.JsonObject
 import local.asb.companion.data.AsbJson
+import local.asb.companion.data.Mark
 import local.asb.companion.data.Thread
 import local.asb.companion.notify.BIT_DONE
 import local.asb.companion.notify.BIT_FAILED
@@ -32,9 +33,9 @@ class NotificationActionsTest {
     }
 
     @Test fun actionReadKeepsOtherRowsAndAllowsTheNextCompletion() {
-        val old = mapOf("read" to BIT_DONE, "other" to BIT_FAILED)
+        val old = mapOf("read" to Mark(BIT_DONE), "other" to Mark(BIT_FAILED))
         val baseline = mergeActionBaseline(old, Thread(id = "read"), 1000)!!
-        assertEquals(mapOf("read" to 0, "other" to BIT_FAILED), baseline)
+        assertEquals(mapOf("read" to Mark(0), "other" to Mark(BIT_FAILED)), baseline)
         val completed = Thread(id = "read", completionAttention = true)
         assertEquals(listOf(BIT_DONE), diff(baseline, listOf(completed), 1001).map { it.kind })
         assertNull(mergeActionBaseline(null, completed, 1000))
@@ -45,19 +46,19 @@ class NotificationActionsTest {
         val before = update(null, listOf(limited, Thread(id = "other", failedAttention = true)), 1000)
         val read = limited.copy(failedAttention = false)
         val after = mergeActionBaseline(before, read, 1001)!!
-        assertEquals(mapOf("read" to 0, "other" to BIT_FAILED), after)
+        assertEquals(mapOf("read" to Mark(0), "other" to Mark(BIT_FAILED)), after)
         assertTrue(diff(after, listOf(read.copy(limitResetsAtMs = 0)), 2000).isEmpty())
     }
 
     @Test fun actionMergeNeverAddsABit() {
-        val old = mapOf("row" to BIT_DONE)
+        val old = mapOf("row" to Mark(BIT_DONE))
         val grown = Thread(id = "row", completionAttention = true, failedAttention = true, questionAttention = true)
         val merged = mergeActionBaseline(old, grown, 1000)!!
-        assertEquals(BIT_DONE, merged["row"])
+        assertEquals(BIT_DONE, merged["row"]?.bits)
         assertEquals(listOf(BIT_INPUT, BIT_FAILED), diff(merged, listOf(grown), 1001).map { it.kind })
-        assertEquals(0, mergeActionBaseline(emptyMap(), grown, 1000)!!["row"])
+        assertEquals(0, mergeActionBaseline(emptyMap(), grown, 1000)!!["row"]?.bits)
         val limited = grown.copy(limitResetsAtMs = 2000)
-        assertEquals(BIT_DONE, mergeActionBaseline(old, limited, 1000)!!["row"])
+        assertEquals(BIT_DONE, mergeActionBaseline(old, limited, 1000)!!["row"]?.bits)
     }
 
     @Test fun manualCheckPostsWhileTheAppIsResumed() {
@@ -86,8 +87,14 @@ class NotificationActionsTest {
         assertNull(notificationRow(null, "key", ""))
     }
 
+    @Test fun actionMergeKeepsTheOldTimes() {
+        val old = mapOf("row" to Mark(BIT_DONE or BIT_FAILED, 100, 200))
+        val read = Thread(id = "row", completionAtMs = 300, failedAtMs = 400)
+        assertEquals(mapOf("row" to Mark(0, 100, 200)), mergeActionBaseline(old, read, 1000))
+    }
+
     @Test fun actionBaselineMergesByKey() {
         val row = Thread(id = "m:bbbbbbbbbbbbbbbb:codex:1", globalId = "aaaaaaaaaaaaaaaa:codex:1")
-        assertEquals(mapOf("aaaaaaaaaaaaaaaa:codex:1" to 0), mergeActionBaseline(mapOf("aaaaaaaaaaaaaaaa:codex:1" to BIT_DONE), row, 1000))
+        assertEquals(mapOf("aaaaaaaaaaaaaaaa:codex:1" to Mark(0)), mergeActionBaseline(mapOf("aaaaaaaaaaaaaaaa:codex:1" to Mark(BIT_DONE)), row, 1000))
     }
 }

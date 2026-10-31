@@ -158,12 +158,16 @@ class Store(private val preferences: SharedPreferences) {
     }
 
     @Synchronized
-    fun loadBaselineIfPaired(token: String, engine: String): Map<String, Int>? {
+    fun loadBaselineIfPaired(token: String, engine: String): Map<String, Mark>? {
         if (token.isEmpty() || this.token != token) return null
         if (preferences.getString("baselineEngine", null) != engine) return null
         val value = baseline ?: return null
-        return try { AsbJson.decodeFromString<Map<String, Int>>(value) }
-            catch (_: SerializationException) { null }
+        return try { AsbJson.decodeFromString<Map<String, Mark>>(value) }
+            catch (_: SerializationException) {
+                // An older app saved only the bits, with no times.
+                try { AsbJson.decodeFromString<Map<String, Int>>(value).mapValues { Mark(it.value) } }
+                catch (_: SerializationException) { null }
+            }
     }
 
     @Synchronized

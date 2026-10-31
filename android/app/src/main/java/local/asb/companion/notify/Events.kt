@@ -1,5 +1,6 @@
 package local.asb.companion.notify
 
+import local.asb.companion.data.Mark
 import local.asb.companion.data.Thread
 import local.asb.companion.ui.actionNeedsAttention
 
@@ -20,7 +21,7 @@ fun bits(row: Thread): Int {
 data class Event(val row: Thread, val kind: Int)
 
 fun diff(
-    baseline: Map<String, Int>?,
+    baseline: Map<String, Mark>?,
     threads: List<Thread>,
     nowMs: Long = System.currentTimeMillis(),
 ): List<Event> {
@@ -28,8 +29,12 @@ fun diff(
     return buildList {
         for (row in threads) {
             // The key is the same on every engine of a group, so a change of engine does not post again.
-            val old = baseline[row.key] ?: 0
-            val added = bits(row) and old.inv()
+            val old = baseline[row.key] ?: Mark(0)
+            val now = bits(row)
+            // A newer result time is a new result also when the mark stayed set between two reads.
+            val added = (now and old.bits.inv()) or
+                (if (now and BIT_DONE != 0 && old.doneAtMs > 0 && row.completionAtMs > old.doneAtMs) BIT_DONE else 0) or
+                (if (now and BIT_FAILED != 0 && old.failedAtMs > 0 && row.failedAtMs > old.failedAtMs) BIT_FAILED else 0)
             if (added and BIT_INPUT != 0) add(Event(row, BIT_INPUT))
             if (added and BIT_FAILED != 0) add(Event(row, BIT_FAILED))
             if (added and BIT_DONE != 0) add(Event(row, BIT_DONE))
@@ -47,7 +52,7 @@ data class Cleared(val key: String, val kind: Int)
  * [engine] is the engine of the read: "" for the paired PC, else the machine ID of another engine of the group.
  */
 fun cleared(
-    baseline: Map<String, Int>?,
+    baseline: Map<String, Mark>?,
     threads: List<Thread>,
     engine: String,
     nowMs: Long = System.currentTimeMillis(),
@@ -58,15 +63,15 @@ fun cleared(
     // The paired PC marks its remote rows with its own tracker, and post() uses those marks, so its clear bits are true.
     // Another engine starts a remote row that it sees for the first time with no mark, so its clear bits prove nothing.
     return threads.filter { engine.isEmpty() || !it.remote }.flatMap { row ->
-        listOf(BIT_INPUT, BIT_FAILED, BIT_DONE).filter { next.getValue(row.key) and it == 0 }.map { Cleared(row.key, it) }
+        listOf(BIT_INPUT, BIT_FAILED, BIT_DONE).filter { next.getValue(row.key).bits and it == 0 }.map { Cleared(row.key, it) }
     }
 }
 
 // Rows missing from one update keep their bits, so a skipped scan cannot replay an old mark.
 fun update(
-    baseline: Map<String, Int>?,
+    baseline: Map<String, Mark>?,
     threads: List<Thread>,
     nowMs: Long = System.currentTimeMillis(),
-): Map<String, Int> = (baseline ?: emptyMap()).toMutableMap().apply {
-    for (row in threads) put(row.key, bits(row))
+): Map<String, Mark> = (baseline ?: emptyMap()).toMutableMap().apply {
+    for (row in threads) put(row.key, Mark(bits(row), row.completionAtMs, row.failedAtMs))
 }

@@ -18,6 +18,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import local.asb.companion.AsbApp
 import local.asb.companion.data.AsbJson
+import local.asb.companion.data.Mark
 import local.asb.companion.data.Thread
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
@@ -26,9 +27,13 @@ internal fun actionOpened(reply: JsonObject): Boolean = (reply["opened"] as? Jso
     !it.isString && it.booleanOrNull == true
 } == true
 
-// A merge may only clear bits: a bit that the action reply adds was never notified.
-internal fun mergeActionBaseline(baseline: Map<String, Int>?, row: Thread, nowMs: Long): Map<String, Int>? =
-    baseline?.let { it + (row.key to ((it[row.key] ?: 0) and update(it, listOf(row), nowMs).getValue(row.key))) }
+// A merge may only clear bits: a bit that the action reply adds was never notified. The old times stay, so a newer
+// result still notifies.
+internal fun mergeActionBaseline(baseline: Map<String, Mark>?, row: Thread, nowMs: Long): Map<String, Mark>? =
+    baseline?.let {
+        val old = it[row.key] ?: Mark(0)
+        it + (row.key to old.copy(bits = old.bits and update(it, listOf(row), nowMs).getValue(row.key).bits))
+    }
 
 /** The session of a notification action; a notification from before the machine group has no key and no engine. */
 internal data class NotificationRow(val id: String, val key: String, val engine: String)

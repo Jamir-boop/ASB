@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.Mark
 import local.asb.companion.data.Message
 import local.asb.companion.data.Palette
 import local.asb.companion.net.AsbApi
@@ -51,9 +52,9 @@ class SessionsViewModel(
     private val api: AsbApi,
     private val serverName: String,
     initiallyRevoked: Boolean = false,
-    private val saveBaseline: (Map<String, Int>, String) -> Unit = { _, _ -> },
+    private val saveBaseline: (Map<String, Mark>, String) -> Unit = { _, _ -> },
     private val notificationMutex: Mutex = Mutex(),
-    private val loadBaseline: (String) -> Map<String, Int>? = { null },
+    private val loadBaseline: (String) -> Map<String, Mark>? = { null },
     initialView: String = "comfortable",
     private val savePalette: (Palette) -> Unit = {},
     private val showLive: (Dashboard, String) -> Unit = { _, _ -> },

@@ -29,6 +29,7 @@ import kotlinx.serialization.json.Json
 import local.asb.companion.data.Thread
 import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Engine
+import local.asb.companion.data.Mark
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.MemoryEngines
 import local.asb.companion.net.MemoryPaths
@@ -62,7 +63,7 @@ class SessionsViewModelTest {
     private val dispatcher = StandardTestDispatcher(scheduler)
     private val models = ViewModelStore()
     private val polls = mutableListOf<Job>()
-    private val baselines = mutableListOf<Map<String, Int>>()
+    private val baselines = mutableListOf<Map<String, Mark>>()
     private val palettes = mutableListOf<Palette>()
     private lateinit var server: MockWebServer
     private lateinit var fingerprint: String
@@ -93,8 +94,8 @@ class SessionsViewModelTest {
     private fun model(
         mutex: Mutex = Mutex(),
         initiallyRevoked: Boolean = false,
-        loadBaseline: (String) -> Map<String, Int>? = { baselines.lastOrNull() },
-        saveBaseline: (Map<String, Int>, String) -> Unit = { baseline, _ -> baselines += baseline },
+        loadBaseline: (String) -> Map<String, Mark>? = { baselines.lastOrNull() },
+        saveBaseline: (Map<String, Mark>, String) -> Unit = { baseline, _ -> baselines += baseline },
         initialView: String = "comfortable",
         savePalette: (Palette) -> Unit = { palettes += it },
         networks: MutableStateFlow<Long> = this.networks,
@@ -150,7 +151,7 @@ class SessionsViewModelTest {
         await { baselines.size == 1 }
         assertNull(server.takeRequest().getHeader("If-None-Match"))
         takeHello()
-        assertEquals(mapOf("one" to 1), baselines.single())
+        assertEquals(mapOf("one" to Mark(1)), baselines.single())
         val dashboard = model.state.value.dashboard
         val duplicate = poll(model)
         scheduler.runCurrent()
@@ -306,7 +307,7 @@ class SessionsViewModelTest {
             Thread(id = "done", state = "idle", completionAttention = true, limitResetsAtMs = nowMs + 3600000),
             Thread(id = "failed", state = "idle", failedAttention = true, limitResetsAtMs = nowMs + 3600000),
         ))
-        var stored: Map<String, Int>? = mapOf("done" to BIT_DONE, "failed" to BIT_FAILED, "gone" to BIT_DONE)
+        var stored: Map<String, Mark>? = mapOf("done" to Mark(BIT_DONE), "failed" to Mark(BIT_FAILED), "gone" to Mark(BIT_DONE))
         val mutex = Mutex(locked = true)
         var reads = 0
         val model = model(mutex, loadBaseline = {
@@ -324,10 +325,10 @@ class SessionsViewModelTest {
         assertEquals(0, reads)
         mutex.unlock()
         await { !model.state.value.refreshing }
-        assertEquals(BIT_DONE, stored!!.getValue("done") and (BIT_DONE or BIT_FAILED))
-        assertEquals(BIT_FAILED, stored!!.getValue("failed") and (BIT_DONE or BIT_FAILED))
+        assertEquals(BIT_DONE, stored!!.getValue("done").bits and (BIT_DONE or BIT_FAILED))
+        assertEquals(BIT_FAILED, stored!!.getValue("failed").bits and (BIT_DONE or BIT_FAILED))
         // A row missing from the update keeps its bits, so it cannot notify again when it comes back.
-        assertEquals(BIT_DONE, stored!!.getValue("gone"))
+        assertEquals(BIT_DONE, stored!!.getValue("gone").bits)
         val afterLimit = stored
 
         server.enqueue(MockResponse().setResponseCode(304))
@@ -344,7 +345,7 @@ class SessionsViewModelTest {
         server.enqueue(response(reset))
         model.refresh()
         await { !model.state.value.refreshing }
-        assertEquals(mapOf("done" to BIT_DONE, "failed" to BIT_FAILED, "gone" to BIT_DONE), stored)
+        assertEquals(mapOf("done" to Mark(BIT_DONE), "failed" to Mark(BIT_FAILED), "gone" to Mark(BIT_DONE)), stored)
         assertEquals(3, reads)
     }
 

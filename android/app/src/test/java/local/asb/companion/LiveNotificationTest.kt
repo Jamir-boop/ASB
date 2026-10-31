@@ -116,4 +116,10 @@ class LiveNotificationTest {
         assertFalse(newlyDone(LiveUpdate(listOf(row("a")), now, ""), LiveUpdate(done, now, "m1")))
         assertTrue(newlyDone(LiveUpdate(listOf(row("a")), now, "m1"), LiveUpdate(done, now, "m1")))
     }
+
+    @Test fun newlyDoneCountsANewerCompletionOfADoneRow() {
+        val done = row("a").copy(completionAttention = true, completionAtMs = 100)
+        assertTrue(newlyDone(LiveUpdate(listOf(done), now, ""), LiveUpdate(listOf(done.copy(completionAtMs = 200)), now, "")))
+        assertFalse(newlyDone(LiveUpdate(listOf(done), now, ""), LiveUpdate(listOf(done), now, "")))
+    }
 }

@@ -1,11 +1,16 @@
 package local.asb.companion
 
 import android.content.SharedPreferences
+import kotlinx.serialization.encodeToString
+import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Engine
+import local.asb.companion.data.Mark
 import local.asb.companion.data.PairReply
 import local.asb.companion.data.PairingInfo
 import local.asb.companion.data.Store
+import local.asb.companion.notify.BIT_DONE
+import local.asb.companion.notify.BIT_FAILED
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -163,11 +168,11 @@ class StoreTest {
         store.saveEnginesIfPaired(token, listOf(homeLp))
         store.saveCurrentEngineIfPaired(token, homeLp.machineId, zerotier)
         store.saveBaselineIfPaired(token, """{"one":1}""", homeLp.machineId)
-        assertEquals(mapOf("one" to 1), store.loadBaselineIfPaired(token, homeLp.machineId))
+        assertEquals(mapOf("one" to Mark(1)), store.loadBaselineIfPaired(token, homeLp.machineId))
         assertNull(store.loadBaselineIfPaired(token, ""))
         assertNull(store.loadBaselineIfPaired("old", homeLp.machineId))
         store.saveBaselineIfPaired("old", """{"two":1}""", "")
-        assertEquals(mapOf("one" to 1), store.loadBaselineIfPaired(token, homeLp.machineId))
+        assertEquals(mapOf("one" to Mark(1)), store.loadBaselineIfPaired(token, homeLp.machineId))
         store.save(PairingInfo(listOf(lan), 4630, "ab".repeat(32), "c".repeat(27), "PC"),
             PairReply(deviceId = "012345abcdef", token = token, serverName = "PC", api = 1))
         for (key in listOf("engines", "currentEngine", "currentEngineEndpoint", "baseline", "baselineEngine")) assertFalse(key, preferences.contains(key))
@@ -184,6 +189,19 @@ class StoreTest {
         val store = Store(preferences)
         assertNull(store.loadBaselineIfPaired(token, ""))
         store.saveBaselineIfPaired(token, """{"one":1}""", "")
-        assertEquals(mapOf("one" to 1), store.loadBaselineIfPaired(token, ""))
+        assertEquals(mapOf("one" to Mark(1)), store.loadBaselineIfPaired(token, ""))
+    }
+
+    @Test fun anOldBitsBaselineMigratesAndTheNewFormRoundTrips() {
+        val store = Store(MemoryPreferences(mutableMapOf("token" to token)))
+        store.saveBaselineIfPaired(token, """{"one":1,"two":6}""", "")
+        assertEquals(mapOf("one" to Mark(1), "two" to Mark(6)), store.loadBaselineIfPaired(token, ""))
+        val marks = mapOf("one" to Mark(BIT_DONE, 100, 0), "two" to Mark(BIT_FAILED, 0, 200))
+        store.saveBaselineIfPaired(token, AsbJson.encodeToString(marks), "")
+        assertEquals(marks, store.loadBaselineIfPaired(token, ""))
+        for (value in listOf("[]", "{\"one\":\"x\"}", "{\"one\":{}}", "nope")) {
+            store.saveBaselineIfPaired(token, value, "")
+            assertNull(value, store.loadBaselineIfPaired(token, ""))
+        }
     }
 }

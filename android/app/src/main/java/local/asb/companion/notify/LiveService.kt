@@ -93,7 +93,8 @@ internal fun liveBadge(threads: List<Thread>, doneFlash: Boolean): LiveBadge? {
 }
 
 /**
- * True when a row has the Done mark now that it did not have in [previous]. A row that is new in the list does not count.
+ * True when a row has the Done mark now that it did not have in [previous], or has it in both with a newer known
+ * completion time. A row that is new in the list does not count.
  * As in [diff], a row with a usage limit now or in [previous] does not count. A change of engine does not count,
  * because the read marks are per engine.
  */
@@ -102,7 +103,8 @@ internal fun newlyDone(previous: LiveUpdate?, current: LiveUpdate): Boolean {
     val before = previous.threads.associateBy { it.key }
     return current.threads.any { row ->
         val old = before[row.key]
-        old != null && bits(row) and BIT_DONE != 0 && bits(old) and BIT_DONE == 0 &&
+        old != null && bits(row) and BIT_DONE != 0 &&
+            (bits(old) and BIT_DONE == 0 || old.completionAtMs > 0 && row.completionAtMs > old.completionAtMs) &&
             limitLeft(row, current.atMs) == 0L && limitLeft(old, previous.atMs) == 0L
     }
 }

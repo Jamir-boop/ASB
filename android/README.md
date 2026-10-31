@@ -30,7 +30,9 @@ then drops new ones, so old notifications must go. The mark on the row decides,
 not a change since the last read: when the user reads a session while the app is
 open, its notification goes at the first read after the app goes to the
 background. A session that is missing from the read and a first read with no
-saved baseline keep their notifications. A usage limit does not hide a mark: a
+saved baseline keep their notifications. A second result of the same session
+between two reads (the mark stays set, the result time is newer) posts again.
+A usage limit does not hide a mark: a
 task that a usage limit stops posts a Failed notification with the title
 `Usage limit` once, and the reset posts nothing. A read from an engine other
 than the paired PC also keeps the notifications of sessions of other machines,
