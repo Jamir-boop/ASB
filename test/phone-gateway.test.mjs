@@ -930,8 +930,12 @@ gatewayTest('peer routes need a member certificate; join takes any certificate w
     [200, status.self.machineId, 'debian', status.groupId, 1, '']);
   assert.deepEqual((await peer('/peer/v1/group', { as: joiner })).json, joined.json.group);
   assert.equal((await peer('/peer/v1/group', { as: stranger })).status, 401);
-  const again = await join(joinBody(await code(), 'other'));
-  assert.deepEqual([again.status, again.json.error], [409, 'This machine is already in the group.']);
+  // A member that joins again (its first reply was lost) gets the group with its saved name, and the invite is used.
+  const repeated = await code();
+  const again = await join(joinBody(repeated, 'other'));
+  assert.deepEqual([again.status, Object.keys(again.json), again.json.groupId], [200, ['groupId', 'group'], status.groupId]);
+  assert.deepEqual(again.json.group.members.map((item) => item.name), ['debian', 'laptop']);
+  assert.equal((await join(joinBody(repeated, 'other'))).status, 401);
   // Leave adds a tombstone; the machine cannot come back with the same certificate.
   assert.equal((await peer('/peer/v1/leave', { method: 'POST', as: joiner, body: { x: 1 } })).status, 400);
   assert.deepEqual((await peer('/peer/v1/leave', { method: 'POST', as: joiner, body: {} })).json, { left: true });

@@ -13,6 +13,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the Messages window, which could join a message to the wrong receipt when two sessions sent the same text within two minutes: a receipt now joins only a send from the same session, or a send whose sender is not known. Also fixed an ASB Bridge message with a new line at its end, which showed two times: ASB now trims the text, as it does for Claude Code messages.
 - Fixed the Android app, which gave no alert when the same session finished or failed again between two reads of the phone. The app now saves the time of each result with its mark and posts Done or Failed again for a newer result. A saved state of an older app version is still read.
 - Fixed a machine group member that stayed unreachable for the other members after it changed its gateway port or its address. Each hello of a member now carries its current addresses and port, and the member that answers saves them in the entry of the caller.
+- Fixed a machine that stayed half-joined when the reply to its join was lost (for example after a timeout on a slow overlay network): each new invite gave `This machine is already in the group.` A repeated join with a valid code now gets the group, and the machine completes its join with the name that the inviter saved.
 
 ## ASB 1.13.0 - 2026-10-28
 

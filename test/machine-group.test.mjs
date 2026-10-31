@@ -304,6 +304,36 @@ test('a hello query saves the new network of the calling member in its own entry
   await machine.stop();
 });
 
+test('a joiner whose join reply was lost joins again with a new invite and gets its saved name', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-rejoin-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const machineGateway = (letter, address) => ({ credentials: async () => ({ key: '', cert: '', fingerprint: letter.repeat(64) }), identity: async () => id(letter),
+    status: async () => ({ running: true, listening: [{ kind: 'lan', address }], port: 4630 }), devices: async () => [] });
+  const timers = { setTimeout: () => ({ unref() {} }), clearTimeout: () => {} };
+  const inviter = createMachineGroup({ file: path.join(home, 'a.json'), gateway: () => machineGateway('a', '10.0.0.1'), timers, hostName: 'desk', log: () => {},
+    request: async () => ({ status: 503, body: null }) });
+  let lose = true;
+  const joiner = createMachineGroup({ file: path.join(home, 'b.json'), gateway: () => machineGateway('b', '10.0.0.2'), timers, hostName: 'laptop', log: () => {},
+    request: async ({ path: route, body }) => {
+      if (route !== '/peer/v1/join') return { status: 503, body: null };
+      const answer = await inviter.peer.join(body, 'b'.repeat(64));
+      if (lose) { lose = false; throw new Error('timeout'); }
+      return answer;
+    } });
+  await inviter.start();
+  await joiner.start();
+  await assert.rejects(joiner.join({ link: (await inviter.invite()).link, name: 'laptop' }), { statusCode: 502, message: 'The other machine did not answer.' });
+  assert.equal((await joiner.status()).groupId, '');
+  assert.deepEqual((await inviter.status()).members.map((item) => item.name), ['desk', 'laptop']);
+  // The second join asks for another name; the joiner keeps the name that the inviter saved.
+  const link = (await inviter.invite()).link;
+  assert.deepEqual(await joiner.join({ link, name: 'other' }), { joined: true, groupId: (await inviter.status()).groupId });
+  assert.deepEqual([joiner.self(), (await joiner.status()).members.map((item) => item.name)], [{ machineId: id('b'), name: 'laptop' }, ['desk', 'laptop']]);
+  assert.deepEqual((await loadGroup(path.join(home, 'b.json'))).group.self, { machineId: id('b'), name: 'laptop' });
+  await inviter.stop();
+  await joiner.stop();
+});
+
 test('status gives the ASB version of each member, and fetchMember asks only an online member', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-fetch-'));
   t.after(() => rm(home, { recursive: true, force: true }));

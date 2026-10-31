@@ -518,7 +518,11 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
           return reply(409, { error: 'This machine was removed. Reset its identity and join again.' });
         }
         const active = activeMembers(group);
-        if (active.some((member) => member.certFingerprint === fingerprint)) return reply(409, { error: 'This machine is already in the group.' });
+        // A member that asks again lost the reply of its join: it takes the group (and its saved name) from this reply.
+        if (active.some((member) => member.certFingerprint === fingerprint)) {
+          invite = null;
+          return reply(200, { groupId: group.groupId, group: withoutSelf(group) });
+        }
         if (!validAddresses(value.addresses, addressOk) || !validPort(value.port)) return reply(400, { error: 'Invalid join request.' });
         const taken = active.map((member) => member.name);
         if (!validName(value.name) || taken.some((item) => item.toLowerCase() === value.name.toLowerCase())) {
