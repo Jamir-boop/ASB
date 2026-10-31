@@ -19,12 +19,21 @@ const claudeLine = (atMs, id, output) => JSON.stringify({ type: 'assistant', tim
     usage: { input_tokens: 3, cache_read_input_tokens: 5, cache_creation_input_tokens: 7, output_tokens: output } } });
 
 // A copy of allParts() before the parts were summed: every record of the cache, by file key, then OpenCode with its own time.
+// A repeated key is one part: the first copy gives its app, model, and time, and each count is the largest of all copies.
 function singleParts(cache, openCode) {
   const list = [];
+  const keyed = new Map();
   for (const key of [...cache.keys()].sort()) {
     const { app, records } = cache.get(key);
     for (const [quarter, model, uncached, cacheRead, cacheWrite, output, dedupeKey] of records) {
-      list.push({ app, model, atMs: quarter * QUARTER_HOUR_MS, tokens: { uncached, cacheRead, cacheWrite, output }, key: dedupeKey });
+      const tokens = { uncached, cacheRead, cacheWrite, output };
+      const kept = keyed.get(dedupeKey);
+      if (kept) for (const type of Object.keys(tokens)) kept.tokens[type] = Math.max(kept.tokens[type], tokens[type]);
+      else {
+        const part = { app, model, atMs: quarter * QUARTER_HOUR_MS, tokens, key: dedupeKey };
+        if (dedupeKey !== null) keyed.set(dedupeKey, part);
+        list.push(part);
+      }
     }
   }
   for (const record of openCode) list.push({ ...record, atMs: record.timestampMs, key: null });
@@ -64,7 +73,7 @@ test('summed parts give the same report and localHourly records as the single pa
   t.after(() => Promise.all([usage.idle(), usage.pricesIdle()]));
   await usage.refresh();
   const parts = singleParts(await loadUsageCache(path.join(cacheDir, 'usage', 'usage-cache.json.gz')), await readOpenCodeUsage(openCodeDir, 0));
-  assert.equal(parts.filter((part) => part.app === 'claude').length, 84);
+  assert.equal(parts.filter((part) => part.app === 'claude').length, 82);
   assert.equal(parts.filter((part) => part.app === 'opencode').length, 7);
   let zones = 0;
   for (const [name, offset] of Object.entries(ZONES)) {
@@ -83,9 +92,9 @@ test('summed parts give the same report and localHourly records as the single pa
     }
   }
   assert.ok(zones >= 1);
-  // The parts were built once for all the calls above, and they are fewer than the single parts.
+  // The parts were built once for all the calls above, one for each repeated key; these single parts are in different quarter hours.
   assert.equal(usage.stats.partBuilds, 1);
-  assert.ok(usage.stats.parts < parts.length);
+  assert.equal(usage.stats.parts, parts.length);
 });
 
 test('a scan that changed nothing keeps the parts, and a changed file builds them again', { skip: !sqlite }, async (t) => {
@@ -116,4 +125,21 @@ test('a scan that changed nothing keeps the parts, and a changed file builds the
   await usage.refresh();
   assert.equal(usage.report('24h').records[0].tokens.output, 10);
   assert.equal(usage.stats.partBuilds, 2);
+});
+
+test('two transcript files with the same message key count it once with the larger counts', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-usage-parts-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const projects = path.join(root, 'projects');
+  await fs.mkdir(projects);
+  // The resumed copy ended while the reply still streamed (output 50); the original has the final count (output 120).
+  await fs.writeFile(path.join(projects, 'a.jsonl'), `${claudeLine(NOW - HOUR, 'k', 50)}\n`);
+  await fs.writeFile(path.join(projects, 'b.jsonl'), `${claudeLine(NOW - HOUR, 'k', 120)}\n`);
+  const usage = createActivityUsage({ homeDir: root, env: {}, cacheDir: path.join(root, 'cache'), now: () => NOW, refreshMs: Infinity,
+    log: () => {}, fetch: async () => { throw new Error('offline'); },
+    readSources: async () => [{ enabled: true, provider: 'claude-desktop-code', projectsDir: projects }] });
+  t.after(() => Promise.all([usage.idle(), usage.pricesIdle()]));
+  await usage.refresh();
+  assert.deepEqual(usage.report('24h').records.map(({ tokens }) => tokens), [{ uncached: 3, cacheRead: 5, cacheWrite: 7, output: 120 }]);
+  assert.deepEqual(usage.localHourly('24h').usage.map(({ tokens }) => tokens), [{ uncached: 3, cacheRead: 5, cacheWrite: 7, output: 120 }]);
 });

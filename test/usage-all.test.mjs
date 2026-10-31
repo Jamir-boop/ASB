@@ -118,5 +118,5 @@ test('version 1 pruned caches rebuild an unchanged file and recover its old reco
   await usage.refresh();
   assert.ok(usage.stats.bytesRead >= Buffer.byteLength(text));
   assert.deepEqual(usage.report('all').records[0].tokens, tokens);
-  assert.equal(JSON.parse(gunzipSync(await fs.readFile(file)).toString('utf8')).version, 2);
+  assert.equal(JSON.parse(gunzipSync(await fs.readFile(file)).toString('utf8')).version, 3);
 });

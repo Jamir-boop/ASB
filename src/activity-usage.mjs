@@ -272,11 +272,12 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   const scanState = () => ({ ...progress, complete: !running || progress.complete });
 
   // The token sums per (app, model, quarter hour), built once per change. Repeated dedupe keys count once: the files go in a
-  // stable order (by file key), so the first copy of a Claude message is always the same one. Every bucket edge is on a
-  // quarter hour, so the reports give the same records as with the single parts.
+  // stable order (by file key), so the first copy of a Claude message always gives its app, model, and quarter hour, and each
+  // count is the largest of all copies (a copy can end while the reply still streams). Every bucket edge is on a quarter hour,
+  // so the reports give the same records as with the single parts.
   function allParts() {
     if (parts?.version === version && parts.openCode === openCode && parts.antigravity === antigravity) return parts.list;
-    const seen = new Set();
+    const keyed = new Map();
     const sums = new Map();
     const add = (app, model, quarter, uncached, cacheRead, cacheWrite, output) => {
       const id = `${app}\0${model}\0${quarter}`;
@@ -289,13 +290,13 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     for (const key of [...(cache?.keys() || [])].sort()) {
       const { app, records } = cache.get(key);
       for (const [quarter, model, uncached, cacheRead, cacheWrite, output, dedupeKey] of records) {
-        if (dedupeKey !== null) {
-          if (seen.has(dedupeKey)) continue;
-          seen.add(dedupeKey);
-        }
-        add(app, model, quarter, uncached, cacheRead, cacheWrite, output);
+        if (dedupeKey === null) { add(app, model, quarter, uncached, cacheRead, cacheWrite, output); continue; }
+        const kept = keyed.get(dedupeKey);
+        if (!kept) keyed.set(dedupeKey, [app, model, quarter, uncached, cacheRead, cacheWrite, output]);
+        else [uncached, cacheRead, cacheWrite, output].forEach((value, index) => { kept[index + 3] = Math.max(kept[index + 3], value); });
       }
     }
+    for (const kept of keyed.values()) add(...kept);
     for (const { app, model, timestampMs, tokens } of [...openCode, ...antigravity]) {
       add(app, model, Math.floor(timestampMs / QUARTER_HOUR_MS), tokens.uncached, tokens.cacheRead, tokens.cacheWrite, tokens.output);
     }

@@ -37,13 +37,14 @@ test('skips local placeholders but keeps real zero-token responses', () => {
   assert.deepEqual(claudeUsageFormat.markers, ['"usage"']);
 });
 
-test('duplicate lines of one message and request count once, in a file and across files', async (t) => {
+test('duplicate lines of one message and request count once with the final output count, in a file and across files', async (t) => {
   const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-usage-claude-'));
   t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  // The lines of one streamed reply: the early lines have a partial output count.
   const lines = [
-    claudeLine({ messageId: 'msg_a', requestId: 'req_a', contentType: 'thinking' }),
-    claudeLine({ messageId: 'msg_a', requestId: 'req_a', contentType: 'text' }),
-    claudeLine({ messageId: 'msg_a', requestId: 'req_a', contentType: 'tool_use' }),
+    claudeLine({ messageId: 'msg_a', requestId: 'req_a', contentType: 'thinking', outputTokens: 5 }),
+    claudeLine({ messageId: 'msg_a', requestId: 'req_a', contentType: 'text', outputTokens: 40 }),
+    claudeLine({ messageId: 'msg_a', requestId: 'req_a', contentType: 'tool_use', outputTokens: 120 }),
     JSON.stringify({ type: 'user', message: { content: 'SECRETTEXT' } }),
     claudeLine({ messageId: 'msg_b', requestId: 'req_b', outputTokens: 14 }),
   ];
@@ -51,7 +52,7 @@ test('duplicate lines of one message and request count once, in a file and acros
   await fs.writeFile(first, `${lines.join('\n')}\n`);
   const entry = await scanFile(first, await fs.stat(first), undefined, 'claude');
   assert.equal(entry.records.length, 2);
-  assert.deepEqual(entry.records.map((record) => record.slice(2, 6)), [[2, 1000, 66818, 286], [2, 1000, 66818, 14]]);
+  assert.deepEqual(entry.records.map((record) => record.slice(2, 6)), [[2, 1000, 66818, 120], [2, 1000, 66818, 14]]);
   // A resumed transcript copies msg_a: the whole scan counts it once.
   const copy = path.join(folder, 'copy.jsonl');
   await fs.writeFile(copy, `${lines[1]}\n`);
@@ -60,5 +61,5 @@ test('duplicate lines of one message and request count once, in a file and acros
     ({ app: 'claude', model, atMs: quarter * QUARTER_HOUR_MS, tokens: { uncached, cacheRead, cacheWrite, output }, key }));
   const hourly = aggregateHourly(parts, 0, Date.parse('2026-09-01T00:00:00Z'));
   assert.deepEqual(hourly, [{ app: 'claude', model: 'claude-test-5', hourMs: Date.parse('2026-08-07T04:00:00Z'),
-    tokens: { uncached: 4, cacheRead: 2000, cacheWrite: 133636, output: 300 } }]);
+    tokens: { uncached: 4, cacheRead: 2000, cacheWrite: 133636, output: 134 } }]);
 });

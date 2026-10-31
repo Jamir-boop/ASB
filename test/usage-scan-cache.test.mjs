@@ -204,8 +204,10 @@ test('array parsers keep every record in order and both new formats survive the 
   const second = await scanFile(pi, await fs.stat(pi), undefined, 'pi');
   const cache = new Map([[pathKey(grok), first], [pathKey(pi), second]]);
   const encoded = encodeScanCache(cache);
-  assert.equal(encoded.version, 2);
+  assert.equal(encoded.version, 3);
   assert.deepEqual(decodeScanCache(JSON.parse(JSON.stringify(encoded))), cache);
+  // A version 2 cache kept the first output count of a repeated key: it is read again.
+  assert.deepEqual(decodeScanCache({ ...JSON.parse(JSON.stringify(encoded)), version: 2 }), new Map());
 });
 
 test('the scan yielder rests 3 times the CPU time of its work, at most 200 ms, on a timer that keeps the event loop alive; without a rest ratio it only gives a turn', async () => {

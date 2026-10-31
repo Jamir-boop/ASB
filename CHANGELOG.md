@@ -18,6 +18,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Made the engine do less work: the Codex reader no longer runs again 15 minutes and 6 hours after each change only to refresh old status fields that nothing showed. After the update, ASB reads the Codex session logs again one time.
 - Fixed a power cut during a save that could leave the usage ledger or the usage cache full of zeros, so that ASB set the ledger aside and started an empty one. ASB now syncs each private usage file and each backup to disk before it replaces the old file.
 - Fixed Usage counting this machine two times after an import of a backup made before `asb group reset-identity`: an imported copy with the name of this machine now joins this machine.
+- Fixed Usage showing less than half of the Claude output tokens. Claude Code writes the usage of a streamed reply many times, and ASB kept the first, partial count. It now keeps the final count. The first scan after the update reads all transcripts again.
 
 ## ASB 1.13.0 - 2026-10-28
 

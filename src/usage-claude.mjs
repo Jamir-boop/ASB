@@ -9,9 +9,9 @@ export function tokenCount(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
 }
 
-// Claude Code writes one record per assistant content block, and every one of those records repeats
-// the same complete usage object for the parent message. Summing them overcounts, so the caller
-// drops repeats by dedupeKey and keeps the first.
+// Claude Code writes one record per assistant content block, and every one of those records repeats the usage object of
+// the parent message. The early records are written while the reply still streams, so their output count is partial.
+// Summing them overcounts, so the scan keeps one record per dedupeKey with the larger counts.
 export function parseClaudeLine(line) {
   let parsed;
   try { parsed = JSON.parse(line); } catch { return null; }

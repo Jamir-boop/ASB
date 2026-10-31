@@ -14,8 +14,8 @@ import { codexUsageFormat } from './usage-codex.mjs';
 import { grokUsageFormat } from './usage-grok.mjs';
 import { piUsageFormat } from './usage-pi.mjs';
 
-// Version 2 keeps all history; v1 caches pruned at 90 days must be read again once.
-export const USAGE_CACHE_VERSION = 2;
+// Version 2 keeps all history; version 3 keeps the larger counts of a repeated key. Older caches are read again once.
+export const USAGE_CACHE_VERSION = 3;
 export const MAX_CACHE_FILES = 10_000;
 export const GUARD_LENGTH = 64;
 export const QUARTER_HOUR_MS = 15 * 60 * 1000;
@@ -56,14 +56,20 @@ export function createYielder(now = Date.now, { restRatio = 0, timers = { setTim
 
 // A record is [quarter hour, model, uncached, cacheRead, cacheWrite, output, key digest or null].
 // Parts with no key in the same quarter hour and model are one record, so a Codex rollout keeps a few records.
+// A repeated key keeps its first quarter hour and model and the larger counts: early lines of a streamed reply count less output.
 function addRecord(entry, record, seen) {
   const quarter = Math.floor(record.timestampMs / QUARTER_HOUR_MS);
   const { uncached, cacheRead, cacheWrite, output } = record.tokens;
   if (record.dedupeKey !== null) {
     const key = digest(record.dedupeKey);
-    if (seen.has(key)) return;
-    seen.add(key);
-    entry.records.push([quarter, record.model, uncached, cacheRead, cacheWrite, output, key]);
+    const kept = seen.get(key);
+    if (kept) {
+      [uncached, cacheRead, cacheWrite, output].forEach((value, index) => { kept[index + 2] = Math.max(kept[index + 2], value); });
+      return;
+    }
+    const tuple = [quarter, record.model, uncached, cacheRead, cacheWrite, output, key];
+    seen.set(key, tuple);
+    entry.records.push(tuple);
     return;
   }
   const last = entry.records.at(-1);
@@ -105,7 +111,7 @@ async function readExactly(handle, length, position, stats) {
 async function scanCompressed(file, info, format, handle, stats, pause) {
   const entry = { app: format.app, size: info.size, mtimeMs: info.mtimeMs, offset: info.size,
     guardLength: Math.min(GUARD_LENGTH, info.size), state: format.initialState(), records: [] };
-  const seen = new Set();
+  const seen = new Map();
   const input = createReadStream(file);
   input.on('data', (chunk) => { stats.bytesRead = (stats.bytesRead || 0) + chunk.length; });
   await pipeline(input, zlib.createZstdDecompress({ chunkSize: CHUNK_BYTES }), async (stream) => {
@@ -143,7 +149,7 @@ export async function scanFile(file, info, previous, app, { stats = {}, pause = 
     }
     entry ||= { app, size: 0, mtimeMs: 0, offset: 0, guardLength: 0, guardHash: guardHash(Buffer.alloc(0)),
       state: format.initialState(), records: [] };
-    const seen = new Set(entry.records.map((record) => record[6]).filter(Boolean));
+    const seen = new Map(entry.records.filter((record) => record[6]).map((record) => [record[6], record]));
     let pending = [];
     let position = entry.offset;
     while (position < info.size) {
