@@ -221,8 +221,7 @@ test('does not treat intermediate Claude text before tool work as a completed tu
   }, Date.parse('2026-05-09T02:04:00.000Z'));
 
   assert.equal(signals.latestAgentFinalAtMs, null);
-  assert.equal(thread.status, 'running');
-  assert.equal(thread.currentTurnStartedAtMs, Date.parse('2026-05-09T02:00:00.000Z'));
+  assert.equal(buildSwitchboardDashboard([thread], [], Date.parse('2026-05-09T02:04:00.000Z')).threads[0].state, 'working');
 });
 
 test('uses Claude assistant end_turn events as completed-turn markers', () => {
@@ -255,8 +254,7 @@ test('uses Claude assistant end_turn events as completed-turn markers', () => {
   }, Date.parse('2026-05-09T03:00:00.000Z'));
 
   assert.equal(signals.latestAgentFinalAtMs, Date.parse('2026-05-09T02:03:00.000Z'));
-  assert.equal(thread.status, 'warm');
-  assert.equal(thread.currentTurnStartedAtMs, null);
+  assert.equal(buildSwitchboardDashboard([thread], [], Date.parse('2026-05-09T03:00:00.000Z')).threads[0].state, 'idle');
 });
 
 test('uses Claude stop hook summaries as completed-turn markers', () => {
@@ -285,7 +283,6 @@ test('uses Claude stop hook summaries as completed-turn markers', () => {
   ]));
 
   assert.equal(signals.latestAgentFinalAtMs, Date.parse('2026-05-09T02:03:00.000Z'));
-  assert.equal(signals.latestMessageKind, 'agent');
 });
 
 test('folds Claude subagent transcripts into their Desktop Code host', async (t) => {

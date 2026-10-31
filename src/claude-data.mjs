@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
-import { enrichThreadRuntime } from './insights.mjs';
 import { readClaudeAppApprovals, readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 import { openCommandForUrl, runOpener } from './session-opener.mjs';
 
@@ -185,7 +184,6 @@ function initialSignals() {
     agentName: '',
     latestUserMessageAtMs: null,
     latestAgentFinalAtMs: null,
-    latestMessageKind: '',
     oldestEventAtMs: null,
     latestEventAtMs: null,
     pendingToolsById: new Map(),
@@ -369,14 +367,11 @@ function handleUserEvent(signals, event, timestampMs) {
 
   if (isUserPromptText(contentText(content))) {
     signals.latestUserMessageAtMs = timestampMs || signals.latestUserMessageAtMs;
-    signals.latestMessageKind = 'user';
   }
 }
 
 function handleAssistantEvent(signals, event, timestampMs) {
   const message = event.message || {};
-  const text = contentText(message.content);
-  const hasText = Boolean(compactInlineText(text));
   const stopReason = String(firstPresent(
     message.stop_reason,
     message.stopReason,
@@ -392,8 +387,6 @@ function handleAssistantEvent(signals, event, timestampMs) {
       rememberPendingTool(signals, String(item.id), item, timestampMs);
     }
   }
-
-  if (hasText) signals.latestMessageKind = 'agent';
 
   if (['end_turn', 'stop_sequence', 'max_tokens', 'refusal'].includes(stopReason)) {
     rememberAgentCompletion(signals, timestampMs);
@@ -419,7 +412,6 @@ function rememberPendingTool(signals, id, item, timestampMs) {
 
 function rememberAgentCompletion(signals, timestampMs) {
   signals.latestAgentFinalAtMs = timestampMs || signals.latestAgentFinalAtMs;
-  signals.latestMessageKind = 'agent';
 }
 
 function handleResultEvent(signals, event, timestampMs) {
@@ -763,10 +755,10 @@ export function baseClaudeThread({
   signals,
   canOpen = true,
   extra = {},
-}, nowMs) {
+}) {
   const pendingTools = Array.isArray(signals?.pendingTools) ? signals.pendingTools : [];
   const questions = pendingTools.filter((tool) => tool.tool === 'AskUserQuestion');
-  const thread = {
+  return {
     id,
     externalId,
     provider,
@@ -789,7 +781,6 @@ export function baseClaudeThread({
     updatedAtMs,
     latestAgentFinalAtMs: signals?.latestAgentFinalAtMs || null,
     latestUserMessageAtMs: signals?.latestUserMessageAtMs || null,
-    latestMessageKind: signals?.latestMessageKind || '',
     lifecycleRunning: signals?.lifecycleRunning,
     agentRunning: signals?.lifecycleRunning === true,
     agentStartedAtMs: signals?.agentStartedAtMs || null,
@@ -812,8 +803,6 @@ export function baseClaudeThread({
     canOpen,
     ...extra,
   };
-
-  return enrichThreadRuntime(thread, nowMs);
 }
 
 // The newest live registry record of a thread: a record that the thread hosts, else a record of one of its CLI session IDs.
@@ -848,9 +837,9 @@ export function applyLiveClaudeStatus(thread, records, nowMs) {
     return { ...thread, approvalCheckAtMs: record.statusUpdatedAt + CLAUDE_APPROVAL_GRACE_MS };
   }
   const atMs = record.statusUpdatedAt || nowMs;
-  return enrichThreadRuntime({ ...thread, awaitingPermission: true, questionNonBlocking: false,
+  return { ...thread, awaitingPermission: true, questionNonBlocking: false,
     pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, atMs), liveWaitingFor: record.waitingFor || 'permission prompt',
-    ...(input ? { awaitingUserInput: true, latestUserQuestionAtMs: Math.max(thread.latestUserQuestionAtMs || 0, atMs) } : {}) }, nowMs);
+    ...(input ? { awaitingUserInput: true, latestUserQuestionAtMs: Math.max(thread.latestUserQuestionAtMs || 0, atMs) } : {}) };
 }
 
 // liveSinceMs is the start of the chat's live process: a request before it belongs to an older process.
@@ -868,8 +857,8 @@ export function applyClaudeAppApproval(thread, approvals, nowMs, liveSinceMs = 0
   // Approvals that the user answers at once must not flash Waiting or play the Needs input sound.
   if (nowMs - request.atMs < CLAUDE_APPROVAL_GRACE_MS) return { ...thread, approvalCheckAtMs: request.atMs + CLAUDE_APPROVAL_GRACE_MS };
   // Only the log shows the answer, so check again every 5 s while the wait shows.
-  return enrichThreadRuntime({ ...thread, awaitingPermission: true, questionNonBlocking: false, approvalCheckAtMs: nowMs + 5_000,
-    pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, request.atMs), liveWaitingFor: 'permission prompt' }, nowMs);
+  return { ...thread, awaitingPermission: true, questionNonBlocking: false, approvalCheckAtMs: nowMs + 5_000,
+    pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, request.atMs), liveWaitingFor: 'permission prompt' };
 }
 
 function dedupeClaudeDesktopCodeThreads(threads) {
@@ -936,7 +925,7 @@ export function normalizeClaudeDesktopCodeSession(session, {
       embeddedSubagentCount: coerceNumber(subagentStats?.count),
       embeddedSubagentUpdatedAtMs: coerceNumber(subagentStats?.updatedAtMs) || null,
     },
-  }, nowMs);
+  });
 }
 
 async function readSignalsForFile(filePath, options = {}) {

@@ -2,9 +2,6 @@ import path from 'node:path';
 import { stripWindowsVerbatimPath } from './platform-paths.mjs';
 import { subagentInfo } from './thread-classification.mjs';
 
-const FRESH_WINDOW_MS = 15 * 60 * 1000;
-const WARM_WINDOW_MS = 6 * 60 * 60 * 1000;
-const RUNNING_ACTIVITY_WINDOW_MS = WARM_WINDOW_MS;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function coerceNumber(value, fallback = 0) {
@@ -18,75 +15,8 @@ function unixValueToMs(value) {
   return number > 1_000_000_000_000 ? number : number * 1000;
 }
 
-function currentTurnStartedAtMs(thread) {
-  if (['claude-code-cli', 'claude-desktop-code'].includes(thread.provider)
-    && (thread.lifecycleRunning === false || (thread.childWorkUnknown && thread.lifecycleRunning !== true))) return 0;
-  if (thread.agentRunning || thread.isAgentRunning) {
-    return coerceNumber(
-      thread.currentTurnStartedAtMs
-      || thread.agentStartedAtMs
-      || thread.latestUserMessageAtMs
-      || thread.createdAtMs
-      || thread.updatedAtMs,
-    );
-  }
-
-  const userAtMs = coerceNumber(thread.currentTurnStartedAtMs || thread.latestUserMessageAtMs);
-  const finalAtMs = coerceNumber(thread.latestAgentFinalAtMs);
-  return userAtMs > 0 && userAtMs > finalAtMs ? userAtMs : 0;
-}
-
-function currentTurnActivityAtMs(thread) {
-  const startedAtMs = currentTurnStartedAtMs(thread);
-  if (!startedAtMs) return 0;
-  const rateLimitActivityAtMs = Object.prototype.hasOwnProperty.call(thread, 'rateLimitActivityAtMs')
-    ? coerceNumber(thread.rateLimitActivityAtMs)
-    : coerceNumber(thread.rateLimitUpdatedAtMs);
-
-  return Math.max(
-    startedAtMs,
-    coerceNumber(thread.updatedAtMs),
-    coerceNumber(thread.agentActivityAtMs),
-    rateLimitActivityAtMs,
-  );
-}
-
-function hasActiveCurrentTurn(thread, nowMs) {
-  if (['claude-code-cli', 'claude-desktop-code'].includes(thread.provider) && thread.lifecycleRunning === true) {
-    const activityAtMs = coerceNumber(thread.agentActivityAtMs);
-    return activityAtMs > 0 && Math.max(0, nowMs - activityAtMs) <= RUNNING_ACTIVITY_WINDOW_MS;
-  }
-  const activityAtMs = currentTurnActivityAtMs(thread);
-  return activityAtMs > 0 && Math.max(0, nowMs - activityAtMs) <= RUNNING_ACTIVITY_WINDOW_MS;
-}
-
-export function inferThreadStatus(thread, nowMs = Date.now()) {
-  if (thread.archived) return 'archived';
-  if (hasActiveCurrentTurn(thread, nowMs)) return 'running';
-
-  const ageMs = Math.max(0, nowMs - coerceNumber(thread.updatedAtMs));
-  if (ageMs <= FRESH_WINDOW_MS) return 'fresh';
-  if (ageMs <= WARM_WINDOW_MS) return 'warm';
-  return 'idle';
-}
-
-// Sets the runtime fields on a thread that the caller owns.
-function applyThreadRuntime(thread, nowMs) {
-  const startedAtMs = hasActiveCurrentTurn(thread, nowMs)
-    ? currentTurnStartedAtMs(thread)
-    : 0;
-  thread.currentTurnStartedAtMs = startedAtMs || null;
-  thread.currentTurnElapsedMs = startedAtMs ? Math.max(0, nowMs - startedAtMs) : 0;
-  thread.status = inferThreadStatus(thread, nowMs);
-  return thread;
-}
-
-export function enrichThreadRuntime(thread, nowMs = Date.now()) {
-  return applyThreadRuntime({ ...thread }, nowMs);
-}
-
 // `titleByThreadId` is the Codex session index (thread ID to title). A thread that has no name of its own gets the title of its entry.
-export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null) {
+export function normalizeThread(row, titleByThreadId = null) {
   const cwd = stripWindowsVerbatimPath(row.cwd || '');
   const id = String(row.id || '');
   const archived = Boolean(coerceNumber(row.archived));
@@ -144,7 +74,7 @@ export function normalizeThread(row, nowMs = Date.now(), titleByThreadId = null)
     agentActivityAtMs: hasActiveGoal ? (goalUpdatedAtMs || updatedAtMs) : null,
   };
 
-  return applyThreadRuntime(thread, nowMs);
+  return thread;
 }
 
 const NO_THREADS = Object.freeze([]);
@@ -235,12 +165,12 @@ function attachThreadRelationships(threads) {
   return threads;
 }
 
-export function normalizeDashboardThreads(threads, nowMs = Date.now()) {
+export function normalizeDashboardThreads(threads) {
   return attachThreadRelationships(threads
-    .map((thread) => enrichThreadRuntime(thread, nowMs))
+    .map((thread) => ({ ...thread }))
     .sort((a, b) => coerceNumber(b.updatedAtMs) - coerceNumber(a.updatedAtMs)));
 }
 
-export function enrichThreads(rows, nowMs = Date.now(), titleByThreadId = null) {
-  return rows.map((row) => normalizeThread(row, nowMs, titleByThreadId));
+export function enrichThreads(rows, titleByThreadId = null) {
+  return rows.map((row) => normalizeThread(row, titleByThreadId));
 }

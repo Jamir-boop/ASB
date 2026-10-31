@@ -424,7 +424,7 @@ test('normalization attaches relationships and Claude ASB signals skip usage', (
     { id: 'host', updatedAtMs: nowMs, tokensUsed: 0 },
     { id: 'child', parentThreadId: 'host', isSubagent: true, updatedAtMs: nowMs + 1, tokensUsed: 0 },
   ];
-  const narrow = normalizeDashboardThreads(threads, nowMs);
+  const narrow = normalizeDashboardThreads(threads);
   assert.deepEqual(narrow.map((thread) => [thread.id, thread.hostThreadId, thread.subagentCount, thread.groupUpdatedAtMs]),
     [['child', 'host', 0, nowMs + 1], ['host', 'host', 1, nowMs + 1]]);
   const records = jsonl([{ type: 'assistant', timestamp: new Date(nowMs).toISOString(), message: { usage: { input_tokens: 123 }, stop_reason: 'end_turn', content: 'Done.' } }]);

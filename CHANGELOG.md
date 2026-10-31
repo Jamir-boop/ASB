@@ -15,6 +15,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed a machine group member that stayed unreachable for the other members after it changed its gateway port or its address. Each hello of a member now carries its current addresses and port, and the member that answers saves them in the entry of the caller.
 - Fixed a machine that stayed half-joined when the reply to its join was lost (for example after a timeout on a slow overlay network): each new invite gave `This machine is already in the group.` A repeated join with a valid code now gets the group, and the machine completes its join with the name that the inviter saved.
 - Fixed a Claude Desktop Code chat that stayed Working for six hours when the Claude app quit, updated, or crashed during a task. On Linux and Windows, the card now shows Unknown, as a Claude Code CLI card does in this case. The reason of both is now `The Claude Code process ended during a task.`
+- Made the engine do less work: the Codex reader no longer runs again 15 minutes and 6 hours after each change only to refresh old status fields that nothing showed. After the update, ASB reads the Codex session logs again one time.
 
 ## ASB 1.13.0 - 2026-10-28
 

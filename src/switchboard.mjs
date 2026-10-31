@@ -205,8 +205,7 @@ const plainObject = (value) => Boolean(value) && typeof value === 'object' && Ob
 // Arrays with the same items: equal values, or plain objects with the same keys and equal values (for example, the incoming messages).
 const sameItems = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, index) => x === b[index]
   || plainObject(x) && plainObject(b[index]) && sameFields(x, b[index], () => false));
-// The thread fields of a row. `currentTurnElapsedMs` changes at each scan, and no row reads it.
-const sameRowThread = (a, b) => sameFields(a, b, (key, x, y) => key === 'currentTurnElapsedMs' ? key in b : sameItems(x, y));
+const sameRowThread = (a, b) => sameFields(a, b, (key, x, y) => sameItems(x, y));
 
 // The non-enumerable fields of a row, for its copies.
 function hiddenFields(row) {
@@ -232,7 +231,7 @@ function rowStatusTimes(thread, row) {
 // Working. With no cache, each row is built.
 export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.now(),
   machine = { machineId: '', machineName: localMachineName() }, workingStarts = new Map(), rowCache = null) {
-  const normalizedThreads = normalizeDashboardThreads(threads, nowMs);
+  const normalizedThreads = normalizeDashboardThreads(threads);
   const byId = new Map(normalizedThreads.map((thread) => [thread.id, thread]));
   const roots = normalizedThreads.filter(isSwitchboardRoot).map((thread) => codexGroupLifecycle(thread, byId, nowMs));
   const keptRows = new Map();

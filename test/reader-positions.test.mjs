@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import * as zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import { useRemotePositions } from '../src/claude-remote-data.mjs';
-import { parseRolloutSignals, readRolloutSignals, useRolloutPositions, useRolloutTailPositions } from '../src/codex-data.mjs';
+import { parseRolloutSignals, readRolloutSignals, useRolloutPositions, useRolloutTailPositions, validRolloutTailRecord } from '../src/codex-data.mjs';
 import { createReaderPositions, MAX_POSITION_FILE_BYTES, MAX_POSITION_RECORD_BYTES, MAX_POSITION_RECORDS,
   POSITION_SAVE_INTERVAL_MS } from '../src/reader-positions.mjs';
 import { rolloutWriter, seededRandom } from './rollout-writer.mjs';
@@ -375,9 +375,10 @@ test('Codex lifecycle positions from disk give the result of a full pass after a
 
 // Measured on main (ba1ecdc) with the same synthetic set: the reader with no positions reads the same bytes and gives the same signals,
 // except the four text fields (`firstUserMessage`, `latestUserMessage`, `latestMeaningfulUserMessage`, `lastAgentMessage`) that the reader no longer keeps:
-// the digest is the digest of the signals of 52a1849 with these four fields removed.
+// the digest is the digest of the signals of 52a1849 with these four fields removed. The signals of 93c13b5 without its two hint fields
+// (the completion hint and the message kind, which nothing read) give the digest below.
 // To measure again: ASB_HEAD_ROOT=file:///<copy of main>/ node --test --test-name-pattern="same bytes" test/reader-positions.test.mjs
-const HEAD_OFF = { lifecycleBytes: 3371140, tailBytes: 240640, digest: 'a1535b3488ff596dea3172c09fb0d6b1c928bc31c24223439724005fa0289476' };
+const HEAD_OFF = { lifecycleBytes: 3371140, tailBytes: 240640, digest: 'd8dbee861b019cf42dc85898ee8cf04c0ffe75f632880e4fec21a2cbe5ff6e56' };
 
 test('with no positions the Codex reader reads the same bytes and gives the same signals as before positions', async (t) => {
   const directory = await temporaryDirectory(t);
@@ -500,6 +501,9 @@ test('Codex tail results from disk give the signals of a full read for random lo
   const saved = await readSaved(file);
   const [record] = saved.codexTail.records;
   assert.deepEqual([...Object.keys(record.lifecycle), ...Object.keys(record.tail)].sort(), fields);
+  // A record of an older ASB has two deleted hint fields, so it is not valid and its log is read again once. The split names keep them out of a grep for deleted fields.
+  assert.equal(validRolloutTailRecord(record), true);
+  assert.equal(validRolloutTailRecord({ ...record, tail: { ...record.tail, ['completion' + 'Hint']: false, ['latestMessage' + 'Kind']: '' } }), false);
 });
 
 test('a saved Codex tail result that does not agree with its log gives a full read and the same signals', async (t) => {
@@ -888,9 +892,10 @@ test('Claude lifecycle positions from disk give the result of a full read after 
 // Measured with the same synthetic set: the reader with no positions reads the same bytes and gives the same rows as d9700f1,
 // except `updatedAtMs` and `status` (the row time now ignores records with no turn, and the file time of the session file),
 // the four text fields that the reader no longer keeps, and the three row fields that no code read (the digest is the digest of the
-// rows of 52a1849 with these seven fields removed).
+// rows of 52a1849 with these seven fields removed). The rows of 93c13b5 without the upstream status fields (the runtime status,
+// the two current turn times, and the message kind, which nothing read) give the digest below.
 // To measure again: ASB_HEAD_ROOT=file:///<copy of the same commit>/ node --test --test-name-pattern="Claude reader reads the same" test/reader-positions.test.mjs
-const CLAUDE_HEAD_OFF = { bytes: 939657, digest: '16ba719c1ccfaae46e0d2dfe43a1285d5e1c6b24d8865026b911e11dcc4e5d02' };
+const CLAUDE_HEAD_OFF = { bytes: 939657, digest: '8de10ff05f0800559faa96e6e007b0bc9ff053e9856edf484525ad0ada5064b9' };
 
 test('with no positions the Claude reader reads the same bytes and gives the same rows as before positions', async (t) => {
   const home = await temporaryDirectory(t);

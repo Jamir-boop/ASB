@@ -79,7 +79,7 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
         embeddedSubagentUpdatedAtMs: Number(subagentStats?.updatedAtMs || 0) || null,
         cliNoTranscript: !signals,
       },
-    }, nowMs);
+    });
     return markEndedClaudeProcess(applyLiveClaudeStatus(thread, live, nowMs), registry, nowMs);
   });
   return rememberClaudeLoad(key, { threads }, options);

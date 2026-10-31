@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { loadCodexDashboard, readThreadRows, readThreads } from '../src/codex-data.mjs';
-import { enrichThreadRuntime, enrichThreads, normalizeDashboardThreads, normalizeThread, threadTree } from '../src/insights.mjs';
+import { enrichThreads, normalizeDashboardThreads, normalizeThread, threadTree } from '../src/insights.mjs';
 import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard } from '../src/switchboard.mjs';
 
 // A scan builds its rows in place on objects that the scan made. These tests give the scan frozen objects where a reader keeps
@@ -62,14 +62,14 @@ test('the subagent tree lists the threads below each thread, also with a loop, a
   assert.deepEqual(ids('root'), ['a', 'b', 'c']);
 });
 
-test('dashboard threads get one copy each, with the relationship fields after the runtime fields, and the input stays as it was', () => {
+test('dashboard threads get one copy each, with the relationship fields last, and the input stays as it was', () => {
   const input = deepFreeze(threadFamily());
-  const threads = normalizeDashboardThreads(input, nowMs);
+  const threads = normalizeDashboardThreads(input);
   // Sorted by time, newest first.
   assert.deepEqual(threads.map((thread) => thread.id), ['b', 'root', 'a', 'c', 'x', 'y', 'o']);
   for (const thread of threads) assert.equal(input.includes(thread), false);
   for (const thread of threads) {
-    assert.deepEqual(Object.keys(thread).slice(-11), ['currentTurnStartedAtMs', 'currentTurnElapsedMs', 'status', ...RELATIONSHIP_FIELDS]);
+    assert.deepEqual(Object.keys(thread).slice(-RELATIONSHIP_FIELDS.length), RELATIONSHIP_FIELDS);
   }
   const byId = Object.fromEntries(threads.map((thread) => [thread.id, thread]));
   assert.deepEqual(byId.root.childThreadIds, ['a', 'c']);
@@ -93,22 +93,13 @@ test('dashboard threads get one copy each, with the relationship fields after th
   assert.notEqual(byId.root.childThreadIds, byId.a.childThreadIds);
 });
 
-test('a runtime copy is a new object, and a thread of normalizeThread has its runtime fields in the object it returns', () => {
-  const thread = deepFreeze({ id: 'one', provider: 'codex', updatedAtMs: nowMs - 1_000, agentRunning: true, agentStartedAtMs: nowMs - 5_000, agentActivityAtMs: nowMs });
-  const copy = enrichThreadRuntime(thread, nowMs);
-  assert.notEqual(copy, thread);
-  assert.deepEqual([copy.status, copy.currentTurnStartedAtMs, copy.currentTurnElapsedMs], ['running', nowMs - 5_000, 5_000]);
-  // Again on the copy: the fields keep their place and take the new values.
-  const again = enrichThreadRuntime(copy, nowMs + 1_000);
-  assert.deepEqual(Object.keys(again), Object.keys(copy));
-  assert.equal(again.currentTurnElapsedMs, 6_000);
-
+test('normalizeThread builds a new thread and leaves its row as it was', () => {
   const row = deepFreeze({ id: uuid(1), title: 'Stored', source: 'vscode', updated_at_ms: nowMs, archived: 0 });
   const index = readOnlyMap([[uuid(1), 'Sidebar title']]);
-  const normalized = normalizeThread(row, nowMs, index);
+  const normalized = normalizeThread(row, index);
+  assert.notEqual(normalized, row);
   assert.equal(normalized.title, 'Sidebar title');
-  assert.deepEqual(Object.keys(normalized).slice(-3), ['currentTurnStartedAtMs', 'currentTurnElapsedMs', 'status']);
-  assert.deepEqual(enrichThreads([row], nowMs, index), [normalized]);
+  assert.deepEqual(enrichThreads([row], index), [normalized]);
 });
 
 async function temporaryDirectory(t, prefix) {

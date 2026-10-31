@@ -82,7 +82,7 @@ test('the thread query reads at most 301 characters of a title, and the row cut 
   const rows = await readThreads({ databasePath });
   assert.deepEqual(rows.map((row) => [...row.title].length).sort((a, b) => a - b), [299, 300, 301, 301, 301]);
   // A row from the cut text is the same as a row from the whole text.
-  const board = buildSwitchboardDashboard(rows.map((row) => normalizeThread(row, 0)), [], 0);
+  const board = buildSwitchboardDashboard(rows.map((row) => normalizeThread(row)), [], 0);
   const expected = (title) => [...title].length > 300 ? `${[...title].slice(0, 299).join('')}…` : title;
   assert.deepEqual(titles.map((title, index) => board.threads.find((row) => row.id.endsWith(`${index + 1}`)).title), titles.map(expected));
 });
@@ -154,7 +154,7 @@ test('Codex titles keep the raw session-index name and an empty fallback', () =>
   const title = '  https://example.test/title\nRaw name  ';
   const indexText = JSON.stringify({ id: 'synthetic-thread', thread_name: title });
   assert.equal(parseSessionIndex(indexText).get('synthetic-thread'), title);
-  assert.equal(normalizeThread({ title: '' }, 0).title, '');
+  assert.equal(normalizeThread({ title: '' }).title, '');
 });
 
 test('raw Codex attachment text resolves questions while scaffold and internal context keep them pending', () => {

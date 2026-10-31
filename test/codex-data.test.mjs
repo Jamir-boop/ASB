@@ -144,9 +144,7 @@ test('keeps completion signals and ignores token-count events in rollout jsonl',
     assert.equal(Object.hasOwn(signals, key), false);
   }
   assert.equal(signals.agentRunning, true);
-  assert.equal(signals.completionHint, true);
   assert.equal(signals.latestAgentFinalAtMs, 1777444508583);
-  assert.equal(signals.latestMessageKind, 'agent');
 });
 
 test('tracks a later user message after an agent final answer', () => {
@@ -167,7 +165,6 @@ test('tracks a later user message after an agent final answer', () => {
 
   assert.equal(signals.latestAgentFinalAtMs, 1777444508583);
   assert.equal(signals.latestUserMessageAtMs, 1777444560000);
-  assert.equal(signals.latestMessageKind, 'user');
 });
 
 test('parses Codex session index titles used by the sidebar', () => {
@@ -192,7 +189,7 @@ test('takes the titles of the Codex sidebar index, and the own name of a thread 
     { id: 'named-thread', name: 'Own name', title: 'Stored title' },
   ];
   const before = JSON.stringify(rows);
-  const threads = enrichThreads(rows, 0, new Map([
+  const threads = enrichThreads(rows, new Map([
     ['visible-thread', 'Sidebar title'],
     ['named-thread', 'Sidebar title'],
   ]));
@@ -228,14 +225,12 @@ test('keeps a thread in progress when commentary follows the latest user message
 
   assert.equal(signals.latestAgentFinalAtMs, 1777444508583);
   assert.equal(signals.latestUserMessageAtMs, 1777446052131);
-  assert.equal(signals.latestMessageKind, 'agent');
 });
 
 test('ignores malformed rollout jsonl lines', () => {
   const signals = parseRolloutSignals('{bad json}\n{"type":"event_msg","payload":{"type":"message"}}');
 
   assert.equal(signals.agentRunning, null);
-  assert.equal(signals.completionHint, false);
 });
 
 test('skips rollout jsonl lines that parse to a non-object', async (t) => {

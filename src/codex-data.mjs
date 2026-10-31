@@ -19,7 +19,6 @@ const TITLE_READ_CHARS = 301;
 const DEFAULT_INITIAL_ROLLOUT_BYTES = 512 * 1024;
 const DEFAULT_MAX_ROLLOUT_BYTES = 16 * 1024 * 1024;
 const ROLLOUT_SIGNAL_CONCURRENCY = 6;
-const COMPLETION_HINT = /(\bdone\b|\bcompleted?\b|ready for review|handoff|完成|已完成|验收|交付|交接|可以看|可以试)/i;
 const ROLLOUT_LIFECYCLE_EVENT_RE = /"type"\s*:\s*"(?:task_started|task_complete|turn_aborted|turn_cancelled|task_cancelled|cancelled)"/;
 // A token_count line with a usage window. Lines without one cannot change the window record of a scan, so they are not parsed.
 const ROLLOUT_LIMIT_WINDOW_RE = /"used_percent"\s*:\s*-?\d/;
@@ -619,10 +618,8 @@ function applyUserQuestionEvent(questions, payload, atMs = 0) {
 export function parseRolloutSignals(jsonlText) {
   const questions = new Map();
   const signals = {
-    completionHint: false,
     latestAgentFinalAtMs: null,
     latestUserMessageAtMs: null,
-    latestMessageKind: '',
     ...emptyRolloutLifecycle(),
     latestEventAtMs: null,
   };
@@ -648,22 +645,12 @@ export function parseRolloutSignals(jsonlText) {
     if (applyUserQuestionEvent(questions, payload, timestampMs)) signals[QUESTION_HISTORY_COMPLETE] = true;
 
     if (payload?.type === 'agent_message') {
-      const text = payloadText(payload);
-      if (payload.phase === 'final_answer' || COMPLETION_HINT.test(text)) {
-        signals.completionHint = true;
-      }
-      if (payload.phase === 'final_answer') {
-        signals.latestAgentFinalAtMs = timestampMs || signals.latestAgentFinalAtMs;
-        signals.latestMessageKind = 'agent';
-      } else if (text) {
-        signals.latestMessageKind = 'agent';
-      }
+      if (payload.phase === 'final_answer') signals.latestAgentFinalAtMs = timestampMs || signals.latestAgentFinalAtMs;
       continue;
     }
 
     if (payload?.type === 'user_message') {
       signals.latestUserMessageAtMs = timestampMs || signals.latestUserMessageAtMs;
-      signals.latestMessageKind = 'user';
     }
   }
 
@@ -699,9 +686,9 @@ const ROLLOUT_POSITION_KINDS = new Set(['', 'task_started', 'task_complete', 'tu
 const ROLLOUT_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'full', 'guard', 'guardBytes', 'ino', 'k', 'lifecycle', 'mtimeMs', 'offset', 'questions', 'size'].join();
 const ROLLOUT_LIFECYCLE_NAMES = Object.keys(emptyRolloutLifecycle());
 const ROLLOUT_LIFECYCLE_KEYS = [...ROLLOUT_LIFECYCLE_NAMES].sort().join();
-// The other fields of the signals of a tail read: a hint flag, times, a fixed kind, and the open-question flags.
-const ROLLOUT_TAIL_NAMES = ['awaitingUserInput', 'completionHint', 'latestAgentFinalAtMs', 'latestBlockingQuestionAtMs', 'latestEventAtMs',
-  'latestMessageKind', 'latestUserMessageAtMs', 'latestUserQuestionAtMs', 'userQuestionBlocking'];
+// The other fields of the signals of a tail read: times and the open-question flags.
+const ROLLOUT_TAIL_NAMES = ['awaitingUserInput', 'latestAgentFinalAtMs', 'latestBlockingQuestionAtMs', 'latestEventAtMs',
+  'latestUserMessageAtMs', 'latestUserQuestionAtMs', 'userQuestionBlocking'];
 const ROLLOUT_TAIL_KEYS = [...ROLLOUT_TAIL_NAMES].sort().join();
 const ROLLOUT_TAIL_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'initialBytes', 'k', 'lifecycle', 'maxBytes',
   'mtimeMs', 'size', 'tail'].sort().join();
@@ -769,7 +756,6 @@ export function validRolloutTailRecord(record) {
     || record.guardBytes !== Math.min(64, record.size) || !finiteNumber(record.mtimeMs) || !finiteNumber(record.ctimeMs)
     || !validRolloutLifecycle(lifecycle)) return false;
   return Boolean(tail) && typeof tail === 'object' && Object.keys(tail).sort().join() === ROLLOUT_TAIL_KEYS
-    && typeof tail.completionHint === 'boolean' && ['', 'agent', 'user'].includes(tail.latestMessageKind)
     && [tail.latestAgentFinalAtMs, tail.latestUserMessageAtMs, tail.latestEventAtMs].every((value) => value === null || finiteNumber(value))
     && typeof tail.awaitingUserInput === 'boolean' && typeof tail.userQuestionBlocking === 'boolean'
     && finiteNumber(tail.latestUserQuestionAtMs) && finiteNumber(tail.latestBlockingQuestionAtMs);
@@ -1060,10 +1046,8 @@ async function attachRolloutSignals(threads, {
     const thread = candidates[index];
     // The row time is the last turn entry of the rollout. The database time stays when the rollout has no turn entry.
     thread.updatedAtMs = Number(result.value.latestEventAtMs || result.value.latestLifecycleAtMs || 0) || thread.updatedAtMs;
-    thread.completionHint = result.value.completionHint;
     thread.latestAgentFinalAtMs = result.value.latestAgentFinalAtMs;
     thread.latestUserMessageAtMs = result.value.latestUserMessageAtMs;
-    thread.latestMessageKind = result.value.latestMessageKind;
     thread.latestLifecycleAtMs = result.value.latestLifecycleAtMs;
     thread.latestLifecycleKind = result.value.latestLifecycleKind;
     thread.latestTaskStartedAtMs = result.value.latestTaskStartedAtMs;
@@ -1114,7 +1098,7 @@ export async function loadCodexDashboard(options = {}) {
   const sessionIndex = sessionIndexValue;
   const globalState = globalStateValue;
   // The kept rows are read only: the sort gets a copy of the list, and the threads are new objects.
-  const threads = enrichThreads([...rows].sort((a, b) => threadRowUpdatedAtMs(b) - threadRowUpdatedAtMs(a)), nowMs, sessionIndex);
+  const threads = enrichThreads([...rows].sort((a, b) => threadRowUpdatedAtMs(b) - threadRowUpdatedAtMs(a)), sessionIndex);
   if (options.codexNativeReadEnabled) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }
@@ -1135,11 +1119,9 @@ export async function loadCodexDashboard(options = {}) {
   for (const thread of enriched) if (incoming.has(thread.id)) thread.incomingMessages = incoming.get(thread.id);
   const result = { generatedAtMs: nowMs, threads: enriched,
     ...(logsUnreadable ? { provider: { installed: true, status: 'warning', message: ROLLOUT_UNREADABLE_MESSAGE } } : {}) };
-  // The Codex runtime windows of `enrichThreads`: 15 min fresh, then six hours warm or running.
-  const untilMs = Math.min(...enriched.flatMap((thread) => [Number(thread.updatedAtMs || 0) + 15 * 60_000,
-    ...[thread.updatedAtMs, thread.agentActivityAtMs, thread.latestUserMessageAtMs, thread.currentTurnStartedAtMs, thread.rateLimitActivityAtMs]
-      .map((time) => Number(time || 0) + 6 * 60 * 60_000),
-    ...(thread.incomingMessages || []).flatMap((message) => [message.atMs - 5_000, message.atMs + SESSION_MESSAGE_WINDOW_MS])]).map((time) => time + 1).filter((time) => time > nowMs));
+  // An incoming message shows from 5 s before its time to the end of its window, so the loader runs again at those times.
+  const untilMs = Math.min(...enriched.flatMap((thread) => (thread.incomingMessages || [])
+    .flatMap((message) => [message.atMs - 5_000, message.atMs + SESSION_MESSAGE_WINDOW_MS])).map((time) => time + 1).filter((time) => time > nowMs));
   options.fileScan?.loaderCache?.set(key, { result, settings, rows, sessionIndex, globalState, filter: options.rolloutThreadFilter, atMs: nowMs, untilMs,
     files: new Map(options.fileScan.statusFiles) });
   return result;
