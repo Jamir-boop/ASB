@@ -209,7 +209,8 @@ test('release payloads are reproducible and the user installer preserves other f
     cwd: temporary, encoding: 'utf8', env: { ...process.env, HOME: home, XDG_DATA_HOME: dataDir, XDG_CONFIG_HOME: configDir, XDG_STATE_HOME: stateDir, PATH: '/nonexistent' },
   }));
   assert.deepEqual(removed.kept, []);
-  assert.match(removed.message, /settings, pins, and unread state were kept/i);
+  assert.equal(removed.message, 'ASB settings, pins, and unread state were kept. Running ASB processes were not stopped. To remove the start at login, run '
+    + './scripts/asb service uninstall in this folder. To remove ASB Bridge from Codex, Claude Code, and OpenCode, run ./scripts/asb bridge uninstall --all.');
   assert.equal(await readFile(path.join(stateDir, 'asb', 'pending.json'), 'utf8'), '{"pins":["saved"],"unread":["saved"]}\n');
   assert.equal(await readFile(path.join(configDir, 'asb', 'layout.json'), 'utf8'), '{"view":"comfortable","columnWidth":240}\n');
   assert.equal(await readFile(path.join(dataDir, 'applications', 'other.desktop'), 'utf8'), 'User launcher\n');

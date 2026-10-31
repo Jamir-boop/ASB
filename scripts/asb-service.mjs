@@ -47,7 +47,8 @@ const unitText = ({ node, launcher }) => `${unitMarker}\n[Unit]\nDescription=ASB
 export const serviceUnit = async (options) => unitText(await enginePaths(options));
 
 // The XDG autostart entry (plan Appendix E). Without ASB_NODE, the launcher sees only the desktop PATH at login.
-const entryText = ({ node, launcher }) => `[Desktop Entry]\n${autostartMarker}\nType=Application\nName=ASB engine\nComment=Starts the ASB engine for the phone and your other machines\nExec=env ASB_NODE=${node} ${launcher} engine start\nIcon=local.asb.AgentSwitchBoard\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n`;
+// TryExec skips the entry after an uninstall removed the launcher.
+const entryText = ({ node, launcher }) => `[Desktop Entry]\n${autostartMarker}\nType=Application\nTryExec=${launcher}\nName=ASB engine\nComment=Starts the ASB engine for the phone and your other machines\nExec=env ASB_NODE=${node} ${launcher} engine start\nIcon=local.asb.AgentSwitchBoard\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n`;
 export const autostartEntry = async (options) => entryText(await enginePaths(options));
 
 // Plan L6: the systemd user unit when a user manager answers and the graphical session target is active,

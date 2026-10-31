@@ -185,7 +185,7 @@ The window needs Python 3.9, PyGObject, GTK 4.12, and Libadwaita 1.4. When the s
 `asb service install` picks the way to start the engine at login:
 
 - With a systemd user manager and an active graphical session, it installs the `asb.service` user service.
-- Without them, in a desktop session (for example Xfce, MATE, LXQt, Cinnamon, or a system with OpenRC, runit, or no systemd), it writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop` and starts the engine. A window manager without XDG autostart must run `asb engine start` after each login.
+- Without them, in a desktop session (for example Xfce, MATE, LXQt, Cinnamon, or a system with OpenRC, runit, or no systemd), it writes the XDG autostart entry `~/.config/autostart/asb-engine.desktop` and starts the engine. A window manager without XDG autostart must run `asb engine start` after each login. The entry has `TryExec=<launcher>`, so the desktop skips it when the launcher is gone.
 - With no desktop session (for example a server without a desktop), it changes nothing, prints the command `<launcher> engine start`, and exits with code 1.
 
 `asb service status` shows the mode. Without `XDG_RUNTIME_DIR`, the engine keeps its runtime file in `~/.local/state/asb/run`.
@@ -284,3 +284,15 @@ Codex tasks and OpenCode sessions can send by session reference (`asb:1/...`). C
 Separate Claude profiles can opt in to shared peer discovery with `asb bridge link-claude <profile-home> <shared-home>`. This shares only peer metadata and IPC authentication keys. App data and provider credentials stay separate. Read the [setup and backup limits](../bridge/README.md#link-claude-profiles) first.
 
 Codex starts the required bridge server with `bun` from the PATH of the Codex app. If that app cannot start Bun, Codex cannot start or resume tasks. To recover, run `asb bridge uninstall --codex-home <home>` for the affected home; this command does not need Bun. Then make Bun visible to desktop apps, for example with a link in `~/.local/bin` on Linux if that directory is on the app's PATH. Restart Codex and install the bridge again. `asb bridge status` checks the PATH of running Codex app-server processes on Linux and warns when Bun is missing.
+
+## Uninstall
+
+To remove the per-user install, run these commands in the unpacked folder (for example `asb-1.13.0`):
+
+```bash
+./scripts/asb service uninstall
+./scripts/asb bridge uninstall --all
+./uninstall.sh
+```
+
+The first command removes the start at login. The second removes ASB Bridge from Codex, Claude Code, and OpenCode. `./uninstall.sh` removes the files that the install wrote. ASB settings, pins, and unread state stay.

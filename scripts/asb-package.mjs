@@ -402,7 +402,7 @@ export async function uninstall(options = {}) {
     await rm(paths.manifest);
     for (const directory of [path.join(paths.appDir, 'releases'), paths.appDir]) await rmdir(directory).catch(() => {});
   }
-  return { removed, kept, message: 'ASB settings, pins, and unread state were kept. Running ASB processes were not stopped.' };
+  return { removed, kept, message: 'ASB settings, pins, and unread state were kept. Running ASB processes were not stopped. To remove the start at login, run ./scripts/asb service uninstall in this folder. To remove ASB Bridge from Codex, Claude Code, and OpenCode, run ./scripts/asb bridge uninstall --all.' };
 }
 
 async function normalizeTree(root, epoch) {
