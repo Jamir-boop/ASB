@@ -28,6 +28,11 @@ test('release runtime includes the card copy kind glyphs', () => {
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-globe-symbolic.svg'));
 });
 
+test('release runtime includes the board pets', () => {
+  assert.ok(RUNTIME_FILES.includes('assets/pets/pets.json'));
+  assert.ok(RUNTIME_FILES.includes('assets/pets/README.md'));
+});
+
 const sourceRoot = fileURLToPath(new URL('..', import.meta.url));
 
 // The launcher starts a detached engine; it gets a private runtime folder and a fake systemctl, and the test stops it.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native GNOME view for the local ASB session API."""
 from datetime import datetime, timedelta
+import functools
 import gzip
 import json
 import math
@@ -301,6 +302,16 @@ COPY_WHEEL_STATE = {"ts": 0.0, "acc": 0.0, "armed": True}
 def validate_copy_kind(value):
     if value not in COPY_KINDS:
         raise ValueError("Copy kind must be Relative or Absolute.")
+    return value
+
+
+PETS = ("off", "crab", "pigeon", "cat")
+PET_WORDS = {"off": "Off", "crab": "Crab", "pigeon": "Pigeon", "cat": "Cat"}
+
+
+def validate_pet(value):
+    if value not in PETS:
+        raise ValueError("Pets must be Off, Crab, Pigeon, or Cat.")
     return value
 
 
@@ -805,6 +816,241 @@ def edge_alpha(ms):
     return max(0, min(1, ms / 120, 1 - (ms - 420) / 300))
 
 
+PET_FILE = Path(__file__).parents[1] / "assets" / "pets" / "pets.json"
+PET_FRAMES = ("stand", "walk1", "walk2", "walk3", "walk4", "crouch", "air", "air2", "toss", "release")
+
+
+def pet_runs(grid, palette, accent=False):
+    """(color, x, y, width) for each run of equal keys, row by row; with accent, the key A is the board accent (None)."""
+    runs = []
+    for y, row in enumerate(grid):
+        x = 0
+        while x < len(row):
+            end = x
+            while end < len(row) and row[end] == row[x]:
+                end += 1
+            if row[x] != ".":
+                runs.append((None if accent and row[x] == "A" else palette[row[x]], x, y, end - x))
+            x = end
+    return runs
+
+
+def pet_pair(value, reason):
+    if not isinstance(value, list) or len(value) != 2 or any(type(item) is not int for item in value):
+        raise ValueError(reason)
+    return tuple(value)
+
+
+def pet_grid(palette, grid, width, height, keys=frozenset(".")):
+    if not isinstance(palette, dict) or any(not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color)
+                                            for color in palette.values()):
+        raise ValueError("a palette value is not #rrggbb")
+    if not isinstance(grid, list) or len(grid) != height or any(not isinstance(row, str) or len(row) != width for row in grid):
+        raise ValueError(f"a grid is not {height} rows of {width} characters")
+    if set("".join(grid)) - set(palette) - keys:
+        raise ValueError("a grid key is not in its palette")
+    return grid
+
+
+def parse_pets(data):
+    if type(data["version"]) is not int or data["version"] != 1:
+        raise ValueError("the version is not 1")
+    letter = data["envelope"]
+    if letter["width"] != 8 or letter["height"] != 6:
+        raise ValueError("the envelope is not 8 × 6")
+    envelope = tuple(pet_runs(pet_grid(letter["palette"], letter["grid"], 8, 6, frozenset(".A")), letter["palette"], accent=True))
+    pets = {}
+    for name in PETS[1:]:
+        if name not in data["pets"]:
+            raise ValueError(f"the {name} is missing")
+        item = data["pets"][name]
+        width, height, palette = item["width"], item["height"], item["palette"]
+        anchor = pet_pair(item["anchor"], f"the {name} anchor is not two integers")
+        mirror, front, fps = item["mirror"], item["envelopeFront"], item["walkFps"]
+        if type(mirror) is not bool or type(front) is not bool:
+            raise ValueError(f"mirror or envelopeFront of the {name} is not true or false")
+        if type(fps) is not int or fps < 1:
+            raise ValueError(f"walkFps of the {name} is not a positive integer")
+        frames = {}
+        for frame in PET_FRAMES:
+            if frame not in item["frames"]:
+                raise ValueError(f"the {name} frame {frame} is missing")
+            value = item["frames"][frame]
+            grid = pet_grid(palette, value["grid"], width, height)
+            if not isinstance(value["over"], list):
+                raise ValueError(f"over of the {name} {frame} is not a list")
+            over = [pet_pair(pixel, f"over of the {name} {frame} is not two integers") for pixel in value["over"]]
+            if any(not 0 <= x < width or not 0 <= y < height for x, y in over):
+                raise ValueError(f"over of the {name} {frame} is outside the frame")
+            right = pet_runs(grid, palette)
+            left = [(color, width - x - length, y, length) for color, x, y, length in right]
+            held = None
+            if value["envelope"] is not None:
+                ex, ey = pet_pair(value["envelope"], f"the envelope of the {name} {frame} is not two integers")
+                held = ((ex, ey), (width - 8 - ex, ey) if mirror else (ex, ey))
+                letters = [[(color, held[side][0] + x, ey + y, length) for color, x, y, length in envelope] for side in (0, 1)]
+                if front:
+                    right += letters[0] + [(palette[grid[y][x]], x, y, 1) for x, y in over]
+                    left += letters[1] + [(palette[grid[y][x]], width - 1 - x, y, 1) for x, y in over]
+                else:
+                    right, left = letters[0] + right, letters[1] + left
+            frames[frame] = {"runs": (tuple(right), tuple(left) if mirror else tuple(right)), "envelope": held}
+        pets[name] = {"width": width, "height": height, "anchor": anchor, "mirror": mirror, "walkFps": fps,
+                      "reach": width - anchor[0], "frames": frames}
+    return {"envelope": {"width": 8, "height": 6, "runs": envelope}, "pets": pets}
+
+
+@functools.lru_cache(maxsize=None)
+def load_pets(path=PET_FILE):
+    """The board pets as paint runs in sprite pixels (see assets/pets/README.md)."""
+    try:
+        return parse_pets(json.loads(Path(path).read_text(encoding="utf-8")))
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise ValueError(f"The pets file is not valid: {error}") from None
+
+
+def pet_sign(value):
+    return (value > 0) - (value < 0)
+
+
+def pet_round(value):
+    # Math.round of the approved preview: halves go up.
+    return math.floor(value + .5)
+
+
+def pet_stop(pet, scale, receiver_x, direction):
+    # Comfortable: the pet stands below the icon. Compact: the icon is level with the pet, so its front edge stops 12 px from the icon center.
+    return receiver_x - direction * (12 if scale > 1 else 12 + pet["reach"])
+
+
+def pet_walk_ms(distance):
+    # The preview speed up to 600 px; a longer walk takes 2 s, so a wide board does not keep a flight slot for long.
+    return distance / max(min(300, max(120, distance / 1.1)), distance / 2) * 1000 if distance else 0
+
+
+def pet_jump_y(y0, y1, height, u):
+    """A parabola from y0 to y1 whose top is height above the higher floor."""
+    top = min(y0, y1) - height
+    a = y0 - top
+    k = (y1 - y0) + 2 * a + 2 * math.sqrt(a * (y1 - top))
+    return y0 + (y1 - y0) * u - k * u * (1 - u)
+
+
+def pet_plan(pet, scale, sender, receiver):
+    """The phases (name, start, end) in ms of one pet message, from the positions at the start."""
+    sx, _sy, fs = sender
+    rx, _ry, fr = receiver
+    direction = pet_sign(rx - sx) or -1
+    stop = pet_stop(pet, scale, rx, direction)
+    same_row = abs(fr - fs) < 1
+    steps = [("rise", 380)]
+    if same_row:
+        steps.append(("walk", pet_walk_ms(abs(stop - sx))))
+    else:
+        if abs(stop - sx) > 14 * scale:
+            steps.append(("walk", pet_walk_ms(abs(stop - pet_sign(stop - sx) * 14 * scale - sx))))
+        steps += [("crouch", 80), ("jump", min(620, max(300, 260 + .5 * abs(fr - fs)))), ("land", 80)]
+    steps += [("windup", 120), ("toss", 240), ("hop", 160), ("dive", 320)]
+    phases, t = [], 0
+    for name, duration in steps:
+        if duration > 0:
+            phases.append((name, t, t + duration))
+            t += duration
+    return {"direction": direction, "same_row": same_row, "phases": phases,
+            "ta": next(end for name, _start, end in phases if name == "toss"), "end": t + 200}
+
+
+def pet_pose(pet, scale, plan, t, sender, receiver):
+    """The frame, the feet point, the facing, and the floor clip of the pet at t, from the positions now; None after the dive."""
+    phase = next((phase for phase in plan["phases"] if phase[1] <= t < phase[2]), None)
+    if phase is None:
+        return None
+    name, start, end = phase
+    sx, _sy, fs = sender
+    rx, _ry, fr = receiver
+    lt = t - start
+    u = lt / (end - start)
+    d = plan["direction"]
+    stop = pet_stop(pet, scale, rx, d)
+    jx = stop - pet_sign(stop - sx) * 14 * scale if abs(stop - sx) > 14 * scale else sx
+    first = pet_sign(stop - sx) or d
+    jump_face = pet_sign(stop - jx) or d
+    h = pet["height"]
+    if name == "rise":
+        back = 1 + 2.4 * (u - 1) ** 3 + 1.4 * (u - 1) ** 2
+        return {"frame": "air" if u < .7 else "stand", "x": sx, "y": fs + h * scale * (1 - back), "face": first, "clip": fs}
+    if name == "walk":
+        x1 = stop if plan["same_row"] else jx
+        return {"frame": ("walk1", "walk2", "walk3", "walk4")[math.floor(lt * pet["walkFps"] / 1000) % 4],
+                "x": sx + (x1 - sx) * u, "y": fs, "face": first, "clip": None}
+    if name == "crouch":
+        return {"frame": "crouch", "x": jx, "y": fs, "face": jump_face, "clip": None}
+    if name == "jump":
+        height = max(0, min(9 * scale, min(fs, fr) - h * scale - 2))
+        return {"frame": "air2" if math.floor(lt / 90) % 2 else "air", "x": jx + (stop - jx) * u,
+                "y": pet_jump_y(fs, fr, height, u), "face": jump_face, "clip": None}
+    # From the toss on, the paws are empty: the envelope never shows in the pet again.
+    frame, y, clip = {"land": ("crouch", fr, None), "windup": ("toss", fr, None), "toss": ("release", fr, None),
+                      "hop": ("release", fr - 4 * scale * math.sin(math.pi * u), None),
+                      "dive": ("release", fr + h * scale * u ** 3, fr)}[name]
+    return {"frame": frame, "x": stop, "y": y, "face": d, "clip": clip}
+
+
+def pet_box(pet, scale, frame, x, y, face):
+    """(runs, left, top, flip) of a frame with its feet at (x, y)."""
+    flip = pet["mirror"] and face < 0
+    ax = pet["width"] - pet["anchor"][0] if flip else pet["anchor"][0]
+    return (pet["frames"][frame]["runs"][1 if flip else 0], pet_round(x - ax * scale),
+            pet_round(y - pet["height"] * scale), flip)
+
+
+def pet_envelope(pet, scale, plan, t, receiver):
+    """The top-left of the flying envelope during the toss, else None."""
+    _name, start, end = next(phase for phase in plan["phases"] if phase[0] == "toss")
+    if not start <= t < end:
+        return None
+    rx, ry, fr = receiver
+    d = plan["direction"]
+    _runs, left, top, flip = pet_box(pet, scale, "toss", pet_stop(pet, scale, rx, d), fr, d)
+    ex, ey = pet["frames"]["toss"]["envelope"][1 if flip else 0]
+    x0, y0, x1, y1 = left + ex * scale, top + ey * scale, rx - 4 * scale, ry - 3 * scale
+    cx, cy = (x0 + x1) / 2, min(y0, y1) - 9 * scale
+    p = 1 - (1 - (t - start) / (end - start)) ** 2
+    q = 1 - p
+    return (pet_round(q * q * x0 + 2 * q * p * cx + p * p * x1), pet_round(q * q * y0 + 2 * q * p * cy + p * p * y1))
+
+
+def pet_particles(pet, scale, plan, t, sender, receiver):
+    """The (x, y, alpha) of each 2 × 2 px particle at t: ground puffs at the start and the dive, sparkles at the icon."""
+    sx, _sy, fs = sender
+    rx, ry, fr = receiver
+    ground = (200, 250, 290, 340)
+    dive = next(start for name, start, _end in plan["phases"] if name == "dive")
+    bursts = ((sx, fs - 1, 0, ground), (rx, ry, plan["ta"], range(0, 360, 45)),
+              (pet_stop(pet, scale, rx, plan["direction"]), fr - 1, dive, ground))
+    particles = []
+    for cx, cy, start, angles in bursts:
+        v = (t - start) / 360
+        if not 0 <= v < 1:
+            continue
+        radius = (5 + 11 * (1 - (1 - v) ** 3)) * scale / 2
+        alpha = 1 if v < .5 else 1 - (v - .5) / .5
+        particles += [(pet_round(cx + radius * math.cos(math.radians(angle)) - 1), pet_round(cy + radius * math.sin(math.radians(angle)) - 1), alpha)
+                      for angle in angles]
+    return particles
+
+
+def pet_tints(plan, t):
+    """{row index: alpha} of the card tints: the sender at the start, the receiver from just before the toss lands."""
+    tints = {}
+    for index, start, end in ((0, 0, 520), (1, plan["ta"] - 120, plan["end"])):
+        if start <= t < end:
+            alpha = max(0, min(1, (t - start) / 120, (end - t) / 240))
+            if alpha > 0:
+                tints[index] = alpha
+    return tints
+
+
 def luminance(color):
     channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
     return sum((value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4) * weight
@@ -932,30 +1178,32 @@ def validate_card_limit(value):
 
 def read_layout(path):
     if not path or not Path(path).exists():
-        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "cardLimit": DEFAULT_CARD_LIMIT, "copyKind": "relative"}
+        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "cardLimit": DEFAULT_CARD_LIMIT, "copyKind": "relative", "pet": "off"}
     value = json.loads(Path(path).read_text())
     if not isinstance(value, dict) or not {"version", "columnWidth"}.issubset(value) \
-            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind"} or value["version"] != 1:
+            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind", "pet"} or value["version"] != 1:
         raise ValueError("The saved layout is not valid. Reset the width.")
     view = value.get("view", "compact")
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
     return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view,
             "cardLimit": validate_card_limit(value.get("cardLimit", DEFAULT_CARD_LIMIT)),
-            "copyKind": validate_copy_kind(value.get("copyKind", "relative"))}
+            "copyKind": validate_copy_kind(value.get("copyKind", "relative")), "pet": validate_pet(value.get("pet", "off"))}
 
 
-def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None):
-    if view is None or card_limit is None or copy_kind is None:
+def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, pet=None):
+    if view is None or card_limit is None or copy_kind is None or pet is None:
         saved = read_layout(path)
         view = saved["view"] if view is None else view
         card_limit = saved["cardLimit"] if card_limit is None else card_limit
         copy_kind = saved["copyKind"] if copy_kind is None else copy_kind
+        pet = saved["pet"] if pet is None else pet
     if view not in ("compact", "comfortable"):
         raise ValueError("Choose Compact or Comfortable view.")
     validate_card_limit(card_limit)
     validate_copy_kind(copy_kind)
-    if width is None and view == "compact" and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative":
+    validate_pet(pet)
+    if width is None and view == "compact" and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative" and pet == "off":
         write_config(path, None)
         return
     value = {"version": 1, "columnWidth": validate_column_width(DEFAULT_COLUMN_WIDTH if width is None else width)}
@@ -965,6 +1213,8 @@ def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None):
         value["cardLimit"] = card_limit
     if copy_kind != "relative":
         value["copyKind"] = copy_kind
+    if pet != "off":
+        value["pet"] = pet
     write_config(path, value)
 
 
@@ -2616,6 +2866,7 @@ class SessionStrip(Gtk.Box):
         self.hover_animation.set_easing(Adw.Easing.EASE_OUT_EXPO)
         self.connect("unmap", self.clear_hover)
         self.flights = []
+        self.pet_nodes, self.pet_colors, self.pet_accent = {}, {}, None
         self.connect("unmap", self.clear_flights)
 
     def show_hover(self, rectangle, card=None):
@@ -2687,6 +2938,8 @@ class SessionStrip(Gtk.Box):
             snapshot.push_rounded_clip(rounded)
             snapshot.append_color(color, bounds)
             snapshot.pop()
+        if self.flights:
+            self.snapshot_tints(snapshot)
         Gtk.Box.do_snapshot(self, snapshot)
         if self.flights:
             self.snapshot_flights(snapshot)
@@ -2705,6 +2958,20 @@ class SessionStrip(Gtk.Box):
         x, y, _fade = self.motion.get(row.asb_focus_key, (0, 0, 0))
         return (bounds.origin.x + bounds.size.width / 2 + x * self.motion_progress,
                 bounds.origin.y + bounds.size.height / 2 + y * self.motion_progress)
+
+    def message_floor(self, row):
+        """The painted bottom edge of a card in strip coordinates, during a card glide too."""
+        found, bounds = row.compute_bounds(self)
+        if not found:
+            return None
+        _x, y, _fade = self.motion.get(row.asb_focus_key, (0, 0, 0))
+        return bounds.origin.y + bounds.size.height + y * self.motion_progress
+
+    def pet_ends(self, rows):
+        ends = [(self.message_point(row), self.message_floor(row)) for row in rows]
+        if any(point is None or floor is None for point, floor in ends):
+            return None
+        return tuple((*point, floor) for point, floor in ends)
 
     def message_ends(self, flight):
         points = [self.message_point(row) for row in flight["rows"]]
@@ -2731,6 +2998,31 @@ class SessionStrip(Gtk.Box):
         if ends[0][2]:
             flight["edge_animation"].play()
 
+    def start_pet(self, source, target, sprites, name, color, scale):
+        pet = sprites["pets"][name]
+        ends = self.pet_ends((source, target))
+        if ends is None:
+            return
+        plan = pet_plan(pet, scale, *ends)
+        flight = {"rows": (source, target), "color": color, "pets": sprites, "pet": pet, "pet_name": name, "scale": scale,
+                  "plan": plan, "pet_time": 0, "arrived": False, "animations": []}
+        callback = Adw.CallbackAnimationTarget.new(lambda value: self.advance_pet(flight, value))
+        animation = Adw.TimedAnimation.new(self, 0, plan["end"], int(plan["end"]), callback)
+        animation.set_easing(Adw.Easing.LINEAR)
+        animation.connect("done", self.flight_done, flight, "pet_time")
+        flight["animations"].append(animation)
+        self.flights.append(flight)
+        animation.play()
+
+    def advance_pet(self, flight, value):
+        if flight not in self.flights:
+            return
+        flight["pet_time"] = value
+        if not flight["arrived"] and value >= flight["plan"]["ta"]:
+            flight["arrived"] = True
+            self.get_root().light_row(flight["rows"][1], 360)
+        self.queue_draw()
+
     def advance_flight(self, flight, key, value):
         if flight in self.flights:
             flight[key] = value
@@ -2738,6 +3030,10 @@ class SessionStrip(Gtk.Box):
 
     def flight_done(self, _animation, flight, key):
         if flight not in self.flights:
+            return
+        if key == "pet_time":
+            self.drop_flights([flight])
+            self.queue_draw()
             return
         flight[key] = None
         if key == "flight":
@@ -2775,6 +3071,9 @@ class SessionStrip(Gtk.Box):
         # The callbacks of dropped flights do nothing, so no draw is queued during this paint.
         self.drop_flights(gone)
         for flight in self.flights:
+            if "pet" in flight:
+                self.snapshot_pet(snapshot, flight)
+                continue
             ends = self.message_ends(flight)
             if ends is None:
                 continue
@@ -2815,6 +3114,76 @@ class SessionStrip(Gtk.Box):
                 builder = Gsk.PathBuilder.new()
                 builder.add_circle(Graphene.Point().init(*end), 5 + 8 * flight["ring"])
                 stroke(builder.to_path(), 1.5, .85 * (1 - flight["ring"]))
+
+    def snapshot_tints(self, snapshot):
+        current = self.get_root().focus_widgets
+        for flight in self.flights:
+            if "pet" not in flight or any(current.get(row.asb_focus_key) is not row for row in flight["rows"]):
+                continue
+            for index, alpha in pet_tints(flight["plan"], flight["pet_time"]).items():
+                row = flight["rows"][index]
+                found, bounds = row.compute_bounds(self)
+                if not found:
+                    continue
+                x, y, _fade = self.motion.get(row.asb_focus_key, (0, 0, 0))
+                rectangle = Graphene.Rect().init(bounds.origin.x + x * self.motion_progress, bounds.origin.y + y * self.motion_progress,
+                                                 bounds.size.width, bounds.size.height)
+                # On a dark board, the accent at 15% is the hover highlight color.
+                color = flight["color"].copy()
+                color.alpha *= alpha * .15
+                rounded = Gsk.RoundedRect()
+                rounded.init_from_rect(rectangle, 3)
+                snapshot.push_rounded_clip(rounded)
+                snapshot.append_color(color, rectangle)
+                snapshot.pop()
+
+    def pet_node(self, flight, key, runs):
+        """A render node of sprite runs at the flight scale, made once; the accent runs take the flight color."""
+        accent = hex_color(flight["color"])
+        if accent != self.pet_accent:
+            self.pet_nodes, self.pet_accent = {}, accent
+        node = self.pet_nodes.get(key)
+        if node is None:
+            scale, paint = flight["scale"], Gtk.Snapshot()
+            for color, x, y, width in runs:
+                if color is not None and color not in self.pet_colors:
+                    self.pet_colors[color] = rgba(color)
+                paint.append_color(flight["color"] if color is None else self.pet_colors[color],
+                                   Graphene.Rect().init(x * scale, y * scale, width * scale, scale))
+            node = self.pet_nodes[key] = paint.to_node()
+        return node
+
+    @staticmethod
+    def draw_node(snapshot, node, left, top):
+        snapshot.save()
+        snapshot.translate(Graphene.Point().init(left, top))
+        snapshot.append_node(node)
+        snapshot.restore()
+
+    def snapshot_pet(self, snapshot, flight):
+        ends = self.pet_ends(flight["rows"])
+        if ends is None:
+            return
+        pet, scale, plan, t = flight["pet"], flight["scale"], flight["plan"], flight["pet_time"]
+        width, height = self.get_width(), self.get_height()
+        snapshot.push_clip(Graphene.Rect().init(0, 0, width, height))
+        pose = pet_pose(pet, scale, plan, t, *ends)
+        if pose is not None:
+            runs, left, top, flip = pet_box(pet, scale, pose["frame"], pose["x"], pose["y"], pose["face"])
+            if pose["clip"] is not None:
+                # Only the pixels above the floor line show while the pet climbs out or dives in.
+                snapshot.push_clip(Graphene.Rect().init(0, 0, width, max(0, pose["clip"])))
+            self.draw_node(snapshot, self.pet_node(flight, (flight["pet_name"], pose["frame"], flip, scale), runs), left, top)
+            if pose["clip"] is not None:
+                snapshot.pop()
+        letter = pet_envelope(pet, scale, plan, t, ends[1])
+        if letter is not None:
+            self.draw_node(snapshot, self.pet_node(flight, ("envelope", scale), flight["pets"]["envelope"]["runs"]), *letter)
+        for x, y, alpha in pet_particles(pet, scale, plan, t, *ends):
+            color = flight["color"].copy()
+            color.alpha *= alpha
+            snapshot.append_color(color, Graphene.Rect().init(x, y, 2, 2))
+        snapshot.pop()
 
 
 class SessionColumn(Gtk.ListBox):
@@ -4769,7 +5138,7 @@ class PreferencesWindow(Adw.Window):
             self.section_list.append(row)
         self.stack.connect("notify::visible-child-name", self.section_changed)
         self.set_content(body)
-        for choice in (owner.card_limit_setting, owner.view_filter, owner.theme_mode):
+        for choice in (owner.card_limit_setting, owner.view_filter, owner.pet_setting, owner.theme_mode):
             non_autohide_choice(self, choice)
         self.breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
         self.breakpoint.add_setter(self.sidebar, "visible", False)
@@ -4912,6 +5281,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     wide_controls, tiny_controls, search_expanded = False, False, False
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     copy_kind = "relative"
+    pet = "off"
+    pet_load_failed = False
     pending, archived = False, False
     states, profiles = set(), set()
     filter_model = ()
@@ -4945,8 +5316,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.column_width, self.view = layout["columnWidth"], layout["view"]
             self.card_limit = layout["cardLimit"]
             self.copy_kind = layout["copyKind"]
+            self.pet = layout["pet"]
         except (OSError, ValueError) as error:
             self.column_width, self.view, self.copy_kind, layout_error = DEFAULT_COLUMN_WIDTH, "compact", "relative", str(error)
+            self.pet = "off"
         self.pending, self.archived = False, False
         self.states, self.profiles = set(), set()
         self.filter_model = ()
@@ -5132,6 +5505,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         view_row.append(view_name)
         view_row.append(self.view_filter)
         appearance.append(view_row)
+        pet_row = Gtk.Box(spacing=12)
+        pet_name = label("Pets")
+        pet_name.set_hexpand(True)
+        self.pet_setting = Gtk.DropDown.new_from_strings([PET_WORDS[pet] for pet in PETS])
+        self.pet_setting.set_selected(PETS.index(self.pet))
+        self.pet_setting.update_property([Gtk.AccessibleProperty.LABEL], ["Pets"])
+        self.pet_setting.connect("notify::selected", self.change_pet)
+        pet_row.append(pet_name)
+        pet_row.append(self.pet_setting)
+        appearance.append(pet_row)
+        pet_help = label("A pixel pet carries each message from card to card.", "caption")
+        pet_help.set_wrap(True)
+        appearance.append(pet_help)
         width_row = Gtk.Box(spacing=8)
         width_name = label("Column width")
         width_name.set_hexpand(True)
@@ -5902,8 +6288,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if getattr(self.list_body, "motion", None):
             self.pending_messages = list(dict.fromkeys([*self.pending_messages, *play]))[-MESSAGE_FLIGHT_LIMIT:]
             return False
-        # A flight draws with Gsk.PathBuilder (GTK 4.14). GTK 4.12 lights the rows, as with animations off.
-        animations = self.get_settings().get_property("gtk-enable-animations") and hasattr(Gsk, "PathBuilder")
+        # A light flight draws with Gsk.PathBuilder (GTK 4.14); without it, GTK 4.12 lights the rows, as with animations off.
+        # A pet needs no path, so it also plays on GTK 4.12.
+        animations = self.get_settings().get_property("gtk-enable-animations")
+        paths = animations and hasattr(Gsk, "PathBuilder")
+        sprites = self.pet_sprites() if animations else None
         for source, target, _at in play:
             rows = self.focus_widgets.get(source), self.focus_widgets.get(target)
             if None in rows:
@@ -5912,7 +6301,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # A message between two cards outside the viewport plays nothing.
             if ends is None or ends[0][2] and ends[1][2]:
                 continue
-            if not animations:
+            # A pet walks only between two cards inside the viewport; else the light shows its edge mark.
+            if sprites and not ends[0][2] and not ends[1][2]:
+                if len(self.list_body.flights) < MESSAGE_FLIGHT_LIMIT:
+                    self.list_body.start_pet(*rows, sprites, self.pet, self.message_color(), 2 if self.view == "comfortable" else 1)
+                    self.light_row(rows[0], 400)
+            elif not paths:
                 for row in rows:
                     self.light_row(row, MESSAGE_LIGHT_MS)
             elif len(self.list_body.flights) < MESSAGE_FLIGHT_LIMIT:
@@ -6007,7 +6401,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if selected == self.card_limit:
             return
         try:
-            write_layout(self.layout_path, self.column_width, self.view, card_limit=selected, copy_kind=self.copy_kind)
+            write_layout(self.layout_path, self.column_width, self.view, card_limit=selected, copy_kind=self.copy_kind, pet=self.pet)
         except (OSError, ValueError) as error:
             self.card_limit_setting.set_selected(limits.index(self.card_limit))
             self.card_limit_error.set_label(str(error))
@@ -6017,13 +6411,38 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.show_all_cards = False
         self.filter_changed()
 
+    def change_pet(self, *_args):
+        pet = PETS[self.pet_setting.get_selected()]
+        if pet == self.pet:
+            return
+        try:
+            write_layout(self.layout_path, self.column_width, self.view, self.card_limit, self.copy_kind, pet=pet)
+        except (OSError, ValueError) as error:
+            self.pet_setting.set_selected(PETS.index(self.pet))
+            self.layout_error.set_label(str(error))
+            return
+        # A pet that already runs finishes; the next message uses the new pet.
+        self.pet = pet
+        self.layout_error.set_label("")
+
+    def pet_sprites(self):
+        if self.pet == "off" or self.pet_load_failed:
+            return None
+        try:
+            return load_pets()
+        except (OSError, ValueError) as error:
+            # The light plays instead, and the error prints only once.
+            self.pet_load_failed = True
+            print(f"Cannot load the pets: {error}", file=sys.stderr)
+            return None
+
     def change_copy_kind(self, kind):
         """Save the board copy kind. A failed save keeps the old kind and shows the error."""
         if kind == self.copy_kind:
             return
         try:
             write_layout(self.layout_path, self.column_width, self.view,
-                         self.card_limit, copy_kind=kind)
+                         self.card_limit, copy_kind=kind, pet=self.pet)
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
             self.set_notice(str(error), temporary=True)
@@ -6055,7 +6474,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def save_width(self):
         try:
-            write_layout(self.layout_path, self.column_width, self.view, card_limit=self.card_limit, copy_kind=self.copy_kind)
+            write_layout(self.layout_path, self.column_width, self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet)
             self.layout_error.set_label("")
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
@@ -6065,7 +6484,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.set_value(DEFAULT_COLUMN_WIDTH)
         self.dragging = False
         try:
-            write_layout(self.layout_path, view=self.view, card_limit=self.card_limit, copy_kind=self.copy_kind)
+            write_layout(self.layout_path, view=self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet)
             self.layout_error.set_label("")
         except (OSError, ValueError):
             self.layout_error.set_label("Cannot reset the width. Check the ASB config folder.")

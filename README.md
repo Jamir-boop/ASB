@@ -19,6 +19,8 @@ When a session sends a message to another session, a light flies from its card t
 
 ![ASB board: a light flies from one session card to three other cards, and back from each](docs/media/board-message-light.svg)
 
+Preferences > Appearance > **Pets** sends a pixel crab, pigeon, or cat with each message instead.
+
 The Messages window shows the messages between your sessions on all machines:
 
 ![ASB Messages window: three messages arrive, a light flies along each chord, and the counts update](docs/media/messages-window.svg)

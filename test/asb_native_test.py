@@ -3856,7 +3856,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertEqual(window.columns, 4)
             self.assertEqual(window.column_width, 240)
-            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative", "pet": "off"})
 
             row = window.focus_widgets["sample-15"]
             window.refresh_button.grab_focus()
@@ -4289,7 +4289,7 @@ class WidgetCheck(unittest.TestCase):
                         window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
-                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative"})
+                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off"})
                 window.search.set_text("cl:"); window.render()
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
                 window.states = {"working", "idle"}
@@ -7386,6 +7386,230 @@ class WidgetCheck(unittest.TestCase):
         self.drain(.2)
         gc.collect()
         self.assertEqual([reference() for reference in references], [None] * 8)
+
+    def pet_board(self, layout, count=9, size=(900, 300)):
+        """A foreground board with made-up cards and a layout file; board() makes a dashboard with new messages."""
+        threads = [{"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
+                    "cwd": "/example/notes", "projectName": "notes", "state": "idle", "canOpen": True,
+                    "updatedAtMs": NOW - n * 60_000} for n in range(1, count + 1)]
+        at = time.time() * 1000
+        sent = []
+        def board(*messages):
+            sent.extend(messages)
+            return {"generatedAtMs": NOW, "providers": [], "threads": threads,
+                    "messages": [{"from": source, "to": target, "atMs": at + index} for index, (source, target) in enumerate(sent)]}
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        directory = tempfile.TemporaryDirectory(prefix="asb-pets-test-")
+        self.addCleanup(directory.cleanup)
+        layout_path = Path(directory.name) / "layout.json"
+        layout_path.write_text(json.dumps({"version": 1, "columnWidth": 240, **layout}))
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", board(), theme_path=False, layout_path=layout_path)
+        self.addCleanup(window.close)
+        window.set_default_size(*size)
+        window.present()
+        self.foreground(window)
+        self.settle(window)
+        self.drain(.3)
+        return window, board, layout_path
+
+    def wait_for(self, done, limit=6):
+        end = time.monotonic() + limit
+        while not done() and time.monotonic() < end:
+            self.drain(.02)
+        self.assertTrue(done())
+
+    def strip_paint(self, window):
+        """A reader of the strip paint: (x, y) to RGBA."""
+        strip = window.list_body
+        strip.queue_draw()
+        self.settle(window)
+        snapshot = asb.Gtk.Snapshot()
+        asb.Gtk.WidgetPaintable.new(strip).snapshot(snapshot, strip.get_width(), strip.get_height())
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        viewport = asb.Graphene.Rect().init(0, 0, strip.get_width(), strip.get_height())
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), viewport))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        renderer.unrealize()
+        data = data.get_data()
+        return lambda x, y: tuple(data[int(y) * stride + int(x) * 4:int(y) * stride + int(x) * 4 + 4])
+
+    @staticmethod
+    def near(painted, color):
+        return all(abs(a - int(color[index:index + 2], 16)) <= 3 for a, index in zip(painted, (1, 3, 5))) and painted[3] == 255
+
+    def walk_pair(self, window):
+        """Two cards inside the view with the same floor and far apart, so the pet walks."""
+        strip = window.list_body
+        for source, target in ((a, b) for a in window.row_order for b in window.row_order if a != b):
+            rows = window.focus_widgets[source], window.focus_widgets[target]
+            ends, flags = strip.pet_ends(rows), strip.message_ends({"rows": rows})
+            if ends and ends[0][2] == ends[1][2] and ends[1][0] - ends[0][0] > 100 and not flags[0][2] and not flags[1][2]:
+                return source, target
+        self.fail("no two cards on one floor")
+
+    def run_pet(self, window, board, pair):
+        strip = window.list_body
+        window.apply_dashboard(board(pair), None)
+        self.wait_for(lambda: strip.flights)
+        flight = strip.flights[0]
+        for animation in flight["animations"]:
+            animation.pause()
+        return flight
+
+    def crab_pixel(self, flight, ends, t):
+        """A strip point in the middle of the widest crab-color run of the pose at t."""
+        pet, scale = flight["pet"], flight["scale"]
+        pose = asb.pet_pose(pet, scale, flight["plan"], t, *ends)
+        runs, left, top, _flip = asb.pet_box(pet, scale, pose["frame"], pose["x"], pose["y"], pose["face"])
+        _color, x, y, width = max((run for run in runs if run[0] == "#d97757"), key=lambda run: run[3])
+        return left + (x + width // 2) * scale + scale // 2, top + y * scale + scale // 2
+
+    def test_pets_preference_saves_and_keeps_the_old_pet_on_error(self):
+        window, _board, layout_path = self.pet_board({}, count=3, size=(700, 420))
+        setting = window.pet_setting
+        self.assertIs(window.view_filter.get_parent().get_next_sibling(), setting.get_parent())
+        self.assertEqual([setting.get_model().get_string(index) for index in range(4)], ["Off", "Crab", "Pigeon", "Cat"])
+        self.assertEqual((setting.get_selected(), window.pet), (0, "off"))
+        self.assert_accessible_label(setting, "Pets")
+        caption = setting.get_parent().get_next_sibling()
+        self.assertEqual(caption.get_label(), "A pixel pet carries each message from card to card.")
+        self.assertTrue(caption.has_css_class("caption") and caption.get_wrap() and caption.get_xalign() == 0)
+        window.open_preferences(); self.drain(.3)
+        preferences = window.preferences_window
+        preferences.stack.set_visible_child_name("appearance"); self.drain(.3)
+        self.assertTrue(caption.get_mapped() and setting.get_mapped())
+        setting.set_selected(3); self.drain(.1)
+        self.assertEqual((window.pet, json.loads(layout_path.read_text())["pet"]), ("cat", "cat"))
+        self.assertEqual(window.layout_error.get_label(), "")
+        before = layout_path.read_bytes()
+        with patch.object(asb, "write_layout", side_effect=OSError("Cannot save.")):
+            setting.set_selected(1); self.drain(.1)
+        self.assertEqual((setting.get_selected(), window.pet, layout_path.read_bytes()), (3, "cat", before))
+        self.assertEqual(window.layout_error.get_label(), "Cannot save.")
+        setting.set_selected(0); self.drain(.1)
+        self.assertEqual((window.pet, window.layout_error.get_label()), ("off", ""))
+        self.assertNotIn("pet", json.loads(layout_path.read_text()))
+
+    def test_pet_flight_paints_the_crab_the_envelope_and_empty_paws(self):
+        window, board, _layout_path = self.pet_board({"view": "comfortable", "pet": "crab"})
+        strip, rows = window.list_body, window.focus_widgets
+        source, target = self.walk_pair(window)
+        flight = self.run_pet(window, board, (source, target))
+        self.assertEqual((flight["rows"], flight["pet_name"], flight["scale"]), ((rows[source], rows[target]), "crab", 2))
+        self.assertTrue(rows[source].has_css_class("asb-message-lit"))
+        plan, pet, scale = flight["plan"], flight["pet"], 2
+        ends = strip.pet_ends(flight["rows"])
+        phases = {name: (start, end) for name, start, end in plan["phases"]}
+        # The tints: the accent at 15% on the empty pixels of each card, away from the pet, the icons, and the particles.
+        accent = window.message_color()
+        # The GNOME accent can have a channel above 1, which paints as 255.
+        accent = [min(255, round(channel * 255)) for channel in (accent.red, accent.green, accent.blue)]
+        flight["pet_time"] = 0
+        rest = self.strip_paint(window)
+        stop = asb.pet_stop(pet, scale, ends[1][0], plan["direction"])
+        # The sender tint is at full alpha from 120 ms to 280 ms (520 ms - 240 ms).
+        for index, t, away in ((0, 200, (ends[0][0],)), (1, plan["ta"], (ends[1][0], stop))):
+            self.assertEqual(asb.pet_tints(plan, t), {index: 1})
+            flight["pet_time"] = t
+            tinted = self.strip_paint(window)
+            _found, bounds = flight["rows"][index].compute_bounds(strip)
+            left, top = math.ceil(bounds.origin.x), math.ceil(bounds.origin.y)
+            right, bottom = int(bounds.origin.x + bounds.size.width), int(bounds.origin.y + bounds.size.height)
+            # The 3 px corners are rounded, so their edge pixels have a lower alpha.
+            corner = lambda x, y: (x < left + 3 or x >= right - 3) and (y < top + 3 or y >= bottom - 3)
+            empty = [(x, y) for x in range(left, right) for y in range(top, bottom)
+                     if rest(x, y)[3] == 0 and not corner(x, y) and all(abs(x - center) >= 40 for center in away)]
+            self.assertGreaterEqual(len(empty), 100)
+            wrong = [(x, y, tinted(x, y)) for x, y in empty
+                     if abs(tinted(x, y)[3] - 38) > 2 or any(abs(a - b) > 8 for a, b in zip(tinted(x, y), accent))]
+            self.assertEqual(wrong[:5], [], index)
+            # The column gap next to the card has no tint.
+            self.assertEqual(tinted(right + 6, (top + bottom) // 2)[3], 0, index)
+        # The walk: the crab color in the middle of a crab run.
+        flight["pet_time"] = sum(phases["walk"]) / 2
+        paint = self.strip_paint(window)
+        painted = paint(*self.crab_pixel(flight, ends, flight["pet_time"]))
+        self.assertTrue(self.near(painted, "#d97757"), painted)
+        # The toss: the flying envelope. Over a card of the top row, the strip cuts the top of the arc.
+        flight["pet_time"] = phases["toss"][0] + 30
+        x, y = asb.pet_envelope(pet, scale, plan, flight["pet_time"], ends[1])
+        self.assertGreaterEqual(y, 0)
+        painted = self.strip_paint(window)(x + scale / 2, y + scale / 2)
+        self.assertTrue(self.near(painted, "#f3efe6"), painted)
+        # The windup holds the envelope; the hop and the dive have empty paws.
+        for phase, held in (("windup", True), ("hop", False), ("dive", False)):
+            flight["pet_time"] = phases[phase][0] + 40
+            pose = asb.pet_pose(pet, scale, plan, flight["pet_time"], *ends)
+            _runs, left, top, flip = asb.pet_box(pet, scale, "toss", pose["x"], pose["y"], pose["face"])
+            ex, ey = pet["frames"]["toss"]["envelope"][1 if flip else 0]
+            paint = self.strip_paint(window)
+            self.assertEqual(any(self.near(paint(column, row), "#f3efe6") for column in range(left + ex * scale, left + (ex + 8) * scale)
+                                 for row in range(top + ey * scale, top + (ey + 6) * scale)), held, phase)
+        rows[target].remove_css_class("asb-message-lit")
+        strip.advance_pet(flight, plan["ta"] + 1)
+        self.assertTrue(flight["arrived"] and rows[target].has_css_class("asb-message-lit"))
+        # A dropped pet flight lets go of its animation and its cards.
+        strip.clear_flights()
+        self.assertEqual((strip.flights, flight["animations"], flight["rows"]), ([], [], ()))
+        # A pet that plays to its end leaves no flight and no frame loop.
+        flight = None
+        window.apply_dashboard(board((target, source)), None)
+        self.wait_for(lambda: strip.flights)
+        self.assertIn("pet", strip.flights[0])
+        self.wait_for(lambda: not strip.flights, 8)
+
+        # GNOME animations off: both icons show the accent color, and no pet walks.
+        settings = window.get_settings()
+        settings.set_property("gtk-enable-animations", False)
+        self.addCleanup(settings.set_property, "gtk-enable-animations", True)
+        window.apply_dashboard(board((source, target)), None)
+        self.wait_for(lambda: rows[source].has_css_class("asb-message-lit"))
+        self.assertTrue(rows[target].has_css_class("asb-message-lit"))
+        self.assertEqual(strip.flights, [])
+        settings.set_property("gtk-enable-animations", True)
+        self.wait_for(lambda: not rows[source].has_css_class("asb-message-lit"), 4)
+        # GTK 4.12 has no Gsk.PathBuilder: the pet still walks.
+        real_gsk = asb.Gsk
+        class Gtk412:
+            def __getattr__(self, name):
+                if name == "PathBuilder":
+                    raise AttributeError(name)
+                return getattr(real_gsk, name)
+        with patch.object(asb, "Gsk", Gtk412()):
+            window.apply_dashboard(board((target, source)), None)
+            self.wait_for(lambda: strip.flights)
+            self.assertIn("pet", strip.flights[0])
+            strip.clear_flights()
+
+    def test_pet_in_compact_and_the_light_for_a_card_out_of_view(self):
+        window, board, _layout_path = self.pet_board({"pet": "crab"}, count=30, size=(900, 200))
+        strip, rows = window.list_body, window.focus_widgets
+        source, target = self.walk_pair(window)
+        flight = self.run_pet(window, board, (source, target))
+        self.assertEqual((flight["pet_name"], flight["scale"]), ("crab", 1))
+        ends = strip.pet_ends(flight["rows"])
+        flight["pet_time"] = next(start for name, start, _end in flight["plan"]["phases"] if name == "windup") + 20
+        painted = self.strip_paint(window)(*self.crab_pixel(flight, ends, flight["pet_time"]))
+        self.assertTrue(self.near(painted, "#d97757"), painted)
+        strip.clear_flights()
+        # A receiver outside the horizontal viewport: the light flies to the edge mark.
+        window.set_default_size(300, 200)
+        self.settle(window)
+        self.drain(.3)
+        left, right = strip.message_view()
+        outside = next(identity for identity in window.row_order if strip.message_point(rows[identity])[0] > right)
+        inside = next(identity for identity in window.row_order if left < strip.message_point(rows[identity])[0] < right)
+        window.apply_dashboard(board((inside, outside)), None)
+        self.wait_for(lambda: strip.flights)
+        self.assertNotIn("pet", strip.flights[0])
+        self.assertIn("flight", strip.flights[0])
+        strip.clear_flights()
 
     def test_a_board_in_the_background_plays_no_glide_and_no_message_light(self):
         threads = [{"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
@@ -10923,7 +11147,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         roots = (board, preferences, editor.provider.get_ancestor(asb.Adw.PreferencesPage), messages, usage)
         choices = {widget for root in roots
                    for widget in descendants(root) if isinstance(widget, (asb.Gtk.DropDown, asb.Adw.ComboRow))}
-        self.assertEqual(len(choices), 7)
+        self.assertEqual(len(choices), 8)
         for choice in choices:
             with self.subTest(choice=choice):
                 popups = [widget for widget in descendants(choice) if isinstance(widget, asb.Gtk.Popover)]

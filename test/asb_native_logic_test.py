@@ -2421,7 +2421,7 @@ class DataChecks(unittest.TestCase):
     def test_layout_width_validation_persistence_and_reset(self):
         with TemporaryDirectory(prefix="asb-layout-test-") as directory:
             path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             asb.write_layout(path, 160)
             self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -2432,20 +2432,20 @@ class DataChecks(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), previous)
             asb.write_layout(path)
             self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
 
     def test_view_setting_legacy_width_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-view-test-") as directory:
             path = Path(directory) / "layout.json"
             path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             asb.write_layout(path)
             self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "unknown")
@@ -2461,14 +2461,14 @@ class DataChecks(unittest.TestCase):
             # ASB does not use the old value, so any value loads.
             for value in (0, 1, "true", None, [], {}):
                 path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": value}))
-                self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
+                self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": True}))
             self.assertNotIn("showAppPills", asb.read_layout(path))
             asb.write_layout(path, 180, "compact")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path)
             self.assertTrue(path.exists())
@@ -2483,7 +2483,7 @@ class DataChecks(unittest.TestCase):
             window.card_limit, window.layout_error, window.dragging = 100, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
             window.save_width()
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
 
@@ -2510,13 +2510,13 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320)
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off"})
             window = object.__new__(Window)
             window.column_width, window.view, window.layout_path, window.copy_kind = 320, "comfortable", path, "relative"
             window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200, "copyKind": "relative"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off"})
             window.save_width()
             self.assertEqual(asb.read_layout(path)["cardLimit"], 200)
             # The delete branch keeps a file that holds a limit other than the default.
@@ -2573,7 +2573,7 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable", card_limit=200)
             self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable",
-                                                     "cardLimit": 200, "copyKind": "absolute"})
+                                                     "cardLimit": 200, "copyKind": "absolute", "pet": "off"})
             # A default layout is deleted; an Absolute kind keeps the file.
             asb.write_layout(path, copy_kind="absolute")
             self.assertTrue(path.exists())
@@ -2603,6 +2603,39 @@ class DataChecks(unittest.TestCase):
             window.change_copy_kind("absolute")
             self.assertEqual((window.copy_kind, asb.read_layout(path)["copyKind"]), ("absolute", "absolute"))
             self.assertEqual(window.change_copy_kind("absolute"), None)
+
+    def test_pet_layout_validation_and_setting_preservation(self):
+        with TemporaryDirectory(prefix="asb-pet-layout-") as directory:
+            path = Path(directory) / "layout.json"
+            self.assertEqual(asb.read_layout(path)["pet"], "off")
+            path.write_text(json.dumps({"version": 1, "columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "absolute"}))
+            asb.write_layout(path, 240, pet="crab")
+            self.assertEqual(json.loads(path.read_text()), {"version": 1, "columnWidth": 240, "view": "comfortable", "cardLimit": 200,
+                                                            "copyKind": "absolute", "pet": "crab"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200,
+                                                     "copyKind": "absolute", "pet": "crab"})
+            # The other saves keep the pet.
+            window = object.__new__(Window)
+            window.column_width, window.view, window.layout_path, window.copy_kind, window.pet = 320, "comfortable", path, "absolute", "crab"
+            window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
+            window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
+            window.save_width()
+            window.reset_width()
+            self.assertEqual(asb.read_layout(path)["pet"], "crab")
+            before = path.read_bytes()
+            for invalid in ("dog", "Crab", "", 1, True, [], {}):
+                with self.assertRaisesRegex(ValueError, "Pets must be Off, Crab, Pigeon, or Cat."):
+                    asb.write_layout(path, pet=invalid)
+                self.assertEqual(path.read_bytes(), before)
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "pet": "dog"}))
+            with self.assertRaisesRegex(ValueError, "Pets must be Off, Crab, Pigeon, or Cat."):
+                asb.read_layout(path)
+            # Off is the default and is not written; a default layout is deleted.
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "pet": "cat"}))
+            asb.write_layout(path, 240, pet="off")
+            self.assertNotIn("pet", json.loads(path.read_text()))
+            asb.write_layout(path, pet="off")
+            self.assertFalse(path.exists())
 
     def test_card_copy_kind_rule_for_local_remote_and_missing_values(self):
         full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
@@ -3491,6 +3524,251 @@ class MessageChecks(unittest.TestCase):
         window, ends = play(True, SimpleNamespace(PathBuilder=object))
         window.list_body.start_flight.assert_called_once_with(window.focus_widgets["a"], window.focus_widgets["b"], "accent", ends)
         window.light_row.assert_called_once_with(window.focus_widgets["a"], 160)
+
+    def test_messages_send_a_pet_between_two_cards_in_view(self):
+        inside, outside = [(1, 2, False), (3, 4, False)], [(1, 2, False), (3, 4, True)]
+        def board(animations=True, gsk=SimpleNamespace(PathBuilder=object), ends=inside, view="comfortable", flights=0):
+            window = object.__new__(Window)
+            window.closed, window.pet, window.view = False, "crab", view
+            window.get_settings = lambda: SimpleNamespace(get_property=lambda name: animations if name == "gtk-enable-animations" else None)
+            window.focus_widgets = {"a": Mock(), "b": Mock()}
+            window.list_body = SimpleNamespace(flights=[None] * flights, message_ends=Mock(return_value=ends),
+                                               start_flight=Mock(), start_pet=Mock())
+            window.light_row, window.message_color = Mock(), Mock(return_value="accent")
+            window.gsk = gsk
+            return window
+        def play(window):
+            with patch.dict(SCOPE, {"Gsk": window.gsk}):
+                self.assertFalse(window.start_messages([("a", "b", 1)]))
+            return window
+        sprites = asb.load_pets()
+        for view, scale in (("comfortable", 2), ("compact", 1)):
+            window = play(board(view=view))
+            window.list_body.start_pet.assert_called_once_with(window.focus_widgets["a"], window.focus_widgets["b"], sprites, "crab", "accent", scale)
+            window.light_row.assert_called_once_with(window.focus_widgets["a"], 400)
+            window.list_body.start_flight.assert_not_called()
+        # One card outside the viewport: the light flies to its edge mark.
+        window = play(board(ends=outside))
+        window.list_body.start_pet.assert_not_called()
+        window.list_body.start_flight.assert_called_once_with(window.focus_widgets["a"], window.focus_widgets["b"], "accent", outside)
+        window.light_row.assert_called_once_with(window.focus_widgets["a"], 160)
+        # GNOME animations off: both icons show the accent color for 2 s.
+        window = play(board(animations=False))
+        window.list_body.start_pet.assert_not_called()
+        self.assertEqual(window.light_row.call_args_list, [call(window.focus_widgets["a"], 2000), call(window.focus_widgets["b"], 2000)])
+        # GTK 4.12 has no Gsk.PathBuilder: the pet still walks, and a card out of view lights both rows.
+        window = play(board(gsk=SimpleNamespace()))
+        window.list_body.start_pet.assert_called_once()
+        window = play(board(gsk=SimpleNamespace(), ends=outside))
+        window.list_body.start_pet.assert_not_called()
+        window.list_body.start_flight.assert_not_called()
+        self.assertEqual(window.light_row.call_args_list, [call(window.focus_widgets["a"], 2000), call(window.focus_widgets["b"], 2000)])
+        # All flight slots in use: nothing starts.
+        window = play(board(flights=asb.MESSAGE_FLIGHT_LIMIT))
+        window.list_body.start_pet.assert_not_called()
+        window.list_body.start_flight.assert_not_called()
+        window.light_row.assert_not_called()
+        # A pets file that cannot load: one error line, and the light plays.
+        window = board()
+        errors = io.StringIO()
+        with patch.dict(SCOPE, {"load_pets": Mock(side_effect=ValueError("The pets file is not valid: the version is not 1"))}), \
+                patch("sys.stderr", errors):
+            play(window)
+            play(window)
+        self.assertEqual(errors.getvalue(), "Cannot load the pets: The pets file is not valid: the version is not 1\n")
+        window.list_body.start_pet.assert_not_called()
+        self.assertEqual(window.list_body.start_flight.call_count, 2)
+
+
+class PetChecks(unittest.TestCase):
+    PETS = asb.load_pets()
+    SAME = ((100, 80, 140), (420, 80, 140))
+    OTHER = ((100, 80, 140), (420, 150, 208))
+
+    @staticmethod
+    def paint(runs):
+        pixels = {}
+        for color, x, y, width in runs:
+            for column in range(x, x + width):
+                pixels[(column, y)] = color
+        return pixels
+
+    def plans(self):
+        for name, pet in self.PETS["pets"].items():
+            for scale in (1, 2):
+                for sender, receiver in (self.SAME, self.OTHER, (self.SAME[1], self.SAME[0])):
+                    yield name, pet, scale, sender, receiver, asb.pet_plan(pet, scale, sender, receiver)
+
+    @staticmethod
+    def phase(plan, name):
+        return next(phase for phase in plan["phases"] if phase[0] == name)
+
+    def test_shipped_pets_frames_mirrors_and_envelope(self):
+        self.assertEqual(list(self.PETS["pets"]), ["crab", "pigeon", "cat"])
+        self.assertEqual((self.PETS["envelope"]["width"], self.PETS["envelope"]["height"]), (8, 6))
+        self.assertEqual([run for run in self.PETS["envelope"]["runs"] if run[0] is None], [(None, 3, 3, 2)])
+        for name, pet in self.PETS["pets"].items():
+            self.assertEqual(tuple(pet["frames"]), asb.PET_FRAMES)
+            self.assertEqual([frame for frame, value in pet["frames"].items() if value["envelope"] is None], ["release"])
+            self.assertEqual(pet["reach"], pet["width"] - pet["anchor"][0])
+            for frame, value in pet["frames"].items():
+                right, left = (self.paint(runs) for runs in value["runs"])
+                # The accent pixels of the letter show only in a frame that holds it.
+                self.assertEqual(None in right.values(), value["envelope"] is not None, (name, frame))
+                if name == "crab":
+                    self.assertEqual(value["runs"][1], value["runs"][0])
+                    continue
+                self.assertEqual(len(left), len(right), (name, frame))
+                for (x, y), color in right.items():
+                    self.assertEqual(left[(pet["width"] - 1 - x, y)], color, (name, frame, x, y))
+                if value["envelope"]:
+                    (ex, ey), (lx, ly) = value["envelope"]
+                    self.assertEqual((lx, ly), (pet["width"] - 8 - ex, ey))
+
+    def test_broken_pets_files_are_refused(self):
+        data = json.loads(asb.PET_FILE.read_text())
+        def variant(change):
+            value = copy.deepcopy(data)
+            change(value)
+            return json.dumps(value)
+        def grid(value):
+            return value["pets"]["pigeon"]["frames"]["walk1"]["grid"]
+        cases = {
+            "invalid JSON": "{\"version\": 1,",
+            "version 2": variant(lambda value: value.update(version=2)),
+            "a missing frame": variant(lambda value: value["pets"]["cat"]["frames"].pop("air2")),
+            "a short grid row": variant(lambda value: grid(value).__setitem__(3, grid(value)[3][:-1])),
+            "an unknown grid key": variant(lambda value: grid(value).__setitem__(0, "Z" + grid(value)[0][1:])),
+        }
+        for reason, text in cases.items():
+            with self.subTest(reason), TemporaryDirectory(prefix="asb-pets-") as directory:
+                path = Path(directory) / "pets.json"
+                path.write_text(text)
+                with self.assertRaisesRegex(ValueError, "^The pets file is not valid: "):
+                    asb.load_pets(path)
+
+    def test_walk_speed_and_jump_time(self):
+        self.assertEqual(asb.pet_walk_ms(0), 0)
+        self.assertEqual(asb.pet_walk_ms(240), 1100)
+        self.assertEqual(round(asb.pet_walk_ms(100), 2), 833.33)
+        self.assertEqual(asb.pet_walk_ms(3000), 2000)
+        crab = self.PETS["pets"]["crab"]
+        for rows, jump in ((68, 300), (600, 560), (1000, 620)):
+            plan = asb.pet_plan(crab, 2, (100, 80, 140), (420, 80, 140 + rows))
+            name, start, end = self.phase(plan, "jump")
+            self.assertEqual(end - start, jump)
+
+    def test_plans_phases_durations_and_ends(self):
+        for name, pet in self.PETS["pets"].items():
+            for scale in (1, 2):
+                with self.subTest(pet=name, scale=scale):
+                    stop = 420 - (12 if scale > 1 else 12 + pet["reach"])
+                    jx = stop - 14 * scale
+                    near = (stop + 3, 80, 140)
+                    jump = min(620, max(300, 260 + .5 * 68))
+                    for sender, receiver, expected in (
+                            (self.SAME[0], self.SAME[1], [("rise", 380), ("walk", asb.pet_walk_ms(stop - 100)), ("windup", 120),
+                                                          ("toss", 240), ("hop", 160), ("dive", 320)]),
+                            (self.OTHER[0], self.OTHER[1], [("rise", 380), ("walk", asb.pet_walk_ms(jx - 100)), ("crouch", 80),
+                                                            ("jump", jump), ("land", 80), ("windup", 120), ("toss", 240),
+                                                            ("hop", 160), ("dive", 320)]),
+                            (near, self.OTHER[1], [("rise", 380), ("crouch", 80), ("jump", jump), ("land", 80), ("windup", 120),
+                                                   ("toss", 240), ("hop", 160), ("dive", 320)])):
+                        plan = asb.pet_plan(pet, scale, sender, receiver)
+                        self.assertEqual(plan["direction"], 1)
+                        self.assertEqual(plan["same_row"], sender[2] == receiver[2])
+                        self.assertEqual([(phase, end - start) for phase, start, end in plan["phases"]], expected)
+                        self.assertEqual(plan["phases"][0][1], 0)
+                        self.assertTrue(all(first[2] == second[1] for first, second in zip(plan["phases"], plan["phases"][1:])))
+                        self.assertEqual(plan["ta"], self.phase(plan, "toss")[2])
+                        self.assertEqual(plan["end"], plan["phases"][-1][2] + 200)
+        # A receiver straight above the sender: the pet goes to the left.
+        self.assertEqual(asb.pet_plan(self.PETS["pets"]["cat"], 2, (100, 80, 140), (100, 10, 72))["direction"], -1)
+
+    def test_stop_point_for_both_views(self):
+        for name, compact in (("crab", 21), ("pigeon", 26), ("cat", 24)):
+            pet = self.PETS["pets"][name]
+            for direction in (1, -1):
+                self.assertEqual(asb.pet_stop(pet, 2, 300, direction), 300 - direction * 12)
+                self.assertEqual(asb.pet_stop(pet, 1, 300, direction), 300 - direction * compact)
+
+    def test_poses_rise_walk_jump_and_dive(self):
+        pigeon = self.PETS["pets"]["pigeon"]
+        sender, receiver = self.SAME
+        plan = asb.pet_plan(pigeon, 2, sender, receiver)
+        def pose(t, plan=plan, sender=sender, receiver=receiver, pet=pigeon, scale=2):
+            return asb.pet_pose(pet, scale, plan, t, sender, receiver)
+        first = pose(0)
+        self.assertEqual((first["frame"], first["x"], first["y"], first["face"], first["clip"]), ("air", 100, 140 + 36, 1, 140))
+        self.assertEqual(pose(.7 * 380 - 1)["frame"], "air")
+        self.assertEqual(pose(.7 * 380 + 1)["frame"], "stand")
+        self.assertAlmostEqual(pose(379.999)["y"], 140, 2)
+        _name, start, end = self.phase(plan, "walk")
+        step = 1000 / pigeon["walkFps"]
+        self.assertEqual([pose(start + k * step + 1)["frame"] for k in range(6)], ["walk1", "walk2", "walk3", "walk4", "walk1", "walk2"])
+        self.assertEqual({pose(t)["clip"] for t in range(int(start), int(end), 20)}, {None})
+        _name, start, end = self.phase(plan, "dive")
+        dive = pose(start + 10)
+        self.assertEqual((dive["frame"], dive["clip"], dive["face"]), ("release", 140, 1))
+        self.assertIsNone(pose(end))
+        self.assertIsNone(pose(plan["end"]))
+        # The pigeon that walks to the left faces left, to the end.
+        back = asb.pet_plan(pigeon, 2, receiver, sender)
+        self.assertEqual({pose(t, back, receiver, sender)["face"] for t in range(0, int(back["phases"][-1][2]), 10)}, {-1})
+        # Compact, from the top row to the next row: the hop stays inside the strip.
+        crab = self.PETS["pets"]["crab"]
+        top, lower = (10, 11, 22), (300, 33, 44)
+        hop = asb.pet_plan(crab, 1, top, lower)
+        _name, start, end = self.phase(hop, "jump")
+        for t in range(int(start), int(end)):
+            jumped = asb.pet_pose(crab, 1, hop, t, top, lower)
+            self.assertGreaterEqual(round(jumped["y"] - crab["height"], 9), 2)
+        self.assertEqual(asb.pet_pose(crab, 1, hop, hop["phases"][-1][1], top, lower)["face"], 1)
+
+    def test_paws_are_empty_from_the_toss_on(self):
+        for name, pet, scale, sender, receiver, plan in self.plans():
+            with self.subTest(pet=name, scale=scale, receiver=receiver):
+                toss = self.phase(plan, "toss")[1]
+                for t in range(0, int(plan["end"]) + 1, 5):
+                    pose = asb.pet_pose(pet, scale, plan, t, sender, receiver)
+                    if t < toss:
+                        self.assertIsNotNone(pet["frames"][pose["frame"]]["envelope"], t)
+                    elif pose is not None:
+                        self.assertEqual(pose["frame"], "release", t)
+
+    def test_flying_envelope_from_the_paws_to_the_icon(self):
+        for name, pet, scale, sender, receiver, plan in self.plans():
+            with self.subTest(pet=name, scale=scale, receiver=receiver):
+                _name, start, end = self.phase(plan, "toss")
+                self.assertIsNone(asb.pet_envelope(pet, scale, plan, start - .01, receiver))
+                self.assertIsNone(asb.pet_envelope(pet, scale, plan, plan["ta"], receiver))
+                d = plan["direction"]
+                _runs, left, top, flip = asb.pet_box(pet, scale, "toss", asb.pet_stop(pet, scale, receiver[0], d), receiver[2], d)
+                ex, ey = pet["frames"]["toss"]["envelope"][1 if flip else 0]
+                self.assertEqual(asb.pet_envelope(pet, scale, plan, start, receiver), (left + ex * scale, top + ey * scale))
+                x, y = asb.pet_envelope(pet, scale, plan, plan["ta"] - .01, receiver)
+                self.assertLessEqual(max(abs(x - (receiver[0] - 4 * scale)), abs(y - (receiver[1] - 3 * scale))), 1)
+
+    def test_tints_and_particles(self):
+        crab = self.PETS["pets"]["crab"]
+        sender, receiver = self.OTHER
+        plan = asb.pet_plan(crab, 2, sender, receiver)
+        ta, end = plan["ta"], plan["end"]
+        self.assertEqual(asb.pet_tints(plan, 0), {})
+        self.assertEqual(asb.pet_tints(plan, 60), {0: .5})
+        self.assertEqual(asb.pet_tints(plan, 120), {0: 1})
+        self.assertLess(asb.pet_tints(plan, 519.5)[0], .01)
+        self.assertEqual(asb.pet_tints(plan, 520), {})
+        self.assertEqual(asb.pet_tints(plan, ta - 120), {})
+        self.assertEqual(asb.pet_tints(plan, ta - 60), {1: .5})
+        self.assertEqual(asb.pet_tints(plan, ta), {1: 1})
+        self.assertLess(asb.pet_tints(plan, end - .5)[1], .01)
+        self.assertEqual(asb.pet_tints(plan, end), {})
+        dive = self.phase(plan, "dive")[1]
+        self.assertEqual([len(asb.pet_particles(crab, 2, plan, t, sender, receiver)) for t in (0, ta, dive, end)], [4, 8, 12, 0])
+        # Each burst starts 5 px out at scale 2, at full alpha, and fades out after half its time.
+        self.assertEqual(asb.pet_particles(crab, 2, plan, ta, sender, receiver)[0], (420 + 4, 150 - 1, 1))
+        self.assertEqual({alpha for _x, _y, alpha in asb.pet_particles(crab, 2, plan, 270, sender, receiver)}, {.5})
 
 
 class SignalHelperChecks(unittest.TestCase):
