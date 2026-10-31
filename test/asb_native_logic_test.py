@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 import os
+import re
 import sys
 from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
@@ -1969,7 +1970,7 @@ class PhoneChecks(unittest.TestCase):
 
     def test_preferences_loads_phone_once_and_stops_it_on_page_and_window_hide(self):
         preferences = object.__new__(Preferences)
-        preferences.owner, preferences.closed = SimpleNamespace(closed=False, report_ui=Mock()), False
+        preferences.owner, preferences.closed = SimpleNamespace(closed=False, report_ui=Mock(), sync_tick=Mock()), False
         preferences.profiles_editor = preferences.phone_editor = preferences.machines_editor = preferences.usage_editor = None
         preferences.phone, preferences.machines, preferences.usage = Mock(), Mock(), Mock()
         preferences.pages = Mock(get_visible_child_name=Mock(return_value="section"))
@@ -3249,8 +3250,9 @@ class DataChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 asb.local_base_url(value)
         calls = []
-        sidebar = SimpleNamespace(closed=False, is_active=lambda: False, refresh=lambda: calls.append(True), report_ui=Mock(),
-                                  events=SimpleNamespace(connected=False))
+        sidebar = object.__new__(Window)
+        sidebar.closed, sidebar.preferences_window, sidebar.events = False, None, SimpleNamespace(connected=False)
+        sidebar.refresh, sidebar.report_ui = lambda: calls.append(True), Mock()
         self.assertTrue(asb.SwitchboardWindow.tick(sidebar))
         self.assertEqual(calls, [True])
         sidebar.closed = True
@@ -3333,7 +3335,8 @@ class DataChecks(unittest.TestCase):
         stream = SCOPE["EventStream"](f"http://127.0.0.1:{server.server_port}", Mock(), lambda callback, *args: callback(*args),
                                       None, lambda: connects.append(True))
         self.addCleanup(stream.close)
-        window = SimpleNamespace(closed=False, events=stream, refresh=Mock(), report_ui=Mock())
+        window = object.__new__(Window)
+        window.closed, window.events, window.preferences_window, window.refresh, window.report_ui = False, stream, None, Mock(), Mock()
         deadline = time.monotonic() + 5
         while not stream.connected and time.monotonic() < deadline:
             time.sleep(.01)
@@ -3352,6 +3355,76 @@ class DataChecks(unittest.TestCase):
         window.events = SimpleNamespace(connected=True, list_events=False)
         self.assertTrue(asb.SwitchboardWindow.tick(window))
         self.assertEqual(window.refresh.call_count, 2)
+
+    def test_the_tick_runs_only_while_the_list_the_ui_report_or_preferences_need_it(self):
+        sources = iter(range(1, 100))
+        glib = SimpleNamespace(timeout_add=Mock(side_effect=lambda *_args: next(sources)), source_remove=Mock())
+        window = object.__new__(Window)
+        window.closed, window.preferences_window, window.refresh_interval_ms, window.timer = False, None, 5000, 7
+        window.refresh, window.report_ui = Mock(), Mock()
+        quiet = SimpleNamespace(connected=True, list_events=True, holds_ui=True)
+        with patch.dict(SCOPE, {"GLib": glib}):
+            window.events = quiet
+            self.assertFalse(window.sync_tick())
+            glib.source_remove.assert_called_once_with(7)
+            self.assertIsNone(window.timer)
+            window.timer = 8
+            self.assertFalse(window.tick())
+            self.assertIsNone(window.timer)
+            window.refresh.assert_not_called()
+            needs = [SimpleNamespace(connected=False), SimpleNamespace(connected=True, list_events=False),
+                     SimpleNamespace(connected=True, list_events=True, holds_ui=False)]
+            for events in needs:
+                with self.subTest(events=events):
+                    window.events, window.timer = events, None
+                    glib.timeout_add.reset_mock()
+                    window.sync_tick()
+                    window.sync_tick()
+                    glib.timeout_add.assert_called_once_with(5000, window.tick)
+                    self.assertTrue(window.tick())
+            window.events, window.timer = quiet, None
+            for visible, closed, armed in ((True, False, True), (False, False, False), (True, True, False)):
+                with self.subTest(visible=visible, closed=closed):
+                    window.preferences_window = SimpleNamespace(closed=closed, get_visible=lambda visible=visible: visible)
+                    glib.timeout_add.reset_mock()
+                    window.sync_tick()
+                    self.assertEqual(glib.timeout_add.call_count, int(armed))
+                    self.assertEqual(window.tick(), armed)
+            window.closed = True
+            self.assertFalse(window.tick_needed())
+
+    def test_a_new_refresh_interval_arms_no_stopped_tick(self):
+        glib = SimpleNamespace(timeout_add=Mock(return_value=5), source_remove=Mock(), timeout_add_seconds=Mock())
+        window = object.__new__(Window)
+        window.preferences_window = None
+        window.closed = window.refresh_queued = window.snapshot_pending = False
+        window.dashboard, window.signature, window.heap_trim = {}, [], 1
+        window.refresh_interval_ms, window.timer = 5000, None
+        window.refresh_button = SimpleNamespace(set_sensitive=Mock())
+        window.set_notice = window.sync_unread_setting = window.update_clock = window.report_ui = window.play_messages = Mock()
+        with patch.dict(SCOPE, {"GLib": glib}):
+            window.apply_dashboard({"threads": [], "refreshIntervalMs": 2000}, None)
+            self.assertEqual((window.refresh_interval_ms, window.timer), (2000, None))
+            glib.timeout_add.assert_not_called()
+            window.timer = 4
+            window.apply_dashboard({"threads": [], "refreshIntervalMs": 5000}, None)
+            glib.source_remove.assert_called_once_with(4)
+            glib.timeout_add.assert_called_once_with(5000, window.tick)
+            self.assertEqual(window.timer, 5)
+
+    def test_a_lost_stream_queues_the_tick_check_after_the_launcher_hears_it(self):
+        order = []
+        window = object.__new__(Window)
+        window.engine_lost = lambda: order.append("lost")
+        window.source_changed, window.sync_tick = Mock(side_effect=lambda: order.append("list")), Mock()
+        with patch.dict(SCOPE, {"GLib": SimpleNamespace(idle_add=lambda callback: order.append(callback))}):
+            window.stream_lost()
+            window.engine_lost = None
+            window.stream_lost()
+        self.assertEqual(order, ["lost", window.sync_tick, window.sync_tick])
+        self.assertFalse(window.stream_connected())
+        window.sync_tick.assert_called_once_with()
+        self.assertEqual(order[-1], "list")
 
 
 class MessageChecks(unittest.TestCase):
@@ -4639,7 +4712,7 @@ class NativeLogicChecks(unittest.TestCase):
 
     def test_preferences_reuses_profile_editor_and_cancels_dialog_callbacks(self):
         owner = object.__new__(Window)
-        owner.closed = False
+        owner.closed, owner.sync_tick = False, Mock()
         preferences = object.__new__(Preferences)
         preferences.owner, preferences.closed, preferences.profiles_editor, preferences.phone_editor = owner, False, None, None
         preferences.machines_editor = preferences.usage_editor = None
@@ -9672,6 +9745,128 @@ class BoardWindowsLogicChecks(unittest.TestCase):
         self.assertFalse(window.show_window_event("board", "board-a"))
         window.present.assert_called_once_with()
         application.show_activity.assert_not_called()
+
+    def test_a_hidden_activity_window_asks_for_one_heap_trim_ten_seconds_later(self):
+        activity = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "ActivityWindow")
+        hide = copy.deepcopy(next(node for node in activity.body if isinstance(node, ast.FunctionDef) and node.name == "close_to_hidden"))
+        scope = dict(SCOPE)
+        exec(compile(ast.Module(body=[hide], type_ignores=[]), str(SOURCE), "exec"), scope)
+        application = object.__new__(SCOPE["SwitchboardApplication"])
+        application.heap_trim = None
+        window = SimpleNamespace(stop_live=Mock(), set_visible=Mock(), application=application)
+        timers = {}
+        def timeout(seconds, callback):
+            timers[len(timers) + 1] = (seconds, callback)
+            return len(timers)
+        glib = SimpleNamespace(timeout_add_seconds=Mock(side_effect=timeout), source_remove=Mock())
+        trim = Mock()
+        with patch.dict(SCOPE, {"GLib": glib, "MALLOC_TRIM": trim}):
+            scope["close_to_hidden"](window)
+            window.set_visible.assert_called_once_with(False)
+            self.assertEqual((list(timers), timers[1][0], application.heap_trim), ([1], 10, 1))
+            # A second hide moves the pending trim.
+            scope["close_to_hidden"](window)
+            glib.source_remove.assert_called_once_with(1)
+            self.assertEqual((timers[2][0], application.heap_trim), (10, 2))
+            self.assertFalse(timers[2][1]())
+            trim.assert_called_once_with(0)
+            self.assertIsNone(application.heap_trim)
+            # The shutdown removes a pending trim.
+            scope["close_to_hidden"](window)
+            application.cancel_heap_trim(application)
+            glib.source_remove.assert_called_with(3)
+            self.assertIsNone(application.heap_trim)
+        glib.timeout_add_seconds.reset_mock()
+        with patch.dict(SCOPE, {"GLib": glib, "MALLOC_TRIM": None}):
+            scope["close_to_hidden"](window)
+        glib.timeout_add_seconds.assert_not_called()
+        self.assertIsNone(application.heap_trim)
+
+    def test_event_stream_passes_only_valid_sound_events(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        events = (b'event: sound\ndata: {"file":"opencode_staplebops_01.wav","clientId":"board-a"}\n\n'
+                  b'event: sound\ndata: {"file":"other.wav","clientId":"board-a"}\n\n'
+                  b'event: sound\ndata: {"file":"../opencode_nope_03.wav","clientId":"board-a"}\n\n'
+                  b'event: sound\ndata: {"file":"opencode_nope_03.wav","clientId":7}\n\n'
+                  b'event: sound\ndata: {"file":"opencode_nope_03.wav"}\n\n'
+                  b'event: sound\ndata: not json\n\n'
+                  b'event: sound\ndata: ["opencode_nope_03.wav", "board-a"]\n\n'
+                  b'event: sound\ndata: {"file":"opencode_staplebops_02.wav","clientId":"board-b"}\n\n'
+                  b'event: sound\ndata: {"file":"opencode_nope_03.wav","clientId":"board-a"}\n\n'
+                  b'event: dashboard\ndata: {"reason":"source-dirty"}\n\n')
+        requests, done = [], threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(events)
+                self.wfile.flush()
+                done.wait(2)
+
+            def log_message(self, *_args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+            server_thread.start()
+            sounds, dashboards = [], threading.Event()
+            stream = SCOPE["EventStream"](f"http://127.0.0.1:{server.server_port}", dashboards.set, lambda callback, *args: callback(*args),
+                                          on_sound=lambda file, client: sounds.append((file, client)))
+            try:
+                self.assertTrue(dashboards.wait(2))
+                # The bad data did not drop the connection: one request, and the later events still came.
+                self.assertEqual(requests, ["/api/events"])
+                self.assertEqual(sounds, [("opencode_staplebops_01.wav", "board-a"), ("opencode_staplebops_02.wav", "board-b"),
+                                          ("opencode_nope_03.wav", "board-a")])
+            finally:
+                done.set()
+                stream.close()
+                stream.worker.join(1)
+                server.shutdown()
+                server_thread.join(1)
+
+    def test_board_plays_a_sound_only_for_its_own_client_id(self):
+        window = object.__new__(Window)
+        window.ui_client_id, window.closed = "board-a", False
+        play = Mock()
+        with patch.dict(SCOPE, {"play_board_sound": play}):
+            for client in ("board-b", "", "BOARD-A"):
+                self.assertFalse(window.sound_event("opencode_nope_03.wav", client))
+            play.assert_not_called()
+            self.assertFalse(window.sound_event("opencode_nope_03.wav", "board-a"))
+            play.assert_called_once_with("opencode_nope_03.wav")
+            window.closed = True
+            window.sound_event("opencode_staplebops_01.wav", "board-a")
+        play.assert_called_once_with("opencode_nope_03.wav")
+
+    def test_the_board_plays_windows_sounds_with_winsound(self):
+        sound = SimpleNamespace(SND_FILENAME=0x20000, SND_ASYNC=1, SND_NODEFAULT=2, PlaySound=Mock())
+        folder = Path(SOURCE).parents[1] / "assets" / "sounds"
+        with patch.dict(sys.modules, {"winsound": sound}), patch.dict(SCOPE, {"SOUND_ERROR_SHOWN": False, "os": SimpleNamespace(name="nt")}), \
+                patch("sys.stderr", new_callable=io.StringIO) as errors:
+            SCOPE["play_board_sound"]("opencode_staplebops_02.wav")
+            sound.PlaySound.assert_called_once_with(str(folder / "opencode_staplebops_02.wav"), 0x20003)
+            self.assertEqual(errors.getvalue(), "")
+            sound.PlaySound.side_effect = RuntimeError("no device")
+            SCOPE["play_board_sound"]("opencode_nope_03.wav")
+            SCOPE["play_board_sound"]("opencode_nope_03.wav")
+        self.assertEqual(errors.getvalue(), "ASB cannot play a sound: no device\n")
+        imports = Mock(side_effect=AssertionError("winsound imported"))
+        with patch.dict(SCOPE, {"os": SimpleNamespace(name="posix")}), patch("builtins.__import__", imports):
+            SCOPE["play_board_sound"]("opencode_nope_03.wav")
+        imports.assert_not_called()
+
+    def test_board_sound_files_match_the_engine_sounds(self):
+        text = (Path(SOURCE).parents[1] / "src" / "asb-sounds.mjs").read_text()
+        names = re.findall(r"'([\w.-]+\.wav)'", text)
+        self.assertEqual(len(names), 3)
+        self.assertEqual(sorted(SCOPE["BOARD_SOUND_FILES"]), sorted(names))
 
     def test_open_window_variable_opens_the_window_after_the_board(self):
         application = object.__new__(SCOPE["SwitchboardApplication"])

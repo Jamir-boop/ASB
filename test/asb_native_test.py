@@ -19,7 +19,7 @@ import threading
 import time
 import unittest
 import weakref
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -649,7 +649,8 @@ class WidgetCheck(unittest.TestCase):
             with patch.object(self.application, "launcher", start):
                 window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", theme_path=False, layout_path=False)
             self.addCleanup(window.close)
-            self.assertEqual(streams, [("http://127.0.0.1:1", start.lost)])
+            # The board stream tells the launcher start through the board, which then checks its tick.
+            self.assertEqual((streams, window.engine_lost), ([("http://127.0.0.1:1", window.stream_lost)], start.lost))
             def follow(reply):
                 replies.append(reply)
                 streams[-1][1]()
@@ -661,7 +662,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(inputs, [{"pid": 4242, "token": token}])
             self.assertEqual((window.base, asb.SOURCE_TOKEN), ("http://127.0.0.1:2", "token-b"))
             # The new stream reports its loss too, and the next helper gets the new engine.
-            self.assertEqual(streams[-1], ("http://127.0.0.1:2", start.lost))
+            self.assertEqual(streams[-1], ("http://127.0.0.1:2", window.stream_lost))
             follow(b'{"state":"quit"}\n')
             self.assertEqual(inputs[1], {"pid": 5151, "token": "token-b"})
             close.assert_called_once_with()
@@ -11298,7 +11299,9 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             self.assertTrue(window.get_visible())
             self.assertEqual((len(streams), request.call_count), (2, 3))
             self.assertIsNotNone(window.poll_timer)
-            self.assertEqual(self.poll_calls.call_count, 2)
+            # The poll of each open, and the heap trim after the hide.
+            self.assertEqual(self.poll_calls.call_count, 3)
+            self.assertIn(call(10, self.application.trim_heap), self.poll_calls.call_args_list)
             self.assertEqual(window.stack.get_visible_child_name(), "data")
             self.assertEqual(window.ledger.get_visible_child_name(), "stats")
             self.assertIsNone(window.thread)

@@ -75,6 +75,24 @@ def find_malloc_trim(system=sys.platform):
 
 
 MALLOC_TRIM = find_malloc_trim()
+# The values of SOUND_FILES in src/asb-sounds.mjs: on Windows the service engine sends each sound for the board to play.
+BOARD_SOUND_FILES = ("opencode_staplebops_01.wav", "opencode_staplebops_02.wav", "opencode_nope_03.wav")
+SOUND_ERROR_SHOWN = False
+
+
+def play_board_sound(file):
+    """Plays an engine sound on Windows; the Linux engine plays its own sounds."""
+    global SOUND_ERROR_SHOWN
+    if os.name != "nt":
+        return
+    try:
+        import winsound
+        winsound.PlaySound(str(Path(__file__).parents[1] / "assets" / "sounds" / file),
+                           winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+    except (ImportError, RuntimeError, OSError) as error:
+        if not SOUND_ERROR_SHOWN:
+            SOUND_ERROR_SHOWN = True
+            print(f"ASB cannot play a sound: {error}", file=sys.stderr)
 
 
 def bridge_state_line(app):
@@ -2636,9 +2654,11 @@ def import_usage_file(base, path):
 
 
 class EventStream:
-    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None, ui_client=None, on_lost=None, on_found=None):
+    def __init__(self, base, callback, dispatch, on_show_window=None, on_connected=None, ui_client=None, on_lost=None, on_found=None,
+                 on_sound=None):
         self.address = urlsplit(base)
         self.callback, self.dispatch, self.on_show_window, self.on_connected = callback, dispatch, on_show_window, on_connected
+        self.on_sound = on_sound
         # Called in the stream thread when the stream cannot connect or ends, and at each `connected` event of the engine.
         self.on_lost, self.on_found = on_lost, on_found
         # The engine keeps this UI client while the stream is open.
@@ -2704,6 +2724,13 @@ class EventStream:
                                     value = None
                                 if isinstance(value, dict) and value.get("window") in ("board", "messages", "usage") and isinstance(value.get("clientId"), str):
                                     self.dispatch(self.on_show_window, value["window"], value["clientId"])
+                            elif event == "sound" and data and self.on_sound:
+                                try:
+                                    value = json.loads("\n".join(data))
+                                except ValueError:
+                                    value = None
+                                if isinstance(value, dict) and value.get("file") in BOARD_SOUND_FILES and isinstance(value.get("clientId"), str):
+                                    self.dispatch(self.on_sound, value["file"], value["clientId"])
                             event, data = "", []
                         elif line.startswith("event:"):
                             event = line[6:].strip()
@@ -5177,6 +5204,7 @@ class PreferencesWindow(Adw.Window):
         if self.usage_editor:
             self.usage_editor.set_active(usage_visible)
         self.owner.report_ui()
+        self.owner.sync_tick()
 
     def narrow(self):
         return self.get_current_breakpoint() is self.breakpoint
@@ -5709,8 +5737,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         launcher = application.launcher
         self.engine_lost, self.engine_found = (launcher.lost, launcher.connected) if launcher else (None, None)
         self.events = EventStream(self.base, self.source_changed, GLib.idle_add, self.show_window_event,
-                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost,
-                                  on_found=self.engine_found)
+                                  on_connected=self.stream_connected, ui_client=self.ui_client_id, on_lost=self.stream_lost,
+                                  on_found=self.engine_found, on_sound=self.sound_event)
         if initial_dashboard is not None:
             self.apply_dashboard(initial_dashboard, None)
         elif first_load:
@@ -5734,8 +5762,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     editor.base = base
         self.events.close()
         self.events = EventStream(base, self.source_changed, GLib.idle_add, self.show_window_event,
-                                  on_connected=self.source_changed, ui_client=self.ui_client_id, on_lost=self.engine_lost,
-                                  on_found=self.engine_found)
+                                  on_connected=self.stream_connected, ui_client=self.ui_client_id, on_lost=self.stream_lost,
+                                  on_found=self.engine_found, on_sound=self.sound_event)
+        self.sync_tick()
         self.dashboard_etag = None
         self.ui_report_last = None
         self.ui_report_sending = False
@@ -5750,6 +5779,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else:
                 self.get_application().show_activity(window)
         return False
+
+    def sound_event(self, file, client_id):
+        # Only the Board that reported last plays the sound, so two Boards do not both play it.
+        if client_id == self.ui_client_id and not self.closed:
+            play_board_sound(file)
+        return False
+
+    def stream_connected(self):
+        self.source_changed()
+        self.sync_tick()
+        return False
+
+    def stream_lost(self):
+        # The stream thread calls this; the tick changes only in the main loop.
+        if self.engine_lost:
+            self.engine_lost()
+        GLib.idle_add(self.sync_tick)
 
     def first_dashboard(self, dashboard, error, etag):
         """The result of the early request of the launcher start. A failed request shows no notice: the normal first refresh runs."""
@@ -6137,7 +6183,28 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # Only a service engine that advertises list events sends each change, also after its timer scans.
             if not (self.events.connected and self.events.list_events):
                 self.refresh()
+        if not self.tick_needed():
+            self.timer = None
+            return False
         return not self.closed
+
+    def tick_needed(self):
+        if self.closed:
+            return False
+        events, preferences = self.events, self.preferences_window
+        # Without list events the tick reads the list; without a held UI client report_ui must send every 25 s.
+        # The Profiles editor in Preferences changes the UI report.
+        return (not (events.connected and events.list_events and events.holds_ui)
+                or bool(preferences and not preferences.closed and preferences.get_visible()))
+
+    def sync_tick(self):
+        if self.tick_needed():
+            if self.timer is None:
+                self.timer = GLib.timeout_add(self.refresh_interval_ms, self.tick)
+        elif self.timer is not None:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        return False
 
     def report_ui(self):
         if self.closed or not SOURCE_TOKEN or not getattr(self, "ui_client_id", None):
@@ -6241,8 +6308,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         interval = refresh_interval(dashboard)
         if interval != self.refresh_interval_ms:
             self.refresh_interval_ms = interval
-            GLib.source_remove(self.timer)
-            self.timer = GLib.timeout_add(interval, self.tick)
+            if self.timer is not None:
+                GLib.source_remove(self.timer)
+                self.timer = GLib.timeout_add(interval, self.tick)
         self.sync_unread_setting(dashboard.get("persistentUnread", True))
         self.set_notice(" ".join(provider.get("message", "") for provider in dashboard.get("providers", []) if provider.get("message")), temporary=True)
         signature = dashboard.get("threads", [])
@@ -9595,6 +9663,7 @@ class ActivityWindow(Adw.Window):
     def close_to_hidden(self):
         self.stop_live()
         self.set_visible(False)
+        self.application.trim_heap_later()
 
     def save_size(self):
         try:
@@ -11159,6 +11228,9 @@ class SwitchboardApplication(Adw.Application):
         self.get_style_manager().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
         self.base, self.first_load, self.launcher = base, first_load, first_load
         self.activity_windows = {}
+        self.heap_trim = None
+        # No heap trim runs after the board closed.
+        self.connect("shutdown", self.cancel_heap_trim)
         # A window destroyed without a close request (no "destroy" signal reaches Python) still stops its stream and is forgotten.
         self.connect("window-removed", lambda _application, window: isinstance(window, ActivityWindow) and window.finish())
         self.connect("activate", self.on_activate)
@@ -11181,6 +11253,23 @@ class SwitchboardApplication(Adw.Application):
                 window.reconnect(base)
         for window in list(self.activity_windows.values()):
             window.reconnect(base)
+        return False
+
+    def trim_heap_later(self):
+        # glibc keeps the memory of a closed Messages or Usage window until a trim; a new close moves the trim.
+        if MALLOC_TRIM is None:
+            return
+        self.cancel_heap_trim()
+        self.heap_trim = GLib.timeout_add_seconds(10, self.trim_heap)
+
+    def cancel_heap_trim(self, *_args):
+        if self.heap_trim:
+            GLib.source_remove(self.heap_trim)
+            self.heap_trim = None
+
+    def trim_heap(self):
+        self.heap_trim = None
+        MALLOC_TRIM(0)
         return False
 
     def show_activity(self, kind, seat=None, title=""):
