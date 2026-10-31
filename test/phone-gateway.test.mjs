@@ -947,6 +947,25 @@ gatewayTest('peer routes need a member certificate; join takes any certificate w
   assert.deepEqual(logs, []);
 });
 
+gatewayTest('the hello query goes to peer.seen with the caller fingerprint, and hello answers as without it', async (t) => {
+  const calls = [];
+  const seen = async (fingerprint, params) => { calls.push([fingerprint, Object.fromEntries(params)]); if (params.get('p') === 'throw') throw new Error('bad'); };
+  let caller = '';
+  for (const relay of [{ seen }, { seen: undefined }]) {
+    const { peer, joiner, joinBody, code } = await peerFixture(t, { relay });
+    caller ||= joiner.fingerprint;
+    assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+    const plain = await peer('/peer/v1/hello', { as: joiner });
+    assert.equal(plain.status, 200);
+    for (const query of ['?a=lan%3A127.0.0.9&p=4998', '?a=%E0%A4%A&p=1', '?p=throw', '?a=x&a=y']) {
+      const reply = await peer(`/peer/v1/hello${query}`, { as: joiner });
+      assert.deepEqual([reply.status, reply.json], [200, plain.json], query);
+    }
+  }
+  assert.deepEqual(calls.map(([fingerprint]) => fingerprint), Array(5).fill(caller));
+  assert.deepEqual(calls.map(([, params]) => params), [{}, { a: 'lan:127.0.0.9', p: '4998' }, { a: '\uFFFD%A', p: '1' }, { p: 'throw' }, { a: 'y' }]);
+});
+
 gatewayTest('a removed certificate gets 410 on the member routes, and 410 does not count toward the throttle', async (t) => {
   const { group, peer, joiner, stranger, joinBody, code } = await peerFixture(t);
   assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);

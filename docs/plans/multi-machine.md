@@ -464,7 +464,7 @@ check gives `401` and counts toward the existing auth throttle.
 | Route | Caller | Body | Reply |
 | --- | --- | --- | --- |
 | `POST /peer/v1/join` | Any client certificate | `{code, name, addresses, port}` | `200 {groupId, group}` (the merged group without `self`), `401` bad code, `409 {error, suggestion}` name taken or machine removed, `429` throttle |
-| `GET /peer/v1/hello` | Member | none | `{api:1, machineId, name, groupId, asbVersion, addresses, port}` |
+| `GET /peer/v1/hello` | Member | none; optional query `a`, `p` (the caller's network, saved in its own entry) | `{api:1, machineId, name, groupId, asbVersion, addresses, port}` |
 | `GET /peer/v1/group` | Member | none | Group file without `self` |
 | `GET /peer/v1/sessions` | Member | none | Section 9.2 |
 | `POST /peer/v1/leave` | Member | `{}` | `{left:true}`; adds a tombstone for the caller |
@@ -898,7 +898,8 @@ Create `src/machine-peers.mjs`:
   - sessions every `max(2000, refreshIntervalMs of the last reply)` ms with
     the ETag;
   - group every 30 s, merged with `mergeGroup` and saved when it changed;
-  - hello at start and every 60 s (address refresh, kept in memory only).
+  - hello at start and every 60 s (address refresh, kept in memory only; the
+    request query sends this machine's network, which the member saves).
   - Back-off when a request fails: 5 s, 10 s, 30 s.
 - Member state: `{ online, lastOkAtMs, sessions, error }`. `online` becomes
   false after 3 failed polls.

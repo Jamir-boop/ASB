@@ -190,17 +190,16 @@ export function addressOrder(addresses, lastAddress = '') {
     || KIND_ORDER.indexOf(left.kind) - KIND_ORDER.indexOf(right.kind));
 }
 
-// The kept connections of GET requests: one agent for each address, port, and pin (two members on different LANs can have the same
-// private address and port), with the client certificate of its first request, because the client certificate does not change while
-// the engine runs. The agent has the secure context of that client certificate, made once. The count of agents is small (a few
-// addresses for each member), and an agent with no socket costs no resource.
-// shortcut: the agents belong to the process, so tests that run several engines in one process share them (and their client
-// certificate), key them by the client certificate if a test must tell such engines apart.
+// The kept connections of GET requests: one agent for each address, port, pin, and own certificate (two members on different LANs can
+// have the same private address and port). The agent has the secure context of that client certificate, made once. The own certificate
+// is in the key because the agents belong to the process: tests that run several engines in one process must not share a client
+// certificate, because a member saves the hello query for the certificate that sends it. The count of agents is small (a few addresses
+// for each member), and an agent with no socket costs no resource.
 const agents = new Map();
 // key and cert on Linux, pfx and passphrase on Windows; the own fingerprint is not a TLS option.
 const clientCertificate = ({ fingerprint: _own, ...certificate }) => certificate;
 function agentFor(address, port, fingerprint, tls) {
-  const key = `${address}|${port}|${fingerprint}`;
+  const key = `${address}|${port}|${fingerprint}|${tls.fingerprint}`;
   let entry = agents.get(key);
   if (!entry) {
     // The minimum version is a context option: with a secureContext, the same option of the agent does not count.
@@ -332,8 +331,9 @@ export async function peerRequest({ member, path, method = 'GET', body, etag, tl
 
 const validVersion = (v) => typeof v === 'string' && v.length <= 40 && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(v);
 // One poller per member: sessions, group, and hello, each on its own timer.
+// helloQuery gives the query of the hello request: the current network of this machine, or ''.
 export function createPeerPoller({ member, tls, validAddresses, request = peerRequest, onGroup = () => {}, onChange = () => {},
-  onRemoved = () => {}, now = Date.now, timers = { setTimeout, clearTimeout } }) {
+  onRemoved = () => {}, helloQuery = async () => '', now = Date.now, timers = { setTimeout, clearTimeout } }) {
   // lastAddress is the address that the last read-only poll proved; the relay sends its delivery there first.
   const state = { member: { ...member }, online: false, lastOkAtMs: 0, sessions: null, error: '', lastAddress: '' };
   let etag = '';
@@ -391,11 +391,11 @@ export function createPeerPoller({ member, tls, validAddresses, request = peerRe
   };
   const pollHello = async () => {
     try {
-      const reply = await call('/peer/v1/hello');
+      const reply = await call(`/peer/v1/hello${await helloQuery()}`);
       const value = reply.body;
       // The ASB version stays in memory only, like the addresses.
       if (reply.status === 200 && value?.machineId === state.member.machineId) state.member.asbVersion = validVersion(value.asbVersion) ? value.asbVersion : '';
-      // The addresses stay in memory only; the next group merge keeps the saved ones.
+      // The addresses stay in memory only, until the saved entry of the member changes.
       if (reply.status === 200 && value?.machineId === state.member.machineId && validAddresses(value.addresses) && Number.isInteger(value.port)
         && value.port >= 1024 && value.port <= 65535) {
         state.member.addresses = value.addresses;

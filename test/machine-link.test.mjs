@@ -225,6 +225,37 @@ test('two engines join one group and show each other\'s sessions as remote cards
   assert.deepEqual(c.logs, ['ASB: this machine was removed from the machine group.']);
 });
 
+// Finding 5: a member that cannot reach the new port of another member learns it from the next hello of that member.
+test('a member learns the new port of another member from its hello and reaches it again', { skip: hasOpenSsl ? false : 'openssl is not on PATH.' }, async (t) => {
+  const clock = { now: Date.now() };
+  const desk = await engine(t, 'desk', '127.0.0.11', clock);
+  const laptop = await engine(t, 'laptop', '127.0.0.12', clock);
+  const invite = await desk.api('/api/group/invite', { method: 'POST', body: {} });
+  assert.equal((await laptop.api('/api/group/join', { method: 'POST', body: { link: invite.body.link, name: 'laptop' } })).status, 200);
+  const deskState = () => laptop.group.peerStates()[0];
+  await waitFor(() => laptop.timers.pending.some((item) => [2000, 5000].includes(item.ms)), 'the first poll of desk');
+  for (let round = 0; round < 3 && !deskState().online; round += 1) await laptop.timers.fireSessions();
+  assert.equal(deskState().error, '');
+  // Desk moves to another port; laptop keeps the old one and cannot reach desk.
+  const port = await freePort();
+  assert.equal((await desk.gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.11'], port })).running, true);
+  await laptop.timers.fireSessions();
+  assert.notEqual(deskState().error, '');
+  assert.equal(deskState().member.port, desk.gatewayPort);
+  // The next hello of desk carries its new port: laptop saves it and its poller uses it.
+  await waitFor(() => desk.timers.pending.some((item) => item.ms === 60_000), 'the hello timer of desk');
+  const hello = desk.timers.pending.find((item) => item.ms === 60_000);
+  desk.timers.pending.splice(desk.timers.pending.indexOf(hello), 1);
+  hello.run();
+  const saved = async () => JSON.parse(await readFile(groupPath(laptop.env), 'utf8')).members.find((item) => item.machineId === desk.machineId);
+  await waitFor(async () => (await saved()).port === port, 'the new port of desk on laptop');
+  assert.deepEqual((await saved()).addresses, [{ kind: 'lan', address: '127.0.0.11' }]);
+  assert.equal(deskState().member.port, port);
+  await laptop.timers.fireSessions();
+  assert.deepEqual([deskState().error, deskState().online], ['', true]);
+  assert.deepEqual([...desk.logs, ...laptop.logs], []);
+});
+
 // Exact member sends over real mutual TLS: the sender's resolve, then one deliver, with the v2 functions of the member.
 test('an exact member send asks an old member once with no text, and a new member gets one resolve and one deliver', { skip: hasOpenSsl ? false : 'openssl is not on PATH.' }, async (t) => {
   const clock = { now: Date.now() };

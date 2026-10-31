@@ -239,6 +239,71 @@ test('an invite after a port or address change saves them in the entry of this m
   assert.equal((await selfEntry()).port, 4700);
 });
 
+test('a hello query saves the new network of the calling member in its own entry only, and its running poller uses it', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-seen-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, 'group.json');
+  const network = { running: true, listening: [{ kind: 'lan', address: '10.0.0.1' }, { kind: 'zerotier', address: '10.147.17.1' }], port: 4630 };
+  const gateway = { credentials: async () => ({ key: '', cert: '', fingerprint: 'a'.repeat(64) }), identity: async () => id('a'),
+    status: async () => ({ ...network }), devices: async () => [] };
+  const hellos = [];
+  const learned = { addresses: [{ kind: 'lan', address: '10.0.0.7' }], port: 4800 };
+  const request = async (options) => {
+    if (!options.path.startsWith('/peer/v1/hello')) return { status: 503, body: null };
+    hellos.push(options.path);
+    return { status: 200, body: { machineId: options.member.machineId, ...learned } };
+  };
+  const pending = [];
+  const timers = { setTimeout: (run, ms) => { const handle = { run, ms, unref() {} }; pending.push(handle); return handle; }, clearTimeout: () => {} };
+  const settle = async () => { for (let round = 0; round < 10; round += 1) await new Promise((resolve) => setImmediate(resolve)); };
+  await saveGroup(file, group({ members: [member('a', 'debian'), member('b', 'homeLP', { addedBy: id('c'), addedAtMs: 15 }), member('c', 'workLP')],
+    removed: [{ machineId: id('c'), certFingerprint: 'c'.repeat(64), removedBy: id('a'), removedAtMs: 20 }] }));
+  let changes = 0;
+  const machine = createMachineGroup({ file, gateway: () => gateway, request, timers, hostName: 'pc', log: () => {}, onChange: () => { changes += 1; } });
+  await machine.start();
+  await settle();
+  // The hello carries this machine's network in the join-link form.
+  assert.deepEqual(hellos, ['/peer/v1/hello?a=lan%3A10.0.0.1%2Czerotier%3A10.147.17.1&p=4630']);
+  const poller = () => machine.peerStates().find((state) => state.member.machineId === id('b'));
+  assert.deepEqual([poller().member.addresses, poller().member.port], [learned.addresses, 4800]);
+  // A save that does not change the entry of the member keeps what the poller learned from the hello reply.
+  await machine.onPhonePaired({ id: '0123456789ab', name: 'Phone', tokenSha256: 'f'.repeat(64) });
+  assert.equal((await loadGroup(file)).group.phones.length, 1);
+  assert.deepEqual([poller().member.addresses, poller().member.port], [learned.addresses, 4800]);
+  // No query when the network is off or the group cannot hold it.
+  const nextHello = async () => {
+    const handle = pending.findLast((item) => item.ms === 60_000);
+    pending.splice(pending.indexOf(handle), 1);
+    handle.run();
+    await settle();
+    return hellos.at(-1);
+  };
+  network.running = false;
+  assert.equal(await nextHello(), '/peer/v1/hello');
+  Object.assign(network, { running: true, listening: Array.from({ length: 9 }, (_, index) => ({ kind: 'lan', address: `10.0.0.${index + 1}` })) });
+  assert.equal(await nextHello(), '/peer/v1/hello');
+  // Invalid values, an unknown, removed, or own certificate, and unchanged values save nothing.
+  const before = await readFile(file, 'utf8');
+  changes = 0;
+  const seen = (letter, query) => machine.peer.seen(letter.repeat(64), new URLSearchParams(query));
+  for (const query of ['', 'p=4631', 'a=lan%3A10.0.0.8', 'a=lan%3A10.0.0.8&p=80', 'a=lan%3A10.0.0.8&p=04631', 'a=lan%3A10.0.0.8&p=4631x',
+    'a=lan%3A10.0.0.8&p=70000', 'a=lan%3A8.8.8.8&p=4631', 'a=wifi%3A10.0.0.8&p=4631', 'a=&p=4631', 'a=10.0.0.8&p=4631',
+    'a=lan%3A10.0.0.8%2Czerotier%3A10.0.0.8&p=4631']) await seen('b', query);
+  for (const letter of ['a', 'c', 'd']) await seen(letter, 'a=lan%3A10.0.0.8&p=4631');
+  const saved = (await loadGroup(file)).group.members.find((item) => item.machineId === id('b'));
+  await seen('b', `a=${encodeURIComponent(saved.addresses.map((item) => `${item.kind}:${item.address}`).join(','))}&p=${saved.port}`);
+  assert.deepEqual([await readFile(file, 'utf8'), changes], [before, 0]);
+  // A valid new network saves only the addresses and port of the caller and reaches its poller.
+  await seen('b', 'a=lan%3A10.0.0.8%2Ctailscale%3A100.64.0.8&p=4631');
+  const after = (await loadGroup(file)).group;
+  const network8 = [{ kind: 'lan', address: '10.0.0.8' }, { kind: 'tailscale', address: '100.64.0.8' }];
+  assert.deepEqual(after.members.find((item) => item.machineId === id('b')), { ...saved, addresses: network8, port: 4631 });
+  assert.deepEqual(after.members.filter((item) => item.machineId !== id('b')), JSON.parse(before).members.filter((item) => item.machineId !== id('b')));
+  assert.equal(changes, 1);
+  assert.deepEqual([poller().member.addresses, poller().member.port], [network8, 4631]);
+  await machine.stop();
+});
+
 test('status gives the ASB version of each member, and fetchMember asks only an online member', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-fetch-'));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -249,7 +314,7 @@ test('status gives the ASB version of each member, and fetchMember asks only an 
   const calls = [];
   const request = async (options) => {
     calls.push(options);
-    if (options.path === '/peer/v1/hello') return { status: 200, body: { machineId: options.member.machineId, asbVersion: options.member.machineId === id('b') ? '1.11.0' : 'bad' } };
+    if (options.path.startsWith('/peer/v1/hello')) return { status: 200, body: { machineId: options.member.machineId, asbVersion: options.member.machineId === id('b') ? '1.11.0' : 'bad' } };
     if (options.path === '/peer/v1/bridge') return { status: 200, body: { api: 1 } };
     return { status: 503, body: null };
   };

@@ -146,8 +146,16 @@ export function checkInvite(invite, code, nowMs = Date.now()) {
   return 'bad';
 }
 
+// The address list of a join link and a hello query: `kind:address` items, split at `,`, then at the first `:`.
+const joinAddresses = (addresses) => addresses.map(({ kind, address }) => `${kind}:${address}`).join(',');
+const splitAddresses = (text) => text.split(',').map((item) => {
+  const at = item.indexOf(':');
+  return { kind: item.slice(0, at), address: item.slice(at + 1) };
+});
+const PORT_TEXT = /^[1-9][0-9]{3,4}$/;
+
 export function buildJoinLink({ groupId, addresses, port, fingerprint, code, name }) {
-  const values = { v: 1, g: groupId, a: addresses.map(({ kind, address }) => `${kind}:${address}`).join(','), p: port, f: fingerprint, c: code, n: name };
+  const values = { v: 1, g: groupId, a: joinAddresses(addresses), p: port, f: fingerprint, c: code, n: name };
   return `asb://join?${Object.entries(values).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&')}`;
 }
 
@@ -159,12 +167,9 @@ export function parseJoinLink(link, { addressOk = validPeerAddress } = {}) {
     if (extra !== undefined || value === undefined || Object.hasOwn(values, key)) return null;
     try { values[key] = decodeURIComponent(value); } catch { return null; }
   }
-  if (!fields(values, ['v', 'g', 'a', 'p', 'f', 'c', 'n']) || values.v !== '1' || !HEX16.test(values.g) || !/^[1-9][0-9]{3,4}$/.test(values.p)
+  if (!fields(values, ['v', 'g', 'a', 'p', 'f', 'c', 'n']) || values.v !== '1' || !HEX16.test(values.g) || !PORT_TEXT.test(values.p)
     || !HEX64.test(values.f) || !CODE.test(values.c) || !validName(values.n)) return null;
-  const addresses = values.a.split(',').map((item) => {
-    const at = item.indexOf(':');
-    return { kind: item.slice(0, at), address: item.slice(at + 1) };
-  });
+  const addresses = splitAddresses(values.a);
   const port = Number(values.p);
   if (!validAddresses(addresses, addressOk) || !validPort(port)) return null;
   return { groupId: values.g, addresses, port, fingerprint: values.f, code: values.c, name: values.n };
@@ -221,19 +226,35 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
       scan: entry.reply?.scan || { complete: true, files: 0, scannedFiles: 0 } };
   }
 
+  const savedNetwork = (member) => JSON.stringify([member.addresses, member.port]);
+  // Each hello tells the member the current network of this machine, so a member that cannot reach the old one learns the new one.
+  const helloQuery = async () => {
+    try {
+      const { addresses, port } = await network();
+      return validAddresses(addresses, addressOk) && validPort(port) ? `?a=${encodeURIComponent(joinAddresses(addresses))}&p=${port}` : '';
+    } catch { return ''; }
+  };
+
   function syncPollers() {
     const wanted = new Map((group && started ? activeMembers(group) : [])
       .filter((member) => member.machineId !== group.self.machineId).map((member) => [member.machineId, member]));
     for (const [machineId, poller] of pollers) {
       const member = wanted.get(machineId);
-      if (member && member.certFingerprint === poller.state.member.certFingerprint) { poller.state.member.name = member.name; continue; }
+      if (member && member.certFingerprint === poller.state.member.certFingerprint) {
+        poller.state.member.name = member.name;
+        // Only a changed saved entry replaces the addresses and port that the poller learned from a hello reply.
+        if (poller.saved !== savedNetwork(member)) Object.assign(poller.state.member, { addresses: member.addresses, port: member.port });
+        poller.saved = savedNetwork(member);
+        continue;
+      }
       poller.stop();
       pollers.delete(machineId);
     }
     for (const [machineId, member] of wanted) {
       if (pollers.has(machineId)) continue;
-      const poller = createPeerPoller({ member, tls, request, now, onChange, validAddresses: (value) => validAddresses(value, addressOk),
+      const poller = createPeerPoller({ member, tls, request, now, onChange, validAddresses: (value) => validAddresses(value, addressOk), helloQuery,
         onGroup: (value) => serialize(() => applyGroup(value)), onRemoved: () => serialize(removed), ...(timers ? { timers } : {}) });
+      poller.saved = savedNetwork(member);
       pollers.set(machineId, poller);
       poller.start();
     }
@@ -465,6 +486,19 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
         return { api: 1, machineId: group.self.machineId, name: group.self.name, groupId: group.groupId, asbVersion,
           addresses: status.listening, port: status.port };
       },
+      // The hello query of a member: its current addresses and port, saved in its own active entry only.
+      seen: (fingerprint, params) => serialize(async () => {
+        const text = params.get('a');
+        const portText = params.get('p');
+        if (!group || text === null || portText === null || !PORT_TEXT.test(portText)) return;
+        const addresses = splitAddresses(text);
+        const port = Number(portText);
+        if (!validAddresses(addresses, addressOk) || !validPort(port)) return;
+        const member = activeMembers(group).find((item) => item.certFingerprint === fingerprint && item.machineId !== group.self.machineId);
+        if (!member || savedNetwork(member) === savedNetwork({ addresses, port })) return;
+        const next = { ...group, members: group.members.map((item) => item === member ? { ...item, addresses, port } : item) };
+        if (validateGroup(next, { addressOk })) await save(next);
+      }),
       group: async () => withoutSelf(group),
       sessions: async (ifNoneMatch) => {
         await server()?.dashboardForRequest();

@@ -422,7 +422,11 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         stream.pipe(response);
         stream.end(answer.body);
         return;
-      } else result = { status: 200, body: route === 'hello' ? await peer.hello() : await peer.group() };
+      } else {
+        // The hello query carries the caller's current network; an old engine sends none, and a bad one changes nothing.
+        if (route === 'hello') try { await peer.seen?.(caller, new URL(request.url, 'https://asb').searchParams); } catch {}
+        result = { status: 200, body: route === 'hello' ? await peer.hello() : await peer.group() };
+      }
       if (response.destroyed) return;
       if (result.status === 401) reject(401, result.body.error); else sendJson(response, result.status, result.body);
     } catch (cause) {
