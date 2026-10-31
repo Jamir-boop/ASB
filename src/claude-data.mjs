@@ -824,6 +824,16 @@ export function liveClaudeRecord(thread, records) {
   return newest(host.length ? host : records.filter((item) => sessionIds.has(item.sessionId)));
 }
 
+// A new or switched session writes its transcript a moment before its registry record names it, so a turn this recent does not show that the process ended.
+const PROCESS_START_GRACE_MS = 10_000;
+
+// An open task with no live process of the session (of any entrypoint) means that the process ended during the task.
+export function markEndedClaudeProcess(row, registry, nowMs) {
+  if (!registry || row.lifecycleRunning !== true || liveClaudeRecord(row, registry)) return row;
+  const deadline = Number(row.transcriptActivityAtMs || 0) + PROCESS_START_GRACE_MS;
+  return nowMs > deadline ? { ...row, cliProcessEnded: true } : { ...row, cliProcessCheckAtMs: deadline };
+}
+
 const CLAUDE_APPROVAL_GRACE_MS = 10_000;
 const APPROVAL_FORMAT_WARNING = 'ASB cannot read the approvals in the Claude app log. Update ASB.';
 
@@ -1396,14 +1406,16 @@ export async function loadClaudeDesktopCodeThreads({
     }
   });
   const windows = platform === 'win32';
-  // The registry is best effort: a read failure keeps the transcript state.
-  const live = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads, fileScan }).catch(() => []);
+  // The registry is best effort: a read failure (null) keeps the transcript state.
+  const registry = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads, fileScan }).catch(() => null);
+  const live = registry || [];
   const approvals = await readClaudeAppApprovals(appDir, { windows, fileScan }).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)
     .map((entry) => normalizeClaudeDesktopCodeSession(entry.session, entry, nowMs))
     .filter((thread) => thread.externalId))
     .map((thread) => applyLiveClaudeStatus(thread, live, nowMs))
+    .map((thread) => markEndedClaudeProcess(thread, platform === 'linux' || windows ? registry : null, nowMs))
     .map((thread) => {
       const record = liveClaudeRecord(thread, live);
       // An approval counts only while the chat's Claude Code process runs.

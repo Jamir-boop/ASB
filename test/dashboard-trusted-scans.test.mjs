@@ -277,7 +277,7 @@ test('an ended registry process with no file event makes its CLI card leave Work
   f.advance(30_000);
   await f.timers.findLast((timer) => timer.milliseconds === 30_000).callback();
   assert.equal(f.snapshot.cachedDashboard().threads[0].state, 'unknown');
-  assert.equal(f.snapshot.cachedDashboard().threads[0].reason, 'The CLI process ended during a task.');
+  assert.equal(f.snapshot.cachedDashboard().threads[0].reason, 'The Claude Code process ended during a task.');
 });
 
 test('unknown hints, coverage loss, hard invalidation, force, and desktop deadlines give full scans', async (t) => {

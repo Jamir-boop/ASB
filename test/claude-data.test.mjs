@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import { once } from 'node:events';
-import { appendFile, mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -979,8 +979,10 @@ test('a live Claude registry record in the waiting status shows a permission pro
     return { thread, row, summary: [row.state, row.actionRequired, row.questionPending, row.questionAttention, row.pending] };
   };
   const working = ['working', false, false, false, false];
-  // An ordinary Bash call leaves no transcript wait signal.
-  assert.deepEqual((await view()).summary, working);
+  // The open task is older than the start grace, so with no live record of the session its process ended.
+  const ended = ['unknown', false, false, false, false];
+  // An ordinary Bash call leaves no transcript wait signal; the empty registry has no live record.
+  assert.deepEqual((await view()).summary, ended);
   const live = await start();
   await record(live);
   const permission = await view();
@@ -991,12 +993,12 @@ test('a live Claude registry record in the waiting status shows a permission pro
   await record(live, { status: 'busy', statusUpdatedAt: resumeNowMs - 20_900 });
   assert.deepEqual((await view()).summary, working);
   await record(live, { procStart: '1' });
-  assert.deepEqual((await view()).summary, working);
+  assert.deepEqual((await view()).summary, ended);
   const dead = await start();
   dead.child.kill();
   await once(dead.child, 'exit');
   await record(dead);
-  assert.deepEqual((await view()).summary, working);
+  assert.deepEqual((await view()).summary, ended);
   await record(live, { waitingFor: 'input needed', statusUpdatedAt: resumeNowMs - 20_800 });
   const question = await view();
   assert.deepEqual(question.summary, ['waiting', false, true, true, true]);
@@ -1017,6 +1019,31 @@ test('a live Claude registry record in the waiting status shows a permission pro
   // A host match wins over a newer CLI session match.
   await record(other, { status: 'busy', statusUpdatedAt: resumeNowMs - 21_000 });
   assert.equal((await view()).row.state, 'working');
+});
+
+test('a Desktop Code chat with an open task shows Unknown when no live process has its session, after the start grace', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000)]);
+  const sessions = path.join(path.dirname(fixture.projectsDir), 'sessions');
+  await mkdir(sessions);
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: {}, stdio: 'ignore' });
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); } });
+  await once(child, 'spawn');
+  const procStart = (await readFile(`/proc/${child.pid}/stat`, 'utf8')).split(') ').pop().split(' ')[19];
+  // The only live record belongs to another session.
+  await writeFile(path.join(sessions, `${child.pid}.json`), JSON.stringify({ pid: child.pid, procStart, sessionId: 'other-cli',
+    hostSessionId: 'local_other', name: 'synthetic', status: 'busy', statusUpdatedAt: resumeNowMs - 21_000 }));
+  const activityAtMs = resumeNowMs - 49_000;
+  const view = async (nowMs) => {
+    const { thread, row } = await observeFixture(fixture.projectsDir, nowMs);
+    return [row.state, row.reason, thread.cliProcessEnded, thread.cliProcessCheckAtMs];
+  };
+  assert.deepEqual(await view(resumeNowMs), ['unknown', 'The Claude Code process ended during a task.', true, undefined]);
+  // A turn of the last seconds can come before the registry record that names its session.
+  assert.deepEqual((await view(activityAtMs + 5_000)).filter((_, index) => index !== 1), ['working', undefined, activityAtMs + 10_000]);
+  // A registry that cannot be read marks nothing.
+  await chmod(sessions, 0o000);
+  try { assert.deepEqual((await view(resumeNowMs)).filter((_, index) => index !== 1), ['working', undefined, undefined]); }
+  finally { await chmod(sessions, 0o700); }
 });
 
 // The Desktop app ends some turns with a wrap-up tool. Its result ends the turn; the app can write more records after it.

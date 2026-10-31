@@ -255,7 +255,7 @@ test('a Claude CLI card with an open task shows Unknown when no live process has
   await record(home, await liveProcess(t), { sessionId: 'desktop-process', entrypoint: 'claude-desktop' });
   // A record of a process that is gone is not a live record.
   await record(home, 2 ** 22 + 1, { sessionId: 'dead', procStart: '1' });
-  assert.deepEqual(await check(projectsDir, 'dead'), ['unknown', 'The CLI process ended during a task.', 5_000]);
+  assert.deepEqual(await check(projectsDir, 'dead'), ['unknown', 'The Claude Code process ended during a task.', 5_000]);
   assert.deepEqual(await check(projectsDir, 'alive'), working);
   assert.deepEqual(await check(projectsDir, 'desktop-process'), working);
   // A turn of the last seconds can come before the registry record that names its session.

@@ -2,13 +2,10 @@
 // They are view-only cards. Titles come from the registry name or the title records, never from prompt text.
 import path from 'node:path';
 import { applyLiveClaudeStatus, baseClaudeThread, claudeFileStat, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
-  indexClaudeProjectFiles, liveClaudeRecord, rememberClaudeLoad, reuseClaudeLoad, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
+  indexClaudeProjectFiles, markEndedClaudeProcess, rememberClaudeLoad, reuseClaudeLoad, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
 import { readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
-// A new or switched session writes its transcript a moment before its registry record names it, so a turn this recent does not show that the process ended.
-const PROCESS_START_GRACE_MS = 10_000;
-
 export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJECTS_DIR, desktopSessionIds = new Set(), nowMs = Date.now(),
   maxCount = 500, maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', platform = process.platform, registryReads = null, fileScan = null } = {}) {
   const registryDir = path.join(path.dirname(projectsDir), 'sessions');
@@ -83,11 +80,7 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
         cliNoTranscript: !signals,
       },
     }, nowMs);
-    const row = applyLiveClaudeStatus(thread, live, nowMs);
-    // An open task with no live process of the session (of any entrypoint) means that the process ended during the task.
-    if (!registry || row.lifecycleRunning !== true || liveClaudeRecord(row, registry)) return row;
-    const deadline = Number(row.transcriptActivityAtMs || 0) + PROCESS_START_GRACE_MS;
-    return nowMs > deadline ? { ...row, cliProcessEnded: true } : { ...row, cliProcessCheckAtMs: deadline };
+    return markEndedClaudeProcess(applyLiveClaudeStatus(thread, live, nowMs), registry, nowMs);
   });
   return rememberClaudeLoad(key, { threads }, options);
 }
