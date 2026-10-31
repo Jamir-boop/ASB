@@ -494,6 +494,23 @@ posix.each(['refused', 'malformed'] as const)('Desktop %s delivery keeps definit
   } finally { await f.close(); }
 });
 
+posix.each(['stall', 'failure'] as const)('a Desktop input check %s drops the message with one delivery-refused receipt', async outcome => {
+  const f = await fixture();
+  if (outcome === 'stall') f.desktop.stallAt('thread-stream-following-changed');
+  else f.bridge.setTarget({ kind: 'desktop', path: join(f.root, 'ipc', 'missing.sock') });
+  try {
+    const id = await f.message('prompting');
+    const receipts = () => f.frames.filter(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id);
+    await until(() => receipts().length > 0, 30000);
+    await Bun.sleep(30);
+    expect(receipts()).toHaveLength(1);
+    expect(receipts()[0]).toMatchObject({ status: 'dropped', drop_reason: 'delivery-refused', dropped_msg_ids: [id] });
+    expect(f.db.query('SELECT status,awaiting_input,drop_reason FROM messages WHERE id=?').get(id))
+      .toEqual({ status: 'dropped', awaiting_input: 0, drop_reason: 'delivery-refused' });
+    expect(f.desktop.submissions).toHaveLength(0);
+  } finally { await f.close(); }
+}, 35000);
+
 posix('a Desktop task that is neither active nor idle refuses a message before any request, and a later idle notice still arrives', async () => {
   const f = await fixture();
   f.desktop.setState('notLoaded');

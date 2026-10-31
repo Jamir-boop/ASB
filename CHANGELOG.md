@@ -20,6 +20,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed Usage counting this machine two times after an import of a backup made before `asb group reset-identity`: an imported copy with the name of this machine now joins this machine.
 - Fixed Usage showing less than half of the Claude output tokens. Claude Code writes the usage of a streamed reply many times, and ASB kept the first, partial count. It now keeps the final count. The first scan after the update reads all transcripts again.
 - Fixed the price of long requests and Claude 1-hour cache writes: from the hour of the update, Codex and Claude requests above 200,000 or 272,000 input tokens and 1-hour cache writes use their LiteLLM tier rates. The price list downloads again one time.
+- Fixed ASB Bridge losing an agent message when Codex Desktop did not answer the input check before a delivery, or its socket closed: the sender got no receipt. Nothing went to Codex, so the message is now dropped with `delivery-refused`, and the sender gets one `dropped` receipt.
 
 ## ASB 1.13.0 - 2026-10-28
 

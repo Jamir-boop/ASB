@@ -131,7 +131,7 @@ flowchart LR
   bs -- "text frame, receipts" --> cs
 ```
 
-The app-server transport uses `turn/start` with `toolOutput`, which starts or joins a turn at tool authority. The tool output is the header and the text. The bridge finds the message again in the thread history from the input ID in the first line of the output. History that ASB Bridge 0.6.0 wrote has a JSON marker instead, and the bridge still reads it. The bridge reads existing settings and leaves approval requests to your UI. If the observer connection drops, status and permissions are `unknown` while the bridge reconnects for up to 30 seconds. If recovery fails, the receiver exits. A lost delivery acknowledgement stays `unknown` and is never resent.
+The app-server transport uses `turn/start` with `toolOutput`, which starts or joins a turn at tool authority. The tool output is the header and the text. The bridge finds the message again in the thread history from the input ID in the first line of the output. History that ASB Bridge 0.6.0 wrote has a JSON marker instead, and the bridge still reads it. The bridge reads existing settings and leaves approval requests to your UI. If the observer connection drops, status and permissions are `unknown` while the bridge reconnects for up to 30 seconds. If recovery fails, the receiver exits. A lost delivery acknowledgement stays `unknown` and is never resent. When the bridge cannot read the task's inputs before a delivery (Codex does not answer in 10 seconds, or its socket closes), nothing goes to Codex: the message is `dropped` with `delivery-refused`, and the sender gets one `dropped` receipt.
 
 `send_message` addresses a peer by `sessionId`, not by name. An ambiguous registration is refused.
 

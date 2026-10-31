@@ -722,7 +722,10 @@ export class Bridge {
     if (message.kind === 'message') {
       try { await this.syncInputs(); }
       catch {
-        this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status IN ('pending','held')", [message.id]);
+        // Nothing went to Codex: the sender gets the same drop receipt as for a refused delivery.
+        if (this.db.run("UPDATE messages SET status='dropped',drop_reason='delivery-refused',awaiting_input=0 WHERE id=? AND status IN ('pending','held')", [message.id]).changes) {
+          await this.receipt(message, 'dropped', 'delivery-refused');
+        }
         return;
       }
     }

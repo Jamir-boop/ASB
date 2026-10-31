@@ -131,8 +131,8 @@ posix('registered peers can initiate contact; unknown senders and wrong targets 
     await transmit(randomUUID(), `uds:${peerPath}`, randomUUID());
     await transmit(messageId);
     const deadline = Date.now() + 2000;
-    while (bridge.status().messages[0]?.status !== 'unknown' && Date.now() < deadline) await Bun.sleep(10);
-    expect(bridge.status().messages[0]?.status).toBe('unknown');
+    while (bridge.status().messages[0]?.status !== 'dropped' && Date.now() < deadline) await Bun.sleep(10);
+    expect(bridge.status().messages[0]).toMatchObject({ status: 'dropped', drop_reason: 'delivery-refused' });
     await transmit(messageId);
     await bridge.close();
     bridge = new Bridge(threadId, configDir, stateDir, join(root, 'unavailable.sock'));
@@ -140,8 +140,13 @@ posix('registered peers can initiate contact; unknown senders and wrong targets 
     await transmit(messageId);
     const state = bridge.status();
     expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]).toMatchObject({ id: messageId, status: 'unknown', turn_id: null });
+    expect(state.messages[0]).toMatchObject({ id: messageId, status: 'dropped', drop_reason: 'delivery-refused', turn_id: null });
     expect(state.replyAddress).not.toBeNull();
+    // The unreachable task's input check failed, so the sender got exactly one drop receipt.
+    const receipts = received.join('').split('\n').filter(Boolean).map(line => JSON.parse(line));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ action: 'peer_message_status', orig_msg_id: messageId, status: 'dropped', drop_reason: 'delivery-refused' });
+    received.length = 0;
     writeFileSync(join(configDir, 'sessions', `${process.ppid}.json`), JSON.stringify({
       pid: process.ppid, sessionId, messagingSocketPath: peerPath, cwd: root, peerProtocol: 1,
       procStart: 'a previous process with this PID',
