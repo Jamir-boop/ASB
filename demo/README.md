@@ -40,7 +40,7 @@ REMOTION_BROWSER_EXECUTABLE=/absolute/path/to/chromium FFMPEG_EXECUTABLE=/absolu
 | Prior local session handoff video, `out/asb-demo-session-switching.mp4` | 28.5 seconds, 1280 × 720, 30 fps, H.264, silent |
 | Local app switching video, `out/asb-demo-app-switching.mp4` | 22 seconds, 1280 × 720, 30 fps, H.264, silent |
 | [Video poster](../docs/media/asb-demo-poster.png) | 1280 × 720 PNG |
-| [Board message light](../docs/media/board-message-light.svg) | 11.5-second loop, 962 × 252, animated SVG |
+| [Board message light](../docs/media/board-message-light.svg) | 14-second loop, 962 × 252, animated SVG |
 | [Messages window](../docs/media/messages-window.svg) | 8.4-second loop, 968 × 760, animated SVG |
 | [Usage window](../docs/media/usage-window.svg) | 12-second loop, 948 × 700, animated SVG |
 | [README hero](../docs/media/asb-hero.svg) | 30-second loop, 960 × 540, animated SVG |
@@ -50,7 +50,7 @@ The GIF uses a 128-color palette to limit its download size. Use the MP4 for ful
 
 ## Board message light
 
-`node message-light.mjs` writes `../docs/media/board-message-light.svg`. It needs no packages. The SVG shows the message light of the board: one Codex session sends a message to three Claude sessions, and each one answers. The sessions are made up. The SVG uses SMIL, so it moves in a README, and it shows no motion when the system asks for reduced motion.
+`node message-light.mjs` writes `../docs/media/board-message-light.svg`. It needs no packages. The SVG shows the message light of the board: one Codex session sends a message to three Claude sessions, and each one answers. Then the board setting **Pets** carries three more messages: a crab, a pigeon, and a cat each climb out of the sender card, walk or jump to the receiver card, toss the envelope into its provider icon, and dive into the card. The script reads `../assets/pets/pets.json` and ports the pet motion of `scripts/asb-native.py` at the Comfortable scale. The sessions are made up. The SVG uses SMIL, so it moves in a README, and it shows no motion when the system asks for reduced motion.
 
 ## Messages and Usage windows
 
