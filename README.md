@@ -17,7 +17,7 @@
 
 When a session sends a message to another session, a light flies from its card to the other card:
 
-![ASB board: a light flies from one session card to three other cards, and back from each](docs/media/board-message-light.svg)
+![ASB board: a light flies from one session card to three other cards and back from each, then a crab, a pigeon, and a cat each carry a message](docs/media/board-message-light.svg)
 
 Preferences > Appearance > **Pets** sends a pixel crab, pigeon, or cat with each message instead.
 
