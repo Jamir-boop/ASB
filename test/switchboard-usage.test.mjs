@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -13,9 +13,15 @@ const self = { machineId: 'a'.repeat(16), machineName: 'engine-a' };
 const member = (usage) => ({ machineId: 'b'.repeat(16), name: 'engine-b', state: 'online', lastReportAtMs: Date.now(), messages: [], usage,
   scan: { complete: true, files: 1, scannedFiles: 1 } });
 
+// Each test closes its servers, and the homes go after the last test. A failed after hook skips the hooks after it: a home
+// that could not go left its server open, and the Windows CI job then ran until its 6-hour limit. A scan or a price load can
+// still save into a home after its last reply, and Windows cannot remove a folder with an open file, so the removal tries again.
+const homes = [];
+after(() => Promise.all(homes.map((home) => rm(home, { recursive: true, force: true, maxRetries: 10 }))));
+
 async function setup(t, extra = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-switchboard-usage-'));
-  t.after(() => rm(home, { recursive: true, force: true }));
+  homes.push(home);
   const projects = path.join(home, '.claude', 'projects');
   await mkdir(path.join(projects, 'project'), { recursive: true });
   const atMs = Date.now() - HOUR;
@@ -48,7 +54,7 @@ async function setup(t, extra = {}) {
     }
     throw new Error('The usage scan did not end.');
   };
-  return { usage, fetches, cacheDir, server };
+  return { usage, fetches, cacheDir, server, home };
 }
 
 test('the switchboard usage route reads the registered Claude source and prices it with the fake download', async (t) => {
@@ -169,4 +175,11 @@ test('only changes in local row identity, state, time, or archive cause a usage 
   assert.equal(await scan(), 5);
   rows[0].updatedAtMs += 1000;
   assert.equal(await scan(), 6);
+});
+
+test('a test closes its server at its end and keeps its home to the end of the file, so a home that cannot go leaves no server open', async (t) => {
+  let server, home;
+  await t.test('a test with a server', async (t) => { ({ server, home } = await setup(t)); });
+  assert.equal(server.listening, false);
+  await access(home);
 });
