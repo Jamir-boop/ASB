@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { uuid } from './claude';
 import { checkSocketFile, isWindows } from './platform';
-import type { Runtime } from './desktop';
+import { permissionMode, type Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
 import { version } from './version';
 import { DeliveryRefused, headerInputId } from './delivery';
@@ -209,12 +209,6 @@ export class AppServer {
   }
 
   close() { this.stopped = true; this.socket.terminate(); }
-}
-
-function permissionMode(permissions: z.infer<typeof permissionsSchema>): Runtime['mode'] {
-  if (permissions.approvalPolicy !== 'never') return 'prompting';
-  const sandbox = permissions.sandboxPolicy.type;
-  return sandbox === 'dangerFullAccess' ? 'bypass' : ['workspaceWrite', 'readOnly', 'externalSandbox'].includes(sandbox) ? 'prompting' : 'unknown';
 }
 
 export async function withAppServer<T>(path: string, threadId: string, operation: (server: AppServer) => Promise<T>) {

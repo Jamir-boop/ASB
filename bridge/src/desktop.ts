@@ -28,7 +28,7 @@ const acceptedSchema = z.object({ result: z.union([
   z.object({ turn: z.object({ id: uuid }) }), z.object({ turnId: uuid }),
 ]) });
 
-function permissionMode(permissions: Snapshot['currentPermissions']): Runtime['mode'] {
+export function permissionMode(permissions: Snapshot['currentPermissions']): Runtime['mode'] {
   if (!permissions) return 'unknown';
   if (permissions.approvalPolicy !== 'never') return 'prompting';
   const sandbox = permissions.sandboxPolicy?.type;

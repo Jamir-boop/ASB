@@ -421,19 +421,31 @@ export class Bridge {
 
   // One exact session on a member machine, through the local engine only. It never lists peers, never uses /api/relay/*,
   // and never sends again by itself. Runs inside sendReference's exclusive section.
-  private async sendMember(runtime: EngineRuntime, reference: string, id: string, text: string) {
+  // The start of sendMember and sendRemote: the sender facts, and the same size limit as a local send (the frame that it would write).
+  private async remoteStart(sessionId: string, id: string, text: string) {
     const receiver = this.receiver();
     const address = peerAddress(receiver.messagingSocketPath);
     const mode = this.runtime().mode;
     const hops = [...await this.outgoingHops(), ...(this.ownHop() ? [this.ownHop()!] : [])].slice(-32);
-    // The same limit as a local send; any UUID has the length of the target session ID.
-    serializeFrame(userFrame({ sessionId: randomUUID() }, address, receiver.name, this.threadId, id, text, mode, null, hops));
+    serializeFrame(userFrame({ sessionId }, address, receiver.name, this.threadId, id, text, mode, null, hops));
+    return { receiver, hops, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown' };
+  }
+
+  // The end of sendMember and sendRemote: the engine has the message.
+  private remoteWritten(id: string) {
+    this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
+    return { messageId: id, subscriptionId: null, status: this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status };
+  }
+
+  private async sendMember(runtime: EngineRuntime, reference: string, id: string, text: string) {
+    // Any UUID has the length of the target session ID.
+    const { hops, mode } = await this.remoteStart(randomUUID(), id, text);
     this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out',?,'submitting',NULL,NULL)",
       [id, reference, text]);
     let reply: z.infer<typeof memberReply> | undefined;
     try {
       reply = memberReply.parse(await engineRequest(runtime, '/api/agent/send-member', { method: 'POST', timeoutMs: 16_000, body: { reference,
-        caller: { runtimeSessionId: this.threadId, configDir: resolve(this.configDir) }, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown',
+        caller: { runtimeSessionId: this.threadId, configDir: resolve(this.configDir) }, mode,
         message: { msgId: id, text, hopChain: hops }, remainingMs: 10_000 } }));
       if (reply.pid !== runtime.pid || reply.msgId !== id) reply = undefined;
     } catch { reply = undefined; }
@@ -446,8 +458,7 @@ export class Bridge {
       this.db.run("UPDATE messages SET status='unknown' WHERE id=? AND status='submitting'", [id]);
       throw new Error(`Send outcome unknown for ${id}; inspect status before sending again`);
     }
-    this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
-    return { messageId: id, subscriptionId: null, status: this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status };
+    return this.remoteWritten(id);
   }
 
   // The receipt of an exact member send, from the local engine through the outbox. It applies only to this receiver
@@ -465,13 +476,8 @@ export class Bridge {
   private async sendRemote(runtime: EngineRuntime, target: RemotePeer, text: string | undefined, notifyWhenIdle: boolean) {
     if (notifyWhenIdle) throw new Error('Idle subscriptions do not work across machines yet.');
     if (!text) throw new Error('A message or notify_when_idle is required');
-    const receiver = this.receiver();
-    const address = peerAddress(receiver.messagingSocketPath);
-    const mode = this.runtime().mode;
-    const hops = [...await this.outgoingHops(), ...(this.ownHop() ? [this.ownHop()!] : [])].slice(-32);
     const id = randomUUID();
-    // The same limit as a local send: the frame that a local send would write.
-    serializeFrame(userFrame({ sessionId: target.sessionId }, address, receiver.name, this.threadId, id, text, mode, null, hops));
+    const { receiver, hops, mode } = await this.remoteStart(target.sessionId, id, text);
     let machineId: string;
     try { machineId = z.object({ machineId: z.string().regex(/^[a-f0-9]{16}$/) }).parse(await engineRequest(runtime, '/api/relay/homes')).machineId; }
     catch { throw new SendRefused('The local ASB engine did not answer. Nothing sent.'); }
@@ -482,7 +488,7 @@ export class Bridge {
     let reply: z.infer<typeof relayReply>;
     try {
       reply = relayReply.parse(await engineRequest(runtime, '/api/relay/send', { method: 'POST', body: { machineId: target.machineId, targetSessionId: target.sessionId,
-        sender: { machineId, sessionId: this.threadId, name: receiver.name, mode: ['prompting', 'bypass'].includes(mode) ? mode : 'unknown', agent: this.host.remoteAgent },
+        sender: { machineId, sessionId: this.threadId, name: receiver.name, mode, agent: this.host.remoteAgent },
         message: { msgId: id, text, hopChain: hops } } }));
     } catch { reply = { ok: false, reason: 'unknown' }; }
     if (!reply.ok) {
@@ -494,8 +500,7 @@ export class Bridge {
       this.db.run("UPDATE messages SET status='not-sent',status_reason=? WHERE id=? AND status='submitting'", [reason, id]);
       throw new SendRefused(reason);
     }
-    this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [id]);
-    return { messageId: id, subscriptionId: null, status: this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(id)?.status };
+    return this.remoteWritten(id);
   }
 
   private async receive(frame: Frame) {

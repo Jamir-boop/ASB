@@ -1,11 +1,23 @@
 import { test, expect } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { deliverToDesktop, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from "../src/desktop";
+import { deliverToDesktop, permissionMode, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from "../src/desktop";
 import { receiver } from "./desktop-fixture";
 import { DeliveryRefused } from '../src/delivery';
 // POSIX only on Windows CI: the Unix socket file of the desktop IPC fixture.
 const posix = test.skipIf(process.platform === 'win32');
+
+// Both transports use this rule; only the desktop snapshot can lack the permissions or the sandbox.
+test('permission mode table for every approval policy and sandbox type', () => {
+  const sandboxes = { dangerFullAccess: 'bypass', workspaceWrite: 'prompting', readOnly: 'prompting', externalSandbox: 'prompting', somethingNew: 'unknown' } as const;
+  for (const approvalPolicy of ['never', 'on-request', 'untrusted', { granular: {} }]) {
+    for (const [type, never] of Object.entries(sandboxes)) {
+      expect(permissionMode({ approvalPolicy, sandboxPolicy: { type } })).toBe(approvalPolicy === 'never' ? never : 'prompting');
+    }
+    expect(permissionMode({ approvalPolicy })).toBe(approvalPolicy === 'never' ? 'unknown' : 'prompting');
+  }
+  expect(permissionMode(undefined)).toBe('unknown');
+});
 
 posix('only committed input continues peer context; pending steering cannot replace a newer user input', async () => {
   const desktop = await receiver('active');
