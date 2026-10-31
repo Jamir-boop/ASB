@@ -861,13 +861,13 @@ test('OpenCode install writes the plugin bundle and skill and leaves opencode.js
   const before = await snapshot(f.home);
   const result = f.run(['install', '--opencode']);
   passed(result);
-  assert.match(result.stdout, /OpenCode .*installed 0\.8\.0/);
+  assert.match(result.stdout, /OpenCode .*installed 0\.8\.1/);
   const plugin = path.join(opencodeConfig, 'plugins', 'asb-bridge');
   assert.equal(await skillState(plugin), 'ok');
   assert.equal(await skillState(path.join(opencodeConfig, 'skills/bridge')), 'ok');
   const packageJson = JSON.parse(await readFile(path.join(plugin, 'package.json'), 'utf8'));
   assert.equal(packageJson.name, 'asb-bridge');
-  assert.equal(packageJson.version, '0.8.0');
+  assert.equal(packageJson.version, '0.8.1');
   assert.equal(packageJson.type, 'module');
   const baked = JSON.parse(await readFile(path.join(plugin, 'asb-bridge.json'), 'utf8'));
   assert.equal(baked.schema, 1);
