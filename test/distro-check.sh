@@ -317,12 +317,13 @@ check_preferences() {
 check_widgets() {
   [ "${ASB_CHECK_WIDGETS:-}" = run ] || return 0
   step 12 "run the board widget tests in Xvfb"
-  # The widget tests need the Cantarell font and the Adwaita icons.
+  # The widget tests need the Cantarell font, the Adwaita icons, and xdotool for the real pointer tests.
   case $family in
-    debian) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-cantarell adwaita-icon-theme ;;
+    debian) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-cantarell adwaita-icon-theme xdotool ;;
     *) fail "No widget test packages for the $family family." ;;
   esac
-  as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 900 dbus-run-session -- xvfb-run -a -e /tmp/asb-widgets-xvfb.log -s '-screen 0 1280x1024x24 -noreset' python3 -m unittest discover -s /asb/test -p asb_native_test.py" || {
+  # A 1440 px test window must fit the screen, and GTK sizes a window exactly only with a compositor selection owner.
+  as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 900 dbus-run-session -- xvfb-run -a -e /tmp/asb-widgets-xvfb.log -s '-screen 0 1600x1000x24 -noreset' python3 -I /asb/test/compositor-stub.py python3 -m unittest discover -s /asb/test -p asb_native_test.py" || {
     cat /tmp/asb-widgets-xvfb.log >&2 || true
     fail "The board widget tests failed."
   }

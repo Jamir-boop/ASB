@@ -83,11 +83,11 @@ test('the Preferences step checks the installed board only when enabled, after t
   assert.match(source, /\ninstall_package\ncheck_preferences\ncheck_widgets\necho "==> all steps passed"/);
 });
 
-test('the widget step runs the board widget tests only when enabled, with the debian fonts and icons', async () => {
+test('the widget step runs the board widget tests only when enabled, with the debian fonts, icons, and xdotool, on a composited display', async () => {
   const source = await readFile(script, 'utf8');
   assert.match(source, /check_widgets\(\) \{\n  \[ "\$\{ASB_CHECK_WIDGETS:-\}" = run \] \|\| return 0\n  step 12/);
-  assert.match(source, /debian\) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-cantarell adwaita-icon-theme ;;/);
+  assert.match(source, /debian\) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-cantarell adwaita-icon-theme xdotool ;;/);
   assert.match(source, /\*\) fail "No widget test packages for the \$family family\." ;;/);
-  assert.match(source, /as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 900 dbus-run-session -- xvfb-run -a -e \/tmp\/asb-widgets-xvfb\.log -s '-screen 0 1280x1024x24 -noreset' python3 -m unittest discover -s \/asb\/test -p asb_native_test\.py"/);
+  assert.match(source, /as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 900 dbus-run-session -- xvfb-run -a -e \/tmp\/asb-widgets-xvfb\.log -s '-screen 0 1600x1000x24 -noreset' python3 -I \/asb\/test\/compositor-stub\.py python3 -m unittest discover -s \/asb\/test -p asb_native_test\.py"/);
   assert.match(source, /fail "The board widget tests failed\."/);
 });
