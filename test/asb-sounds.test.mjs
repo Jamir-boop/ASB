@@ -346,7 +346,7 @@ for (const reported of [false, true]) test(`the engine plays a completion sound 
   let clock = now;
   let loads = 0;
   const played = [];
-  const server = createSwitchboardServer({ serviceMode: true, sourceToken: 'window-token', now: () => clock, pendingStatePath: false,
+  const server = createSwitchboardServer({ serviceMode: true, platform: 'linux', sourceToken: 'window-token', now: () => clock, pendingStatePath: false,
     dashboardWatchPaths: [], playSound: (kind) => played.push(kind),
     loadDashboard: async () => {
       loads += 1;
