@@ -102,7 +102,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { job: debian-13, image: 'debian:13', runner: ubuntu-latest, family: debian, tier: board, node: repository, package: deb }
+          - { job: debian-13, image: 'debian:13', runner: ubuntu-latest, family: debian, tier: board, node: repository, package: deb, widgets: run }
           - { job: debian-12, image: 'debian:12', runner: ubuntu-latest, family: debian, tier: engine, node: nodesource, package: deb }
           - { job: ubuntu-24.04, image: 'ubuntu:24.04', runner: ubuntu-latest, family: debian, tier: board, node: nodesource, package: deb }
           - { job: ubuntu-22.04, image: 'ubuntu:22.04', runner: ubuntu-latest, family: debian, tier: engine, node: nodesource, package: deb }
@@ -137,6 +137,7 @@ jobs:
           WINDOW: ${{ matrix.window }}
           SNAPSHOT: ${{ matrix.snapshot }}
           PREFERENCES: ${{ matrix.preferences }}
+          WIDGETS: ${{ matrix.widgets }}
         run: |
           required='node sqlite openssl xdg'
           ci='xvfb dbus font'
@@ -166,7 +167,7 @@ jobs:
           export ASB_CHECK_REFRESH ASB_CHECK_ROUTE ASB_CHECK_REQUIRED ASB_CHECK_BOARD ASB_CHECK_OPTIONAL ASB_CHECK_CI
           env | grep '^ASB_CHECK_'
           docker run --rm -v "$PWD:/asb:ro" -e ASB_DISTRO_CHECK=1 -e ASB_CHECK_WINDOW="$WINDOW" -e ASB_CHECK_SNAPSHOT="$SNAPSHOT" \
-            -e ASB_CHECK_REFRESH -e ASB_CHECK_ROUTE -e ASB_CHECK_REQUIRED -e ASB_CHECK_BOARD -e ASB_CHECK_OPTIONAL -e ASB_CHECK_CI -e ASB_CHECK_PREFERENCES="$PREFERENCES" \
+            -e ASB_CHECK_REFRESH -e ASB_CHECK_ROUTE -e ASB_CHECK_REQUIRED -e ASB_CHECK_BOARD -e ASB_CHECK_OPTIONAL -e ASB_CHECK_CI -e ASB_CHECK_PREFERENCES="$PREFERENCES" -e ASB_CHECK_WIDGETS="$WIDGETS" \
             "$IMAGE" sh -eu /asb/test/distro-check.sh "$FAMILY" "$TIER" "$PACKAGE"
 
   # Build the flake, then run its asb: the board libraries load and the engine starts.

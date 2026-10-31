@@ -15,6 +15,7 @@
 #   ASB_CHECK_WINDOW=skip   the row has no Xvfb, so the board window is not opened
 #   ASB_CHECK_SNAPSHOT=skip   the board cannot save its image on the row, so step 7 waits for "UI: verified" from asb agent status
 #   ASB_CHECK_PREFERENCES=check   step 11 opens Preferences > Profiles and one profile dialog with the installed board
+#   ASB_CHECK_WIDGETS=run   step 12 runs the board widget tests (test/asb_native_test.py) in Xvfb
 # The repository is mounted read only at /asb, and the build output is at /asb/dist.
 # Each step prints one "==> step N" line before it starts, and the script stops at the first error.
 # POSIX sh only: Alpine (busybox ash), Void, Arch, Fedora, openSUSE, Debian, and Ubuntu all run it with their own sh.
@@ -313,6 +314,20 @@ check_preferences() {
   }
 }
 
+check_widgets() {
+  [ "${ASB_CHECK_WIDGETS:-}" = run ] || return 0
+  step 12 "run the board widget tests in Xvfb"
+  # The widget tests need the Cantarell font and the Adwaita icons.
+  case $family in
+    debian) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-cantarell adwaita-icon-theme ;;
+    *) fail "No widget test packages for the $family family." ;;
+  esac
+  as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 900 dbus-run-session -- xvfb-run -a -e /tmp/asb-widgets-xvfb.log -s '-screen 0 1280x1024x24 -noreset' python3 -m unittest discover -s /asb/test -p asb_native_test.py" || {
+    cat /tmp/asb-widgets-xvfb.log >&2 || true
+    fail "The board widget tests failed."
+  }
+}
+
 install_packages
 create_user
 install_asb
@@ -323,4 +338,5 @@ run_python_tests
 uninstall_asb
 install_package
 check_preferences
+check_widgets
 echo "==> all steps passed"

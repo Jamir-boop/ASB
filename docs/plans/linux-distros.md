@@ -240,7 +240,9 @@ the same names.
 - **Tests:** `test/asb_native_logic_test.py` needs only Python 3.8; it loads
   some classes of `asb-native.py` with `ast` and no GTK (`:14-40`).
   `test/asb_native_test.py` (`npm run test:native`) needs a display, the
-  Adwaita icon theme, and the Cantarell font; it is not in CI.
+  Adwaita icon theme, and the Cantarell font; the `debian-13` check row
+  of `.github/workflows/distros.yml` runs it in Xvfb (step 12 of
+  `test/distro-check.sh`, `ASB_CHECK_WIDGETS=run`).
   `test/asb_tray_test.py` needs PyGObject with GLib and Gio; it is not in
   CI.
 

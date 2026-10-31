@@ -32,11 +32,15 @@ test('the check job has the rows of the probe job, each with the package of its 
   const check = rows(jobs.check);
   assert.equal(probe.length, 15);
   // The same job, image, runner, family, tier, node, and window, in the same order.
-  assert.deepEqual(check.map(({ package: _package, snapshot: _snapshot, preferences: _preferences, ...row }) => row), probe);
+  assert.deepEqual(check.map(({ package: _package, snapshot: _snapshot, preferences: _preferences, widgets: _widgets, ...row }) => row), probe);
   for (const row of check) assert.equal(row.package, PACKAGES[row.family], row.job);
   assert.ok(jobs.check.includes('    timeout-minutes: 30'));
   assert.ok(jobs.check.some((line) => line.includes('PREFERENCES: ${{ matrix.preferences }}')));
   assert.ok(jobs.check.some((line) => line.includes('-e ASB_CHECK_PREFERENCES="$PREFERENCES"')));
+  // Only the x86_64 debian-13 row runs the board widget tests.
+  assert.deepEqual(check.filter((row) => row.widgets).map((row) => [row.job, row.widgets]), [['debian-13', 'run']]);
+  assert.ok(jobs.check.some((line) => line.includes('WIDGETS: ${{ matrix.widgets }}')));
+  assert.ok(jobs.check.some((line) => line.includes('-e ASB_CHECK_WIDGETS="$WIDGETS"')));
 });
 
 test('the check job needs the build job, and the nix job exists', () => {
@@ -76,5 +80,14 @@ test('the Preferences step checks the installed board only when enabled, after t
   assert.match(source, /check_preferences\(\) \{\n  \[ "\$\{ASB_CHECK_PREFERENCES:-\}" = check \] \|\| return 0\n  step 11/);
   assert.match(source, /native=\/usr\/lib\/asb\/scripts\/asb-native\.py/);
   assert.match(source, /as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 120 dbus-run-session -- xvfb-run -a -e \/tmp\/asb-preferences-xvfb\.log -s '-screen 0 1280x1024x24 -noreset' python3 -I \/asb\/test\/preferences-check\.py --board \$native"/);
-  assert.match(source, /\ninstall_package\ncheck_preferences\necho "==> all steps passed"/);
+  assert.match(source, /\ninstall_package\ncheck_preferences\ncheck_widgets\necho "==> all steps passed"/);
+});
+
+test('the widget step runs the board widget tests only when enabled, with the debian fonts and icons', async () => {
+  const source = await readFile(script, 'utf8');
+  assert.match(source, /check_widgets\(\) \{\n  \[ "\$\{ASB_CHECK_WIDGETS:-\}" = run \] \|\| return 0\n  step 12/);
+  assert.match(source, /debian\) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-cantarell adwaita-icon-theme ;;/);
+  assert.match(source, /\*\) fail "No widget test packages for the \$family family\." ;;/);
+  assert.match(source, /as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 900 dbus-run-session -- xvfb-run -a -e \/tmp\/asb-widgets-xvfb\.log -s '-screen 0 1280x1024x24 -noreset' python3 -m unittest discover -s \/asb\/test -p asb_native_test\.py"/);
+  assert.match(source, /fail "The board widget tests failed\."/);
 });
