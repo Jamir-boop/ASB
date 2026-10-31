@@ -291,7 +291,8 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
     const bun = await findBun({ platform, env });
     const relayDir = path.join(runtimeDir(env, platform), 'relay');
     const spawned = spawn(bun, [relayJs], { stdio: ['pipe', 'pipe', 'inherit'],
-      env: { ...env, ASB_ENGINE_URL: `http://127.0.0.1:${port}`, ASB_SOURCE_TOKEN: sourceToken, ASB_RELAY_DIR: relayDir } });
+      // Bun starts one GC marker thread per core and each wakes about 8 times a second; the relay heap is small.
+      env: { ...env, BUN_JSC_numberOfGCMarkers: '1', ASB_ENGINE_URL: `http://127.0.0.1:${port}`, ASB_SOURCE_TOKEN: sourceToken, ASB_RELAY_DIR: relayDir } });
     child = spawned;
     spawned.once('error', () => exited(spawned, 1));
     spawned.once('exit', (code) => exited(spawned, code));

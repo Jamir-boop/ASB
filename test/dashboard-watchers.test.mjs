@@ -40,13 +40,14 @@ async function fixture(t, { watchPaths, readWatchPaths = (paths) => paths, realW
   const timers = [];
   let clock = Date.parse('2026-10-09T10:00:00Z');
   let loads = 0;
+  let reads = 0;
   const openAtLoad = [];
   const open = () => watches.filter((item) => !item.watcher.closed).map((item) => item.target).sort();
   const snapshot = new DashboardSnapshot({
-    dashboardWatchPaths: () => readWatchPaths(paths), dashboardPlatform: 'linux', now: () => clock,
+    dashboardWatchPaths: () => { reads += 1; return readWatchPaths(paths); }, dashboardPlatform: 'linux', now: () => clock,
     dashboardSourceChanged: (source, hint) => hints.push({ source, ...hint }),
-    dashboardSetTimeout(callback, milliseconds) { const timer = { callback, milliseconds, unref() {} }; timers.push(timer); return timer; },
-    dashboardClearTimeout() {},
+    dashboardSetTimeout(callback, milliseconds) { const timer = { callback, milliseconds, at: clock + milliseconds, unref() {} }; timers.push(timer); return timer; },
+    dashboardClearTimeout(timer) { timer.done = true; },
     loadDashboard: async () => { loads += 1; openAtLoad.push(open()); return { threads: [] }; },
     ...(realWatch ? {} : { watchDashboardPath(target, options, callback) {
       const watcher = new EventEmitter();
@@ -59,23 +60,32 @@ async function fixture(t, { watchPaths, readWatchPaths = (paths) => paths, realW
   server.close = () => {};
   snapshot.attach(server);
   t.after(async () => { server.close(); countedRoot = '\0'; await rm(dir, { recursive: true, force: true }); });
-  server.emit('listening');
-  const retryTimer = () => timers.findLast((timer) => timer.milliseconds === 5_000);
-  await until(retryTimer);
+  // The first reconcile, awaited.
+  await Promise.all(server.listeners('listening').map((listener) => listener()));
+  const retryTimers = () => timers.filter((timer) => !timer.done && timer.callback.name === 'retryAdaptiveWatchers');
+  const fire = async (timer) => { timer.done = true; clock = Math.max(clock, timer.at); await timer.callback(); };
   countedRoot = dir;
   calls.stat = 0;
   calls.readdir = 0;
   const performanceNow = () => snapshot.performanceSnapshot().dashboard;
-  return { dir, root, paths, watches, hints, snapshot, performanceNow, open, openAtLoad, loads: () => loads,
+  return { dir, root, paths, watches, hints, snapshot, performanceNow, open, openAtLoad, loads: () => loads, reads: () => reads,
     advance(milliseconds) { clock += milliseconds; },
-    // Runs the 5 s retry timer once, at its due time.
-    async tick() { clock += 5_000; await retryTimer().callback(); },
+    // The delays of the pending retry timers.
+    pending: () => retryTimers().map((timer) => timer.milliseconds),
+    // Runs the one pending retry timer, at its due time.
+    async tick() { const [timer, ...rest] = retryTimers(); assert.ok(timer && !rest.length); await fire(timer); },
+    // Runs the retry timers that are due in the next milliseconds, in time order.
+    async run(milliseconds) {
+      const end = clock + milliseconds;
+      for (let timer; (timer = retryTimers().sort((a, b) => a.at - b.at)[0]) && timer.at <= end;) await fire(timer);
+      clock = end;
+    },
     emit(target, event, filename) { watches.findLast((item) => item.target === target && !item.watcher.closed).callback(event, filename); },
     async dirtyLoad() { assert.equal(performanceNow().dirty, true); await snapshot.loadSharedDashboard(); },
   };
 }
 
-test('steady state: dirty loads, change events, and retry ticks cause no stat, readdir, or walk', async (t) => {
+test('steady state: dirty loads and change events cause no stat, readdir, or walk', async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.open(), [f.root, path.join(f.root, 'a'), path.join(f.root, 'a', 'b'), path.join(f.root, 'c')]);
   assert.ok(f.watches.every((item) => item.options.recursive === false));
@@ -83,7 +93,7 @@ test('steady state: dirty loads, change events, and retry ticks cause no stat, r
   for (let round = 0; round < 5; round += 1) {
     f.emit(path.join(f.root, 'a', 'b'), 'change', 'rollout-a.jsonl');
     await f.dirtyLoad();
-    await f.tick();
+    f.advance(5_000);
   }
   assert.equal(f.loads(), 5);
   assert.deepEqual(calls, { stat: 0, readdir: 0 });
@@ -91,13 +101,22 @@ test('steady state: dirty loads, change events, and retry ticks cause no stat, r
   assert.equal(f.watches.length, 4);
 });
 
+test('full coverage with no failures arms no retry timer, and 10 quiet minutes read and walk nothing', async (t) => {
+  const f = await fixture(t);
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [true, []]);
+  const reads = f.reads();
+  await f.run(600_000);
+  assert.deepEqual([f.reads() - reads, calls, f.performanceNow().watchWalks, f.pending()], [0, { stat: 0, readdir: 0 }, 1, []]);
+});
+
 test('a rename event for a new directory attaches it and its nested directory without a full walk', async (t) => {
-  // The filter drops every event: structure work must not depend on it.
-  const f = await fixture(t, { acceptEvent: () => false });
+  // The filter drops every rename event: structure work must not depend on it.
+  const f = await fixture(t, { acceptEvent: (filename, event) => event !== 'rename' });
   await mkdir(path.join(f.root, 'new', 'nested'), { recursive: true });
   f.emit(f.root, 'rename', 'new');
   assert.equal(f.performanceNow().dirty, false);
-  await f.tick();
+  f.emit(f.root, 'change', 'rollout-a.jsonl');
+  await f.dirtyLoad();
   assert.deepEqual(f.open(), [f.root, path.join(f.root, 'a'), path.join(f.root, 'a', 'b'), path.join(f.root, 'c'),
     path.join(f.root, 'new'), path.join(f.root, 'new', 'nested')]);
   assert.equal(f.performanceNow().watchWalks, 1);
@@ -105,7 +124,8 @@ test('a rename event for a new directory attaches it and its nested directory wi
   assert.deepEqual(calls, { stat: 3, readdir: 2 });
   await mkdir(path.join(f.root, 'new', 'nested', 'deep'));
   f.emit(path.join(f.root, 'new', 'nested'), 'rename', 'deep');
-  await f.tick();
+  f.emit(f.root, 'change', 'rollout-a.jsonl');
+  await f.dirtyLoad();
   assert.ok(f.open().includes(path.join(f.root, 'new', 'nested', 'deep')));
   assert.equal(f.performanceNow().watchWalks, 1);
 });
@@ -160,20 +180,23 @@ test('a large structure burst falls back to one full walk', async (t) => {
   assert.deepEqual(calls, { stat: 5, readdir: 5 });
 });
 
-test('the safety-net walk runs after 60 s and not before, on the retry timer and before a dirty load', async (t) => {
-  const f = await fixture(t);
+test('the 300 s safety walk runs only before a dirty load, and never on the retry timer', async (t) => {
+  const f = await fixture(t, { watchPaths: (dir, root) => [{ path: root, source: 'codex', recursive: true },
+    { path: path.join(dir, 'cache'), source: 'claude', optional: true }] });
   await mkdir(path.join(f.root, 'silent'));
-  for (let count = 0; count < 11; count += 1) await f.tick();
-  assert.equal(f.performanceNow().watchWalks, 1);
-  assert.deepEqual(calls, { stat: 0, readdir: 0 });
+  await f.run(300_000);
   await f.tick();
-  assert.equal(f.performanceNow().watchWalks, 2);
-  assert.ok(f.open().includes(path.join(f.root, 'silent')));
-  f.advance(59_999);
+  assert.equal(f.performanceNow().watchWalks, 1);
+  assert.deepEqual(calls, { stat: 6, readdir: 0 });
   f.emit(f.root, 'change', 'rollout-a.jsonl');
   await f.dirtyLoad();
   assert.equal(f.performanceNow().watchWalks, 2);
-  f.advance(1);
+  assert.ok(f.open().includes(path.join(f.root, 'silent')));
+  f.advance(299_000);
+  f.emit(f.root, 'change', 'rollout-a.jsonl');
+  await f.dirtyLoad();
+  assert.equal(f.performanceNow().watchWalks, 2);
+  f.advance(1_000);
   f.emit(f.root, 'change', 'rollout-a.jsonl');
   await f.dirtyLoad();
   assert.equal(f.performanceNow().watchWalks, 3);
@@ -183,6 +206,7 @@ test('the 5 s retry checks a missing required root without walking healthy direc
   const f = await fixture(t, { watchPaths: (dir, root) => [{ path: root, source: 'codex', recursive: true },
     { path: path.join(dir, 'late'), source: 'claude', recursive: true }] });
   assert.equal(f.performanceNow().watchCoverage, false);
+  assert.deepEqual(f.pending(), [5_000]);
   const healthy = [...f.watches];
   await f.tick();
   await f.tick();
@@ -195,13 +219,14 @@ test('the 5 s retry checks a missing required root without walking healthy direc
   await f.tick();
   assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage], [2, true]);
   assert.deepEqual(calls, { stat: 4, readdir: 2 });
+  assert.deepEqual(f.pending(), []);
   assert.ok(f.open().includes(restored));
   f.emit(restored, 'change', 'local-synthetic.json');
   await f.dirtyLoad();
   assert.deepEqual(f.hints, [{ source: 'claude', filePath: path.join(restored, 'local-synthetic.json'), index: false }]);
   calls.stat = 0;
   calls.readdir = 0;
-  for (let count = 0; count < 5; count += 1) await f.tick();
+  await f.run(600_000);
   assert.equal(f.performanceNow().watchWalks, 2);
   assert.deepEqual(calls, { stat: 0, readdir: 0 });
 });
@@ -230,7 +255,7 @@ test('failed watcher trees recover independently, replaced roots discard old wat
   await rename(other, `${other}-old`);
   await mkdir(path.join(other, 'new'), { recursive: true });
   f.emit(other, 'rename', path.basename(other));
-  await f.tick();
+  await f.dirtyLoad();
   assert.ok(replaced.every((item) => item.watcher.closed));
   assert.ok(!f.open().includes(path.join(other, 'child')));
   assert.ok(f.open().includes(path.join(other, 'new')));
@@ -239,7 +264,9 @@ test('failed watcher trees recover independently, replaced roots discard old wat
   assert.equal(f.hints.at(-1).filePath, path.join(other, 'new', 'local-replaced.json'));
   const removed = f.watches.filter((item) => item.target.startsWith(other));
   f.paths.pop();
-  await f.tick();
+  // The source registry is a watch root: its change makes the next load dirty.
+  f.emit(f.root, 'change', 'rollout-a.jsonl');
+  await f.dirtyLoad();
   assert.ok(removed.every((item) => item.watcher.closed));
   assert.deepEqual(f.open(), healthy.map((item) => item.target).sort());
   for (const item of removed) {
@@ -248,24 +275,33 @@ test('failed watcher trees recover independently, replaced roots discard old wat
   }
   assert.equal(f.performanceNow().dirty, false);
   assert.equal(f.performanceNow().watchCoverage, true);
-  await f.tick();
+  assert.deepEqual(f.pending(), []);
   assert.deepEqual(f.open(), healthy.map((item) => item.target).sort());
 });
 
-test('a watch path registry read error recovers coverage on the next retry', async (t) => {
-  let fail = false;
+test('a watch path registry read error retries every 5 s until a read works, also after a dirty load', async (t) => {
+  let fail = true;
   const f = await fixture(t, { readWatchPaths(paths) {
     if (fail) throw new Error('Source registry unavailable');
     return paths;
   } });
-  fail = true;
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [false, [5_000]]);
   await f.tick();
-  assert.equal(f.performanceNow().watchCoverage, false);
-  assert.deepEqual(calls, { stat: 0, readdir: 0 });
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [false, [5_000]]);
   fail = false;
   await f.tick();
-  assert.equal(f.performanceNow().watchCoverage, true);
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [true, []]);
   assert.deepEqual(calls, { stat: 4, readdir: 4 });
+  fail = true;
+  f.emit(f.root, 'change', 'rollout-a.jsonl');
+  await assert.rejects(f.dirtyLoad(), /Source registry unavailable/);
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [false, [5_000]]);
+  await f.tick();
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [false, [5_000]]);
+  fail = false;
+  await f.tick();
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [true, []]);
+  assert.deepEqual(calls, { stat: 8, readdir: 8 });
   assert.equal(f.watches.length, 4);
 });
 
@@ -273,46 +309,48 @@ test('a watcher error and a watch root that reports its own name each cause one 
   const f = await fixture(t);
   const failed = f.watches.find((item) => item.target === path.join(f.root, 'c'));
   failed.watcher.emit('error', new Error('Watch failed'));
-  assert.equal(f.performanceNow().watchCoverage, false);
+  assert.deepEqual([f.performanceNow().watchCoverage, f.pending()], [false, [5_000]]);
   await f.tick();
-  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage], [2, true]);
+  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage, f.pending()], [2, true, []]);
   assert.equal(f.open().length, 4);
-  await f.tick();
-  assert.equal(f.performanceNow().watchWalks, 2);
   f.emit(f.root, 'rename', path.basename(f.root));
-  await f.tick();
+  await f.dirtyLoad();
   assert.equal(f.performanceNow().watchWalks, 3);
-  await f.tick();
-  assert.equal(f.performanceNow().watchWalks, 3);
+  f.emit(f.root, 'change', 'rollout-a.jsonl');
+  await f.dirtyLoad();
+  assert.deepEqual([f.performanceNow().watchWalks, f.pending()], [3, []]);
 });
 
 test('a changed watch path list and a restored optional path each trigger a walk', async (t) => {
   const f = await fixture(t, { watchPaths: (dir, root) => [{ path: root, source: 'codex', recursive: true },
     { path: path.join(dir, 'cache'), source: 'claude', optional: true }] });
-  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage], [1, true]);
+  assert.deepEqual([f.performanceNow().watchWalks, f.performanceNow().watchCoverage, f.pending()], [1, true, [60_000]]);
   await f.tick();
   // A missing optional path costs one stat for each reconcile until it exists.
   assert.deepEqual(calls, { stat: 1, readdir: 0 });
-  assert.equal(f.performanceNow().watchWalks, 1);
+  assert.deepEqual([f.performanceNow().watchWalks, f.pending()], [1, [60_000]]);
   await mkdir(path.join(f.dir, 'cache'));
   await f.tick();
   assert.equal(f.performanceNow().watchWalks, 2);
   assert.deepEqual(calls, { stat: 2, readdir: 0 });
   assert.ok(f.open().includes(path.join(f.dir, 'cache')));
+  assert.deepEqual(f.pending(), []);
+  // The source registry is a watch root: its change makes the next load dirty.
+  const registryChange = async () => { f.emit(f.root, 'change', 'rollout-a.jsonl'); await f.dirtyLoad(); };
   calls.stat = 0;
-  await f.tick();
+  await registryChange();
   assert.deepEqual([f.performanceNow().watchWalks, calls.stat], [2, 0]);
   await mkdir(path.join(f.dir, 'extra'));
   f.paths.push({ path: path.join(f.dir, 'extra'), source: 'claude' });
-  await f.tick();
+  await registryChange();
   assert.equal(f.performanceNow().watchWalks, 3);
   assert.ok(f.open().includes(path.join(f.dir, 'extra')));
   f.paths.pop();
-  await f.tick();
+  await registryChange();
   assert.equal(f.performanceNow().watchWalks, 4);
   assert.ok(!f.open().includes(path.join(f.dir, 'extra')));
-  await f.tick();
-  assert.equal(f.performanceNow().watchWalks, 4);
+  await registryChange();
+  assert.deepEqual([f.performanceNow().watchWalks, f.pending()], [4, []]);
 });
 
 test('real linux watches follow a new directory, a file written into it at once, and a replaced root', { skip: process.platform !== 'linux' }, async (t) => {

@@ -103,6 +103,7 @@ export class DashboardSnapshot {
     let dashboardClosed = false;
     let dashboardWatchCoverage = false;
     let dashboardWatchRetryTimer = null;
+    let dashboardWatchRetryDueMs = Infinity;
     let dashboardServiceTimer = null;
     let dashboardServiceDueAtMs = Infinity;
     let dashboardStatusTimer = null;
@@ -218,9 +219,9 @@ export class DashboardSnapshot {
         dashboardLoadPromise = Promise.resolve()
           .then(async () => {
             if (dashboardDirty) {
-              await reconcileAdaptiveWatchers();
+              await reconcileAdaptiveWatchers({ safetyWalk: true });
               // A reconcile in flight can predate the structure event that made this scan dirty.
-              if (dashboardWatchStructure.size) await reconcileAdaptiveWatchers();
+              if (dashboardWatchStructure.size) await reconcileAdaptiveWatchers({ safetyWalk: true });
             }
             for (const [source, files] of hints) {
               for (const [filePath, index] of files) await dashboardSourceChanged(source, { filePath, index });
@@ -420,6 +421,7 @@ export class DashboardSnapshot {
         dashboardWatchFailures.set(spec.path, true);
         dashboardWatchCoverage = false;
         dashboardWatchEpoch += 1;
+        armWatchRetry();
         sourceChanged(spec, 'rename', null);
       });
       return true;
@@ -450,7 +452,7 @@ export class DashboardSnapshot {
       } catch { return false; }
     };
 
-    const reconcileAdaptiveWatchers = () => {
+    const reconcileAdaptiveWatchers = ({ safetyWalk }) => {
       if (dashboardWatchReconcilePromise || dashboardClosed) return dashboardWatchReconcilePromise;
       dashboardWatchReconcilePromise = (async () => {
         const watchPaths = await getWatchPaths();
@@ -458,9 +460,9 @@ export class DashboardSnapshot {
           : [entry?.path, entry?.source, entry?.recursive, entry?.optional]));
         if (dashboardWatchWalkedPaths && walkedPaths !== dashboardWatchWalkedPaths) dashboardWatchEpoch += 1;
         const walkAgeMs = now() - dashboardWatchWalkedAtMs;
-        // The directory set almost never changes: events keep it current, and a full walk is the 60 s safety net.
+        // The directory set almost never changes: events keep it current, and a full walk before a dirty scan is the 300 s safety net.
         const reuse = (dashboardWatchCoverage || dashboardWatchFailures.size > 0)
-          && walkedPaths === dashboardWatchWalkedPaths && walkAgeMs >= 0 && walkAgeMs < 60_000
+          && walkedPaths === dashboardWatchWalkedPaths && walkAgeMs >= 0 && (!safetyWalk || walkAgeMs < 300_000)
           && await applyWatchStructure();
         if (reuse && !dashboardWatchFailures.size) return;
         if (dashboardClosed) return;
@@ -505,15 +507,28 @@ export class DashboardSnapshot {
         dashboardWatchCoverage = !dashboardClosed && Boolean(watchPaths.length)
           && ![...dashboardWatchFailures.values()].some(Boolean);
         if (!dashboardWatchCoverage) dashboardWatchEpoch += 1;
-      })().finally(() => { dashboardWatchReconcilePromise = null; });
+      })().catch((error) => { dashboardWatchCoverage = false; dashboardWatchEpoch += 1; throw error; })
+        .finally(() => { dashboardWatchReconcilePromise = null; armWatchRetry(); });
       return dashboardWatchReconcilePromise;
     };
 
-    const retryAdaptiveWatchers = async () => {
-      try { await reconcileAdaptiveWatchers(); } catch { dashboardWatchCoverage = false; dashboardWatchEpoch += 1; }
-      if (dashboardClosed) return;
-      dashboardWatchRetryTimer = dashboardSetTimeout(retryAdaptiveWatchers, 5_000);
+    // Real failures retry in 5 s, missing optional roots in 60 s; full coverage needs no timer.
+    const armWatchRetry = () => {
+      const failures = [...dashboardWatchFailures.values()];
+      const delayMs = !dashboardWatchCoverage || failures.some(Boolean) ? 5_000 : failures.length ? 60_000 : 0;
+      const dueMs = now() + delayMs;
+      if (dashboardWatchRetryTimer && delayMs && !dashboardClosed && dashboardWatchRetryDueMs <= dueMs) return;
+      if (dashboardWatchRetryTimer) dashboardClearTimeout(dashboardWatchRetryTimer);
+      dashboardWatchRetryTimer = null;
+      if (!delayMs || dashboardClosed) return;
+      dashboardWatchRetryDueMs = dueMs;
+      dashboardWatchRetryTimer = dashboardSetTimeout(retryAdaptiveWatchers, delayMs);
       dashboardWatchRetryTimer.unref?.();
+    };
+
+    const retryAdaptiveWatchers = async () => {
+      dashboardWatchRetryTimer = null;
+      try { await reconcileAdaptiveWatchers({ safetyWalk: false }); } catch {}
     };
 
     const armStatusTimer = (dashboard) => {

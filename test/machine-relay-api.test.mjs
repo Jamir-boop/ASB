@@ -201,6 +201,7 @@ test('the supervisor starts the relay only when every start condition holds', as
   assert.deepEqual(spawned.options.stdio, ['pipe', 'pipe', 'inherit']);
   assert.deepEqual([spawned.options.env.ASB_ENGINE_URL, spawned.options.env.ASB_SOURCE_TOKEN, spawned.options.env.ASB_RELAY_DIR],
     ['http://127.0.0.1:4659', TOKEN, path.join(f.dir, 'run', 'asb', 'relay')]);
+  assert.equal(spawned.options.env.BUN_JSC_numberOfGCMarkers, '1');
   assert.equal(f.supervisor.running(), true);
   // The condition ends: SIGTERM, then SIGKILL when the relay does not exit.
   f.group.states.length = 0;
