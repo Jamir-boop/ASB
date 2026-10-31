@@ -23,6 +23,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed ASB Bridge losing an agent message when Codex Desktop did not answer the input check before a delivery, or its socket closed: the sender got no receipt. Nothing went to Codex, so the message is now dropped with `delivery-refused`, and the sender gets one `dropped` receipt.
 - Fixed the end of a Codex task on Windows, which sent no end notices. The ASB Bridge SessionEnd hook now sends the `expired` notices of held messages and the `exited` idle notices before it stops the receiver, and each sender gets each notice one time.
 - Fixed the migration from claude-uds-bridge, which could make a state folder that ASB Bridge refused: when the old state folder is missing, the migration now makes it private (mode 0700).
+- Fixed a second `asb` start, or a start from the Windows Start menu, which opened a second board while one was open. ASB now shows the open board, as the tray does.
 
 ## ASB 1.13.0 - 2026-10-28
 

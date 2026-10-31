@@ -34,6 +34,17 @@ export function boardSpawnOptions(windows) {
 
 async function start() {
   const windows = process.platform === 'win32';
+  const running = await findRunningService(process.env, process.platform).catch(() => null);
+  if (running) {
+    // The same rule as the board: only these two names open a second window.
+    const kind = ['messages', 'usage'].includes(process.env.ASB_OPEN_WINDOW) ? process.env.ASB_OPEN_WINDOW : 'board';
+    try {
+      // An open board shows the window itself, as for the tray; without one, this launcher opens a board.
+      const reply = await requestInstance(running, '/api/engine/show-window', { method: 'POST', body: { window: kind }, timeoutMs: 5000 });
+      if (reply.statusCode === 200 && reply.body?.shown === true) return;
+    } catch {}
+    if (stopping) return;
+  }
   const engine = windows ? startWindowsEngine() : startEngine();
   // The board check runs while the engine starts. Its result comes before the icon registration, so that a run without the window writes nothing.
   // A good result is kept in the cache folder until the board fails (forgetBoard), so that most starts skip the Python probe.

@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
 import { chmod, chown, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,8 +24,9 @@ const cachedBoardCheck = async ({ env }) => ({ ok: true, python: env.ASB_PYTHON 
 // The cache itself is tested in test/linux-system.test.mjs; here it is a stand-in, and a test replaces forgetBoardCheck to see the calls.
 const boardFakes = { cachedBoardCheck, forgetBoardCheck() {} };
 // The launcher runs no engine watch: an interval fails the test.
+// No engine runs before the launcher unless a test gives one.
 const pick = (watch) => ({ setTimeout: watch.setTimeout, clearTimeout: watch.clearTimeout, setInterval: () => assert.fail('The launcher runs no engine watch.'),
-  readFileSync, createHash, path });
+  readFileSync, createHash, path, findRunningService: async () => null });
 // The 30 s timer after the address line is captured; tests run its callback by hand.
 const timers = () => {
   const watch = { callbacks: [], cleared: [] };
@@ -75,6 +77,52 @@ test('the window gets the engine URL and token on stdin, never in its arguments 
   assert.equal(owner.exitCode, 3);
   assert.equal(starts, 1);
 });
+
+for (const shown of [true, false]) {
+  test(`a running engine ${shown ? 'shows the open board, and the launcher exits 0 with no engine start or board' : 'with no open board leaves the normal start'}`, async (t) => {
+    // An isolated env: a temp HOME and runtime folder, no display or session bus, and a fake engine on port 0 with its runtime record.
+    const home = await mkdtemp(path.join(os.tmpdir(), 'asb-launcher-show-'));
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const requests = [];
+    const fake = http.createServer((request, response) => {
+      let body = '';
+      request.on('data', (chunk) => { body += chunk; }).on('end', () => {
+        requests.push({ method: request.method, url: request.url, token: request.headers['x-asb-source-token'], body });
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify(request.url === '/api/service' ? { service: true, pid: 4242 } : { shown }));
+      });
+    });
+    await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
+    t.after(() => fake.close());
+    const record = { schema: 1, pid: 4242, port: fake.address().port, sourceToken: 'b'.repeat(64) };
+    await mkdir(path.join(home, 'asb'), { mode: 0o700 });
+    await writeFile(path.join(home, 'asb', 'service.json'), JSON.stringify(record), { mode: 0o600 });
+    const owner = launcherProcess();
+    owner.platform = 'linux';
+    owner.env = { HOME: home, XDG_RUNTIME_DIR: home, ASB_OPEN_WINDOW: 'messages' };
+    let starts = 0;
+    const native = fakeWindow();
+    const spawned = [];
+    await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+      findRunningService: instance.findRunningService, requestInstance: instance.requestInstance,
+      startEngine: async () => { starts += 1; return engine; },
+      registerAppIcon: async () => ({}),
+      console: { log() {}, error() {}, warn() {} },
+      spawn: (program) => { spawned.push(program); return native; },
+    });
+    const show = requests.filter((request) => request.url === '/api/engine/show-window');
+    assert.deepEqual(show, [{ method: 'POST', url: '/api/engine/show-window', token: record.sourceToken, body: '{"window":"messages"}' }]);
+    if (shown) {
+      assert.equal(owner.exitCode, undefined);
+      assert.equal(starts, 0);
+      assert.deepEqual(spawned, []);
+    } else {
+      assert.equal(starts, 1);
+      assert.deepEqual(spawned, ['/opt/python3']);
+      assert.deepEqual(native.stdin.written, [addressLine]);
+    }
+  });
+}
 
 test('a failed board check keeps the engine, registers nothing, opens no window, and exits 3', async () => {
   const owner = launcherProcess();
