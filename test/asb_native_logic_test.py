@@ -649,6 +649,7 @@ class ProfileSyncChecks(unittest.TestCase):
         window.sources_revision = self.REV_B
         window.ui_report_last, window.ui_report_at, window.ui_report_sending = None, 0, False
         window.events = SimpleNamespace(connected=False, holds_ui=False, connections=0)
+        window.sync_tick = Mock()
         window.refresh_queued = window.refresh_force_queued = False
         clock = Mock(return_value=0)
         with patch.dict(SCOPE, {"SOURCE_TOKEN": "ab" * 32, "time": SimpleNamespace(monotonic=clock)}):
@@ -701,6 +702,7 @@ class ProfileSyncChecks(unittest.TestCase):
         window.sources_revision = self.REV_B
         window.ui_report_last, window.ui_report_at, window.ui_report_sending = None, 0, False
         window.events = SimpleNamespace(connected=True, holds_ui=True, connections=1)
+        window.sync_tick = Mock()
         clock = Mock(return_value=100)
         with patch.dict(SCOPE, {"SOURCE_TOKEN": "ab" * 32, "time": SimpleNamespace(monotonic=clock)}):
             window.report_ui()
@@ -3361,7 +3363,7 @@ class DataChecks(unittest.TestCase):
         glib = SimpleNamespace(timeout_add=Mock(side_effect=lambda *_args: next(sources)), source_remove=Mock())
         window = object.__new__(Window)
         window.closed, window.preferences_window, window.refresh_interval_ms, window.timer = False, None, 5000, 7
-        window.refresh, window.report_ui = Mock(), Mock()
+        window.refresh, window.report_ui, window.ui_report_failed = Mock(), Mock(), False
         quiet = SimpleNamespace(connected=True, list_events=True, holds_ui=True)
         with patch.dict(SCOPE, {"GLib": glib}):
             window.events = quiet
@@ -3392,6 +3394,44 @@ class DataChecks(unittest.TestCase):
                     self.assertEqual(window.tick(), armed)
             window.closed = True
             self.assertFalse(window.tick_needed())
+
+    def quiet_reporting_board(self):
+        window = object.__new__(Window)
+        window.closed, window.preferences_window, window.refresh_interval_ms, window.timer = False, None, 5000, None
+        window.base, window.engine_generation, window.sources_revision, window.ui_client_id = "http://127.0.0.1:1", 0, 3, "board-a"
+        window.ui_report_last, window.ui_report_at, window.ui_report_sending, window.ui_report_failed = None, 0, False, False
+        window.events = SimpleNamespace(connected=True, list_events=True, holds_ui=True, connections=1)
+        window.refresh = Mock()
+        return window
+
+    def test_a_failed_ui_report_arms_the_tick_while_the_stream_holds_the_client(self):
+        glib = SimpleNamespace(timeout_add=Mock(return_value=1), source_remove=Mock(), idle_add=Mock())
+        request = Mock()
+        window = self.quiet_reporting_board()
+        with patch.dict(SCOPE, {"GLib": glib, "SOURCE_TOKEN": "ab" * 32, "request_async": request}):
+            window.report_ui()
+            request.call_args.args[2](None, "Cannot load or change the native UI status.")
+            self.assertTrue(window.ui_report_failed)
+            glib.timeout_add.assert_called_once_with(5000, window.tick)
+            self.assertEqual(window.timer, 1)
+            # The tick sends the report again.
+            self.assertTrue(window.tick())
+            self.assertEqual(request.call_count, 2)
+
+    def test_a_good_ui_report_after_a_failure_lets_the_next_tick_stop(self):
+        glib = SimpleNamespace(timeout_add=Mock(return_value=2), source_remove=Mock(), idle_add=Mock())
+        request = Mock()
+        window = self.quiet_reporting_board()
+        window.ui_report_failed, window.timer = True, 1
+        with patch.dict(SCOPE, {"GLib": glib, "SOURCE_TOKEN": "ab" * 32, "request_async": request}):
+            self.assertTrue(window.tick_needed())
+            window.report_ui()
+            request.call_args.args[2]({}, None)
+            self.assertFalse(window.ui_report_failed)
+            self.assertEqual(request.call_count, 1)
+            self.assertFalse(window.tick())
+            self.assertIsNone(window.timer)
+        glib.timeout_add.assert_not_called()
 
     def test_a_new_refresh_interval_arms_no_stopped_tick(self):
         glib = SimpleNamespace(timeout_add=Mock(return_value=5), source_remove=Mock(), timeout_add_seconds=Mock())

@@ -5362,6 +5362,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.sources_revision = None
         self.ui_client_id = str(uuid.uuid4())
         self.ui_report_last, self.ui_report_at, self.ui_report_sending = None, 0, False
+        self.ui_report_failed = False
         self.refresh_interval_ms = 5000
         self.clock_interval = self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
@@ -6193,9 +6194,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         events, preferences = self.events, self.preferences_window
         # Without list events the tick reads the list; without a held UI client report_ui must send every 25 s.
-        # The Profiles editor in Preferences changes the UI report.
+        # The Profiles editor in Preferences changes the UI report, and a failed report goes again at the next tick.
         return (not (events.connected and events.list_events and events.holds_ui)
-                or bool(preferences and not preferences.closed and preferences.get_visible()))
+                or bool(preferences and not preferences.closed and preferences.get_visible()) or self.ui_report_failed)
 
     def sync_tick(self):
         if self.tick_needed():
@@ -6229,9 +6230,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if generation != self.engine_generation:
                 return False
             self.ui_report_sending = False
+            self.ui_report_failed = bool(error)
             if error:
-                # With a connected stream, the next tick sends it again.
+                # The tick sends it again, also while the stream holds the client.
                 self.ui_report_stream = None
+                self.sync_tick()
             elif not self.closed:
                 self.report_ui()
             return False
