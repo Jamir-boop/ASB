@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { bodyHash, cutText } from './activity-messages.mjs';
 import { parseCrossSessionEnvelope } from './claude-data.mjs';
 import { createYielder, pathKey, readPrivateJson, writePrivateJson } from './usage-scan-cache.mjs';
 
@@ -10,10 +10,8 @@ const CHUNK_BYTES = 1024 * 1024;
 const SAVE_EVERY_MS = 5 * 60 * 1000;
 const MARKERS = ['SendMessage', 'send_message', '<cross-session-message', 'success'].map((text) => Buffer.from(text));
 const SESSION = /^(?:local_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const hash = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
 const contentText = (content) => typeof content === 'string' ? content : Array.isArray(content)
   ? content.filter((item) => item?.type === 'text').map((item) => item.text || '').join('\n') : '';
-const cut = (body) => { const points = Array.from(body); return points.length > 2000 ? `${points.slice(0, 1999).join('')}…` : body; };
 
 // Bodies exist only while parsing a line or answering a text request, never in the file cache.
 function messages(event, owner) {
@@ -91,8 +89,8 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
     try {
       const guard = Buffer.alloc(Math.min(64, stat.size));
       if (guard.length) { await handle.read(guard, 0, guard.length, 0); stats.readBytes = (stats.readBytes || 0) + guard.length; }
-      const first = hash(guard);
-      if (!entry || entry.ino !== stat.ino || entry.dev !== stat.dev || stat.size <= entry.size || hash(guard.subarray(0, entry.guardLength)) !== entry.first) entry = { offset: 0, rows: [], failed: new Set() };
+      const first = bodyHash(guard);
+      if (!entry || entry.ino !== stat.ino || entry.dev !== stat.dev || stat.size <= entry.size || bodyHash(guard.subarray(0, entry.guardLength)) !== entry.first) entry = { offset: 0, rows: [], failed: new Set() };
       async function readLines(data) {
         const starts = new Set();
         for (const marker of MARKERS) {
@@ -110,7 +108,7 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
             try { event = JSON.parse(line); } catch {}
             if (event) {
               for (const { body, ...row } of messages(event, path.basename(file, '.jsonl'))) {
-                if (row.atMs >= sinceMs) entry.rows.push({ ...row, hash: hash(body), offset: entry.offset + offset, length: end - offset });
+                if (row.atMs >= sinceMs) entry.rows.push({ ...row, hash: bodyHash(body), offset: entry.offset + offset, length: end - offset });
               }
               if (event.type === 'user' && Array.isArray(event.message?.content)) {
                 for (const item of event.message.content) if (item?.type === 'tool_result' && (event.toolUseResult?.success === false
@@ -224,14 +222,14 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
       if (bytesRead !== buffer.length) return null;
       const event = JSON.parse(buffer.toString('utf8'));
       const row = messages(event, path.basename(location.file, '.jsonl')).find((item) => item.id === location.id);
-      return row && hash(row.body) === location.hash ? row : null;
+      return row && bodyHash(row.body) === location.hash ? row : null;
     } catch { return null; } finally { await handle?.close(); }
   }
   async function text(record) {
     const location = locations.get(record);
     if (!location) return null;
     const row = await readMessage({ ...location, id: record.id, hash: record.hash });
-    return row ? cut(row.body) : null;
+    return row ? cutText(row.body) : null;
   }
   return { records, text };
 }

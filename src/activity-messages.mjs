@@ -42,7 +42,7 @@ export function statusReason(status, text) {
   return 'Not sent';
 }
 
-const bodyHash = (body) => createHash('sha256').update(body).digest('hex').slice(0, 16);
+export const bodyHash = (body) => createHash('sha256').update(body).digest('hex').slice(0, 16);
 
 // The bridge text without the cross-session envelope.
 export function messageBody(text) {
@@ -53,9 +53,14 @@ export function messageBody(text) {
   return lines.join('\n').trim();
 }
 
+// At most TEXT_LIMIT code points: a longer body ends in an ellipsis.
+export function cutText(body) {
+  const points = Array.from(body);
+  return points.length > TEXT_LIMIT ? `${points.slice(0, TEXT_LIMIT - 1).join('')}…` : body;
+}
+
 export function messageText(text) {
-  const points = Array.from(messageBody(text));
-  return points.length > TEXT_LIMIT ? `${points.slice(0, TEXT_LIMIT - 1).join('')}…` : points.join('');
+  return cutText(messageBody(text));
 }
 
 export function createActivityMessages({ readSources = async () => [], dashboard = async () => ({ threads: [] }),
