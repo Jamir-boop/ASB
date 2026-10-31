@@ -1,5 +1,5 @@
 // The machine group: group.json, its merge rules, invites, join links, and the orchestrator that owns the pollers.
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createPeerPoller, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, mergePeerRows, peerRequest, validActivity } from './machine-peers.mjs';
@@ -174,8 +174,6 @@ export function parseJoinLink(link, { addressOk = validPeerAddress } = {}) {
   if (!validAddresses(addresses, addressOk) || !validPort(port)) return null;
   return { groupId: values.g, addresses, port, fingerprint: values.f, code: values.c, name: values.n };
 }
-
-export const fingerprintOf = (raw) => createHash('sha256').update(raw).digest('hex');
 
 const refuse = (statusCode, message, extra = {}) => Object.assign(new Error(message), { statusCode, ...extra });
 const NETWORK_OFF = 'Turn on network access first: asb network enable <address>.';

@@ -98,8 +98,7 @@ export function exactKeys(value, required, optional = []) {
 }
 
 function safeStaticPath(publicDir, pathname) {
-  const requestedPath = pathname === '/' ? '/index.html' : pathname;
-  const decodedPath = decodeURIComponent(requestedPath);
+  const decodedPath = decodeURIComponent(pathname);
   const resolved = path.resolve(publicDir, `.${decodedPath}`);
   if (!resolved.startsWith(publicDir)) return null;
   return resolved;
