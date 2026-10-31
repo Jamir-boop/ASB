@@ -115,7 +115,7 @@ export async function main(args = process.argv.slice(2)) {
   if (!apply) { console.log('Dry run only. Use --apply to migrate.'); return 0; }
   for (const { home, plugin, marketplace } of homes) {
     // Keep the old folder so a failed install can be run again.
-    mkdirSync(path.join(home, 'plugin-state/claude-uds-bridge'), { recursive: true });
+    mkdirSync(path.join(home, 'plugin-state/claude-uds-bridge'), { recursive: true, mode: 0o700 });
     if (plugin) runCodex(home, ['plugin', 'remove', OLD_PLUGIN]);
     if (marketplace) runCodex(home, ['plugin', 'marketplace', 'remove', 'leonkohli']);
     const result = await installCodex(home);

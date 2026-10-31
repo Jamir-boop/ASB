@@ -83,6 +83,8 @@ test('migration selects an old plugin, old marketplace or old state independentl
     ]);
     assert.equal(await skillState(path.join(home, 'skills/bridge')), 'ok');
     assert.deepEqual(await readdir(path.join(home, 'plugin-state/asb-bridge')), []);
+    // The script made the missing old folder; ASB Bridge refuses a state folder that other users can read. Windows has no file modes.
+    if (signal !== 'state' && process.platform !== 'win32') assert.equal((await lstat(path.join(home, 'plugin-state/asb-bridge'))).mode & 0o777, 0o700);
     await rm(f.log);
     const after = await snapshot(f.home), second = f.run(['--apply']);
     passed(second);
