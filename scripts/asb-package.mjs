@@ -60,26 +60,27 @@ function absolute(value) {
   if (!path.isAbsolute(value) || /[\x00-\x1f\x7f]/.test(value)) throw new Error('Install paths must be absolute and have no control characters.');
   return path.resolve(value);
 }
-async function contents(file) {
+// The file helpers of the install, the user service, and ASB Bridge.
+export async function contents(file) {
   try {
-    if (!(await lstat(file)).isFile()) throw new Error(`ASB will not change a linked or non-file path: ${file}`);
+    if (!(await lstat(file)).isFile()) throw new Error(`ASB will not use a linked or non-file path: ${file}`);
     return await readFile(file);
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
 }
-async function safeParents(file) {
+export async function safeParents(file) {
   for (let directory = path.dirname(file); directory !== path.dirname(directory); directory = path.dirname(directory)) {
     try {
       if (!(await lstat(directory)).isDirectory()) throw new Error(`ASB will not write through a linked or non-directory path: ${directory}`);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 }
-async function replace(file, bytes, previous, mode = 0o644, signal) {
+export async function replace(file, bytes, previous, mode = 0o644, signal) {
   signal?.throwIfAborted();
   const current = await contents(file);
-  if (previous === null ? current !== null : !current?.equals(previous)) throw new Error(`ASB did not change a file that changed during install: ${file}`);
+  if (previous === null ? current !== null : !current?.equals(previous)) throw new Error(`ASB did not change a file that changed during this command: ${file}`);
   const temporary = `${file}.asb-${randomUUID()}`;
   try {
     await writeFile(temporary, bytes, { flag: 'wx', mode, signal });
@@ -88,7 +89,7 @@ async function replace(file, bytes, previous, mode = 0o644, signal) {
     signal?.throwIfAborted();
     if (previous === null) await link(temporary, file);
     else {
-      if (!(await contents(file))?.equals(previous)) throw new Error(`ASB did not change a file that changed during install: ${file}`);
+      if (!(await contents(file))?.equals(previous)) throw new Error(`ASB did not change a file that changed during this command: ${file}`);
       signal?.throwIfAborted();
       await rename(temporary, file);
     }

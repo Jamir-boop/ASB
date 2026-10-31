@@ -27,6 +27,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Fixed the Windows engine log, which lost the reason for a crash, and each engine start, which emptied the log. The log now keeps the crash stack, and the log of the start before stays as `engine.log.1`.
 - CI now runs the board widget tests (`test/asb_native_test.py`) in Xvfb on Debian 13.
 - Fixed the XDG autostart entry, which started a launcher that `./uninstall.sh` had removed at each login: the entry now has `TryExec`. The uninstall message now names the commands that remove the start at login and ASB Bridge, and the install guide has an Uninstall section.
+- The install, the user service, and `asb bridge` now give the same messages for a linked path and for a file that changed during the command.
 
 ## ASB 1.13.0 - 2026-10-28
 

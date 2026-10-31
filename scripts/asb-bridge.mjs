@@ -1,10 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, rmdir, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, rmdir, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findExecutable as executable, stripWindowsVerbatimPath } from '../src/platform-paths.mjs';
+import { contents, safeParents } from './asb-package.mjs';
+// The tests and the Windows checks use the PATH search by this name.
+export { executable };
 
 export const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 // The next steps of what an install changed. The last line has the words of bridge/README.md.
@@ -31,18 +35,6 @@ function absolute(value) {
 async function info(file) {
   try { return await lstat(file); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-}
-async function contents(file) {
-  const entry = await info(file);
-  if (!entry) return null;
-  if (!entry.isFile()) throw new Error(`ASB will not use a linked or non-file path: ${file}`);
-  return readFile(file);
-}
-async function safeParents(file) {
-  for (let directory = path.dirname(file); directory !== path.dirname(directory); directory = path.dirname(directory)) {
-    const entry = await info(directory);
-    if (entry && !entry.isDirectory()) throw new Error(`ASB will not write through a linked or non-directory path: ${directory}`);
-  }
 }
 const sameFile = (left, right) => left && right && left.dev === right.dev && left.ino === right.ino;
 async function registryDirectory(directory, privateMode = true) {
@@ -229,22 +221,6 @@ async function checkRoot(sourceRoot) {
   }
   return root;
 }
-// The same PATH search as findExecutable in src/platform-paths.mjs; this script also runs without src/.
-// Windows splits PATH with ';' and tries each PATHEXT extension; other systems need the execute bit.
-export async function executable(name, { platform = process.platform, env = process.env, searchPath = env.PATH || '', cwd = process.cwd() } = {}) {
-  const windows = platform === 'win32';
-  const names = windows ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((extension) => name + extension.toLowerCase()) : [name];
-  for (const directory of searchPath.split(windows ? ';' : path.delimiter)) {
-    for (const candidate of names) {
-      const file = path.resolve(cwd, directory, candidate);
-      try {
-        await access(file, windows ? constants.F_OK : constants.X_OK);
-        if ((await stat(file)).isFile()) return file;
-      } catch (error) { if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error; }
-    }
-  }
-  return '';
-}
 // Windows runs a .cmd or .bat file only through cmd.exe, which expands % and ! and splits at & | < > even in quotes.
 export function commandLine(file, args, platform = process.platform) {
   if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(file)) return { command: file, args, options: {} };
@@ -324,13 +300,6 @@ function sections(text) {
 export function hasOldPlugin(config) {
   return sections(config).has(`plugins."${OLD_PLUGIN}"`);
 }
-// The same rule as stripWindowsVerbatimPath in src/platform-paths.mjs; this script also runs without src/.
-function stripWindowsVerbatimPath(cwd) {
-  if (cwd.startsWith('\\\\?\\UNC\\')) return `\\\\${cwd.slice(8)}`;
-  if (/^\\\\\?\\[a-z]:\\/i.test(cwd)) return cwd.slice(4);
-  return cwd;
-}
-
 function sourceValue(section = '') {
   const value = section.match(/^\s*source\s*=\s*("(?:\\.|[^"\\])*"|'[^']*')\s*(?:#.*)?$/m)?.[1];
   if (!value) return null;

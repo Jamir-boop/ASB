@@ -8,7 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ASB_APP_ID } from '../scripts/asb-icon.mjs';
-import { build, checkRuntime, enablePanel, formatStringList, gnomeShellMajor, install, PANEL_UUID, parseStringList, RUNTIME_FILES, uninstall } from '../scripts/asb-package.mjs';
+import { build, checkRuntime, contents, enablePanel, formatStringList, gnomeShellMajor, install, PANEL_UUID, parseStringList, replace, RUNTIME_FILES,
+  safeParents, uninstall } from '../scripts/asb-package.mjs';
 
 test('release runtime includes the Claude remote reader imported by the switchboard', () => {
   assert.ok(RUNTIME_FILES.includes('src/claude-remote-data.mjs'));
@@ -57,6 +58,19 @@ const bridgeRuntimeFiles = [
   'bridge/agent-skills/opencode/bridge/SKILL.md',
   'bridge/agent-skills/codex/bridge/agents/openai.yaml', 'scripts/asb-bridge.mjs',
 ].sort();
+
+test('the shared file helpers give the same neutral messages to the install, the user service, and ASB Bridge', async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-file-helpers-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const file = path.join(temporary, 'file');
+  assert.equal(await contents(file), null);
+  await assert.rejects(contents(temporary), { message: `ASB will not use a linked or non-file path: ${temporary}` });
+  await writeFile(file, 'old');
+  await assert.rejects(safeParents(path.join(file, 'inner')), { message: `ASB will not write through a linked or non-directory path: ${file}` });
+  await assert.rejects(replace(file, Buffer.from('new'), Buffer.from('other')), { message: `ASB did not change a file that changed during this command: ${file}` });
+  await replace(file, Buffer.from('new'), Buffer.from('old'));
+  assert.equal(await readFile(file, 'utf8'), 'new');
+});
 
 test('the bridge runtime whitelist has exactly the fourteen required files', () => {
   assert.deepEqual(RUNTIME_FILES.filter((file) => file.startsWith('bridge/')

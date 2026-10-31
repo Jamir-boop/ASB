@@ -45,7 +45,7 @@ async function executableFile(file, platform) {
 }
 
 // The PATH search of a shell, with the file it found ('' when none). Windows splits PATH with ';' and tries
-// each PATHEXT extension; other systems need the execute bit. scripts/asb-bridge.mjs has the same search.
+// each PATHEXT extension; other systems need the execute bit.
 export async function findExecutable(name, { platform = process.platform, env = process.env, searchPath = env.PATH || '', cwd = process.cwd() } = {}) {
   const windows = platform === 'win32';
   const names = windows ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((extension) => name + extension.toLowerCase()) : [name];
@@ -88,7 +88,7 @@ export async function findBun({ platform = process.platform, env = process.env, 
 // The text for "no Bun": it names the folders that findBun tried after PATH.
 export const bunNotFound = (folders) => `Bun was not found on PATH${folders.length ? ` or in ${folders.join(' or ')}` : ''}.`;
 
-// Codex on Windows saves verbatim paths (\\?\C:\x, \\?\UNC\server\share); scripts/asb-bridge.mjs has the same rule.
+// Codex on Windows saves verbatim paths (\\?\C:\x, \\?\UNC\server\share).
 export function stripWindowsVerbatimPath(cwd) {
   if (cwd.startsWith('\\\\?\\UNC\\')) return `\\\\${cwd.slice(8)}`;
   if (/^\\\\\?\\[a-z]:\\/i.test(cwd)) return cwd.slice(4);

@@ -615,8 +615,11 @@ test('Claude configuration override and CLI argument validation stay within expl
 
 test('status uses shipped plugin metadata without bridge package.json and missing root refuses writes', async (t) => {
   const f = await fixture(t), root = path.join(f.temporary, 'payload');
-  await mkdir(path.join(root, 'scripts'), { recursive: true });
-  await copyFile(SCRIPT, path.join(root, 'scripts/asb-bridge.mjs'));
+  // The script and the shared helpers that it imports; no bridge runtime files.
+  for (const file of ['scripts/asb-bridge.mjs', 'scripts/asb-package.mjs', 'scripts/asb-icon.mjs', 'src/linux-system.mjs', 'src/platform-paths.mjs']) {
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await copyFile(path.join(ROOT, file), path.join(root, file));
+  }
   const run = (args) => runScript(path.join(root, 'scripts/asb-bridge.mjs'), args, f.env, { procRoot: f.procRoot, platform: 'linux' });
   const before = await snapshot(f.home), refusal = run(['install', '--codex-home', f.codex]);
   assert.equal(refusal.status, 1);

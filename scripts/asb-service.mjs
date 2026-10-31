@@ -1,13 +1,13 @@
 import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, link, lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { findRunningService, readServiceRuntime } from './asb-instance.mjs';
 import { runEngine, startEngine, stopRunning } from './asb-engine.mjs';
+import { contents, replace, safeParents } from './asb-package.mjs';
 export { readServiceRuntime, findRunningService } from './asb-instance.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -64,35 +64,9 @@ export async function autostartMode({ env = process.env, execFile = execFileAsyn
   return env.XDG_CURRENT_DESKTOP || env.DESKTOP_SESSION ? 'xdg' : 'none';
 }
 
-async function contents(file) {
-  try {
-    if (!(await lstat(file)).isFile()) throw new Error(`ASB will not change a linked or non-file path: ${file}`);
-    return await readFile(file);
-  } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-}
-
-async function atomicWrite(file, bytes, previous, mode) {
-  const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
-  try {
-    await writeFile(temporary, bytes, { flag: 'wx', mode });
-    if (previous === null) await link(temporary, file);
-    else {
-      if (!(await contents(file))?.equals(previous)) throw new Error(`ASB kept a file that changed during this command: ${file}`);
-      await rename(temporary, file);
-    }
-  } finally { await rm(temporary, { force: true }); }
-}
-
-async function realParents(file) {
-  for (let parent = path.dirname(file); parent !== path.dirname(parent); parent = path.dirname(parent)) {
-    const info = await lstat(parent).catch((error) => { if (error.code !== 'ENOENT') throw error; });
-    if (info && !info.isDirectory()) throw new Error(`ASB will not write through a linked or non-directory folder: ${parent}`);
-  }
-}
-
 // The bytes of an ASB file, or null when it is missing. A file without the ASB marker is not changed.
 async function managedFile(file, marker, kind) {
-  await realParents(file);
+  await safeParents(file);
   const bytes = await contents(file);
   if (bytes && !bytes.toString('utf8').split('\n').includes(marker)) throw new Error(`ASB kept an unrelated ${kind} file: ${file}`);
   return bytes;
@@ -167,7 +141,7 @@ export async function main(args, { env = process.env, execFile = execFileAsync, 
   // The file of the other mode goes after the write, and only when it has the ASB marker; other files stay with no error.
   const other = await (mode === 'systemd' ? managedEntry(entryFile) : managedUnit(unitFile)).catch(() => null);
   await mkdir(path.dirname(own), { recursive: true, mode: 0o700 });
-  await atomicWrite(own, Buffer.from(mode === 'systemd' ? unitText(paths) : entryText(paths)), previous, 0o644);
+  await replace(own, Buffer.from(mode === 'systemd' ? unitText(paths) : entryText(paths)), previous, 0o644);
   if (mode === 'systemd') {
     if (other) await removeEntry(entryFile, other, log);
     // Any running engine stops first (detached, of the entry, or of the unit). Else the unit engine refuses the runtime record and restarts again and again.
