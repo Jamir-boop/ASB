@@ -71,13 +71,14 @@ async function fixture(t, { load, watchPaths, watchImpl, platform } = {}) {
     },
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  await until(() => clock.timers.size);
-  const base = `http://127.0.0.1:${server.address().port}`;
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
   });
+  // The first reconcile ends with a retry timer for a failed root, or with a live watch on every root.
+  await until(() => clock.timers.size || paths.every((spec) => watches.some((item) => item.target === spec.path && !item.watcher.closed)));
+  const base = `http://127.0.0.1:${server.address().port}`;
   return { dir, paths, clock, watches, hints, server, base, loads: () => loads,
     scan: () => fetch(`${base}/api/dashboard`).then((response) => response.json()),
     change: (filename = 'state_9.sqlite-wal', source = 'codex', event = 'change') => {
@@ -160,10 +161,10 @@ test('a PC without the Claude app folder keeps full watch coverage and watches t
   await rm(path.join(f.dir, 'app'), { recursive: true });
   f.watches.findLast((item) => item.target === desktopPath && !item.watcher.closed)
     .callback('rename', path.basename(desktopPath));
-  await f.clock.advance(5_000);
+  // The root event makes the load dirty, and a dirty load reconciles first.
   assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
   await mkdir(desktopPath, { recursive: true });
-  await f.clock.advance(5_000);
+  await f.clock.advance(60_000);
   await until(() => f.watches.some((item) => item.target === desktopPath && !item.watcher.closed));
   assert.equal((await f.scan()).performance.dashboard.watchCoverage, true);
 });
@@ -217,7 +218,7 @@ test('idle source changes wake after debounce and preserve one follow-up during 
   await f.clock.advance(250);
   assert.equal(f.loads(), 2);
   release.resolve();
-  await until(() => f.clock.timers.size === 2);
+  await until(() => f.clock.timers.size === 1);
   const current = await f.scan();
   assert.equal(current.performance.dashboard.dirty, true);
   assert.equal(current.refreshIntervalMs, 2_000);
@@ -249,13 +250,16 @@ test('watch failures use active fallback, retry missing stores, and follow atomi
   for (const spec of f.paths) if (spec.path.startsWith(`${old.target}${path.sep}`)) await mkdir(spec.path, { recursive: true });
   // A moved or removed watch root reports its own name, as inotify does.
   old.callback('rename', path.basename(old.target));
-  await f.clock.advance(5_000);
+  // The Codex root filter drops its own name: a state file event makes the load dirty.
+  f.change();
+  await f.scan();
   assert.equal(old.watcher.closed, true);
   assert.ok(f.watches.length > f.paths.length);
   const claudePath = f.paths.find((item) => item.source === 'claude' && !item.optional).path;
   await rm(claudePath, { recursive: true });
   f.watches.findLast((item) => item.target === claudePath).callback('rename', path.basename(claudePath));
-  await f.clock.advance(5_000);
+  // Busy scans start at most once per 2 s.
+  await f.clock.advance(2_000);
   assert.equal((await f.scan()).performance.dashboard.watchCoverage, false);
   await mkdir(claudePath);
   await f.clock.advance(5_000);
@@ -287,7 +291,7 @@ test('linux watches each directory once, never recursively, and still sees neste
   const childPath = path.join(root, '2026', '10');
   await mkdir(childPath, { recursive: true });
   f.watches.find((item) => item.target === root).callback('rename', '2026');
-  await f.clock.advance(5_000);
+  await f.scan();
   await until(() => f.watches.some((item) => item.target === childPath));
   const open = f.watches.filter((item) => !item.watcher.closed).map((item) => item.target);
   assert.deepEqual([...open].sort(), [...f.paths.map((item) => item.path), path.dirname(childPath), childPath].sort());
