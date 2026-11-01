@@ -145,6 +145,8 @@ export async function readLiveClaudeRegistry(roots, { windows = false, isAlive =
 }
 
 const APPROVAL_WINDOW_BYTES = 1024 * 1024;
+// On Windows the Number ino of a file ID above 2^53 is rounded, so a new log can have the identity of the old one; the bytes before the offset must match too, as in src/claude-data.mjs.
+const APPROVAL_GUARD_BYTES = 64;
 const approvalLogs = new Map();
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const LOG_TIME = '(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) \\[info\\] ';
@@ -166,9 +168,15 @@ export async function readClaudeAppApprovals(appDir, { windows = process.platfor
     if (!info.isFile()) return new Map();
     fileScan?.statusFiles?.set(file, info);
     let state = approvalLogs.get(file);
-    if (!state || state.dev !== info.dev || state.ino !== info.ino || info.size < state.offset
-      || info.size - state.offset > 4 * APPROVAL_WINDOW_BYTES) {
-      state = { dev: info.dev, ino: info.ino, offset: Math.max(0, info.size - APPROVAL_WINDOW_BYTES), open: new Map(), emitted: 0, received: 0 };
+    let replaced = !state || state.dev !== info.dev || state.ino !== info.ino || info.size < state.offset
+      || info.size - state.offset > 4 * APPROVAL_WINDOW_BYTES;
+    if (!replaced && state.guard.length > 0) {
+      const guard = Buffer.alloc(state.guard.length);
+      const { bytesRead } = await handle.read(guard, 0, guard.length, state.offset - guard.length);
+      replaced = bytesRead < guard.length || !guard.equals(state.guard);
+    }
+    if (replaced) {
+      state = { dev: info.dev, ino: info.ino, offset: Math.max(0, info.size - APPROVAL_WINDOW_BYTES), open: new Map(), emitted: 0, received: 0, guard: Buffer.alloc(0) };
       state.skipFirst = state.offset > 0;
     }
     const readOffset = state.offset;
@@ -181,6 +189,8 @@ export async function readClaudeAppApprovals(appDir, { windows = process.platfor
     }
     const completeEnd = buffer.subarray(0, size).lastIndexOf(10) + 1;
     state.offset = readOffset + completeEnd;
+    const guardTail = buffer.subarray(Math.max(0, completeEnd - APPROVAL_GUARD_BYTES), completeEnd);
+    state.guard = Buffer.from(Buffer.concat([state.guard, guardTail]).subarray(-APPROVAL_GUARD_BYTES));
     const lines = buffer.subarray(0, completeEnd).toString('utf8').split('\n');
     lines.pop();
     for (const raw of lines) {

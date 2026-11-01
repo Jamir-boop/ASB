@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed Claude Desktop Code approvals on Windows, which could stay open after the Claude app replaced its log: the new log can have the same file number as the old one. ASB now also compares the 64 bytes before its read position.
+
 ## ASB 1.14.0 - 2026-11-01
 
 - ASB Bridge is now `0.8.1`. It has the ASB Bridge fixes below.

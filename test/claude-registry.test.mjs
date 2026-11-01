@@ -260,6 +260,14 @@ test('truncation and replacement clear previous app approvals', async (t) => {
   assert.deepEqual([...(await read()).keys()], [APP_SESSION]);
 });
 
+test('an app log rewritten in place with a longer different line clears previous app approvals', async (t) => {
+  const { file, read } = approvalFixture(t);
+  writeFileSync(file, approvalLine(OTHER_REQUEST, OTHER_APP_SESSION, 'Read'));
+  assert.deepEqual([...(await read()).keys()], [OTHER_APP_SESSION]);
+  writeFileSync(file, approvalLine());
+  assert.deepEqual([...(await read()).keys()], [APP_SESSION]);
+});
+
 test('unrelated and malformed app log lines cannot open or close approvals', async (t) => {
   const { file, read } = approvalFixture(t);
   writeFileSync(file, [
