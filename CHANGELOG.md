@@ -4,7 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
-## ASB 1.14.0 - 2026-10-31
+## ASB 1.14.0 - 2026-11-01
 
 - ASB Bridge is now `0.8.1`. It has the ASB Bridge fixes below.
 - Added **Pets** to Preferences > Appearance: Off (the default), Crab, Pigeon, or Cat. With a pet on, a message on the board shows as a pixel pet instead of the light: the pet climbs out of the sender card, walks to the receiver card, tosses the envelope into its provider icon, and dives into the card. Comfortable shows the pets at 2×, Compact at 1×. When a card is out of view, the light plays. With GNOME animations off, both icons show the accent color for 2 s, as before. Pets also play on GTK 4.12. `layout.json` keeps `pet` only when it is not Off.
