@@ -39,7 +39,13 @@ const server = http.createServer((request, response) => {
   const route = request.url.split('?')[0];
   if (route === '/api/service') send(response, 200, { service: true, pid: process.pid });
   else if (route === '/api/dashboard') send(response, 200, dashboard);
-  else if (route === '/api/events') send(response, 404, {});
+  // A stream, as the real engine: a 404 makes the board ask its follow helper while the engine runs, and its "alive" answer makes it ignore losses for 30 s.
+  else if (route === '/api/events') {
+    response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive' });
+    response.write('\\n');
+    const connected = { reason: 'connected', listEvents: true, ...(new URL(request.url, 'http://127.0.0.1').searchParams.has('ui') ? { uiClient: true } : {}) };
+    response.write('event: connected\\ndata: ' + JSON.stringify(connected) + '\\n\\n');
+  }
   else send(response, 200, {});
 });
 server.listen(0, '127.0.0.1', () => {
@@ -66,7 +72,8 @@ const descendantBoards = (processes, rootPid) => {
 const boardPids = (rootPid) => descendantBoards(JSON.parse(spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
   'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CommandLine)'],
 { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }).stdout), rootPid);
-// The boards that are still below the root after up to 25 s (the 2 s PID check, the 20 s reconnect wait, and cleanup).
+// The boards that are still below the root after up to 25 s (the PID check of the follow helper, at once for a killed engine and at most 5 s,
+// the 20 s wait for a new engine, and the close).
 async function boardsLeft(rootPid) {
   let left = boardPids(rootPid);
   for (const deadline = Date.now() + 25_000; left.length && Date.now() < deadline;) { await delay(500); left = boardPids(rootPid); }
