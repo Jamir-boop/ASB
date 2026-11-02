@@ -21,6 +21,10 @@ When a session sends a message to another session, a light flies from its card t
 
 Preferences > Appearance > **Pets** sends a pixel crab, pigeon, or cat with each message instead. The Android app has the same setting.
 
+To mute a session for a time, rest the pointer on the bell button of its card, turn the wheel to choose 30 min, 1 hour, 8 hours, 1 day, or Always, and click. The card shows the time left, and the mute ends by itself:
+
+![ASB board: the pointer rests on the bell button of a card, the wheel changes the time from 30 min to 1 hour, a click mutes the session, and the card shows a muted bell and 1h](docs/media/board-mute-wheel.svg)
+
 The Messages window shows the messages between your sessions on all machines:
 
 ![ASB Messages window: three messages arrive, a light flies along each chord, and the counts update](docs/media/messages-window.svg)
