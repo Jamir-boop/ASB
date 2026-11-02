@@ -7471,31 +7471,278 @@ class WidgetCheck(unittest.TestCase):
         _color, x, y, width = max((run for run in runs if run[0] == "#d97757"), key=lambda run: run[3])
         return left + (x + width // 2) * scale + scale // 2, top + y * scale + scale // 2
 
+    def pets_preferences(self, pet="off", width=780):
+        window, _board, path = self.pet_board({"pet": pet}, count=3, size=(700, 420))
+        settings = window.get_settings()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", True)
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        preferences.set_default_size(width, 560); self.drain(.3)
+        preferences.show_section("appearance"); self.drain(.05)
+        return window, preferences, path
+
+    def assert_pet_choice(self, window, index, focused=False):
+        for position, tile in enumerate(window.pet_tiles):
+            chosen = position == index
+            self.assertEqual((tile.get_active(), tile.get_focusable()), (chosen, chosen))
+            error = self.gtk_state(self.capsule_pointer(tile.__gpointer__, None), int(asb.Gtk.AccessibleState.CHECKED),
+                                   ctypes.c_int(asb.Gtk.AccessibleTristate.TRUE if chosen else asb.Gtk.AccessibleTristate.FALSE))
+            if error:
+                message = ctypes.string_at(error).decode()
+                self.g_free(error)
+                self.fail(message)
+        if focused:
+            self.assertIs(window.preferences_window.get_focus(), window.pet_tiles[index])
+
     def test_pets_preference_saves_and_keeps_the_old_pet_on_error(self):
-        window, _board, layout_path = self.pet_board({}, count=3, size=(700, 420))
-        setting = window.pet_setting
-        self.assertIs(window.view_filter.get_parent().get_next_sibling(), setting.get_parent())
-        self.assertEqual([setting.get_model().get_string(index) for index in range(4)], ["Off", "Crab", "Pigeon", "Cat"])
-        self.assertEqual((setting.get_selected(), window.pet), (0, "off"))
-        self.assert_accessible_label(setting, "Pets")
-        caption = setting.get_parent().get_next_sibling()
+        window, preferences, layout_path = self.pets_preferences()
+        tiles = window.pet_tiles
+        strip = tiles[0].get_parent()
+        pets_label = window.view_filter.get_parent().get_next_sibling()
+        self.assertEqual((pets_label.get_label(), pets_label.get_xalign()), ("Pets", 0))
+        self.assertIs(pets_label.get_next_sibling(), strip)
+        self.assertEqual([tile.name for tile in tiles], list(asb.PETS))
+        self.assertEqual(window.pet, "off")
+        self.assertFalse(hasattr(window, "pet_setting"))
+        self.assertEqual(strip.get_accessible_role(), asb.Gtk.AccessibleRole.RADIO_GROUP)
+        self.assert_accessible_label(strip, "Pets")
+        for tile, name in zip(tiles, ("Off", "Crab", "Pigeon", "Cat")):
+            self.assertEqual(tile.get_accessible_role(), asb.Gtk.AccessibleRole.RADIO)
+            self.assert_accessible_label(tile, name)
+        self.assert_pet_choice(window, 0)
+        caption = strip.get_next_sibling()
         self.assertEqual(caption.get_label(), "A pixel pet carries each message from card to card.")
         self.assertTrue(caption.has_css_class("caption") and caption.get_wrap() and caption.get_xalign() == 0)
-        window.open_preferences(); self.drain(.3)
-        preferences = window.preferences_window
-        preferences.stack.set_visible_child_name("appearance"); self.drain(.3)
-        self.assertTrue(caption.get_mapped() and setting.get_mapped())
-        setting.set_selected(3); self.drain(.1)
+        self.assertIs(caption.get_next_sibling(), window.pet_stage)
+        self.assertIs(window.pet_stage.get_next_sibling(), window.width_control.get_parent())
+        self.assertTrue(caption.get_mapped() and strip.get_mapped())
+        tiles[3].emit("clicked"); self.drain(.1)
+        self.assert_pet_choice(window, 3)
         self.assertEqual((window.pet, json.loads(layout_path.read_text())["pet"]), ("cat", "cat"))
         self.assertEqual(window.layout_error.get_label(), "")
+        self.drain(.35)
         before = layout_path.read_bytes()
         with patch.object(asb, "write_layout", side_effect=OSError("Cannot save.")):
-            setting.set_selected(1); self.drain(.1)
-        self.assertEqual((setting.get_selected(), window.pet, layout_path.read_bytes()), (3, "cat", before))
+            tiles[1].emit("clicked"); self.drain(.05)
+        self.assert_pet_choice(window, 3)
+        self.assertEqual((window.pet, layout_path.read_bytes()), ("cat", before))
+        self.assertIsNone(tiles[1].chosen_at)
         self.assertEqual(window.layout_error.get_label(), "Cannot save.")
-        setting.set_selected(0); self.drain(.1)
+        tiles[3].emit("clicked")
+        self.assert_pet_choice(window, 3)
+        tiles[0].emit("clicked"); self.drain(.1)
+        self.assert_pet_choice(window, 0)
         self.assertEqual((window.pet, window.layout_error.get_label()), ("off", ""))
         self.assertNotIn("pet", json.loads(layout_path.read_text()))
+
+    def test_pet_tiles_keyboard_wraps_and_roves_focus(self):
+        window, preferences, _path = self.pets_preferences("cat")
+        window.pet_tiles[3].grab_focus()
+        for key, index in ((asb.Gdk.KEY_Right, 0), (asb.Gdk.KEY_Left, 3), (asb.Gdk.KEY_Home, 0),
+                           (asb.Gdk.KEY_End, 3), (asb.Gdk.KEY_Down, 0), (asb.Gdk.KEY_Up, 3)):
+            tile = preferences.get_focus()
+            controller = next(item for item in tile.observe_controllers() if isinstance(item, asb.Gtk.EventControllerKey))
+            self.assertTrue(controller.emit("key-pressed", key, 0, 0))
+            self.assert_pet_choice(window, index, focused=True)
+            self.assertIsNotNone(window.pet_tiles[index].chosen_at)
+        self.drain(.8)
+        self.assertIsNone(window.pet_tiles[0].get_parent().tick)
+
+    def pet_widget_paint(self, widget):
+        """RGBA pixels in the outer widget box, including its CSS border."""
+        paintable = asb.Gtk.WidgetPaintable.new(widget)
+        width, height = paintable.get_intrinsic_width(), paintable.get_intrinsic_height()
+        snapshot = asb.Gtk.Snapshot()
+        paintable.snapshot(snapshot, width, height)
+        node = snapshot.to_node()
+        self.assertIsNotNone(node)
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        try:
+            downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(node, asb.Graphene.Rect().init(0, 0, width, height)))
+            downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+            data, stride = downloader.download_bytes()
+            data = data.get_data()
+        finally:
+            renderer.unrealize()
+        return lambda x, y: tuple(data[int(y) * stride + int(x) * 4:int(y) * stride + int(x) * 4 + 4])
+
+    def test_pet_tiles_sizes_picture_ring_badge_and_background(self):
+        window, preferences, _path = self.pets_preferences("crab")
+        stage, tiles = window.pet_stage, window.pet_tiles
+        self.assertEqual(stage.get_accessible_role(), asb.Gtk.AccessibleRole.IMG)
+        self.assert_accessible_label(stage, "Crab carries a message between two sample cards")
+        self.assertFalse(stage.get_focusable() or stage.get_can_target())
+        for width, tile_width in ((420, 89), (780, 112)):
+            preferences.set_default_size(width, 560); self.drain(.3)
+            preferences.show_section("appearance"); self.drain(.2)
+            self.assertEqual(preferences.get_width(), width)
+            self.assertEqual([(tile.get_allocated_width(), tile.get_allocated_height()) for tile in tiles], [(tile_width, 92)] * 4)
+            self.assertEqual(tiles[0].get_parent().get_spacing(), 8)
+            self.assertEqual(stage.get_allocated_height(), 116)
+            self.assertEqual(stage.get_allocated_width(), stage.get_parent().get_width())
+            self.assertEqual([card.get_allocated_height() for card in stage.cards], [68, 68])
+            found, outer = stage.compute_bounds(preferences)
+            left, right = [card.compute_bounds(preferences)[1] for card in stage.cards]
+            self.assertEqual(left.origin.x - outer.origin.x, 12)
+            self.assertEqual(right.origin.x - left.origin.x - left.size.width, 12)
+            self.assertEqual(outer.origin.x + outer.size.width - right.origin.x - right.size.width, 12)
+            output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
+            if output:
+                asb.save_snapshot(preferences, str(Path(output) / f"pets-gnome-{width}.png"))
+        for colors in (None, CUSTOM):
+            window.set_palette(colors)
+            (preferences.add_css_class if colors else preferences.remove_css_class)("asb-custom")
+            # The Adwaita button transition runs for 200 ms after the colors change.
+            self.drain(.4)
+            self.settle(preferences)
+            checked, unchecked = self.pet_widget_paint(tiles[1]), self.pet_widget_paint(tiles[2])
+            accent = window.message_color()
+            accent = tuple(min(255, round(channel * 255)) for channel in (accent.red, accent.green, accent.blue))
+            near_accent = lambda pixel: all(abs(a - b) <= 3 for a, b in zip(pixel[:3], accent)) and pixel[3] == 255
+            self.assertTrue(near_accent(checked(1, 46)), checked(1, 46))
+            self.assertFalse(near_accent(unchecked(1, 46)))
+            self.assertTrue(tiles[1].badge.get_visible())
+            self.assertFalse(tiles[2].badge.get_visible())
+            self.assertEqual(tiles[1].badge.get_allocated_width(), 18)
+            self.assertEqual(tiles[1].badge.get_allocated_height(), 18)
+            # The icon has no ink at the center of the circle.
+            self.assertTrue(near_accent(checked(tiles[1].get_allocated_width() - 15, 8)))
+            self.assertFalse(near_accent(unchecked(tiles[2].get_allocated_width() - 15, 8)))
+            self.assertFalse(near_accent(checked(4, 60)))
+            pet = asb.load_pets()["pets"]["crab"]
+            runs, left, top, _flip = asb.pet_box(pet, 2, "stand", round(tiles[1].get_allocated_width() / 2), 53, 1)
+            _color, x, y, length = max((run for run in runs if run[0] == "#d97757"), key=lambda run: run[3])
+            pixel = checked(left + (x + length // 2) * 2 + 1, top + y * 2 + 1)
+            self.assertTrue(self.near(pixel, "#d97757"), pixel)
+        output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
+        if output:
+            asb.save_snapshot(preferences, str(Path(output) / "pets-custom-780.png"))
+
+    def test_pet_stage_reuses_board_flights_and_stops_on_hide(self):
+        window, preferences, _path = self.pets_preferences("crab")
+        stage = window.pet_stage
+        stage.set_active(False)
+        stage.set_active(True)
+        started = time.monotonic()
+        self.assertIsNotNone(stage.timeout)
+        self.assertFalse(stage.flights)
+        self.wait_for(lambda: stage.flights, 1)
+        self.assertAlmostEqual(time.monotonic() - started, .4, delta=.15)
+        flight = stage.flights[0]
+        self.assertEqual((flight["pet_name"], flight["scale"], flight["rows"]), ("crab", 2, tuple(stage.cards)))
+        self.assertIs(asb.PetStage.start_pet, asb.SessionStrip.start_pet)
+        self.assertIs(asb.PetStage.snapshot_pet, asb.SessionStrip.snapshot_pet)
+        for name in ("advance_pet", "snapshot_tints", "snapshot_flights", "pet_node", "start_flight"):
+            self.assertIs(getattr(asb.PetStage, name), getattr(asb.SessionStrip, name))
+        # The timer is start-to-start, not an extra wait after the flight ends.
+        started = time.monotonic()
+        self.wait_for(lambda: not stage.flights, 5)
+        self.wait_for(lambda: stage.flights, 5)
+        self.assertAlmostEqual(time.monotonic() - started, 4.6, delta=.15)
+        flight = stage.flights[0]
+        window.pet_tiles[2].emit("clicked")
+        self.assertEqual((stage.flights, flight["animations"]), ([], []))
+        started = time.monotonic()
+        self.wait_for(lambda: stage.flights, 1)
+        self.assertAlmostEqual(time.monotonic() - started, .4, delta=.15)
+        self.assertEqual(stage.flights[0]["pet_name"], "pigeon")
+        self.assert_accessible_label(stage, "Pigeon carries a message between two sample cards")
+        preferences.show_section("sessions"); self.drain(.05)
+        self.assertEqual((stage.active, stage.timeout, stage.flights), (False, None, []))
+        self.assertTrue(all(card.asb_light_timer is None for card in stage.cards))
+        preferences.show_section("appearance"); self.drain(.05)
+        self.assertIsNotNone(stage.timeout)
+        preferences.set_default_size(420, 560); self.drain(.3)
+        self.assertEqual(preferences.pages.get_visible_child_name(), "list")
+        self.assertEqual((stage.active, stage.timeout, stage.flights), (False, None, []))
+        preferences.show_section("appearance"); self.drain(.5)
+        self.assertTrue(stage.flights)
+        preferences.close(); self.drain(.05)
+        self.assertEqual((stage.active, stage.timeout, stage.flights), (False, None, []))
+        strip = window.pet_tiles[0].get_parent()
+        self.assertEqual((strip.tick, strip.motion_signal), (None, None))
+        self.assertTrue(all(card.asb_light_timer is None for card in stage.cards))
+
+    def test_pet_stage_light_fallback_and_no_motion(self):
+        window, preferences, _path = self.pets_preferences("crab")
+        stage, strip = window.pet_stage, window.pet_tiles[0].get_parent()
+        settings = window.get_settings()
+        settings.set_property("gtk-enable-animations", False)
+        for colors in (None, CUSTOM):
+            window.set_palette(colors)
+            (preferences.add_css_class if colors else preferences.remove_css_class)("asb-custom")
+            window.pet_tiles[0 if window.pet != "off" else 3].emit("clicked")
+            self.drain(.1)
+            self.assertFalse(stage.flights)
+            self.assertIsNone(stage.timeout)
+            self.assertIsNone(strip.tick)
+            self.assertTrue(all(card.has_css_class("asb-message-lit") for card in stage.cards))
+            accent = window.message_color()
+            for card in stage.cards:
+                color = card.asb_mark.get_color()
+                self.assertEqual([min(255, round(channel * 255)) for channel in (color.red, color.green, color.blue)],
+                                 [min(255, round(channel * 255)) for channel in (accent.red, accent.green, accent.blue)])
+            self.drain(1.7)
+            self.assertTrue(all(card.has_css_class("asb-message-lit") for card in stage.cards))
+            self.drain(.3)
+            self.assertTrue(all(not card.has_css_class("asb-message-lit") for card in stage.cards))
+        settings.set_property("gtk-enable-animations", True)
+        window.pet_tiles[0].emit("clicked")
+        if hasattr(asb.Gsk, "PathBuilder"):
+            self.wait_for(lambda: stage.flights, 1)
+            flight = stage.flights[0]
+            self.assertNotIn("pet", flight)
+            self.assertEqual(flight["rows"], tuple(stage.cards))
+            self.assert_accessible_label(stage, "The light carries a message between two sample cards")
+        # GTK 4.12 has no path builder; the two marks light instead.
+        class OldGsk:
+            def __getattr__(self, name):
+                if name == "PathBuilder":
+                    raise AttributeError(name)
+                return getattr(gsk, name)
+        gsk = asb.Gsk
+        stage.restart()
+        with patch.object(asb, "Gsk", OldGsk()):
+            self.drain(.45)
+            self.assertFalse(stage.flights)
+            self.assertTrue(all(card.has_css_class("asb-message-lit") for card in stage.cards))
+        # Without the sprites, the tiles keep their names and the stage plays the light rule.
+        with patch.object(asb, "load_pets", side_effect=OSError("No sprites.")), contextlib.redirect_stderr(io.StringIO()):
+            missing = asb.PetTiles(window)
+            self.assertIsNone(missing.sprites)
+            self.assertEqual([tile.name for tile in missing.tiles], list(asb.PETS))
+            window.pet_tiles[1].emit("clicked")
+            self.assertEqual(window.pet, "crab")
+            self.drain(.5)
+            if hasattr(asb.Gsk, "PathBuilder"):
+                self.assertNotIn("pet", stage.flights[0])
+            else:
+                self.assertTrue(all(card.has_css_class("asb-message-lit") for card in stage.cards))
+
+    def test_pet_tile_hover_tick_choice_and_stop(self):
+        window, preferences, _path = self.pets_preferences("cat")
+        strip = window.pet_tiles[0].get_parent()
+        self.assertIsNone(strip.tick)
+        for index in (0, 1):
+            tile = window.pet_tiles[index]
+            tile.hover(None, True)
+            self.assertIsNotNone(strip.tick)
+            self.drain(.1)
+            tile.hover(None, False)
+            self.assertIsNone(strip.tick)
+            tile.emit("clicked")
+            self.assertIsNotNone(strip.tick)
+            self.drain(.75 if index == 0 else .36)
+            self.assertIsNone(strip.tick)
+        window.pet_tiles[2].hover(None, True)
+        window.get_settings().set_property("gtk-enable-animations", False)
+        self.assertIsNone(strip.tick)
+        window.get_settings().set_property("gtk-enable-animations", True)
+        self.assertIsNotNone(strip.tick)
+        preferences.close(); self.drain(.05)
+        self.assertIsNone(strip.tick)
 
     def test_pet_flight_paints_the_crab_the_envelope_and_empty_paws(self):
         window, board, _layout_path = self.pet_board({"view": "comfortable", "pet": "crab"})
@@ -11148,7 +11395,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         roots = (board, preferences, editor.provider.get_ancestor(asb.Adw.PreferencesPage), messages, usage)
         choices = {widget for root in roots
                    for widget in descendants(root) if isinstance(widget, (asb.Gtk.DropDown, asb.Adw.ComboRow))}
-        self.assertEqual(len(choices), 8)
+        self.assertEqual(len(choices), 7)
         for choice in choices:
             with self.subTest(choice=choice):
                 popups = [widget for widget in descendants(choice) if isinstance(widget, asb.Gtk.Popover)]

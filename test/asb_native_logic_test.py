@@ -3695,6 +3695,20 @@ class MessageChecks(unittest.TestCase):
 
 class PetChecks(unittest.TestCase):
     PETS = asb.load_pets()
+
+    def test_pet_tile_pose(self):
+        expected = ((0, "crouch", 0), (40, "crouch", 0), (79, "crouch", 0), (80, "air", 0),
+                    (160, "air", -8), (169, "air", None), (170, "air2", None), (200, "air2", -5.657),
+                    (239, "air2", None), (240, "crouch", 0), (280, "crouch", 0), (319, "crouch", 0))
+        for t, frame, offset in expected:
+            with self.subTest(t=t):
+                pose = asb.pet_tile_pose(t)
+                self.assertEqual(pose[0], frame)
+                if offset is not None:
+                    self.assertAlmostEqual(pose[1], offset, delta=.001)
+        for t in (320, 330):
+            self.assertIsNone(asb.pet_tile_pose(t))
+
     SAME = ((100, 80, 140), (420, 80, 140))
     OTHER = ((100, 80, 140), (420, 150, 208))
 

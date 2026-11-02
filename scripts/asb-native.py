@@ -936,6 +936,15 @@ def pet_round(value):
     return math.floor(value + .5)
 
 
+def pet_tile_pose(t):
+    """The frame and vertical offset of a tile choice, in ms; None at rest."""
+    if 0 <= t < 80 or 240 <= t < 320:
+        return "crouch", 0
+    if 80 <= t < 240:
+        return ("air" if t - 80 < 90 else "air2"), -8 * math.sin(math.pi * (t - 80) / 160)
+    return None
+
+
 def pet_stop(pet, scale, receiver_x, direction):
     # Comfortable: the pet stands below the icon. Compact: the icon is level with the pet, so its front edge stops 12 px from the icon center.
     return receiver_x - direction * (12 if scale > 1 else 12 + pet["reach"])
@@ -2949,7 +2958,7 @@ class SessionStrip(Gtk.Box):
 
     def do_snapshot(self, snapshot):
         if self.hover_rect and self.hover_alpha > 0:
-            colors = self.get_root().hover_colors
+            colors = self.message_hover_colors()
             if colors:
                 color = Gdk.RGBA()
                 color.parse(highlight_color(colors))
@@ -2970,6 +2979,15 @@ class SessionStrip(Gtk.Box):
         Gtk.Box.do_snapshot(self, snapshot)
         if self.flights:
             self.snapshot_flights(snapshot)
+
+    def message_hover_colors(self):
+        return self.get_root().hover_colors
+
+    def message_rows(self):
+        return self.get_root().focus_widgets
+
+    def light_message_row(self, row, duration):
+        self.get_root().light_row(row, duration)
 
     def message_view(self):
         # The strip starts after its 4 px margin inside the scrolled viewport.
@@ -3047,7 +3065,7 @@ class SessionStrip(Gtk.Box):
         flight["pet_time"] = value
         if not flight["arrived"] and value >= flight["plan"]["ta"]:
             flight["arrived"] = True
-            self.get_root().light_row(flight["rows"][1], 360)
+            self.light_message_row(flight["rows"][1], 360)
         self.queue_draw()
 
     def advance_flight(self, flight, key, value):
@@ -3092,7 +3110,7 @@ class SessionStrip(Gtk.Box):
             self.queue_draw()
 
     def snapshot_flights(self, snapshot):
-        current = self.get_root().focus_widgets
+        current = self.message_rows()
         gone = [flight for flight in self.flights
                 if any(current.get(row.asb_focus_key) is not row for row in flight["rows"])]
         # The callbacks of dropped flights do nothing, so no draw is queued during this paint.
@@ -3143,7 +3161,7 @@ class SessionStrip(Gtk.Box):
                 stroke(builder.to_path(), 1.5, .85 * (1 - flight["ring"]))
 
     def snapshot_tints(self, snapshot):
-        current = self.get_root().focus_widgets
+        current = self.message_rows()
         for flight in self.flights:
             if "pet" not in flight or any(current.get(row.asb_focus_key) is not row for row in flight["rows"]):
                 continue
@@ -3211,6 +3229,328 @@ class SessionStrip(Gtk.Box):
             color.alpha *= alpha
             snapshot.append_color(color, Graphene.Rect().init(x, y, 2, 2))
         snapshot.pop()
+
+
+class PetTile(Gtk.ToggleButton):
+    def __init__(self, strip, name):
+        super().__init__(accessible_role=Gtk.AccessibleRole.RADIO)
+        self.strip, self.name = strip, name
+        self.hovered, self.hover_at, self.chosen_at = False, 0, None
+        self.add_css_class("asb-pet-tile")
+        self.update_property([Gtk.AccessibleProperty.LABEL], [PET_WORDS[name]])
+        title = label(PET_WORDS[name], "asb-pet-name")
+        title.set_xalign(.5)
+        title.set_valign(Gtk.Align.START)
+        title.set_margin_top(64)
+        title.set_size_request(-1, 16)
+        overlay = Gtk.Overlay(child=title)
+        self.badge = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.START, margin_top=5, margin_end=5,
+                             width_request=18, height_request=18, can_target=False)
+        self.badge.add_css_class("asb-pet-check")
+        self.badge.append(Gtk.Image(icon_name="object-select-symbolic", pixel_size=12, hexpand=True,
+                                    halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER))
+        overlay.add_overlay(self.badge)
+        self.set_child(overlay)
+        # A layout manager would skip do_measure, and the tile width comes from the strip, not from its name.
+        self.set_layout_manager(None)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", self.hover, True)
+        motion.connect("leave", self.hover, False)
+        self.add_controller(motion)
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self.key_pressed)
+        self.add_controller(keys)
+        self.connect("clicked", lambda _button: strip.choose(self))
+
+    def do_measure(self, orientation, for_size):
+        # The content box: the 1 px border makes the tile at most 112 x 92 px.
+        return (38, 110, -1, -1) if orientation == Gtk.Orientation.HORIZONTAL else (90, 90, -1, -1)
+
+    def do_size_allocate(self, width, height, baseline):
+        self.get_child().allocate(width, height, baseline, None)
+
+    def hover(self, _controller, *args):
+        self.hovered = args[-1]
+        self.hover_at = GLib.get_monotonic_time() / 1000
+        self.strip.sync_tick()
+        self.queue_draw()
+
+    def key_pressed(self, _controller, key, _code, modifiers):
+        if modifiers & SHORTCUT_MASK:
+            return False
+        index = PETS.index(self.name)
+        if key in (Gdk.KEY_Left, Gdk.KEY_Up):
+            index = (index - 1) % len(PETS)
+        elif key in (Gdk.KEY_Right, Gdk.KEY_Down):
+            index = (index + 1) % len(PETS)
+        elif key == Gdk.KEY_Home:
+            index = 0
+        elif key == Gdk.KEY_End:
+            index = len(PETS) - 1
+        elif key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self.strip.choose(self)
+            return True
+        else:
+            return False
+        tile = self.strip.tiles[index]
+        tile.set_active(True)
+        self.strip.choose(tile)
+        self.strip.tiles[PETS.index(self.strip.owner.pet)].grab_focus()
+        return True
+
+    def do_snapshot(self, snapshot):
+        # The picture uses the coordinates of the outer tile edge, outside the 1 px border.
+        snapshot.save()
+        snapshot.translate(Graphene.Point().init(-1, -1))
+        self.snapshot_picture(snapshot, self.get_width() + 2)
+        snapshot.restore()
+        Gtk.ToggleButton.do_snapshot(self, snapshot)
+
+    def snapshot_picture(self, snapshot, width):
+        color = self.strip.owner.message_color()
+        floor = self.get_color().copy()
+        floor.alpha *= .15
+        snapshot.append_color(floor, Graphene.Rect().init(10, 53, width - 20, 1))
+        now = GLib.get_monotonic_time() / 1000
+        moving = self.strip.animations()
+        elapsed = now - self.chosen_at if moving and self.chosen_at is not None else None
+        if self.name == "off":
+            t = elapsed if elapsed is not None and elapsed < 700 else (now - self.hover_at) % 1200 if moving and self.hovered else None
+            if t is not None and t < 700:
+                start, end, t = (10, 47), (width - 10, 47), t / 700
+            else:
+                start, end, t = (width / 2 - 24, 50), (width / 2 + 12, 44), 390 / 700
+            control = message_control(start, end)
+            if hasattr(Gsk, "PathBuilder"):
+                for first, last, thickness, alpha in message_tail(t):
+                    builder = Gsk.PathBuilder.new()
+                    builder.move_to(*bezier_point(start, control, end, first))
+                    builder.line_to(*bezier_point(start, control, end, last))
+                    stroke = Gsk.Stroke.new(thickness)
+                    stroke.set_line_cap(Gsk.LineCap.ROUND)
+                    ink = color.copy()
+                    ink.alpha *= alpha
+                    snapshot.append_stroke(builder.to_path(), stroke, ink)
+            x, y = bezier_point(start, control, end, ease_in_out_cubic(t))
+            for radius, alpha in ((6, .25), (3, 1)):
+                bounds = Graphene.Rect().init(x - radius, y - radius, 2 * radius, 2 * radius)
+                rounded = Gsk.RoundedRect()
+                rounded.init_from_rect(bounds, radius)
+                ink = color.copy()
+                ink.alpha *= alpha
+                snapshot.push_rounded_clip(rounded)
+                snapshot.append_color(ink, bounds)
+                snapshot.pop()
+        elif self.strip.sprites:
+            pet = self.strip.sprites["pets"][self.name]
+            pose = pet_tile_pose(elapsed) if elapsed is not None else None
+            if pose is not None:
+                frame, offset = pose
+            elif moving and self.hovered:
+                frame = ("walk1", "walk2", "walk3", "walk4")[int((now - self.hover_at) * pet["walkFps"] / 1000) % 4]
+                offset = 0
+            else:
+                frame, offset = "stand", 0
+            runs, left, top, flip = pet_box(pet, 2, frame, round(width / 2), 53 + offset, 1)
+            node = SessionStrip.pet_node(self.strip, {"color": color, "scale": 2}, (self.name, frame, flip, 2), runs)
+            SessionStrip.draw_node(snapshot, node, left, top)
+
+
+class PetTiles(Gtk.Box):
+    def __init__(self, owner):
+        super().__init__(spacing=8, homogeneous=True, hexpand=True, halign=Gtk.Align.START,
+                         accessible_role=Gtk.AccessibleRole.RADIO_GROUP)
+        self.owner, self.tick, self.motion_signal = owner, None, None
+        self.pet_nodes, self.pet_colors, self.pet_accent = {}, {}, None
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["Pets"])
+        try:
+            self.sprites = load_pets()
+        except (OSError, ValueError):
+            self.sprites = None
+        self.tiles = [PetTile(self, name) for name in PETS]
+        for tile in self.tiles:
+            if tile is not self.tiles[0]:
+                tile.set_group(self.tiles[0])
+            self.append(tile)
+        self.sync_choice()
+        self.connect("map", self.watch_motion)
+        self.connect("unmap", self.stop)
+
+    def watch_motion(self, *_args):
+        self.motion_signal = self.get_settings().connect("notify::gtk-enable-animations", self.motion_changed)
+
+    def motion_changed(self, *_args):
+        for tile in self.tiles:
+            tile.chosen_at = None
+            tile.queue_draw()
+        self.sync_tick()
+        self.owner.pet_stage.restart()
+
+    def animations(self):
+        return self.get_settings().get_property("gtk-enable-animations")
+
+    def sync_choice(self):
+        for tile in self.tiles:
+            chosen = tile.name == self.owner.pet
+            tile.set_active(chosen)
+            tile.set_focusable(chosen)
+            tile.update_state([Gtk.AccessibleState.CHECKED], [int(Gtk.AccessibleTristate.TRUE if chosen else Gtk.AccessibleTristate.FALSE)])
+            tile.badge.set_visible(chosen)
+
+    def choose(self, tile):
+        if not self.owner.change_pet(tile.name):
+            self.sync_choice()
+            return
+        self.sync_choice()
+        if self.animations():
+            tile.chosen_at = GLib.get_monotonic_time() / 1000
+        self.sync_tick()
+        self.owner.pet_stage.restart()
+
+    def moving(self):
+        now = GLib.get_monotonic_time() / 1000
+        for tile in self.tiles:
+            if tile.chosen_at is not None and now - tile.chosen_at >= (700 if tile.name == "off" else 320):
+                tile.chosen_at = None
+        return self.animations() and self.get_mapped() and any((tile.name == "off" or self.sprites) and
+                                                              (tile.hovered or tile.chosen_at is not None) for tile in self.tiles)
+
+    def sync_tick(self):
+        if self.moving():
+            if self.tick is None:
+                self.tick = self.add_tick_callback(self.advance)
+        elif self.tick is not None:
+            self.remove_tick_callback(self.tick)
+            self.tick = None
+
+    def advance(self, _widget, _clock):
+        for tile in self.tiles:
+            tile.queue_draw()
+        if self.moving():
+            return GLib.SOURCE_CONTINUE
+        self.tick = None
+        return GLib.SOURCE_REMOVE
+
+    def stop(self, *_args):
+        if self.tick is not None:
+            self.remove_tick_callback(self.tick)
+            self.tick = None
+        if self.motion_signal is not None:
+            self.get_settings().disconnect(self.motion_signal)
+            self.motion_signal = None
+        for tile in self.tiles:
+            tile.chosen_at, tile.hovered = None, False
+
+
+class PetStage(SessionStrip):
+    def __init__(self, owner):
+        super().__init__(spacing=12, homogeneous=True, can_target=False,
+                         accessible_role=Gtk.AccessibleRole.IMG)
+        self.owner, self.active, self.timeout = owner, False, None
+        self.add_css_class("asb-pet-stage")
+        self.set_overflow(Gtk.Overflow.HIDDEN)
+        self.cards = []
+        for provider, folder, title in (("codex", "docs-site", "Write the release notes for 2.4"),
+                                         ("claude", "billing", "Check the retry limits")):
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, height_request=68, valign=Gtk.Align.CENTER,
+                           can_target=False)
+            card.add_css_class("asb-session")
+            card.add_css_class("asb-unhovered")
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=8, margin_end=8,
+                              margin_top=2, margin_bottom=2, valign=Gtk.Align.CENTER)
+            workspace = Gtk.Box(spacing=7)
+            mark = Gtk.Image(pixel_size=14)
+            mark.add_css_class("asb-provider")
+            set_icon(mark, provider_icon(provider))
+            workspace.append(mark)
+            name = label(folder, "caption")
+            name.add_css_class("asb-folder")
+            name.add_css_class("dim-label")
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            workspace.append(name)
+            content.append(workspace)
+            heading = label(title, "asb-title")
+            heading.set_wrap(True)
+            heading.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            heading.set_lines(2)
+            heading.set_ellipsize(Pango.EllipsizeMode.END)
+            heading.set_size_request(-1, 32)
+            heading.set_margin_start(21)
+            heading.set_margin_end(8)
+            content.append(heading)
+            footer = Gtk.Box(spacing=6, margin_start=21)
+            footer.append(label("Idle", "asb-state"))
+            age = label("2m", "caption")
+            age.add_css_class("asb-age")
+            age.add_css_class("dim-label")
+            age.set_hexpand(True)
+            age.set_halign(Gtk.Align.END)
+            footer.append(age)
+            content.append(footer)
+            card.append(content)
+            card.asb_mark, card.asb_focus_key = mark, provider
+            self.cards.append(card)
+            self.append(card)
+        self.connect("unmap", lambda *_args: self.set_active(False))
+        self.update_label()
+
+    def message_hover_colors(self):
+        return self.owner.hover_colors
+
+    def message_rows(self):
+        return {card.asb_focus_key: card for card in self.cards}
+
+    def light_message_row(self, row, duration):
+        self.owner.light_row(row, duration)
+
+    def message_view(self):
+        return 0, self.get_width()
+
+    def update_label(self):
+        name = "The light" if self.owner.pet == "off" else PET_WORDS[self.owner.pet]
+        self.update_property([Gtk.AccessibleProperty.LABEL], [f"{name} carries a message between two sample cards"])
+
+    def set_active(self, active):
+        if active == self.active:
+            return
+        self.active = active
+        self.restart()
+
+    def restart(self):
+        if self.timeout is not None:
+            GLib.source_remove(self.timeout)
+            self.timeout = None
+        self.clear_flights()
+        for card in self.cards:
+            self.owner.clear_message_light(card)
+        self.update_label()
+        if self.active:
+            if not self.get_settings().get_property("gtk-enable-animations"):
+                for card in self.cards:
+                    self.light_message_row(card, MESSAGE_LIGHT_MS)
+            else:
+                self.timeout = GLib.timeout_add(400, self.run)
+
+    def run(self):
+        self.timeout = None
+        if not self.active:
+            return False
+        if not self.get_settings().get_property("gtk-enable-animations"):
+            return False
+        sprites = self.owner.pet_sprites()
+        if sprites:
+            self.start_pet(*self.cards, sprites, self.owner.pet, self.owner.message_color(), 2)
+            self.light_message_row(self.cards[0], 400)
+        elif hasattr(Gsk, "PathBuilder"):
+            ends = self.message_ends({"rows": self.cards})
+            if ends:
+                self.start_flight(*self.cards, self.owner.message_color(), ends)
+                self.light_message_row(self.cards[0], 160)
+        else:
+            for card in self.cards:
+                self.light_message_row(card, MESSAGE_LIGHT_MS)
+        self.timeout = GLib.timeout_add(4600, self.run)
+        return False
 
 
 class SessionColumn(Gtk.ListBox):
@@ -5165,7 +5505,7 @@ class PreferencesWindow(Adw.Window):
             self.section_list.append(row)
         self.stack.connect("notify::visible-child-name", self.section_changed)
         self.set_content(body)
-        for choice in (owner.card_limit_setting, owner.view_filter, owner.pet_setting, owner.theme_mode):
+        for choice in (owner.card_limit_setting, owner.view_filter, owner.theme_mode):
             non_autohide_choice(self, choice)
         self.breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 600px"))
         self.breakpoint.add_setter(self.sidebar, "visible", False)
@@ -5183,6 +5523,8 @@ class PreferencesWindow(Adw.Window):
         # The narrow section list covers the section page.
         shown = not self.closed and self.get_visible() and self.get_mapped() and self.pages.get_visible_child_name() == "section"
         section = self.stack.get_visible_child_name()
+        if getattr(self.owner, "pet_stage", None):
+            self.owner.pet_stage.set_active(shown and section == "appearance")
         if self.profiles_editor:
             self.profiles_editor.set_active(shown and section == "profiles")
         phone_visible = shown and section == "phone"
@@ -5534,19 +5876,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         view_row.append(view_name)
         view_row.append(self.view_filter)
         appearance.append(view_row)
-        pet_row = Gtk.Box(spacing=12)
-        pet_name = label("Pets")
-        pet_name.set_hexpand(True)
-        self.pet_setting = Gtk.DropDown.new_from_strings([PET_WORDS[pet] for pet in PETS])
-        self.pet_setting.set_selected(PETS.index(self.pet))
-        self.pet_setting.update_property([Gtk.AccessibleProperty.LABEL], ["Pets"])
-        self.pet_setting.connect("notify::selected", self.change_pet)
-        pet_row.append(pet_name)
-        pet_row.append(self.pet_setting)
-        appearance.append(pet_row)
+        appearance.append(label("Pets"))
+        pet_strip = PetTiles(self)
+        self.pet_tiles = pet_strip.tiles
+        appearance.append(pet_strip)
         pet_help = label("A pixel pet carries each message from card to card.", "caption")
         pet_help.set_wrap(True)
         appearance.append(pet_help)
+        self.pet_stage = PetStage(self)
+        appearance.append(self.pet_stage)
         width_row = Gtk.Box(spacing=8)
         width_name = label("Column width")
         width_name.set_hexpand(True)
@@ -5820,6 +6158,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def set_palette(self, colors):
         base = ".asb-column-flow"
         css = f"""
+{base}.asb-preferences button.asb-pet-tile {{ min-width: 0; min-height: 0; padding: 0; border-radius: 8px;
+    background: alpha(@window_fg_color, .10); border: 1px solid alpha(@window_fg_color, .15); box-shadow: none; }}
+{base}.asb-preferences button.asb-pet-tile:hover {{ background: alpha(@window_fg_color, .15); }}
+{base}.asb-preferences button.asb-pet-tile:checked {{ background: alpha(@window_fg_color, .10); color: @window_fg_color;
+    border-color: transparent; box-shadow: inset 0 0 0 2px @accent_color; }}
+{base} .asb-pet-name {{ font-size: 13px; font-weight: normal; }}
+{base} .asb-pet-check {{ background: @accent_color; color: #ffffff; border-radius: 50%; }}
+{base} .asb-pet-stage {{ min-height: 114px; padding: 0 11px; border: 1px solid alpha(@window_fg_color, .15);
+    border-radius: 8px; background: @window_bg_color; }}
 {base} .asb-session {{ min-height: {ROW_HEIGHT}px; transition-property: background-color, color; padding: 0; border-radius: 3px; font-size: 13px; }}
 {base}.asb-comfortable .asb-session {{ min-height: {COMFORTABLE_ROW_HEIGHT}px; }}
 {base}.asb-comfortable .asb-session.asb-hover-paint:not(:focus-within) {{ background: transparent; }}
@@ -5964,6 +6311,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope}.asb-preferences .asb-preferences-nav {{ background: alpha({colors['text']}, .04); }}
 {scope}.asb-preferences entry, {scope}.asb-preferences button, {scope}.asb-preferences dropdown {{ background: alpha({colors['text']}, .08); }}
 {scope}.asb-preferences row:selected, {scope}.asb-preferences button:checked {{ background: {colors['accent']}; color: {colors['background']}; }}
+{scope}.asb-preferences button.asb-pet-tile {{ background: alpha({colors['text']}, .08); border-color: alpha({colors['text']}, .15); }}
+{scope}.asb-preferences button.asb-pet-tile:hover {{ background: alpha({colors['text']}, .11); }}
+{scope}.asb-preferences button.asb-pet-tile:checked {{ background: alpha({colors['text']}, .08); color: {colors['text']};
+    border-color: transparent; box-shadow: inset 0 0 0 2px {colors['accent']}; }}
+{scope} .asb-pet-check {{ background: {colors['accent']}; color: {colors['background']}; }}
+{scope} .asb-pet-stage {{ background: {colors['background']}; border-color: alpha({colors['text']}, .15); }}
 {scope}.asb-preferences separator {{ background: {colors['divider']}; }}
 {scope} .asb-read-button {{ color: {colors['accent']}; background: alpha({colors['text']}, .08); }}
 {scope} .asb-pin-button.asb-pinned {{ background: alpha({colors['text']}, .12); }}
@@ -6482,19 +6835,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.show_all_cards = False
         self.filter_changed()
 
-    def change_pet(self, *_args):
-        pet = PETS[self.pet_setting.get_selected()]
+    def change_pet(self, pet):
         if pet == self.pet:
-            return
+            return True
         try:
             write_layout(self.layout_path, self.column_width, self.view, self.card_limit, self.copy_kind, pet=pet)
         except (OSError, ValueError) as error:
-            self.pet_setting.set_selected(PETS.index(self.pet))
             self.layout_error.set_label(str(error))
-            return
+            return False
         # A pet that already runs finishes; the next message uses the new pet.
         self.pet = pet
         self.layout_error.set_label("")
+        return True
 
     def pet_sprites(self):
         if self.pet == "off" or self.pet_load_failed:
