@@ -297,7 +297,7 @@ test('the switchboard server plays the injected player once after a Working to I
   assert.deepEqual(played, [BIT_DONE]);
 });
 
-test('a muted session plays no Done sound but still plays Failed and Needs input', async () => {
+test('a muted session plays no Done, Failed, or Needs input sound', async () => {
   const thread = (state, extra = {}) => ({ providers: [], threads: [{ id: 'a', state, nativeUnread: null, completionAtMs: 0, ...extra }] });
   const events = async (end) => {
     const tracker = new PendingTracker(false);
@@ -308,11 +308,11 @@ test('a muted session plays no Done sound but still plays Failed and Needs input
   };
   assert.deepEqual(await events(thread('idle', { completionAtMs: 10 })), []);
   assert.deepEqual(await events(thread('idle', { completionAtMs: 10, nativeUnread: true })), []);
-  assert.deepEqual(await events(thread('idle', { failedAtMs: 10 })), [['a', BIT_FAILED]]);
-  assert.deepEqual(await events(thread('waiting', { questionPending: true })), [['a', BIT_INPUT]]);
+  assert.deepEqual(await events(thread('idle', { failedAtMs: 10 })), []);
+  assert.deepEqual(await events(thread('waiting', { questionPending: true })), []);
 });
 
-test('a timed-muted session plays Done only after its end, and Failed and Needs input still play', async () => {
+test('a timed-muted session plays Done only for a task that ends after its end, and Failed and Needs input only after its end', async () => {
   const until = now + 3_600_000;
   const thread = (state, atMs, extra = {}) => ({ generatedAtMs: atMs, providers: [],
     threads: [{ id: 'a', state, nativeUnread: null, completionAtMs: 0, ...extra }] });
@@ -327,8 +327,31 @@ test('a timed-muted session plays Done only after its end, and Failed and Needs 
   assert.deepEqual(await events({ state: 'idle', extra: { completionAtMs: until - 1 } }, until + 1), []);
   assert.deepEqual(await events({ state: 'idle', extra: { completionAtMs: until } }, until), [['a', BIT_DONE]]);
   assert.deepEqual(await events({ state: 'idle', extra: { completionAtMs: until + 1 } }, until + 1), [['a', BIT_DONE]]);
-  assert.deepEqual(await events({ state: 'idle', extra: { failedAtMs: until - 1 } }, until - 1), [['a', BIT_FAILED]]);
-  assert.deepEqual(await events({ state: 'waiting', extra: { questionPending: true } }, until - 1), [['a', BIT_INPUT]]);
+  assert.deepEqual(await events({ state: 'idle', extra: { failedAtMs: until - 1 } }, until - 1), []);
+  assert.deepEqual(await events({ state: 'idle', extra: { failedAtMs: until - 1 } }, until), [['a', BIT_FAILED]]);
+  assert.deepEqual(await events({ state: 'waiting', extra: { questionPending: true } }, until - 1), []);
+  assert.deepEqual(await events({ state: 'waiting', extra: { questionPending: true } }, until), [['a', BIT_INPUT]]);
+});
+
+test('the sound watcher plays nothing for a question during a timed mute and Needs input once after its end', async () => {
+  const until = now + 3_600_000;
+  const asked = (atMs) => ({ generatedAtMs: atMs, providers: [],
+    threads: [{ id: 'a', state: 'waiting', questionPending: true, nativeUnread: null, completionAtMs: 0 }] });
+  const tracker = new PendingTracker(false);
+  const played = [];
+  const watch = createSoundWatcher((kind) => played.push(kind));
+  const before = await tracker.observe(asked(now));
+  assert.equal(before.threads[0].questionAttention, true);
+  watch(before, now);
+  await tracker.setMuted(before.threads[0], true, until, now);
+  const during = await tracker.observe(asked(now + 10));
+  assert.deepEqual([during.threads[0].muted, during.threads[0].questionAttention], [true, false]);
+  watch(during, now + 10);
+  assert.deepEqual(played, []);
+  const after = await tracker.observe(asked(until));
+  assert.deepEqual([after.threads[0].muted, after.threads[0].questionAttention], [false, true]);
+  watch(after, until);
+  assert.deepEqual(played, [BIT_INPUT]);
 });
 
 test('a next-task Discard on an Idle session plays no Done sound but still plays Failed', async () => {

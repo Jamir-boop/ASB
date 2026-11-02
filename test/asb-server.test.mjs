@@ -402,11 +402,11 @@ test('the session actions of the tracker change a cached row, and the next reply
   const get = dashboardReader(base);
   let previous = await get();
   assert.equal(previous.body.threads[0].unread, false);
-  // `scans`: the scans from the action to the next read. Most actions change the cached row in place and need none; Pin and Unpin
-  // drop the snapshot, and Discard makes a scan before it arms.
+  // `scans`: the scans from the action to the next read. Most actions change the cached row in place and need none; Pin, Unpin, Mute,
+  // and Unmute drop the snapshot, and Discard makes a scan before it arms.
   const actions = [['mark-unread', '{}', 0, (row) => row.unread && row.manualUnread], ['drawer-in', '{}', 0, (row) => row.drawer && !row.unread],
     ['drawer-out', '{}', 0, (row) => !row.drawer && row.unread], ['mark-read', '{}', 0, (row) => !row.unread && !row.manualUnread],
-    ['mute', '{}', 0, (row) => row.muted], ['unmute', '{}', 0, (row) => !row.muted],
+    ['mute', '{}', 1, (row) => row.muted], ['unmute', '{}', 1, (row) => !row.muted],
     ['pin', '{}', 1, (row) => row.pinned], ['unpin', '{}', 1, (row) => !row.pinned],
     ['discard-result', '{"next":true}', 1, (row) => row.discardResult], ['keep-result', '{}', 0, (row) => !row.discardResult]];
   for (const [action, body, scans, check] of actions) {

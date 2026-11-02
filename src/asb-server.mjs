@@ -709,8 +709,9 @@ export function createAsbServer({
           invalidateDashboard('asb-drawer', { hard: false, dirty: false });
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else if (action === 'mute' || action === 'unmute') {
-          await muteThread(thread, action === 'mute', timedMute ? now() + body.durationMs : 0);
-          invalidateDashboard('asb-mute', { hard: false, dirty: false });
+          const atMs = now();
+          await muteThread(thread, action === 'mute', timedMute ? atMs + body.durationMs : 0, atMs);
+          invalidateDashboard('asb-mute');
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else {
           if (body.targetId && !await findThreadForAction(body.targetId)) { threadNotFound(response); return; }

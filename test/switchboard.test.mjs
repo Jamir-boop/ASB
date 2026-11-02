@@ -2028,13 +2028,16 @@ test('a next-task arm keeps its failed dot and its stop square, and the arm clea
       assert.deepEqual([tracker.records[id].discard, tracker.records[id].discardNext], [0, 0]);
     }
   }
-  // A muted row still shows a failed end that a next-task arm covers.
+  // A muted row keeps a failed end that a next-task arm covers: it shows when the mute ends.
   const muted = new PendingTracker(false);
   const events = idleEvents();
   const idle = await armNext(muted, events);
   await muted.setMuted(idle, true);
   events.push(discardEvent('task_started', 0), discardEvent('task_complete', 10, { error: { message: 'Synthetic failure' } }));
-  assert.deepEqual([(await muted.observe(discardBoard(events))).threads[0].failedAttention, muted.records[id].discard], [true, 0]);
+  const failed = (await muted.observe(discardBoard(events))).threads[0];
+  assert.deepEqual([failed.failedAttention, muted.records[id].discard], [false, 0]);
+  await muted.setMuted(failed, false);
+  assert.deepEqual([failed.failedAttention, failed.pending], [true, true]);
 });
 
 test('a late native unread mark after a discarded next-task end is acknowledged, and a later Read-to-Unread cycle is kept', async () => {
@@ -2177,18 +2180,22 @@ test('the mute route takes exactly one allowed duration and sets the end with th
   const clock = Date.now();
   const tracker = new PendingTracker(false);
   const server = createSwitchboardServer({ pendingTracker: tracker, now: () => clock, dashboardWatchPaths: [],
-    loadDashboard: async () => ({ providers: [], threads: [{ id, state: 'idle', nativeUnread: null, completionAtMs: 0 }] }) });
+    loadDashboard: async () => ({ providers: [], threads: [{ id, state: 'waiting', questionPending: true, nativeUnread: null, completionAtMs: 0 }] }) });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = (action, body) => fetch(`${base}/api/threads/${id}/${action}`, { method: 'POST', headers: { Origin: base }, body });
+  const asked = (await (await fetch(`${base}/api/dashboard`)).json()).threads[0];
+  assert.deepEqual([asked.questionAttention, asked.pending], [true, true]);
   assert.deepEqual(MUTE_DURATIONS_MS, [1_800_000, 3_600_000, 28_800_000, 86_400_000]);
   for (const durationMs of MUTE_DURATIONS_MS) {
     const response = await post('mute', JSON.stringify({ durationMs }));
     assert.equal(response.status, 200, String(durationMs));
     const body = await response.json();
-    assert.deepEqual([body.changed, body.threadId, body.thread.muted, body.thread.mutedUntilMs], [true, id, true, clock + durationMs]);
-    assert.deepEqual([tracker.records[id].muted, tracker.records[id].mutedUntil], [1, clock + durationMs]);
+    assert.deepEqual([body.changed, body.threadId, body.thread.muted, body.thread.mutedUntilMs, body.thread.mutedAtMs], [true, id, true, clock + durationMs, clock]);
+    // A muted row that had question attention asks for nothing.
+    assert.deepEqual([body.thread.pending, body.thread.questionAttention, body.thread.questionPending], [false, false, true]);
+    assert.deepEqual([tracker.records[id].muted, tracker.records[id].mutedUntil, tracker.records[id].mutedAt], [1, clock + durationMs, clock]);
   }
   const untouched = JSON.stringify(tracker.records);
   for (const body of ['{"durationMs":1000}', '{"durationMs":"3600000"}', '{"durationMs":3600000.5}', '{"durationMs":3600000,"x":1}', '{"next":true}']) {
@@ -2200,9 +2207,42 @@ test('the mute route takes exactly one allowed duration and sets the end with th
   assert.deepEqual([unmuteWithDuration.status, (await unmuteWithDuration.json()).error], [400, 'Invalid ASB session action.']);
   assert.equal(JSON.stringify(tracker.records), untouched);
   const unmuted = await (await post('unmute', '{}')).json();
-  assert.deepEqual([unmuted.thread.muted, unmuted.thread.mutedUntilMs, tracker.records[id].mutedUntil], [false, 0, 0]);
+  assert.deepEqual([unmuted.thread.muted, unmuted.thread.mutedUntilMs, unmuted.thread.mutedAtMs, tracker.records[id].mutedUntil], [false, 0, 0, 0]);
+  assert.deepEqual([unmuted.thread.pending, unmuted.thread.questionAttention], [true, true]);
   const untilUnmute = await (await post('mute', '{}')).json();
-  assert.deepEqual([untilUnmute.thread.muted, untilUnmute.thread.mutedUntilMs, tracker.records[id].mutedUntil], [true, 0, 0]);
+  assert.deepEqual([untilUnmute.thread.muted, untilUnmute.thread.mutedUntilMs, untilUnmute.thread.mutedAtMs, tracker.records[id].mutedUntil],
+    [true, 0, clock, 0]);
+  assert.equal(untilUnmute.thread.pending, false);
+});
+
+test('Mute and Unmute make the next dashboard read build again, and a timed Mute sets the next status check to its end', async (t) => {
+  // Near the real time, so the response row (applied with Date.now()) still shows the mute as active.
+  const clock = Date.now();
+  let loads = 0;
+  const tracker = new PendingTracker(false);
+  // `nextStatusCheckAtMs` is not in the JSON, so the test reads it on the dashboard that the tracker observed.
+  let observed = null;
+  const observe = tracker.observe.bind(tracker);
+  tracker.observe = async (...args) => (observed = await observe(...args));
+  const server = createSwitchboardServer({ pendingTracker: tracker, now: () => clock, dashboardWatchPaths: [],
+    loadDashboard: async () => { loads += 1; return { providers: [], generatedAtMs: clock, threads: [{ id, state: 'idle', nativeUnread: null, completionAtMs: 0 }] }; } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (action, body) => fetch(`${base}/api/threads/${id}/${action}`, { method: 'POST', headers: { Origin: base }, body });
+  const read = async () => (await fetch(`${base}/api/dashboard`)).json();
+  assert.equal((await read()).threads[0].muted, false);
+  assert.equal(observed.nextStatusCheckAtMs, undefined);
+  assert.equal((await read()).threads[0].muted, false);
+  const cached = loads;
+  assert.equal((await post('mute', '{"durationMs":3600000}')).status, 200);
+  const muted = await read();
+  assert.equal(loads, cached + 1);
+  assert.deepEqual([muted.threads[0].muted, muted.threads[0].mutedAtMs, observed.nextStatusCheckAtMs], [true, clock, clock + 3_600_000]);
+  assert.equal((await post('unmute', '{}')).status, 200);
+  const unmuted = await read();
+  assert.equal(loads, cached + 2);
+  assert.deepEqual([unmuted.threads[0].muted, observed.nextStatusCheckAtMs], [false, undefined]);
 });
 
 test('malformed raw request targets return 400 and leave the ASB server available', async (t) => {
@@ -2603,7 +2643,7 @@ test('usage-limit outcomes are failed ends, while user stops take priority', () 
   }
 });
 
-test('limit failures stay unread through Discard and Mute until Read', async () => {
+test('limit failures stay unread through Discard, and through Mute until Unmute, until Read', async () => {
   for (const mode of ['plain', 'discard', 'mute']) {
     const tracker = new PendingTracker(false);
     const events = [discardEvent('task_started', -100)];
@@ -2612,8 +2652,14 @@ test('limit failures stay unread through Discard and Mute until Read', async () 
     if (mode === 'mute') await tracker.setMuted(working.threads[0], true);
     events.push(discardEvent('task_complete', 10));
     const scan = () => tracker.observe(discardBoard(events, { limitResetsAtMs: now + 60_000 }));
-    const failed = (await scan()).threads[0];
+    let failed = (await scan()).threads[0];
     assert.deepEqual([failed.lastOutcome, failed.failedAtMs, failed.completionAtMs], ['limit', now + 10, 0]);
+    if (mode === 'mute') {
+      // A muted failure is hidden until Unmute.
+      assert.deepEqual([failed.failedAttention, failed.unread, failed.alert, failed.pending, failed.pendingSource], [false, false, false, false, '']);
+      await tracker.setMuted(failed, false);
+      failed = (await scan()).threads[0];
+    }
     assert.deepEqual([failed.failedAttention, failed.unread, failed.alert, failed.pending, failed.pendingSource],
       [true, true, true, true, 'observed-failure'], mode);
     await tracker.acknowledge(id);

@@ -690,7 +690,8 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
     def moment(row):
         # Output changes updatedAtMs at each scan; the task start keeps a Working row in its place.
         if row.get("state") != "working":
-            return row.get("updatedAtMs", 0)
+            # A muted row waits with the Idle rows from the time of its mute, as if it had just finished.
+            return max(row.get("updatedAtMs", 0), row.get("mutedAtMs") or 0)
         start = row.get("workingSinceMs")
         return start if type(start) in (int, float) and start > 0 else 0
     rows.sort(key=lambda row: (0, row.get("pinIndex", 0), row["id"]) if row.get("pinned") else

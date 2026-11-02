@@ -242,23 +242,29 @@ test('a muted session stays read when a task ends with success, also with a late
   }
 });
 
-test('a muted failure, question, and manual Unread still show', async () => {
+test('a muted failure, question, and manual Unread stay hidden until Unmute and then show', async () => {
   for (const end of [{ failedAtMs: 10 }, { completionAtMs: 5, failedAtMs: 10 }]) {
     const tracker = await mutedTracker();
     await scanRow(tracker, 'working');
     const failed = await scanRow(tracker, 'idle', end);
+    assert.deepEqual([failed.failedAttention, failed.unread, failed.pendingSource], [false, false, ''], JSON.stringify(end));
+    await tracker.setMuted(failed, false);
     assert.deepEqual([failed.failedAttention, failed.unread, failed.pendingSource], [true, true, 'observed-failure'], JSON.stringify(end));
   }
   const asked = await mutedTracker();
   const question = await scanRow(asked, 'waiting', { questionPending: true });
+  assert.deepEqual([question.questionAttention, question.pending, question.questionPending, question.state], [false, false, true, 'waiting']);
+  await asked.setMuted(question, false);
   assert.deepEqual([question.questionAttention, question.pending], [true, true]);
   const marked = await mutedTracker();
   await marked.markUnread(id);
   const manual = await scanRow(marked, 'idle');
+  assert.deepEqual([manual.manualUnread, manual.unread, manual.pendingSource], [false, false, '']);
+  await marked.setMuted(manual, false);
   assert.deepEqual([manual.manualUnread, manual.unread, manual.pendingSource], [true, true, 'manual-unread']);
 });
 
-test('Mute keeps an older dot until a later muted success clears only an older success dot', async () => {
+test('Mute hides an older dot, and a later muted success clears only an older success dot', async () => {
   const marks = {
     success: async (tracker) => { await scanRow(tracker, 'working'); return scanRow(tracker, 'idle', { completionAtMs: 10 }); },
     failure: async (tracker) => { await scanRow(tracker, 'working'); return scanRow(tracker, 'idle', { failedAtMs: 10 }); },
@@ -270,12 +276,13 @@ test('Mute keeps an older dot until a later muted success clears only an older s
     const dot = await mark(tracker);
     assert.equal(dot.unread, true, name);
     await tracker.setMuted(dot, true);
-    assert.deepEqual([dot.muted, dot.unread], [true, true], `${name} right after Mute`);
+    assert.deepEqual([dot.muted, dot.unread], [true, false], `${name} right after Mute`);
     const same = name === 'manual' ? {} : name === 'success' ? { completionAtMs: 10 } : { failedAtMs: 10 };
-    for (let scan = 0; scan < 2; scan += 1) assert.equal((await scanRow(tracker, 'idle', same)).unread, true, `${name} scan ${scan}`);
+    for (let scan = 0; scan < 2; scan += 1) assert.equal((await scanRow(tracker, 'idle', same)).unread, false, `${name} scan ${scan}`);
     await scanRow(tracker, 'working', same);
     const later = await scanRow(tracker, 'idle', { ...same, completionAtMs: 20 });
-    assert.equal(later.completionAttention, false, name);
+    assert.deepEqual([later.completionAttention, later.unread], [false, false], name);
+    await tracker.setMuted(later, false);
     assert.equal(later.unread, name !== 'success', `${name} after a later muted success`);
     assert.equal((await scanRow(tracker, 'idle', { ...same, completionAtMs: 20 })).unread, name !== 'success', `${name} next scan`);
   }
@@ -366,18 +373,138 @@ test('timed mute row fields expire by the clock even without a scan', async () =
   assert.deepEqual([unknown.muted, unknown.mutedUntilMs], [false, 0]);
 });
 
-test('a timed-muted failure, question, and manual Unread still show', async () => {
+test('a timed-muted failure, question, and manual Unread stay hidden until the mute ends', async () => {
   const tracker = await timedTracker();
   await timedScan(tracker, now, 'working');
   const failed = await timedScan(tracker, now + 10, 'idle', { failedAtMs: now + 10 });
-  assert.deepEqual([failed.muted, failed.failedAttention, failed.unread], [true, true, true]);
+  assert.deepEqual([failed.muted, failed.failedAttention, failed.unread], [true, false, false]);
+  const failedEnd = await timedScan(tracker, now + HOUR, 'idle', { failedAtMs: now + 10 });
+  assert.deepEqual([failedEnd.muted, failedEnd.failedAttention, failedEnd.unread], [false, true, true]);
+  // A question that starts while the mute is on.
   const asked = await timedTracker();
   const question = await timedScan(asked, now + 10, 'waiting', { questionPending: true });
-  assert.deepEqual([question.muted, question.questionAttention, question.pending], [true, true, true]);
+  assert.deepEqual([question.muted, question.questionAttention, question.pending, question.questionPending], [true, false, false, true]);
+  const questionEnd = await timedScan(asked, now + HOUR, 'waiting', { questionPending: true });
+  assert.deepEqual([questionEnd.muted, questionEnd.questionAttention, questionEnd.pending, questionEnd.pendingSource], [false, true, true, 'user-question']);
   const marked = await timedTracker();
   await marked.markUnread(id);
   const manual = await timedScan(marked, now + 10);
-  assert.deepEqual([manual.muted, manual.manualUnread, manual.unread], [true, true, true]);
+  assert.deepEqual([manual.muted, manual.manualUnread, manual.unread], [true, false, false]);
+  const manualEnd = await timedScan(marked, now + HOUR);
+  assert.deepEqual([manualEnd.muted, manualEnd.manualUnread, manualEnd.unread], [false, true, true]);
+});
+
+const ATTENTION_FLAGS = ['manualUnread', 'questionAttention', 'actionAttention', 'nativeAttention', 'failedAttention', 'completionAttention', 'retainedUnread'];
+const shown = (row) => Object.fromEntries([...ATTENTION_FLAGS, 'unread', 'pending', 'alert', 'pendingSource', 'retainedUnreadSource',
+  'state', 'questionPending', 'actionRequired'].map((key) => [key, row[key]]));
+const withoutMute = ({ muted, mutedUntil, mutedAt, ...rest }) => rest;
+// Each source of attention: the scans that make it, and whether Persistent unread is on.
+const ATTENTION_CASES = {
+  question: { flag: 'questionAttention', persistent: false, scan: ['waiting', { questionPending: true }] },
+  permission: { flag: 'actionAttention', persistent: false, scan: ['waiting', {}] },
+  completion: { flag: 'completionAttention', persistent: false, before: ['working', {}], scan: ['idle', { completionAtMs: now - 5 }] },
+  failure: { flag: 'failedAttention', persistent: false, before: ['working', {}], scan: ['idle', { failedAtMs: now - 5 }] },
+  native: { flag: 'nativeAttention', persistent: false, scan: ['idle', { nativeUnread: true }] },
+  manual: { flag: 'manualUnread', persistent: false, manual: true, scan: ['idle', {}] },
+  retained: { flag: 'retainedUnread', persistent: true, before: ['working', {}], scan: ['idle', { completionAtMs: now - 5 }] },
+};
+const attentionTracker = async ({ persistent, before, manual, scan }) => {
+  const tracker = new PendingTracker(false);
+  await tracker.setPersistentUnread(persistent, { threads: [] });
+  await timedScan(tracker, now - 20, 'idle');
+  if (before) await timedScan(tracker, now - 10, ...before);
+  if (manual) await tracker.markUnread(id);
+  await timedScan(tracker, now - 5, ...scan);
+  return { tracker, plainRow: await timedScan(tracker, now - 5, ...scan) };
+};
+
+test('a muted row asks for nothing for each source of attention, its records do not change, and the end gives it back', async () => {
+  for (const [name, attentionCase] of Object.entries(ATTENTION_CASES)) {
+    for (const until of [now + HOUR, 0]) {
+      const label = `${name} until ${until}`;
+      const { scan } = attentionCase;
+      const { tracker, plainRow } = await attentionTracker(attentionCase);
+      assert.deepEqual([plainRow[attentionCase.flag], plainRow.pending], [true, true], label);
+      const unmuted = shown(plainRow);
+      const record = structuredClone(tracker.records[id]);
+      await tracker.setMuted(plainRow, true, until, now);
+      const muted = await timedScan(tracker, now + 10, ...scan);
+      assert.deepEqual([muted.muted, muted.mutedUntilMs, muted.mutedAtMs], [true, until, now], label);
+      assert.deepEqual(shown(muted), { ...unmuted, ...Object.fromEntries(ATTENTION_FLAGS.map((key) => [key, false])),
+        unread: false, pending: false, alert: false, pendingSource: '', retainedUnreadSource: '' }, label);
+      assert.deepEqual(withoutMute(tracker.records[id]), withoutMute(record), label);
+      assert.deepEqual([tracker.records[id].muted, tracker.records[id].mutedUntil, tracker.records[id].mutedAt], [1, until, now], label);
+      // The end, by time or with Unmute, gives back what the row shows without a mute.
+      if (until) {
+        for (const atMs of [until, until + 1]) {
+          const ended = await timedScan(tracker, atMs, ...scan);
+          assert.deepEqual(shown(ended), unmuted, `${label} at ${atMs}`);
+          assert.deepEqual([ended.muted, ended.mutedUntilMs, ended.mutedAtMs], [false, 0, 0], `${label} at ${atMs}`);
+        }
+      } else {
+        await tracker.setMuted(muted, false);
+        const ended = await timedScan(tracker, now + 20, ...scan);
+        assert.deepEqual(shown(ended), unmuted, label);
+        assert.deepEqual([ended.muted, ended.mutedUntilMs, ended.mutedAtMs], [false, 0, 0], label);
+      }
+    }
+  }
+});
+
+test('Mute saves its start time in mutedAt, Unmute clears it, and pending.json keeps only a valid value', async (t) => {
+  const before = Date.now();
+  const tracker = new PendingTracker(false);
+  const row = await timedScan(tracker, now);
+  assert.equal(tracker.records[id].mutedAt, 0);
+  await tracker.setMuted(row, true);
+  assert.equal(tracker.records[id].mutedAt >= before && tracker.records[id].mutedAt <= Date.now(), true);
+  await tracker.setMuted(row, true, now + HOUR, now - 7);
+  assert.equal(tracker.records[id].mutedAt, now - 7);
+  tracker.apply(row, now);
+  assert.deepEqual([row.muted, row.mutedAtMs, row.mutedUntilMs], [true, now - 7, now + HOUR]);
+  tracker.apply(row, now + HOUR);
+  assert.deepEqual([row.muted, row.mutedAtMs], [false, 0]);
+  await tracker.setMuted(row, false);
+  assert.equal(tracker.records[id].mutedAt, 0);
+
+  const statePath = path.join(await temp(t), 'pending.json');
+  const saving = new PendingTracker(statePath);
+  const savingRow = await timedScan(saving, now);
+  await saving.setMuted(savingRow, true, now + HOUR, now - 7);
+  const saved = JSON.parse(await readFile(statePath, 'utf8'));
+  assert.equal(saved.records[id].mutedAt, now - 7);
+  const loaded = new PendingTracker(statePath);
+  assert.equal((await timedScan(loaded, now)).mutedAtMs, now - 7);
+  assert.equal(loaded.records[id].mutedAt, now - 7);
+  for (const [muted, mutedAt] of [[1, -1], [1, 3.5], [1, '5'], [1, null], [1, undefined], [0, now - 7]]) {
+    await writeFile(statePath, JSON.stringify({ ...saved, records: { [id]: { ...saved.records[id], muted, mutedAt } } }));
+    const invalid = new PendingTracker(statePath);
+    const result = await timedScan(invalid, now);
+    assert.deepEqual([invalid.records[id].mutedAt, result.mutedAtMs, invalid.warning], [0, 0, ''], JSON.stringify([muted, mutedAt]));
+  }
+  await saving.setMuted(savingRow, false);
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(statePath, 'utf8')).records[id], 'mutedAt'), false);
+});
+
+test('observe makes the end of the earliest active timed mute the next status check when it is earlier', async () => {
+  const rows = (atMs) => ({ generatedAtMs: atMs, providers: [],
+    threads: ['a', 'b', 'c'].map((rowId) => ({ id: rowId, state: 'idle', nativeUnread: null, completionAtMs: 0 })) });
+  const tracker = new PendingTracker(false);
+  const first = await tracker.observe(rows(now));
+  assert.equal(first.nextStatusCheckAtMs, undefined);
+  await tracker.setMuted(first.threads[0], true, now + 2 * HOUR, now);
+  await tracker.setMuted(first.threads[1], true, now + HOUR, now);
+  await tracker.setMuted(first.threads[2], true, 0, now);
+  assert.equal((await tracker.observe(rows(now))).nextStatusCheckAtMs, now + HOUR);
+  const built = rows(now);
+  Object.defineProperty(built, 'nextStatusCheckAtMs', { value: now + 3 * HOUR, configurable: true });
+  assert.equal((await tracker.observe(built)).nextStatusCheckAtMs, now + HOUR);
+  const earlier = rows(now);
+  Object.defineProperty(earlier, 'nextStatusCheckAtMs', { value: now + 60_000, configurable: true });
+  assert.equal((await tracker.observe(earlier)).nextStatusCheckAtMs, now + 60_000);
+  // An expired end and an Always mute add nothing.
+  assert.equal((await tracker.observe(rows(now + HOUR))).nextStatusCheckAtMs, now + 2 * HOUR);
+  assert.equal((await tracker.observe(rows(now + 2 * HOUR))).nextStatusCheckAtMs, undefined);
 });
 
 test('pending.json keeps a timed mute and loads invalid end times as 0', async (t) => {
@@ -668,9 +795,9 @@ function loadAsV110(record) {
     drawer: record.drawer === 1 ? 1 : 0, muted: record.muted === 1 ? 1 : 0, lastSeen: number(record.lastSeen) ? record.lastSeen : null });
 }
 const asV110 = (records) => Object.fromEntries(Object.entries(records).map(([key, record]) => [key, loadAsV110(record)]));
-// `discardNext`, `actionSeen`, `actionAck`, and `mutedUntil` are newer than ASB 1.10.0, which ignores them.
+// `discardNext`, `actionSeen`, `actionAck`, `mutedUntil`, and `mutedAt` are newer than ASB 1.10.0, which ignores them.
 const withoutNext = (records) => Object.fromEntries(Object.entries(records)
-  .map(([key, { discardNext, actionSeen, actionAck, mutedUntil, ...record }]) => [key, record]));
+  .map(([key, { discardNext, actionSeen, actionAck, mutedUntil, mutedAt, ...record }]) => [key, record]));
 
 // Watches the change marks of a tracker. `touched` has the record fields that changed through set(), and `marks` counts the times that other code set the
 // flag (a new or dropped record, the pin order, Persistent unread).
@@ -851,7 +978,7 @@ test('pending.json has no field that holds its default, and it keeps the fields 
   assert.deepEqual(file.records.rich, rich);
   assert.equal(text.includes('""'), false);
   // This ASB and ASB 1.10.0 read the same records as from the full form (with the one change that the call made).
-  const expected = { rich: { ...rich, mutedUntil: 0 }, zero: { ...zero, manual: 1, mutedUntil: 0 }, some: { ...some, mutedUntil: 0 } };
+  const expected = { rich: { ...rich, mutedUntil: 0, mutedAt: 0 }, zero: { ...zero, manual: 1, mutedUntil: 0, mutedAt: 0 }, some: { ...some, mutedUntil: 0, mutedAt: 0 } };
   const loaded = new PendingTracker(statePath);
   await loaded.load();
   assert.deepEqual([{ ...loaded.records }, loaded.warning], [expected, '']);

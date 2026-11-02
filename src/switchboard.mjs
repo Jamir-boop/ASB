@@ -649,6 +649,7 @@ export class PendingTracker {
             this.records[id].drawer = record.drawer === 1 ? 1 : 0;
             this.records[id].muted = record.muted === 1 ? 1 : 0;
             this.records[id].mutedUntil = record.muted === 1 && Number.isSafeInteger(record.mutedUntil) && record.mutedUntil > 0 ? record.mutedUntil : 0;
+            this.records[id].mutedAt = record.muted === 1 && Number.isSafeInteger(record.mutedAt) && record.mutedAt > 0 ? record.mutedAt : 0;
             // A file from an older ASB has no time of sight: its records get the whole time from now.
             this.records[id].lastSeen = Number.isFinite(record.lastSeen) && record.lastSeen >= 0 ? record.lastSeen : Date.now();
           } else this.bad = true;
@@ -704,7 +705,7 @@ export class PendingTracker {
         record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '',
           questionSeen: 0, questionAck: 0, actionSeen: 0, actionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
           discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
-          drawer: 0, drawerSeen: 0, muted: 0, mutedUntil: 0, lastSeen: today };
+          drawer: 0, drawerSeen: 0, muted: 0, mutedUntil: 0, mutedAt: 0, lastSeen: today };
         this.dirty = true;
       }
       if (record.lastSeen < today) this.set(record, 'lastSeen', today);
@@ -766,6 +767,11 @@ export class PendingTracker {
       if (discardedSuccess) this.set(record, 'drawerSeen', record.seen);
       this.apply(row, nowMs);
     }
+    // The engine builds the dashboard again when a timed mute ends, so the attention that still applies comes back on time.
+    const muteEnd = Math.min(...dashboard.threads.filter((row) => row.muted && row.mutedUntilMs > nowMs).map((row) => row.mutedUntilMs));
+    if (muteEnd < (dashboard.nextStatusCheckAtMs || Infinity)) {
+      Object.defineProperty(dashboard, 'nextStatusCheckAtMs', { value: muteEnd, configurable: true });
+    }
     this.prune(nowMs, members, dashboard.threads);
     await this.save();
     dashboard.pinnedOrder = [...this.pinnedOrder];
@@ -824,6 +830,12 @@ export class PendingTracker {
     row.drawer = record?.drawer === 1;
     row.muted = muteActive(record, nowMs);
     row.mutedUntilMs = row.muted ? record.mutedUntil : 0;
+    row.mutedAtMs = row.muted ? record.mutedAt : 0;
+    // A muted row asks for nothing until the mute ends. Its stored marks stay, so what still applies then comes back.
+    if (row.muted) {
+      for (const key of ['manualUnread', 'questionAttention', 'actionAttention', 'nativeAttention', 'failedAttention', 'completionAttention', 'retainedUnread']) row[key] = false;
+      row.retainedUnreadSource = '';
+    }
     // A Working row shows only question attention. Stored marks stay and show again after Working ends.
     const working = row.state === 'working';
     row.unread = !working && !row.drawer && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
@@ -867,12 +879,13 @@ export class PendingTracker {
     this.apply(row);
   }
 
-  async setMuted(row, enabled, untilMs = 0) {
+  async setMuted(row, enabled, untilMs = 0, atMs = Date.now()) {
     await this.load();
     const record = this.records[row.id];
     if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
     this.set(record, 'muted', enabled ? 1 : 0);
     this.set(record, 'mutedUntil', enabled ? untilMs : 0);
+    this.set(record, 'mutedAt', enabled ? atMs : 0);
     await this.save();
     this.apply(row);
   }
@@ -1169,7 +1182,7 @@ export function createSwitchboardServer(options = {}) {
       return tracker.setDiscard(thread, enabled, next);
     },
     drawerThread: (thread, enabled) => tracker.setDrawer(thread, enabled),
-    muteThread: (thread, enabled, untilMs) => tracker.setMuted(thread, enabled, untilMs),
+    muteThread: (thread, enabled, untilMs, atMs) => tracker.setMuted(thread, enabled, untilMs, atMs),
     setUnreadSettings: (enabled, dashboard) => tracker.setPersistentUnread(enabled, dashboard),
     pinThread: async (thread, action, body) => {
       const order = action === 'move-pin' ? await tracker.movePin(thread.id, body)

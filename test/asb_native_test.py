@@ -4874,8 +4874,8 @@ class WidgetCheck(unittest.TestCase):
                 right.copy_area(0, 0, right.get_width(), right.get_height(), both, left.get_width() + 12, 0)
                 both.savev(str(Path(output) / "native-copy-tag-crops.png"), "png", [], [])
 
-    def mute_wheel_board(self, width=520):
-        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+    def mute_wheel_board(self, width=520, threads=None):
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": threads or [
             {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Plan the garden " + identity,
              "cwd": "/example/garden", "projectName": "garden", "state": "idle", "canOpen": True,
              "updatedAtMs": NOW - n * 1000, "unread": identity == "unread"}
@@ -5072,6 +5072,41 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(card.asb_mute_tag.get_child_revealed(), mute.asb_tag_shown)
         window.change_mute_for("30m")
         self.assertFalse(card.asb_mute_words.get_transition_running())
+
+    def test_muting_an_unread_card_moves_it_after_the_working_card_with_its_time_and_feedback(self):
+        base = {"provider": "codex", "providerLabel": "Codex", "cwd": "/example/garden", "projectName": "garden", "canOpen": True}
+        window = self.mute_wheel_board(248, [
+            {**base, "id": "unread", "title": "Plan the garden unread", "state": "idle", "updatedAtMs": NOW - 60_000,
+             "unread": True, "pending": True, "completionAttention": True, "pendingSource": "observed-completion"},
+            {**base, "id": "busy", "title": "Plan the garden busy", "state": "working", "updatedAtMs": NOW, "workingSinceMs": NOW}])
+        self.assertEqual(window.column_pixel_width, 240)
+        def top(identity):
+            found, bounds = window.focus_widgets[identity].compute_bounds(window)
+            self.assertTrue(found)
+            return bounds.origin.y
+        self.assertLess(top("unread"), top("busy"))
+        card = window.focus_widgets["unread"]
+        mute = card.asb_mute_button
+        self.assertTrue(mute.get_visible())
+        requests = []
+        patcher = patch.object(asb, "request_async", lambda *args: requests.append(args))
+        patcher.start(); self.addCleanup(patcher.stop)
+        window.change_mute_for("30m")
+        mute.emit("clicked")
+        self.assertEqual(requests[-1][1], "/api/threads/unread/mute")
+        at = int(time.time() * 1000)
+        reply = {**card.asb_thread, "muted": True, "mutedUntilMs": at + 1_800_000, "mutedAtMs": at, "unread": False, "pending": False,
+                 "pendingSource": "", **{key: False for key in ("manualUnread", "questionAttention", "actionAttention", "nativeAttention",
+                                                                 "failedAttention", "completionAttention", "retainedUnread")}}
+        requests[-1][2]({"changed": True, "threadId": "unread", "thread": reply}, None)
+        self.drain(.4)
+        moved = window.focus_widgets["unread"]
+        self.assertIs(moved, card)
+        self.assertGreater(top("unread"), top("busy"))
+        self.assertTrue(moved.asb_mute_glyph.get_visible())
+        self.assertEqual(moved.asb_mute_time.get_label(), "30m")
+        self.assertEqual(moved.asb_feedback_label.get_label(), "Muted for 30 minutes")
+        self.assertEqual(moved.asb_footer_stack.get_visible_child_name(), "copied")
 
     def test_mute_wheel_panel_tag_wheel_keys_enter_and_compact(self):
         window = self.mute_wheel_board()

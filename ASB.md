@@ -128,21 +128,20 @@ All ASB clients share this attention and pin state. Filters do not limit what th
 
 ## Mute
 
-Select **Mute** in the row panel to keep a chat read when its tasks end: finished tasks stay read, and questions still alert. Choose **30 min** (the default), **1 hour**, **8 hours**, **1 day**, or **Always**. The choice is one board setting, optional `muteFor` in schema `1` `layout.json` (`30m`, `1h`, `8h`, `1d`, `always`; absent means `30m`). View, width, and other layout saves keep it. A failed save keeps the old choice.
+Select **Mute** in the row panel to quiet a chat for a time: until the mute ends, it asks for nothing. Choose **30 min** (the default), **1 hour**, **8 hours**, **1 day**, or **Always**. The choice is one board setting, optional `muteFor` in schema `1` `layout.json` (`30m`, `1h`, `8h`, `1d`, `always`; absent means `30m`). View, width, and other layout saves keep it. A failed save keeps the old choice.
 
 In Comfortable, a mute button shows before Copy when the pointer is on the card or the card has visible keyboard focus. It needs a column of at least 240 px; narrower columns and Compact use the row panel. Rest on the button for 250 ms to show its time tag. The wheel then changes the choice, one step per notch: down is longer, up is shorter, with no wrap. Before the rest the wheel scrolls the column. Alt+Up and Alt+Down on the focused button also change the choice. The tag stays inside the card and never covers the controls; if it cannot fit, the wheel and keys still work, and the tooltip names the choice. Click, Enter, or Space mutes for the choice. A check and the done text replace the footer for 1.6 s. With GNOME animations off, tags and words change at once.
 
-A muted chat shows a small muted-bell icon after the folder name in Comfortable and after the state in Compact. A timed mute shows the time left after the glyph, for example **29m**. It ends by itself, without a sound or a new dot for an earlier result. **Unmute** turns it off sooner. In the row panel, **Unmute** has an **Until ...** caption with the local end day and time, or **Until you unmute** for Always. The card button becomes an accent bell; its tag says **Unmute** with no dots. Its wheel and Alt+Up/Down do not change the choice. To set a new time, unmute, choose a time, and mute again. Each new choice starts again from now, not from the old end.
+A muted chat shows a small muted-bell icon after the folder name in Comfortable and after the state in Compact. A timed mute shows the time left after the glyph, for example **29m**. It ends by itself; **Unmute** turns it off sooner. In the row panel, **Unmute** has an **Until ...** caption with the local end day and time, or **Until you unmute** for Always. The card button becomes an accent bell; its tag says **Unmute** with no dots. Its wheel and Alt+Up/Down do not change the choice. To set a new time, unmute, choose a time, and mute again. Each new choice starts again from now, not from the old end.
 
-- A task of a muted chat that ends with success gives no dot, no Done sound, and no Done phone notification. ASB handles it as a success with **Discard result** on, also for a native unread mark of that task that arrives late. **Persistent unread** does not keep it.
-- Questions and permission waits still show the `?` and play the Needs input sound and phone notification.
-- A failed task still shows its `!` mark and plays the Failed sound.
-- Mute applies to tasks that end after you turn it on.
-- Turning Mute on does not clear a dot at once. A dot from before stays until you read it, or until a later task of the muted chat ends with success. Failure dots and manual Unread stay until you read them.
-- **Unread** in ASB still works on a muted chat. An Unread mark that the original app sets with no new finished task still shows.
+- While a mute is on, the card has no unread dot, no `!`, and no `?` for a question, and the chat plays no sound and sends no phone notification: no Done, Needs input, or Failed. The top bar, the **Pending** filter, and the phone do not count it. Its state still shows, for example **Waiting**, and a permission wait keeps its `?`, as after Read.
+- The card leaves the Pending group and waits with the Idle cards, placed at the time you muted it, as if it had just finished. A Working card stays with the Working cards.
+- When the mute ends, by time or with **Unmute**, what is still unread, failed, or waiting comes back with its mark, sound, and phone notification, and the card goes back to the Pending group.
+- A task of a muted chat that ends with success stays read, also after the mute ends: no dot, no Done sound, and no Done phone notification. ASB handles it as a success with **Discard result** on, also for a native unread mark of that task that arrives late. **Persistent unread** does not keep it.
+- Mute changes no stored mark: a dot, `!`, or question from before the mute is only hidden while the mute is on. **Unread** in ASB during a mute shows when the mute ends.
 - A muted chat has no **Discard result**: no card ring and no row panel action. A Discard that you armed before Mute stays as it is.
 
-ASB saves Mute for each chat in its own `pending.json`, like the drawer, with an optional end in `mutedUntil`. The phone and the browser view get the `muted` and `mutedUntilMs` row fields, but they have no Mute control.
+ASB saves Mute for each chat in its own `pending.json`, like the drawer, with an optional end in `mutedUntil` and its start in `mutedAt`. The phone and the browser view get the `muted`, `mutedUntilMs`, and `mutedAtMs` row fields, but they have no Mute control.
 
 ## OpenCode
 
