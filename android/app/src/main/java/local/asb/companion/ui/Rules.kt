@@ -126,7 +126,7 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
         "idle", "waiting" -> 2
         else -> 3
     }
-    fun moment(row: Thread) = if (row.state == "working") row.workingSinceMs.coerceAtLeast(0) else row.updatedAtMs
+    fun moment(row: Thread) = if (row.state == "working") row.workingSinceMs.coerceAtLeast(0) else maxOf(row.updatedAtMs, row.mutedAtMs)
     return threads.filter { row ->
         (f.archived || !row.archived) &&
             (!f.drawerOnly || row.drawer) &&

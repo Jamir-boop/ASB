@@ -4,6 +4,7 @@ import java.security.MessageDigest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Thread
 import local.asb.companion.data.Message
 import local.asb.companion.ui.APP_FILTERS
@@ -212,6 +213,20 @@ class RulesTest {
             Thread(id = "old", state = "idle", pending = false, updatedAtMs = 200),
         )
         assertEquals(listOf("done", "asks", "approve", "work", "read", "old"), ids(rows))
+    }
+
+    @Test fun mutedRowSortsWithTheIdleRowsAtItsMuteTime() {
+        val minute = 60_000L
+        fun rows(mutedAtMs: Long) = listOf(
+            Thread(id = "i", state = "idle", updatedAtMs = now - 5 * minute),
+            Thread(id = "m", state = "waiting", pending = false, updatedAtMs = now - 60 * minute, mutedAtMs = mutedAtMs),
+            Thread(id = "w", state = "working", updatedAtMs = now),
+            Thread(id = "p", state = "idle", pending = true, updatedAtMs = now - 10 * minute),
+        )
+        assertEquals(listOf("p", "w", "m", "i"), ids(rows(now)))
+        assertEquals(listOf("p", "w", "i", "m"), ids(rows(0)))
+        assertEquals(123L, AsbJson.decodeFromString<Thread>("""{"id":"a","mutedAtMs":123}""").mutedAtMs)
+        assertEquals(0L, AsbJson.decodeFromString<Thread>("""{"id":"a"}""").mutedAtMs)
     }
 
     @Test fun attentionUsesOnlyTheCurrentAsbFlagsInPriorityOrder() {

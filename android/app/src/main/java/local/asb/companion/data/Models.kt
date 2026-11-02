@@ -130,6 +130,8 @@ data class Thread(
     val retainedUnread: Boolean = false,
     val retainedUnreadSource: String = "",
     val drawer: Boolean = false,
+    // The start of an active mute, else 0.
+    @Serializable(with = MillisSerializer::class) val mutedAtMs: Long = 0,
     val unread: Boolean = false,
     // The unread mark comes from a failed or usage-limit stop; an older engine sends none.
     val alert: Boolean = false,
