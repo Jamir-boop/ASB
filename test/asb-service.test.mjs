@@ -718,6 +718,9 @@ test('the engine starts the tray with its environment, stops it, and survives a 
     headers: { origin: base, 'content-type': 'application/json', 'X-ASB-Source-Token': runtime.sourceToken } });
   assert.equal(reply.status, 200);
   assert.equal((await child.closed)[0], 0, child.errors);
+  // The engine sends SIGTERM to the tray and does not wait, so the tray (or its zombie) can outlive the engine for a moment.
+  const trayGone = () => { try { process.kill(trayPid, 0); return false; } catch (error) { return error.code === 'ESRCH'; } };
+  for (let tries = 0; tries < 100 && !trayGone(); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.throws(() => process.kill(trayPid, 0), { code: 'ESRCH' });
   await rm(record);
   const failing = f.launch([engineScript, 'run'], { ...extra, ASB_TRAY_FAIL: '1' });
