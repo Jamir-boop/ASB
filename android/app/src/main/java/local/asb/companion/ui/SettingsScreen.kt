@@ -98,6 +98,7 @@ fun SettingsScreen(
     onCheckNow: () -> Unit,
     onPersistentUnreadChanged: () -> Unit = {},
     onViewChanged: (String) -> Unit = {},
+    onPetChanged: (String) -> Unit = {},
     onTextScaleChanged: (Float) -> Unit = {},
     useCameraArea: Boolean = true,
     onUseCameraAreaChanged: (Boolean) -> Unit = {},
@@ -133,6 +134,7 @@ fun SettingsScreen(
     var notifyInput by remember(store) { mutableStateOf(store.notifyInput) }
     var view by remember(store) { mutableStateOf(store.view) }
     var textScale by remember(store) { mutableFloatStateOf(store.textScale) }
+    var pet by remember(store) { mutableStateOf(store.pet) }
     val palette = LocalPalette.current
     val paletteFromPc = remember(store, palette) { store.palette != null }
     val version = remember(context) {
@@ -322,6 +324,7 @@ fun SettingsScreen(
                         }
                         Text("Changes the text on the session cards. Other text follows the phone font size.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        PetSettings(pet) { value -> pet = value; store.pet = value; onPetChanged(value) }
                         SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)
                         Text("Draw the app under the camera hole. Turn off to keep that band clear.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

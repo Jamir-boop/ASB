@@ -6,6 +6,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 - Fixed Claude Desktop Code approvals on Windows, which could stay open after the Claude app replaced its log: the new log can have the same file number as the old one. ASB now also compares the 64 bytes before its read position.
 - Preferences > Appearance now shows Pets as four picture tiles. Hover makes a pet walk; a choice makes it hop. Below the caption, the chosen pet carries a message between two sample cards on a 116 px stage every 4.6 s while the section shows. With GNOME animations off, the tiles stay still and the two marks light for 2 s after a choice.
+- Added **Pets** to the Android app. Settings > Appearance > Pets (Off, the default, Crab, Pigeon, or Cat) shows the same four picture tiles and stage as the PC; a tap makes the pet hop. With a pet on, a message on the session list shows the pixel pet with the board motion instead of the light, when both cards are on the screen; else the light plays. With animations off, the two marks light for 2 s, as before. The phone keeps its own choice.
 
 ## ASB 1.14.0 - 2026-11-01
 

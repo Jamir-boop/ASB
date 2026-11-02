@@ -227,6 +227,9 @@ fun SessionsScreen(
     var initialError by rememberSaveable { mutableStateOf<String?>(null) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val providerCenters = remember { mutableStateMapOf<String, Offset>() }
+    val cardFloors = remember { mutableStateMapOf<String, Float>() }
+    val pets by rememberPets()
+    var petFlights by remember { mutableStateOf(emptyList<PetFlight>()) }
     var listOrigin by remember { mutableStateOf(Offset.Zero) }
     var listSize by remember { mutableStateOf(IntSize.Zero) }
     var flights by remember { mutableStateOf(emptyList<MessageFlight>()) }
@@ -293,6 +296,12 @@ fun SessionsScreen(
         id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentDensity,
     )
 
+    fun petPoint(id: String): PetPoint? {
+        val center = providerCenters[id]?.minus(listOrigin) ?: return null
+        val floor = cardFloors[id]?.minus(listOrigin.y) ?: return null
+        return PetPoint((center.x / density).toDouble(), (center.y / density).toDouble(), (floor / density).toDouble())
+    }
+
     LaunchedEffect(viewModel, lifecycleOwner, state.revoked) {
         if (!state.revoked) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             try {
@@ -300,6 +309,7 @@ fun SessionsScreen(
             } finally {
                 motionGeneration++
                 flights = emptyList()
+                petFlights = emptyList()
                 highlights = emptyMap()
             }
         }
@@ -317,14 +327,16 @@ fun SessionsScreen(
     }
     LaunchedEffect(rowsById) {
         flights = flights.filter { it.message.from in rowsById && it.message.to in rowsById }
+        petFlights = petFlights.filter { it.message.from in rowsById && it.message.to in rowsById }
         highlights = highlights.filterKeys { it in rowsById }
+        cardFloors.keys.filter { it !in rowsById }.forEach { cardFloors.remove(it) }
         providerCenters.keys.filter { it !in rowsById }.forEach { providerCenters.remove(it) }
     }
     LaunchedEffect(viewModel, state.dashboard?.messages, rowsById, state.revoked) {
         if (state.revoked) return@LaunchedEffect
         val messages = state.dashboard?.messages ?: return@LaunchedEffect
         val (play, seen) = newMessages(messages, viewModel.seenMessages, rowsById.keys,
-            System.currentTimeMillis(), MESSAGE_FLIGHT_LIMIT - flights.size)
+            System.currentTimeMillis(), MESSAGE_FLIGHT_LIMIT - flights.size - petFlights.size)
         viewModel.seenMessages = seen
         if (play.isEmpty()) return@LaunchedEffect
         val generation = motionGeneration
@@ -338,22 +350,35 @@ fun SessionsScreen(
         val startedAt = System.nanoTime()
         val highlightEnd = SystemClock.uptimeMillis() + if (reducedMotion) 2000 else 160
         val added = mutableListOf<MessageFlight>()
+        val addedPets = mutableListOf<PetFlight>()
         val lit = highlights.toMutableMap()
         for (message in play) {
             val start = endpoint(message.from) ?: continue
             val end = endpoint(message.to) ?: continue
             if (start.outside && end.outside) continue
+            val pet = pets?.pets?.get(state.pet)
+            val sender = petPoint(message.from)
+            val receiver = petPoint(message.to)
+            if (messagePlay(state.pet, pet != null, reducedMotion, start.outside, end.outside) == MessagePlay.PET &&
+                sender != null && receiver != null && pet != null &&
+                flights.size + petFlights.size + added.size + addedPets.size < MESSAGE_FLIGHT_LIMIT) {
+                val scale = if (comfortable) 2.0 else 1.0
+                addedPets += PetFlight(message, startedAt, pet, scale, petPlan(pet, scale, sender, receiver))
+                lit[message.from] = SystemClock.uptimeMillis() + 400
+                continue
+            }
             lit[message.from] = highlightEnd
             if (reducedMotion) lit[message.to] = highlightEnd
-            else if (flights.size + added.size < MESSAGE_FLIGHT_LIMIT) added += MessageFlight(
+            else if (flights.size + petFlights.size + added.size + addedPets.size < MESSAGE_FLIGHT_LIMIT) added += MessageFlight(
                 message, startedAt, messageDuration(((end.point - start.point).getDistance() / density).toDouble()),
                 start.outside,
             )
         }
         highlights = lit
-        if (added.isNotEmpty()) {
+        if (added.isNotEmpty() || addedPets.isNotEmpty()) {
             frameNanos = startedAt
             flights = flights + added
+            petFlights = petFlights + addedPets
         }
     }
     LaunchedEffect(highlights) {
@@ -361,9 +386,19 @@ fun SessionsScreen(
         delay((next - SystemClock.uptimeMillis()).coerceAtLeast(1))
         highlights = highlights.filterValues { it > SystemClock.uptimeMillis() }
     }
-    LaunchedEffect(flights.isNotEmpty()) {
-        while (flights.isNotEmpty()) {
+    LaunchedEffect(flights.isNotEmpty() || petFlights.isNotEmpty()) {
+        while (flights.isNotEmpty() || petFlights.isNotEmpty()) {
             withFrameNanos { frameNanos = it }
+            val visible = visibleRows.map { it.id }.toSet()
+            petFlights = petFlights.mapNotNull { flight ->
+                if (flight.message.from !in visible || flight.message.to !in visible) null
+                else {
+                    if (!flight.arrived && flight.elapsedMs(frameNanos) >= flight.plan.ta) {
+                        highlights = highlights + (flight.message.to to (SystemClock.uptimeMillis() + 360))
+                        flight.copy(arrived = true)
+                    } else flight
+                }
+            }.filter { it.elapsedMs(frameNanos) < it.plan.end }
             flights = flights.map { flight ->
                 if (flight.receiverOutside == null && flight.elapsedMs(frameNanos) >= flight.durationMs) {
                     flight.copy(receiverOutside = endpoint(flight.message.to)?.outside ?: true)
@@ -417,6 +452,13 @@ fun SessionsScreen(
             nowMs = nowMs,
             messageLit = row.id in highlights,
             onProviderCenter = { center -> providerCenters[row.id] = center },
+            onCardFloor = { floor -> cardFloors[row.id] = floor },
+            petTint = {
+                petFlights.maxOfOrNull { flight ->
+                    val index = when (row.id) { flight.message.from -> 0; flight.message.to -> 1; else -> -1 }
+                    petTints(flight.plan, flight.elapsedMs(frameNanos))[index] ?: 0.0
+                }?.toFloat() ?: 0f
+            },
             onOpen = { viewModel.action(row.id, "open") },
             onActions = { point -> keyboard?.hide(); inspector = row.id to point },
             onCorner = { action -> viewModel.action(row.id, action) },
@@ -713,6 +755,15 @@ fun SessionsScreen(
                             val end = endpoint(flight.message.to) ?: continue
                             if (!start.outside || !end.outside) drawMessage(flight, frameNanos, start, end, messageColor, flow)
                         }
+                        pets?.let { sprites ->
+                            val visible = visibleRows.map { it.id }.toSet()
+                            for (flight in petFlights) {
+                                if (flight.message.from !in visible || flight.message.to !in visible) continue
+                                val sender = petPoint(flight.message.from) ?: continue
+                                val receiver = petPoint(flight.message.to) ?: continue
+                                drawPetFlight(sprites, flight.pet, flight.scale, flight.plan, flight.elapsedMs(frameNanos), sender, receiver, messageColor)
+                            }
+                        }
                     }
                 }
             }
@@ -826,7 +877,7 @@ private fun ProviderWarning(provider: Provider, onDismiss: () -> Unit) {
 private fun SessionCard(
     row: Thread, comfortable: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
     nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: (Offset) -> Unit,
-    onCorner: (String) -> Unit, modifier: Modifier = Modifier,
+    onCorner: (String) -> Unit, onCardFloor: (Float) -> Unit, petTint: () -> Float, modifier: Modifier = Modifier,
 ) {
     val palette = LocalPalette.current
     val interaction = remember { MutableInteractionSource() }
@@ -875,7 +926,13 @@ private fun SessionCard(
     val title = if (opening) "Opening…" else row.title
     val density = LocalDensity.current
     val fontScale = density.fontScale
+    val messageColor = MaterialTheme.colorScheme.primary
     val card = modifier.fillMaxWidth().onPlaced { coordinates.value = it }
+        .onGloballyPositioned { onCardFloor(it.positionInRoot().y + it.size.height) }
+        .drawBehind {
+            val alpha = petTint()
+            if (alpha > 0) drawRoundRect(messageColor.copy(alpha = .15f * alpha), cornerRadius = CornerRadius(3.dp.toPx()))
+        }
         .heightIn(min = (if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)).dp)
         .combinedClickable(
             interactionSource = interaction,
@@ -961,7 +1018,7 @@ private fun SessionCard(
 }
 
 @Composable
-private fun ProviderMark(
+internal fun ProviderMark(
     row: Thread, limited: Boolean, messageLit: Boolean, palette: Palette, modifier: Modifier, dot: Boolean = true,
 ) {
     val text = hexColor(palette.text)
@@ -1371,7 +1428,14 @@ private class InspectorPosition(private val point: Offset, private val safe: Int
     }
 }
 
-private data class MessageFlight(
+private data class PetFlight(
+    val message: Message, val startedAtNanos: Long, val pet: Pet, val scale: Double, val plan: PetPlan,
+    val arrived: Boolean = false,
+) {
+    fun elapsedMs(nowNanos: Long) = (nowNanos - startedAtNanos).coerceAtLeast(0) / 1_000_000.0
+}
+
+internal data class MessageFlight(
     val message: Message,
     val startedAtNanos: Long,
     val durationMs: Double,
@@ -1381,7 +1445,7 @@ private data class MessageFlight(
     fun elapsedMs(nowNanos: Long) = (nowNanos - startedAtNanos).coerceAtLeast(0) / 1_000_000.0
 }
 
-private data class MessageEndpoint(val point: Offset, val outside: Boolean)
+internal data class MessageEndpoint(val point: Offset, val outside: Boolean)
 
 private fun messageEndpoint(
     id: String,
@@ -1436,7 +1500,7 @@ private fun flowEndpoint(
     return MessageEndpoint(Offset(if (column < first) left else right, y.coerceAtMost(viewport.height.toFloat())), true)
 }
 
-private fun DrawScope.drawMessage(
+internal fun DrawScope.drawMessage(
     flight: MessageFlight, nowNanos: Long, start: MessageEndpoint, end: MessageEndpoint, color: Color,
     sideEdges: Boolean,
 ) {

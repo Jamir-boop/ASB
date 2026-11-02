@@ -38,6 +38,7 @@ data class UiState(
     val revoked: Boolean = false,
     val refreshing: Boolean = false,
     val view: String = "comfortable",
+    val pet: String = "off",
     val openingIds: Set<String> = emptySet(),
     val readConfirmedIds: Set<String> = emptySet(),
     /** The last failed action of a row, as the desktop row panel error. */
@@ -60,8 +61,9 @@ class SessionsViewModel(
     private val showLive: (Dashboard, String) -> Unit = { _, _ -> },
     /** Counts the default-network changes (AsbApp.networkChanges). */
     private val networkChanges: StateFlow<Long> = MutableStateFlow(0L),
+    initialPet: String = "off",
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked, view = initialView))
+    private val mutableState = MutableStateFlow(UiState(revoked = initiallyRevoked, view = initialView, pet = initialPet))
     val state: StateFlow<UiState> = mutableState.asStateFlow()
     var seenMessages: Set<Message>? = null
     /** The first visible session ("" at the top of the list), so a rotation or a return from Settings can show it again. */
@@ -80,6 +82,7 @@ class SessionsViewModel(
     private val readTimers = mutableMapOf<String, Job>()
 
     fun setFilter(filter: Filter) { mutableState.update { it.copy(filter = filter) } }
+    fun setPet(pet: String) { mutableState.update { it.copy(pet = pet) } }
     fun setView(view: String) { mutableState.update { it.copy(view = view) } }
     fun dismissBanner() { mutableState.update { it.copy(banner = null) } }
     fun clearError() { mutableState.update { it.copy(lastError = null) } }

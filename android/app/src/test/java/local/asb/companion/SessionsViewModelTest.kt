@@ -640,12 +640,15 @@ class SessionsViewModelTest {
         val filter = Filter(query = "cl: plan", app = "codex", states = setOf("working"), archived = true, drawerOnly = true)
         original.setFilter(filter)
         original.setView("comfortable")
+        assertEquals("off", original.state.value.pet)
+        original.setPet("cat")
         original.anchorId = "two"
 
         val recreated = ViewModelProvider.create(owner, factory)[SessionsViewModel::class]
         assertSame(original, recreated)
         assertEquals(filter, recreated.state.value.filter)
         assertEquals("comfortable", recreated.state.value.view)
+        assertEquals("cat", recreated.state.value.pet)
         assertEquals("two", recreated.anchorId)
         owner.clear()
     }

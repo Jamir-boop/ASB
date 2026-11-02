@@ -93,6 +93,15 @@ class StoreTest {
         assertNull(store.currentEndpoint)
     }
 
+    @Test fun petDefaultsToOffAndKeepsOnlyBoardPets() {
+        val preferences = MemoryPreferences()
+        assertEquals("off", Store(preferences).pet)
+        Store(preferences).pet = "pigeon"
+        assertEquals("pigeon", Store(preferences).pet)
+        preferences.values["pet"] = "dragon"
+        assertEquals("off", Store(preferences).pet)
+    }
+
     @Test fun dismissedWarningsSurviveANewStore() {
         val preferences = MemoryPreferences()
         assertEquals(emptyMap<String, String>(), Store(preferences).dismissedWarnings)

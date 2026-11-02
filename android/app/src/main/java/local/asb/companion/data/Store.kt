@@ -2,6 +2,7 @@ package local.asb.companion.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -62,6 +63,9 @@ class Store(private val preferences: SharedPreferences) {
     var view: String
         get() = if (preferences.getString("view", null) == "compact") "compact" else "comfortable"
         set(value) { preferences.edit().putString("view", value).apply() }
+    var pet: String
+        get() = preferences.getString("pet", null)?.takeIf { it in setOf("crab", "pigeon", "cat") } ?: "off"
+        set(value) { preferences.edit { putString("pet", value.takeIf { it in setOf("crab", "pigeon", "cat") } ?: "off") } }
     /** The Card text size, a factor on the phone font scale. It scales the session cards only. */
     var textScale: Float
         get() = preferences.getFloat("textScale", 1f)

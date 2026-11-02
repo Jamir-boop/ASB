@@ -3897,6 +3897,55 @@ class PetChecks(unittest.TestCase):
         self.assertEqual(asb.pet_particles(crab, 2, plan, ta, sender, receiver)[0], (420 + 4, 150 - 1, 1))
         self.assertEqual({alpha for _x, _y, alpha in asb.pet_particles(crab, 2, plan, 270, sender, receiver)}, {.5})
 
+    def test_android_pet_motion_fixture(self):
+        import hashlib
+
+        def rounded(value):
+            if isinstance(value, float):
+                return round(value, 6)
+            if isinstance(value, dict):
+                return {str(key): rounded(item) for key, item in value.items()}
+            if isinstance(value, (tuple, list)):
+                return [rounded(item) for item in value]
+            return value
+
+        def runs_text(runs):
+            return "".join(f"{color or 'A'},{x},{y},{width};" for color, x, y, width in runs)
+
+        data = {"envelopeSha256": hashlib.sha256(runs_text(self.PETS["envelope"]["runs"]).encode()).hexdigest(), "pets": {}}
+        cases = ((2, (40, 20, 70), (300, 20, 70)), (2, (25, 20, 70), (25, 260, 310)),
+                 (1, (25, 300, 316), (25, 40, 56)), (2, (400, 120, 170), (60, 20, 70)))
+        for name, pet in self.PETS["pets"].items():
+            text = "".join(runs_text(side) + "|" for frame in asb.PET_FRAMES for side in pet["frames"][frame]["runs"])
+            entry = {"runsSha256": hashlib.sha256(text.encode()).hexdigest(), "cases": []}
+            for scale, sender, receiver in cases:
+                plan = asb.pet_plan(pet, scale, sender, receiver)
+                samples = []
+                for t in range(0, int(plan["end"] + 29), 30):
+                    if t >= plan["end"]:
+                        break
+                    pose = asb.pet_pose(pet, scale, plan, t, sender, receiver)
+                    box = None
+                    if pose:
+                        _runs, left, top, flip = asb.pet_box(pet, scale, pose["frame"], pose["x"], pose["y"], pose["face"])
+                        box = {"left": left, "top": top, "flip": flip}
+                    samples.append({"t": t, "pose": pose, "box": box,
+                                    "envelope": asb.pet_envelope(pet, scale, plan, t, receiver),
+                                    "particles": asb.pet_particles(pet, scale, plan, t, sender, receiver),
+                                    "tints": asb.pet_tints(plan, t)})
+                entry["cases"].append({"scale": scale, "sender": sender, "receiver": receiver,
+                                       "plan": {"direction": plan["direction"], "sameRow": plan["same_row"],
+                                                "phases": plan["phases"], "ta": plan["ta"], "end": plan["end"]},
+                                       "samples": samples})
+            data["pets"][name] = entry
+        data = rounded(data)
+        path = Path(__file__).parents[1] / "android/app/src/test/resources/pet-motion.json"
+        text = json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
+        self.assertLessEqual(len(text.encode()), 300_000)
+        if os.environ.get("ASB_UPDATE_PET_FIXTURE") == "1":
+            path.write_text(text, encoding="utf-8")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), data)
+
 
 class SignalHelperChecks(unittest.TestCase):
     def run_helper(self, glib_unix=None, version_error=None):

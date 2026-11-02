@@ -186,6 +186,11 @@ card corner shows the Read target, the pin of a pinned row, the drawer glyph of
 a drawer row, and the armed Discard ring. Tap a corner control to use it. Pin,
 Put in drawer, and Discard result are in the session inspector.
 
+Settings > Appearance > **Pets** is Off by default. Select a pixel crab,
+pigeon, or cat to carry each message from card to card, as on the PC. The stage
+below the choices shows this motion. With animations off, the 2 marks light
+instead.
+
 Touch and hold a card to open the session inspector at that point. It shows
 the provider, folder, title, and state, and an **Open in <app>** button. Below
 it are the **Unread**, **In the drawer**, and **Pinned** switches, **Pin order**

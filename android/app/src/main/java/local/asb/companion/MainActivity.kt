@@ -218,6 +218,7 @@ private fun PairedApp(
                         notificationMutex = app.notificationMutex,
                         loadBaseline = { engine -> store.loadBaselineIfPaired(token, engine) },
                         initialView = store.view,
+                        initialPet = store.pet,
                         savePalette = app::usePalette,
                         showLive = { dashboard, engine ->
                             app.liveUpdates.value = LiveUpdate(dashboard.threads, System.currentTimeMillis(), engine)
@@ -245,6 +246,7 @@ private fun PairedApp(
                 onCheckNow = { CheckWorker.checkNow(app) },
                 onPersistentUnreadChanged = sessionsModel::refresh,
                 onViewChanged = sessionsModel::setView,
+                onPetChanged = sessionsModel::setPet,
                 onTextScaleChanged = app::useTextScale,
                 useCameraArea = app.useCameraArea,
                 onUseCameraAreaChanged = app::chooseCameraArea,
