@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -231,11 +232,11 @@ private fun PetStage(pet: String, pets: Pets?, choice: Int, reducedMotion: Boole
     val name = pet.replaceFirstChar { it.uppercase() }
     val description = if (pet == "off") "The light carries a message between two sample cards"
         else "$name carries a message between two sample cards"
-    Box(Modifier.fillMaxWidth().height(116.dp).clip(shape).background(hexColor(palette.background))
+    Box(Modifier.fillMaxWidth().heightIn(min = 116.dp).clip(shape).background(hexColor(palette.background))
         .border(1.dp, hexColor(mixColor(palette.background, palette.text, .15)), shape)
         .onGloballyPositioned { origin = it.positionInRoot() }
         .clearAndSetSemantics { contentDescription = description }) {
-        Row(Modifier.fillMaxWidth().align(Alignment.Center).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth().align(Alignment.Center).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SAMPLE_CARDS.forEachIndexed { index, row ->
                 val tones = cardTones(palette, row, comfortable = true, drawerView = false, pressed = false)
                 var markCenter by remember { mutableStateOf(Offset.Zero) }
@@ -244,7 +245,7 @@ private fun PetStage(pet: String, pets: Pets?, choice: Int, reducedMotion: Boole
                     ends[index] = PetPoint(((markCenter.x - origin.x) / density).toDouble(),
                         ((markCenter.y - origin.y) / density).toDouble(), ((floor - origin.y) / density).toDouble())
                 }
-                Column(Modifier.weight(1f).height(68.dp).onGloballyPositioned {
+                Column(Modifier.weight(1f).heightIn(min = 68.dp).onGloballyPositioned {
                     floor = it.positionInRoot().y + it.size.height
                     updateEnd()
                 }.drawBehind {
