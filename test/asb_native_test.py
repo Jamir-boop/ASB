@@ -3054,7 +3054,8 @@ class WidgetCheck(unittest.TestCase):
                                 if button.get_visible() and not button.asb_icon.get_icon_name()))
             for button in panel.asb_actions.values():
                 if button.get_visible():
-                    self.assert_accessible_label(button, button.asb_label.get_label())
+                    # The Mute row names the chosen time.
+                    self.assert_accessible_label(button, "Mute for 30 minutes" if button is panel.asb_actions["mute"] else button.asb_label.get_label())
             self.assert_accessible_label(panel.asb_open, "Open in Codex")
             self.assert_accessible_label(panel.asb_copy, "Copy relative reference")
             self.assert_accessible_label(panel.asb_copy_full, "Copy absolute reference")
@@ -3857,7 +3858,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertEqual(window.columns, 4)
             self.assertEqual(window.column_width, 240)
-            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
 
             row = window.focus_widgets["sample-15"]
             window.refresh_button.grab_focus()
@@ -4290,7 +4291,7 @@ class WidgetCheck(unittest.TestCase):
                         window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
-                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off"})
+                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
                 window.search.set_text("cl:"); window.render()
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
                 window.states = {"working", "idle"}
@@ -4873,6 +4874,250 @@ class WidgetCheck(unittest.TestCase):
                 right.copy_area(0, 0, right.get_width(), right.get_height(), both, left.get_width() + 12, 0)
                 both.savev(str(Path(output) / "native-copy-tag-crops.png"), "png", [], [])
 
+    def mute_wheel_board(self, width=520):
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [
+            {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Plan the garden " + identity,
+             "cwd": "/example/garden", "projectName": "garden", "state": "idle", "canOpen": True,
+             "updatedAtMs": NOW - n * 1000, "unread": identity == "unread"}
+            for n, identity in enumerate(("read", "unread", "other"))]}
+        temporary = tempfile.TemporaryDirectory(prefix="asb-mute-wheel-")
+        self.addCleanup(temporary.cleanup)
+        layout = Path(temporary.name) / "layout.json"
+        asb.write_layout(layout, 240, "comfortable")
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_a, **_k: None),
+                                    (asb, "EventStream", lambda *_a, **_k: SimpleNamespace(close=lambda: None, connected=False))):
+            patcher = patch.object(target, name, value)
+            patcher.start(); self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=layout)
+        self.addCleanup(window.close)
+        window.set_default_size(width, 430)
+        window.present(); window.set_focus(None); self.drain(.4)
+        window.check_geometry(); self.drain(.3)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.drain(.2)
+        return window
+
+    def test_mute_wheel_card_order_width_rest_keys_tag_bounds_and_save(self):
+        window = self.mute_wheel_board(520)
+        read, unread = (window.focus_widgets[name] for name in ("read", "unread"))
+        for card, expected in ((read, ["mute", "copy", "read", "pin"]),
+                               (unread, ["mute", "copy", "drawer", "read", "pin"])):
+            controls = []
+            child = card.asb_actions.get_first_child()
+            while child:
+                button = child if isinstance(child, asb.Gtk.Button) else child.get_first_child()
+                if isinstance(button, asb.Gtk.Button) and button.get_visible():
+                    controls.append(button.asb_card_action)
+                child = child.get_next_sibling()
+            self.assertEqual(controls, expected)
+            self.assertEqual(card.asb_actions.get_first_child(), card.asb_copy_tag)
+            self.assertEqual(card.asb_copy_tag.get_next_sibling(), card.asb_mute_tag)
+            self.assertEqual(card.asb_mute_tag.get_next_sibling(), card.asb_mute_button)
+        mute = read.asb_mute_button
+        for width, visible in ((239, False), (240, True)):
+            window.column_pixel_width = width
+            window.update_card_actions(read)
+            self.assertEqual(mute.get_visible(), visible)
+        controller = SimpleNamespace(get_widget=lambda: mute)
+        window.copy_button_enter(controller, 0, 0)
+        self.assertFalse(mute.asb_tag_shown)
+        window.scroll_horizontal(None, 0, 1)
+        self.assertEqual(window.mute_for, "30m")
+        self.drain(.5)
+        self.assertTrue(mute.asb_tag_shown)
+        self.assertEqual(read.asb_mute_words.get_visible_child_name(), "30m")
+        self.assertEqual(read.asb_mute_words.get_visible_child().get_label(), "30 min")
+        self.assertEqual([dot.has_css_class("asb-copy-tag-on") for dot in read.asb_mute_dots], [True, False, False, False, False])
+        window.scroll_horizontal(None, 0, 1); self.drain(.3)
+        self.assertEqual(window.mute_for, "1h")
+        self.assertEqual(read.asb_mute_words.get_visible_child().get_label(), "1 hour")
+        self.assertEqual(asb.read_layout(window.layout_path)["muteFor"], "1h")
+        window.set_focus(mute); window.set_focus_visible(True); window.key_focus_changed()
+        self.assertTrue(window.row_key(None, asb.Gdk.KEY_Down, 0, asb.Gdk.ModifierType.ALT_MASK, "read"))
+        self.assertEqual(window.mute_for, "8h")
+        self.assertEqual(read.asb_mute_words.get_visible_child().get_label(), "8 hours")
+        for _n in range(5):
+            window.row_key(None, asb.Gdk.KEY_Down, 0, asb.Gdk.ModifierType.ALT_MASK, "read")
+        self.assertEqual(window.mute_for, "always")
+        for _n in range(6):
+            window.row_key(None, asb.Gdk.KEY_Up, 0, asb.Gdk.ModifierType.ALT_MASK, "read")
+        self.assertEqual(window.mute_for, "30m")
+        self.assert_accessible_label(mute, "Mute for 30 minutes: Plan the garden read")
+        # The two tags share the left end; neither covers a control.
+        window.show_copy_tag(read.asb_copy_button, True)
+        self.assertFalse(mute.asb_tag_shown)
+        self.assertTrue(read.asb_copy_button.asb_tag_shown)
+        window.show_copy_tag(mute, True); self.drain(.5)
+        self.assertFalse(read.asb_copy_button.asb_tag_shown)
+        for dot in read.asb_mute_dots:
+            found, bounds = dot.compute_bounds(read)
+            self.assertTrue(found)
+            self.assertEqual((bounds.size.width, bounds.size.height), (4, 4))
+        found, tag = read.asb_mute_tag.get_child().compute_bounds(read)
+        self.assertTrue(found)
+        for button in (mute, read.asb_copy_button, read.asb_drawer_button, read.asb_read_button, read.asb_pin_button):
+            if button.get_visible():
+                found, control = button.compute_bounds(read)
+                self.assertTrue(found)
+                self.assertLessEqual(tag.origin.x + tag.size.width, control.origin.x)
+        # Measure the tag at an actual 240 px column, including the unread drawer slot.
+        window.set_focus(None); window.set_focus_visible(False); window.key_focus_changed()
+        window.copy_button_leave(controller)
+        window.set_default_size(248, 430); self.drain(.5); window.check_geometry(); self.drain(.5)
+        self.assertEqual(window.column_pixel_width, 240)
+        for card in (read, unread):
+            button = card.asb_mute_button
+            window.set_focus(button); window.set_focus_visible(True); window.key_focus_changed(); self.drain(.5)
+            found, control = button.compute_bounds(card)
+            self.assertTrue(found)
+            natural = button.asb_tag.get_child().measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1]
+            left = control.origin.x - natural - 2
+            print(f"mute tag at 240 px ({card.asb_thread['id']}, Cantarell 11): left={left:g}, shown={button.asb_tag_shown}")
+            self.assertEqual(button.asb_tag_shown, left >= 8)
+            if button.asb_tag_shown:
+                found, tag = button.asb_tag.get_child().compute_bounds(card)
+                self.assertTrue(found)
+                self.assertGreaterEqual(tag.origin.x, 8)
+                self.assertLessEqual(tag.origin.x + tag.size.width, control.origin.x)
+            output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
+            if output:
+                self.capture(window, Path(output) / f"native-mute-tag-240-{card.asb_thread['id']}.png")
+            window.set_focus(None); window.key_focus_changed(); self.drain(.3)
+        # A long word stands in for a wide font: the tag stays hidden, but the wheel still selects and the tooltip still names it.
+        unread.asb_mute_words.get_child_by_name("30m").set_label("30 minutes for a wide font")
+        self.drain(.2)
+        window.set_focus(unread.asb_mute_button); window.set_focus_visible(True); window.key_focus_changed(); self.drain(.5)
+        window.show_copy_tag(unread.asb_mute_button, True)
+        self.assertFalse(unread.asb_mute_button.asb_tag_shown)
+        window.copy_button_enter(SimpleNamespace(get_widget=lambda: unread.asb_mute_button), 0, 0)
+        self.drain(.3)
+        window.scroll_horizontal(None, 0, 1)
+        self.assertEqual(window.mute_for, "1h")
+        self.assertEqual(unread.asb_mute_button.get_tooltip_text(), "Mute for 1 hour")
+
+    def test_focused_mute_button_does_not_capture_the_wheel_away_from_the_pointer(self):
+        window = self.mute_wheel_board(248)
+        self.assertEqual(window.column_pixel_width, 240)
+        button = window.focus_widgets["read"].asb_mute_button
+        window.set_focus(button)
+        window.set_focus_visible(True)
+        window.key_focus_changed()
+        self.assertIs(window.get_focus(), button)
+        self.assertTrue(button.asb_tag_shown)
+        self.assertIsNone(window.copy_hover)
+        window.scroll_horizontal(None, 0, 1)
+        self.assertEqual(window.mute_for, "30m")
+        self.assertNotIn("muteFor", json.loads(Path(window.layout_path).read_text()))
+
+    def test_mute_wheel_click_feedback_muted_tag_unmute_always_and_failure(self):
+        window = self.mute_wheel_board()
+        card = window.focus_widgets["read"]
+        mute = card.asb_mute_button
+        requests = []
+        patcher = patch.object(asb, "request_async", lambda *args: requests.append(args))
+        patcher.start(); self.addCleanup(patcher.stop)
+        window.session_action = Mock(wraps=window.session_action)
+        window.change_mute_for("8h")
+        mute.emit("clicked")
+        window.session_action.assert_called_with("read", "mute", {"durationMs": 28800000})
+        self.assertEqual(card.asb_footer_stack.get_visible_child_name(), "line")
+        until = int(time.time() * 1000) + 28800000
+        requests[-1][2]({"thread": {**card.asb_thread, "muted": True, "mutedUntilMs": until}}, None)
+        self.drain(.2)
+        self.assertEqual(card.asb_feedback_label.get_label(), "Muted for 8 hours")
+        self.assertEqual(card.asb_footer_stack.get_visible_child_name(), "copied")
+        self.assert_accessible_label(card, "Muted for 8 hours", asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.drain(1.2)
+        self.assertEqual(card.asb_footer_stack.get_visible_child_name(), "copied")
+        self.drain(.4)
+        self.assertEqual(card.asb_footer_stack.get_visible_child_name(), "line")
+        self.assertTrue(mute.has_css_class("asb-mute-on"))
+        self.assertEqual(mute.get_child().get_icon_name(), "preferences-system-notifications-symbolic")
+        color = mute.get_child().get_color()
+        accent = mute.get_style_context().lookup_color("accent_color")[1]
+        self.assertEqual((color.red, color.green, color.blue), (accent.red, accent.green, accent.blue))
+        self.assertEqual(mute.get_tooltip_text(), asb.mute_button_tip(card.asb_thread, "8h"))
+        self.assert_accessible_label(mute, "Unmute: Plan the garden read")
+        window.set_focus(mute); window.set_focus_visible(True); window.key_focus_changed(); self.drain(.3)
+        self.assertTrue(mute.asb_tag_shown)
+        self.assertEqual(card.asb_mute_words.get_visible_child().get_label(), "Unmute")
+        self.assertFalse(card.asb_mute_dots[0].get_parent().get_visible())
+        window.copy_button_enter(SimpleNamespace(get_widget=lambda: mute), 0, 0); self.drain(.3)
+        window.scroll_horizontal(None, 0, 1)
+        window.set_focus(mute)
+        window.row_key(None, asb.Gdk.KEY_Up, 0, asb.Gdk.ModifierType.ALT_MASK, "read")
+        self.assertEqual(window.mute_for, "8h")
+        mute.emit("clicked")
+        window.session_action.assert_called_with("read", "unmute", {})
+        requests[-1][2]({"thread": {**card.asb_thread, "muted": False}}, None); self.drain(.2)
+        self.assertEqual(card.asb_feedback_label.get_label(), "Unmuted")
+        window.change_mute_for("always")
+        mute.emit("clicked")
+        window.session_action.assert_called_with("read", "mute", {})
+        requests[-1][2]({"thread": {**card.asb_thread, "muted": True, "mutedUntilMs": 0}}, None); self.drain(.2)
+        self.assertEqual(card.asb_feedback_label.get_label(), "Muted until you unmute")
+        self.assertEqual(mute.get_tooltip_text(), "Unmute")
+        # An immediate failed action clears the previous success, including its description.
+        mute.emit("clicked")
+        requests[-1][2](None, "Cannot save the mute"); self.drain(.2)
+        self.assertEqual(card.asb_footer_stack.get_visible_child_name(), "line")
+        self.assertIn("Cannot save the mute", card.asb_tooltip)
+        # Animation settings apply to both words and tags without a separate animation path.
+        settings = window.get_settings()
+        previous = settings.get_property("gtk-enable-animations")
+        self.addCleanup(settings.set_property, "gtk-enable-animations", previous)
+        settings.set_property("gtk-enable-animations", False)
+        window.show_copy_tag(mute, True); self.drain(.05)
+        self.assertEqual(card.asb_mute_tag.get_child_revealed(), mute.asb_tag_shown)
+        window.change_mute_for("30m")
+        self.assertFalse(card.asb_mute_words.get_transition_running())
+
+    def test_mute_wheel_panel_tag_wheel_keys_enter_and_compact(self):
+        window = self.mute_wheel_board()
+        window.session_action = Mock()
+        for view in ("comfortable", "compact"):
+            window.view_filter.set_selected(1 if view == "comfortable" else 0); self.drain(.4)
+            card = window.focus_widgets["read"]
+            self.assertEqual(bool(getattr(card, "asb_mute_button", None)), view == "comfortable")
+            window.change_mute_for("30m")
+            window.show_context(card); self.drain(.3)
+            panel = window.context_menu
+            button = panel.asb_actions["mute"]
+            self.assertTrue(panel.asb_mute_tag.get_visible())
+            centers = []
+            for widget in (button.asb_label, panel.asb_mute_tag):
+                found, bounds = widget.compute_bounds(button)
+                self.assertTrue(found)
+                centers.append(bounds.origin.y + bounds.size.height / 2)
+            self.assertLessEqual(abs(centers[0] - centers[1]), 1)
+            self.assertEqual(panel.asb_mute_words.get_visible_child().get_label(), "30 min")
+            self.assert_accessible_label(button, "Mute for 30 minutes")
+            controller = SimpleNamespace(get_widget=lambda: button, get_unit=lambda: asb.Gdk.ScrollUnit.WHEEL)
+            self.assertTrue(window.panel_mute_scroll(controller, 0, 1))
+            self.assertEqual(window.mute_for, "1h")
+            button.grab_focus()
+            keys = SimpleNamespace(get_widget=lambda: panel)
+            self.assertTrue(window.panel_key(keys, asb.Gdk.KEY_Right, 0, asb.Gdk.ModifierType(0)))
+            self.assertEqual(window.mute_for, "8h")
+            self.assertIs(window.get_focus(), button)
+            self.assertTrue(window.panel_key(keys, asb.Gdk.KEY_Left, 0, asb.Gdk.ModifierType(0)))
+            self.assertEqual(window.mute_for, "1h")
+            self.assertIs(window.get_focus(), button)
+            self.assertEqual(panel.asb_mute_words.get_transition_duration(), 0)
+            # Gtk.Button activates on Enter, the same path as a pointer click.
+            button.emit("activate"); self.drain(.4)
+            window.session_action.assert_called_with("read", "mute", {"durationMs": 3600000})
+            self.assertIsNone(window.context_menu)
+            card.asb_thread = {**card.asb_thread, "muted": True}
+            window.show_context(card); self.drain(.3)
+            panel = window.context_menu
+            self.assertFalse(panel.asb_mute_tag.get_visible())
+            self.assertEqual(panel.asb_actions["mute"].asb_label.get_label(), "Unmute")
+            panel.asb_actions["mute"].emit("clicked"); self.drain(.2)
+            window.session_action.assert_called_with("read", "unmute", {})
+            card.asb_thread = {**card.asb_thread, "muted": False}
+
     def test_copy_feedback_keeps_the_limit_clock_and_needs_focus_visible(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
         patcher.start()
@@ -5263,7 +5508,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(window.get_focus(), card)
         self.assertTrue(card.has_css_class("asb-key-focus"))
         self.assertIsNotNone(card.asb_copy_tag)
-        for name in ("copy", "drawer", "read", "pin"):
+        for name in ("mute", "copy", "drawer", "read", "pin"):
             self.assertTrue(window.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
             self.drain(.03)
             self.assertIs(window.get_focus(), getattr(card, "asb_" + name + "_button"))
@@ -5283,8 +5528,8 @@ class WidgetCheck(unittest.TestCase):
         window, _dashboard = self.lazy_board(20)
         window.view_filter.set_selected(1); self.drain()
         cards = [card for card in window.focus_widgets.values() if not hasattr(card, "asb_copy_button")]
-        self.assertGreaterEqual(len(cards), 2)
-        first, second = cards[-2:]
+        self.assertGreaterEqual(len(cards), 3)
+        first, second, third = cards[-3:]
         clipboard = Mock()
         window.get_clipboard = lambda: clipboard
         window.copy_reference(None, asb.GLib.Variant("s", first.asb_focus_key))
@@ -5293,6 +5538,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(first.asb_footer_stack.get_visible_child_name(), "copied")
         window.restore_position(second.asb_focus_key, 0, focused_action="copy")
         self.assertIs(window.get_focus(), second.asb_copy_button)
+        window.restore_position(third.asb_focus_key, 0, focused_action="mute")
+        self.assertIs(window.get_focus(), third.asb_mute_button)
 
     def test_column_range_uses_the_allocated_edges_and_one_side_column(self):
         window, _dashboard = self.lazy_board()
@@ -6589,9 +6836,11 @@ class WidgetCheck(unittest.TestCase):
         one, question = cards["s1"], cards["s5"]
         drawer, read, cue = one.asb_drawer_button, one.asb_read_button, one.asb_read_button.get_child().get_last_child()
         copy_button = one.asb_copy_button
-        # The kind tag is first in the corner, then copy, drawer, read, pin. Every state has copy, and every wide corner fades the title for it.
+        # The two tags are first in the corner, then mute, copy, drawer, read, pin. Every state has copy, and every wide corner fades the title for it.
         self.assertIs(drawer.get_parent().get_first_child(), copy_button.asb_tag)
-        self.assertIs(copy_button.asb_tag.get_next_sibling(), copy_button)
+        self.assertIs(copy_button.asb_tag.get_next_sibling(), one.asb_mute_tag)
+        self.assertIs(one.asb_mute_tag.get_next_sibling(), one.asb_mute_button)
+        self.assertIs(one.asb_mute_button.get_next_sibling(), copy_button)
         self.assertIs(copy_button.get_next_sibling(), drawer)
         self.assertIs(drawer.get_next_sibling().get_first_child(), read)
         self.assertIs(drawer.get_next_sibling().get_next_sibling(), one.asb_pin_button)
@@ -6637,8 +6886,8 @@ class WidgetCheck(unittest.TestCase):
         window.set_focus(cards["s2"]); settle()
         self.assertFalse(one.has_css_class("asb-key-focus"))
         self.assertEqual(shown(), (255, 0, False, 255, 0))
-        window.set_focus(one)  # Tab goes to copy, drawer, read, pin.
-        for control in (copy_button, drawer, read, one.asb_pin_button):
+        window.set_focus(one)  # Tab goes to mute, copy, drawer, read, pin.
+        for control in (one.asb_mute_button, copy_button, drawer, read, one.asb_pin_button):
             self.assertTrue(one.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
             self.assertIs(window.get_focus(), control)
         window.set_focus(None); window.set_focus_visible(False); settle()
@@ -8116,6 +8365,9 @@ class WidgetCheck(unittest.TestCase):
         clipboard.read_text_async(None, lambda source, result: copied.append(source.read_text_finish(result))); self.drain(.3)
         self.assertEqual(copied, [asb.session_reference(cards["s4"].asb_thread)])
         self.assertEqual(cards["s4"].asb_copy_button.get_child().get_icon_name(), "object-select-symbolic")
+        self.assertEqual(click(cards["s4"].asb_mute_button), ["/api/threads/s4/mute"])
+        self.assertEqual(window.opening, set())
+        failed()
         self.assertEqual(click(cards["s2"].asb_drawer_button), ["/api/threads/s2/drawer-in"])
         pending = list(requests)
         self.assertEqual(click(cards["s2"].asb_title_label), [])  # The card does not open while its action is in flight.
@@ -8148,13 +8400,13 @@ class WidgetCheck(unittest.TestCase):
                               self.ink(card.asb_drawer_button))
         self.assertEqual(shown(one), (255, False, 0))
         self.assertGreater(self.ink(one.asb_pin_button), 0)  # The pin rule of 1.5.0.
-        # The keyboard makes the focus visible. Tab from the row goes to copy, drawer, read, pin, with the controls shown.
+        # The keyboard makes the focus visible. Tab from the row goes to mute, copy, drawer, read, pin, with the controls shown.
         xdo("windowfocus", xid)
         xdo("key", "Up"); self.settle(window)
         self.assertIs(window.get_focus(), two)
         self.assertEqual((window.get_focus_visible(), two.has_css_class("asb-key-focus"), one.has_css_class("asb-key-focus")), (True, True, False))
         self.assertEqual((shown(one), shown(two)), ((255, False, 0), (0, True, 255)))
-        for control in (two.asb_copy_button, two.asb_drawer_button, two.asb_read_button, two.asb_pin_button):
+        for control in (two.asb_mute_button, two.asb_copy_button, two.asb_drawer_button, two.asb_read_button, two.asb_pin_button):
             xdo("key", "Tab"); self.settle(window)
             self.assertIs(window.get_focus(), control)
             self.assertEqual(shown(two), (0, True, 255))

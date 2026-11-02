@@ -2501,7 +2501,7 @@ class DataChecks(unittest.TestCase):
     def test_layout_width_validation_persistence_and_reset(self):
         with TemporaryDirectory(prefix="asb-layout-test-") as directory:
             path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             asb.write_layout(path, 160)
             self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -2512,20 +2512,20 @@ class DataChecks(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), previous)
             asb.write_layout(path)
             self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
 
     def test_view_setting_legacy_width_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-view-test-") as directory:
             path = Path(directory) / "layout.json"
             path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             asb.write_layout(path)
             self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "unknown")
@@ -2541,14 +2541,14 @@ class DataChecks(unittest.TestCase):
             # ASB does not use the old value, so any value loads.
             for value in (0, 1, "true", None, [], {}):
                 path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": value}))
-                self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+                self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": True}))
             self.assertNotIn("showAppPills", asb.read_layout(path))
             asb.write_layout(path, 180, "compact")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path)
             self.assertTrue(path.exists())
@@ -2563,7 +2563,7 @@ class DataChecks(unittest.TestCase):
             window.card_limit, window.layout_error, window.dragging = 100, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             window.save_width()
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
 
@@ -2590,13 +2590,13 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320)
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             window = object.__new__(Window)
             window.column_width, window.view, window.layout_path, window.copy_kind = 320, "comfortable", path, "relative"
             window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
             window.save_width()
             self.assertEqual(asb.read_layout(path)["cardLimit"], 200)
             # The delete branch keeps a file that holds a limit other than the default.
@@ -2653,7 +2653,7 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable", card_limit=200)
             self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable",
-                                                     "cardLimit": 200, "copyKind": "absolute", "pet": "off"})
+                                                     "cardLimit": 200, "copyKind": "absolute", "pet": "off", "muteFor": "30m"})
             # A default layout is deleted; an Absolute kind keeps the file.
             asb.write_layout(path, copy_kind="absolute")
             self.assertTrue(path.exists())
@@ -2693,7 +2693,7 @@ class DataChecks(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {"version": 1, "columnWidth": 240, "view": "comfortable", "cardLimit": 200,
                                                             "copyKind": "absolute", "pet": "crab"})
             self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200,
-                                                     "copyKind": "absolute", "pet": "crab"})
+                                                     "copyKind": "absolute", "pet": "crab", "muteFor": "30m"})
             # The other saves keep the pet.
             window = object.__new__(Window)
             window.column_width, window.view, window.layout_path, window.copy_kind, window.pet = 320, "comfortable", path, "absolute", "crab"
@@ -2716,6 +2716,72 @@ class DataChecks(unittest.TestCase):
             self.assertNotIn("pet", json.loads(path.read_text()))
             asb.write_layout(path, pet="off")
             self.assertFalse(path.exists())
+
+    def test_mute_for_layout_validation_and_setting_preservation(self):
+        with TemporaryDirectory(prefix="asb-mute-for-layout-") as directory:
+            path = Path(directory) / "layout.json"
+            self.assertEqual(asb.read_layout(path)["muteFor"], "30m")
+            for choice in ("1h", "8h", "1d", "always"):
+                asb.write_layout(path, 240, mute_for=choice)
+                self.assertEqual(json.loads(path.read_text()), {"version": 1, "columnWidth": 240, "muteFor": choice})
+                self.assertEqual(asb.read_layout(path)["muteFor"], choice)
+            # 30 min is the default: it is not written, and a default layout is deleted.
+            asb.write_layout(path, 240, mute_for="30m")
+            self.assertNotIn("muteFor", json.loads(path.read_text()))
+            asb.write_layout(path, mute_for="30m")
+            self.assertFalse(path.exists())
+            asb.write_layout(path, 240, mute_for="8h")
+            before = path.read_bytes()
+            for invalid in ("30 min", "2h", "Always", "", 1, True, [], {}):
+                with self.assertRaisesRegex(ValueError, "Mute for must be 30 min, 1 hour, 8 hours, 1 day, or Always."):
+                    asb.write_layout(path, mute_for=invalid)
+                self.assertEqual(path.read_bytes(), before)
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "muteFor": "2h"}))
+            with self.assertRaisesRegex(ValueError, "Mute for must be 30 min, 1 hour, 8 hours, 1 day, or Always."):
+                asb.read_layout(path)
+            # The other saves keep the choice.
+            path.write_bytes(before)
+            asb.write_layout(path, 320, "comfortable", card_limit=200, copy_kind="absolute", pet="cat")
+            self.assertEqual(asb.read_layout(path)["muteFor"], "8h")
+            window = object.__new__(Window)
+            window.column_width, window.view, window.layout_path, window.copy_kind, window.pet = 320, "comfortable", path, "absolute", "cat"
+            window.card_limit, window.layout_error, window.dragging, window.mute_for = 200, Mock(), False, "8h"
+            window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
+            window.save_width()
+            window.reset_width()
+            window.change_copy_kind("relative")
+            self.assertEqual(asb.read_layout(path)["muteFor"], "8h")
+            # A failed save keeps the old choice and shows the error.
+            window.set_notice, window.sync_row_panel, window.focus_widgets = Mock(), Mock(), {}
+            with patch.dict(SCOPE, {"write_layout": Mock(side_effect=OSError("Save failed"))}):
+                window.change_mute_for("1d")
+            self.assertEqual(window.mute_for, "8h")
+            window.layout_error.set_label.assert_called_with("Save failed")
+            window.set_notice.assert_called_once_with("Save failed", temporary=True)
+            window.change_mute_for("1d")
+            self.assertEqual((window.mute_for, asb.read_layout(path)["muteFor"]), ("1d", "1d"))
+            window.sync_row_panel.assert_called_once_with()
+
+    def test_mute_choice_steps_bodies_and_tooltips(self):
+        self.assertEqual(asb.MUTE_CHOICES, ("30m", "1h", "8h", "1d", "always"))
+        self.assertEqual([asb.MUTE_WORDS[choice] for choice in asb.MUTE_CHOICES], ["30 min", "1 hour", "8 hours", "1 day", "Always"])
+        self.assertEqual([asb.mute_body(choice) for choice in asb.MUTE_CHOICES],
+                         [{"durationMs": 1800000}, {"durationMs": 3600000}, {"durationMs": 28800000}, {"durationMs": 86400000}, {}])
+        self.assertEqual(asb.mute_step("30m", 1), "1h")
+        self.assertEqual(asb.mute_step("1d", 1), "always")
+        self.assertEqual(asb.mute_step("always", 1), "always")
+        self.assertEqual(asb.mute_step("30m", -1), "30m")
+        self.assertEqual(asb.mute_step("8h", -1), "1h")
+        self.assertEqual([asb.MUTE_TIPS[choice] for choice in asb.MUTE_CHOICES],
+                         ["Mute for 30 minutes", "Mute for 1 hour", "Mute for 8 hours", "Mute for 1 day", "Mute until you unmute"])
+        self.assertEqual([asb.MUTE_DONE[choice] for choice in asb.MUTE_CHOICES],
+                         ["Muted for 30 minutes", "Muted for 1 hour", "Muted for 8 hours", "Muted for 1 day", "Muted until you unmute"])
+        self.assertEqual(asb.mute_button_tip({}, "1h", NOW), "Mute for 1 hour")
+        self.assertEqual(asb.mute_button_tip({"muted": True}, "1h", NOW), "Unmute")
+        until = NOW + 3600_000
+        row = {"muted": True, "mutedUntilMs": until}
+        self.assertEqual(asb.mute_button_tip(row, "1h", NOW), "Unmute (until " + asb.mute_flag_text(row, NOW).removeprefix("Muted until ") + ")")
+        self.assertEqual(asb.mute_button_tip(row, "8h", until), "Mute for 8 hours")
 
     def test_card_copy_kind_rule_for_local_remote_and_missing_values(self):
         full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
