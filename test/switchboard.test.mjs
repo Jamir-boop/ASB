@@ -14,7 +14,7 @@ import vm from 'node:vm';
 import { defaultClaudeAppDir, normalizeClaudeDesktopCodeSession, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readThreads, discoverCodexStateDatabase, parseRolloutSignals, readRolloutSignals, getCodexCacheStats, codexNativeReadStatus } from '../src/codex-data.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, localMachineName, openSwitchboardThread, switchboardStatus, switchboardWatchPaths, PendingTracker,
-  isSwitchboardRoot, OFFLINE_MEMBER, resolveSessionMessages, sessionMessageKeys } from '../src/switchboard.mjs';
+  isSwitchboardRoot, MUTE_DURATIONS_MS, OFFLINE_MEMBER, resolveSessionMessages, sessionMessageKeys } from '../src/switchboard.mjs';
 import { BIT_INPUT, soundBits } from '../src/asb-sounds.mjs';
 import { defaultOpenCodeStateDir } from '../src/opencode-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
@@ -2170,6 +2170,39 @@ test('the Discard route takes {} for a Working task and exactly {"next":true} fo
   state = 'idle';
   const remote = await post('discard-result', { next: true }, 'remote');
   assert.deepEqual([remote.status, (await remote.json()).error], [400, 'Discard does not work on a session on another machine.']);
+});
+
+test('the mute route takes exactly one allowed duration and sets the end with the server clock', async (t) => {
+  // Near the real time, so the response row (applied with Date.now()) still shows the mute as active.
+  const clock = Date.now();
+  const tracker = new PendingTracker(false);
+  const server = createSwitchboardServer({ pendingTracker: tracker, now: () => clock, dashboardWatchPaths: [],
+    loadDashboard: async () => ({ providers: [], threads: [{ id, state: 'idle', nativeUnread: null, completionAtMs: 0 }] }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (action, body) => fetch(`${base}/api/threads/${id}/${action}`, { method: 'POST', headers: { Origin: base }, body });
+  assert.deepEqual(MUTE_DURATIONS_MS, [1_800_000, 3_600_000, 28_800_000, 86_400_000]);
+  for (const durationMs of MUTE_DURATIONS_MS) {
+    const response = await post('mute', JSON.stringify({ durationMs }));
+    assert.equal(response.status, 200, String(durationMs));
+    const body = await response.json();
+    assert.deepEqual([body.changed, body.threadId, body.thread.muted, body.thread.mutedUntilMs], [true, id, true, clock + durationMs]);
+    assert.deepEqual([tracker.records[id].muted, tracker.records[id].mutedUntil], [1, clock + durationMs]);
+  }
+  const untouched = JSON.stringify(tracker.records);
+  for (const body of ['{"durationMs":1000}', '{"durationMs":"3600000"}', '{"durationMs":3600000.5}', '{"durationMs":3600000,"x":1}', '{"next":true}']) {
+    const response = await post('mute', body);
+    assert.deepEqual([response.status, (await response.json()).error], [400, 'Invalid ASB session action.'], body);
+    assert.equal(JSON.stringify(tracker.records), untouched, body);
+  }
+  const unmuteWithDuration = await post('unmute', '{"durationMs":3600000}');
+  assert.deepEqual([unmuteWithDuration.status, (await unmuteWithDuration.json()).error], [400, 'Invalid ASB session action.']);
+  assert.equal(JSON.stringify(tracker.records), untouched);
+  const unmuted = await (await post('unmute', '{}')).json();
+  assert.deepEqual([unmuted.thread.muted, unmuted.thread.mutedUntilMs, tracker.records[id].mutedUntil], [false, 0, 0]);
+  const untilUnmute = await (await post('mute', '{}')).json();
+  assert.deepEqual([untilUnmute.thread.muted, untilUnmute.thread.mutedUntilMs, tracker.records[id].mutedUntil], [true, 0, 0]);
 });
 
 test('malformed raw request targets return 400 and leave the ASB server available', async (t) => {

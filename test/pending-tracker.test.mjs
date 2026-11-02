@@ -311,6 +311,124 @@ test('pending.json keeps Mute across save and load, and a bad value loads as 0',
   assert.equal(fresh.records[id].muted, 0);
 });
 
+const timedScan = async (tracker, atMs, state = 'idle', extra = {}) =>
+  (await tracker.observe({ ...plain(state, extra), generatedAtMs: atMs })).threads[0];
+const timedTracker = async (untilMs = now + HOUR) => {
+  const tracker = new PendingTracker(false);
+  const row = await timedScan(tracker, now);
+  await tracker.setMuted(row, true, untilMs);
+  return tracker;
+};
+
+test('a timed mute silences success before its end but not at or after it', async () => {
+  const until = now + HOUR;
+  for (const end of [until - 1, until, until + 1]) {
+    const tracker = await timedTracker(until);
+    await timedScan(tracker, now, 'working');
+    const row = await timedScan(tracker, end, 'idle', { completionAtMs: end });
+    assert.deepEqual([row.unread, row.completionAttention], [end >= until, end >= until], String(end));
+    assert.equal(tracker.records[id].mutedUntil, until);
+  }
+});
+
+test('a success first seen after a timed mute ends is still read when it ended before the end', async () => {
+  const until = now + HOUR;
+  for (const nativeUnread of [null, true]) {
+    const tracker = await timedTracker(until);
+    await timedScan(tracker, now, 'working');
+    // A scan after expiry with no result must not clear the end time.
+    await timedScan(tracker, until, 'working');
+    const row = await timedScan(tracker, until + HOUR, 'idle', { completionAtMs: until - 1, nativeUnread });
+    assert.deepEqual([row.muted, row.mutedUntilMs, row.unread, row.pending], [false, 0, false, false]);
+    assert.equal(tracker.records[id].discardedAt, until - 1);
+    const late = await timedScan(tracker, until + 2 * HOUR, 'idle', { completionAtMs: until - 1, nativeUnread: true });
+    assert.equal(late.unread, false);
+  }
+});
+
+test('timed mute row fields expire by the clock even without a scan', async () => {
+  const until = now + HOUR;
+  const tracker = await timedTracker(until);
+  const row = await timedScan(tracker, until - 1);
+  assert.deepEqual([row.muted, row.mutedUntilMs], [true, until]);
+  for (const atMs of [until, until + 1]) {
+    tracker.apply(row, atMs);
+    assert.deepEqual([row.muted, row.mutedUntilMs], [false, 0]);
+    const scanned = await timedScan(tracker, atMs);
+    assert.deepEqual([scanned.muted, scanned.mutedUntilMs], [false, 0]);
+    assert.deepEqual([tracker.records[id].muted, tracker.records[id].mutedUntil], [1, until]);
+  }
+  await tracker.setMuted(row, true);
+  tracker.apply(row, until + HOUR);
+  assert.deepEqual([row.muted, row.mutedUntilMs], [true, 0]);
+  const unknown = { id: 'unknown' };
+  tracker.apply(unknown, now);
+  assert.deepEqual([unknown.muted, unknown.mutedUntilMs], [false, 0]);
+});
+
+test('a timed-muted failure, question, and manual Unread still show', async () => {
+  const tracker = await timedTracker();
+  await timedScan(tracker, now, 'working');
+  const failed = await timedScan(tracker, now + 10, 'idle', { failedAtMs: now + 10 });
+  assert.deepEqual([failed.muted, failed.failedAttention, failed.unread], [true, true, true]);
+  const asked = await timedTracker();
+  const question = await timedScan(asked, now + 10, 'waiting', { questionPending: true });
+  assert.deepEqual([question.muted, question.questionAttention, question.pending], [true, true, true]);
+  const marked = await timedTracker();
+  await marked.markUnread(id);
+  const manual = await timedScan(marked, now + 10);
+  assert.deepEqual([manual.muted, manual.manualUnread, manual.unread], [true, true, true]);
+});
+
+test('pending.json keeps a timed mute and loads invalid end times as 0', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  const row = await timedScan(tracker, now);
+  assert.equal(tracker.records[id].mutedUntil, 0);
+  await tracker.setMuted(row, true, now + HOUR);
+  const saved = JSON.parse(await readFile(statePath, 'utf8'));
+  assert.equal(saved.records[id].mutedUntil, now + HOUR);
+  const loaded = new PendingTracker(statePath);
+  const active = await timedScan(loaded, now);
+  assert.deepEqual([loaded.records[id].mutedUntil, active.muted, active.mutedUntilMs], [now + HOUR, true, now + HOUR]);
+  for (const [muted, mutedUntil] of [[1, -1], [1, '3600000'], [1, 3600000.5], [1, Number.MAX_SAFE_INTEGER + 1],
+    [1, 0], [1, null], [1, undefined], [0, now + HOUR]]) {
+    await writeFile(statePath, JSON.stringify({ ...saved, records: { [id]: { ...saved.records[id], muted, mutedUntil } } }));
+    const invalid = new PendingTracker(statePath);
+    const result = await timedScan(invalid, now);
+    assert.deepEqual([invalid.records[id].mutedUntil, result.muted, result.mutedUntilMs, invalid.warning], [0, muted === 1, 0, ''], JSON.stringify([muted, mutedUntil]));
+  }
+  await tracker.setMuted(row, false);
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(statePath, 'utf8')).records[id], 'mutedUntil'), false);
+});
+
+test('Unmute clears a timed mute and a new Mute replaces its end', async () => {
+  const tracker = await timedTracker();
+  const row = await timedScan(tracker, now);
+  for (const end of [now + 8 * HOUR, now + HOUR, 0]) {
+    await tracker.setMuted(row, true, end);
+    tracker.apply(row, now);
+    assert.deepEqual([tracker.records[id].muted, tracker.records[id].mutedUntil, row.muted, row.mutedUntilMs], [1, end, true, end]);
+  }
+  await tracker.setMuted(row, true, now + HOUR);
+  await tracker.setMuted(row, false);
+  assert.deepEqual([tracker.records[id].muted, tracker.records[id].mutedUntil, row.muted, row.mutedUntilMs], [0, 0, false, 0]);
+});
+
+test('prune keeps an unseen active timed mute but drops it at its end', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const old = { seen: 0, working: 0, pending: 0, ack: 0, lastSeen: now - 31 * 86_400_000, muted: 1 };
+  await writeFile(statePath, JSON.stringify({ version: 1, records: {
+    active: { ...old, mutedUntil: now + HOUR }, ended: { ...old, mutedUntil: now - 1 }, boundary: { ...old, mutedUntil: now },
+  } }));
+  const tracker = new PendingTracker(statePath);
+  await tracker.observe({ providers: [], threads: [], generatedAtMs: now });
+  assert.deepEqual(Object.keys(tracker.records), ['active']);
+  assert.equal(tracker.records.active.mutedUntil, now + HOUR);
+  await tracker.observe({ providers: [], threads: [], generatedAtMs: now + HOUR });
+  assert.deepEqual(Object.keys(tracker.records), []);
+});
+
 test('mute and unmute are local session actions with an empty body', async (t) => {
   const tracker = new PendingTracker(false);
   const server = createSwitchboardServer({ pendingTracker: tracker, dashboardWatchPaths: [], openThread: async () => ({ opened: true }),
@@ -550,9 +668,9 @@ function loadAsV110(record) {
     drawer: record.drawer === 1 ? 1 : 0, muted: record.muted === 1 ? 1 : 0, lastSeen: number(record.lastSeen) ? record.lastSeen : null });
 }
 const asV110 = (records) => Object.fromEntries(Object.entries(records).map(([key, record]) => [key, loadAsV110(record)]));
-// `discardNext`, `actionSeen`, and `actionAck` are newer than ASB 1.10.0, which ignores them.
+// `discardNext`, `actionSeen`, `actionAck`, and `mutedUntil` are newer than ASB 1.10.0, which ignores them.
 const withoutNext = (records) => Object.fromEntries(Object.entries(records)
-  .map(([key, { discardNext, actionSeen, actionAck, ...record }]) => [key, record]));
+  .map(([key, { discardNext, actionSeen, actionAck, mutedUntil, ...record }]) => [key, record]));
 
 // Watches the change marks of a tracker. `touched` has the record fields that changed through set(), and `marks` counts the times that other code set the
 // flag (a new or dropped record, the pin order, Persistent unread).
@@ -733,7 +851,7 @@ test('pending.json has no field that holds its default, and it keeps the fields 
   assert.deepEqual(file.records.rich, rich);
   assert.equal(text.includes('""'), false);
   // This ASB and ASB 1.10.0 read the same records as from the full form (with the one change that the call made).
-  const expected = { rich, zero: { ...zero, manual: 1 }, some };
+  const expected = { rich: { ...rich, mutedUntil: 0 }, zero: { ...zero, manual: 1, mutedUntil: 0 }, some: { ...some, mutedUntil: 0 } };
   const loaded = new PendingTracker(statePath);
   await loaded.load();
   assert.deepEqual([{ ...loaded.records }, loaded.warning], [expected, '']);

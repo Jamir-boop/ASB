@@ -9,6 +9,7 @@ import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic,
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
+import { MUTE_DURATIONS_MS } from './switchboard.mjs';
 
 const gzipAsync = promisify(gzip);
 
@@ -680,9 +681,11 @@ export function createAsbServer({
           || fields === 'placement,targetId' && typeof body.targetId === 'string' && ['before', 'after'].includes(body.placement);
         // Discard also takes exactly {"next":true}: it arms the next task of an Idle row.
         const nextDiscard = action === 'discard-result' && fields === 'next' && body.next === true;
+        // Mute also takes exactly {"durationMs":N} with an allowed N: the end is the server time plus N.
+        const timedMute = action === 'mute' && fields === 'durationMs' && MUTE_DURATIONS_MS.includes(body.durationMs);
         let threadId = null;
         try { threadId = decodeURIComponent(localAction[1]); } catch {}
-        if (threadId === null || (action === 'move-pin' && !validMove) || (action !== 'move-pin' && fields !== '' && !nextDiscard)) {
+        if (threadId === null || (action === 'move-pin' && !validMove) || (action !== 'move-pin' && fields !== '' && !nextDiscard && !timedMute)) {
           sendJson(response, 400, { error: 'Invalid ASB session action.' });
           return;
         }
@@ -706,7 +709,7 @@ export function createAsbServer({
           invalidateDashboard('asb-drawer', { hard: false, dirty: false });
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else if (action === 'mute' || action === 'unmute') {
-          await muteThread(thread, action === 'mute');
+          await muteThread(thread, action === 'mute', timedMute ? now() + body.durationMs : 0);
           invalidateDashboard('asb-mute', { hard: false, dirty: false });
           sendJson(response, 200, { changed: true, threadId: thread.id, thread });
         } else {

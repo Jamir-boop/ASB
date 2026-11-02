@@ -41,6 +41,8 @@ const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-fail
 // at the same scan, so a scan does not rewrite pending.json for it, and the first scan of a day rewrites the file once.
 const RECORD_KEEP_MS = 30 * 86_400_000;
 const RECORD_TOUCH_MS = 86_400_000;
+export const MUTE_DURATIONS_MS = Object.freeze([1_800_000, 3_600_000, 28_800_000, 86_400_000]);
+const muteActive = (record, atMs) => record?.muted === 1 && (record.mutedUntil === 0 || atMs < record.mutedUntil);
 // pending.json has each record without the fields that hold their default (0 or the empty string). The loader reads a missing field as that default,
 // also the loader of ASB 1.10.0. These five are always saved: ASB 1.10.0 rejects a record that lacks one of the first four, and `lastSeen` has no default.
 const ALWAYS_SAVED = new Set(['seen', 'working', 'pending', 'ack', 'lastSeen']);
@@ -646,6 +648,7 @@ export class PendingTracker {
             this.records[id].discardNative = record.discardNative === 1 ? 1 : 0;
             this.records[id].drawer = record.drawer === 1 ? 1 : 0;
             this.records[id].muted = record.muted === 1 ? 1 : 0;
+            this.records[id].mutedUntil = record.muted === 1 && Number.isSafeInteger(record.mutedUntil) && record.mutedUntil > 0 ? record.mutedUntil : 0;
             // A file from an older ASB has no time of sight: its records get the whole time from now.
             this.records[id].lastSeen = Number.isFinite(record.lastSeen) && record.lastSeen >= 0 ? record.lastSeen : Date.now();
           } else this.bad = true;
@@ -701,7 +704,7 @@ export class PendingTracker {
         record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '',
           questionSeen: 0, questionAck: 0, actionSeen: 0, actionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
           discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
-          drawer: 0, drawerSeen: 0, muted: 0, lastSeen: today };
+          drawer: 0, drawerSeen: 0, muted: 0, mutedUntil: 0, lastSeen: today };
         this.dirty = true;
       }
       if (record.lastSeen < today) this.set(record, 'lastSeen', today);
@@ -714,8 +717,8 @@ export class PendingTracker {
         && task.rootEnd > record.discardStart && task.rootStart > task.rootEnd;
       const discardEnded = record.discard === 1 && (next ? (row.state === 'idle' || row.state === 'working') && taskEnded
         : row.state === 'idle' || row.state === 'working' && (taskEnded || newRoot));
-      // A muted success takes the discarded-success path, so it leaves no new attention.
-      const mutedSuccess = record.muted === 1 && row.state === 'idle' && !row.archived && completion > record.seen
+      // A muted success takes the discarded-success path, so it leaves no new attention. A timed mute counts at the task end, not at the scan.
+      const mutedSuccess = muteActive(record, task.atMs || completion) && row.state === 'idle' && !row.archived && completion > record.seen
         && task.kind !== 'failed' && !(Number(row.failedAtMs || 0) > Number(row.completionAtMs || 0));
       const discardedSuccess = discardEnded && taskEnded && task.kind === 'task_complete' || mutedSuccess;
       if (discardEnded) { this.set(record, 'discard', 0); this.set(record, 'discardNext', 0); }
@@ -761,7 +764,7 @@ export class PendingTracker {
       this.set(record, 'seen', Math.max(record.seen, completion, discardedSuccess ? task.atMs : 0));
       // A result that the user discarded is not new attention for a drawer card.
       if (discardedSuccess) this.set(record, 'drawerSeen', record.seen);
-      this.apply(row);
+      this.apply(row, nowMs);
     }
     this.prune(nowMs, members, dashboard.threads);
     await this.save();
@@ -772,7 +775,7 @@ export class PendingTracker {
   }
 
   // Drops the record of a row that ASB did not see for 30 days, unless it has a pin, a mark (unread, an unacknowledged result, question or native
-  // unread, or an armed Discard), the drawer, or Mute. Also drops the records of the rows of a machine that is not in `members` (it left the group),
+  // unread, or an armed Discard), the drawer, or an active Mute. Also drops the records of the rows of a machine that is not in `members` (it left the group),
   // with their pins, but not the record of a row that is in this scan.
   prune(nowMs, members, rows) {
     const pinned = new Set(this.pinnedOrder);
@@ -782,7 +785,7 @@ export class PendingTracker {
     for (const id in this.records) {
       const record = this.records[id];
       const machine = active && /^m:([a-f0-9]{16}):/.exec(id)?.[1];
-      const kept = pinned.has(id) || record.manual === 1 || record.drawer === 1 || record.muted === 1 || record.discard === 1 || record.retained
+      const kept = pinned.has(id) || record.manual === 1 || record.drawer === 1 || muteActive(record, nowMs) || record.discard === 1 || record.retained
         || record.pending > record.ack || record.questionSeen > record.questionAck || record.actionSeen > record.actionAck
         || record.nativeAt > record.nativeAck;
       if (machine && !active.has(machine) && !present.has(id) || nowMs - record.lastSeen > RECORD_KEEP_MS && !kept) { delete this.records[id]; dropped = true; }
@@ -794,7 +797,7 @@ export class PendingTracker {
     }
   }
 
-  apply(row) {
+  apply(row, nowMs = Date.now()) {
     const record = this.records[row.id];
     row.actionRequired ??= row.state === 'waiting' && !row.questionPending;
     row.discardResult = record?.discard === 1 && (row.state === 'working' || row.state === 'idle' && record.discardNext === 1);
@@ -819,7 +822,8 @@ export class PendingTracker {
       || !(record.manual === 1 || record.retained || record.pending > record.ack
         || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) this.set(record, 'drawer', 0);
     row.drawer = record?.drawer === 1;
-    row.muted = record?.muted === 1;
+    row.muted = muteActive(record, nowMs);
+    row.mutedUntilMs = row.muted ? record.mutedUntil : 0;
     // A Working row shows only question attention. Stored marks stay and show again after Working ends.
     const working = row.state === 'working';
     row.unread = !working && !row.drawer && (row.manualUnread || row.nativeAttention || row.completionAttention || row.failedAttention || row.retainedUnread);
@@ -863,11 +867,12 @@ export class PendingTracker {
     this.apply(row);
   }
 
-  async setMuted(row, enabled) {
+  async setMuted(row, enabled, untilMs = 0) {
     await this.load();
     const record = this.records[row.id];
     if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
     this.set(record, 'muted', enabled ? 1 : 0);
+    this.set(record, 'mutedUntil', enabled ? untilMs : 0);
     await this.save();
     this.apply(row);
   }
@@ -1164,7 +1169,7 @@ export function createSwitchboardServer(options = {}) {
       return tracker.setDiscard(thread, enabled, next);
     },
     drawerThread: (thread, enabled) => tracker.setDrawer(thread, enabled),
-    muteThread: (thread, enabled) => tracker.setMuted(thread, enabled),
+    muteThread: (thread, enabled, untilMs) => tracker.setMuted(thread, enabled, untilMs),
     setUnreadSettings: (enabled, dashboard) => tracker.setPersistentUnread(enabled, dashboard),
     pinThread: async (thread, action, body) => {
       const order = action === 'move-pin' ? await tracker.movePin(thread.id, body)
