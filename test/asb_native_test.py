@@ -6828,6 +6828,95 @@ class WidgetCheck(unittest.TestCase):
             self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
         window.close(); self.drain(.03)
 
+    def test_timed_mute_cards_and_open_panel_expire_without_a_dashboard(self):
+        now = [NOW / 1000]
+        rows = [{"id": "timed", "provider": "codex", "providerLabel": "Codex", "title": "Check sample notes",
+                 "cwd": "/example/field-notes", "projectName": "a-long-synthetic-folder-name-for-the-timed-mute",
+                 "state": "idle", "canOpen": True, "updatedAtMs": NOW, "muted": True, "mutedUntilMs": NOW + 61_000},
+                {"id": "forever", "provider": "codex", "providerLabel": "Codex", "title": "Check sample pages",
+                 "cwd": "/example/pages", "projectName": "pages", "state": "idle", "canOpen": True,
+                 "updatedAtMs": NOW, "muted": True}]
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                    (asb.time, "time", lambda: now[0])):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1",
+                                       {"generatedAtMs": NOW, "providers": [], "threads": rows}, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(520, 400)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.settle(window)
+        card = window.focus_widgets["timed"]
+        forever = window.focus_widgets["forever"]
+        self.assertIsNone(forever.asb_mute_time)
+        def check_pair(before, size_source=None):
+            glyph, text = card.asb_mute_glyph, card.asb_mute_time
+            self.assertIs(glyph.get_next_sibling(), text)
+            self.assertIs(glyph.get_parent().get_prev_sibling(), before)
+            self.assertTrue(glyph.get_visible() and text.get_visible() and text.get_mapped())
+            self.assertEqual(text.get_label(), "2m")
+            self.assertTrue(text.has_css_class("asb-mute-time") and text.has_css_class("dim-label"))
+            ok, glyph_bounds = glyph.compute_bounds(card)
+            self.assertTrue(ok)
+            ok, text_bounds = text.compute_bounds(card)
+            self.assertTrue(ok)
+            self.assertAlmostEqual(text_bounds.origin.x - glyph_bounds.origin.x - glyph_bounds.size.width, 4, delta=1)
+            self.assertLessEqual(text_bounds.origin.x + text_bounds.size.width, card.get_width())
+            self.assertEqual(text.get_pango_context().get_font_description().get_size(),
+                             (size_source or before).get_pango_context().get_font_description().get_size())
+            self.assertEqual(asb.SwitchboardWindow.hex_color(text.get_color()), asb.SwitchboardWindow.hex_color(glyph.get_color()))
+        check_pair(card.asb_folder)
+        window.width_control.set_value(160); self.settle(window)
+        self.assertLess(window.column_pixel_width, 190)
+        self.assertTrue(card.asb_folder.get_layout().is_ellipsized())
+        check_pair(card.asb_folder)
+        window.width_control.set_value(240); self.settle(window)
+        window.view_filter.set_selected(0); self.settle(window)
+        check_pair(card.asb_where_label, card.asb_state_label)
+        self.assertIs(card.asb_where_label.get_prev_sibling(), card.asb_state_label)
+        self.assertIsNone(forever.asb_mute_time)
+        window.view_filter.set_selected(1); self.settle(window)
+        flag = asb.mute_flag_text(rows[0], NOW)
+        self.assertIn(flag, card.asb_tooltip)
+        self.assertIn(" " + flag + ".", card.asb_accessible_label)
+        self.assertFalse(card.asb_read_button.get_visible())
+        window.show_context(forever); self.drain()
+        self.assertEqual(window.context_menu.asb_actions["mute"].asb_caption.get_label(), "Until you unmute")
+        window.context_menu.popdown(); self.drain()
+        window.show_context(card); self.drain()
+        panel = window.context_menu
+        slot = panel.asb_actions["mute"]
+        self.assertEqual(slot.asb_label.get_label(), "Unmute")
+        self.assertEqual(slot.asb_caption.get_label(), "Until " + flag.removeprefix("Muted until "))
+        self.assertTrue(slot.asb_caption.get_visible())
+        self.assertTrue(slot.asb_caption.has_css_class("asb-panel-caption"))
+        slot.grab_focus()
+        now[0] += 1
+        window.update_clock(); self.drain()
+        self.assertEqual(card.asb_mute_time.get_label(), "1m")
+        now[0] += 60
+        window.update_clock(); self.drain()
+        self.assertIs(window.context_menu, panel)
+        self.assertTrue(panel.get_visible())
+        self.assertIs(panel.asb_actions["mute"], slot)
+        self.assertTrue(slot.has_focus() or slot.is_focus())
+        self.assertEqual(slot.asb_label.get_label(), "Mute")
+        self.assertFalse(slot.asb_caption.get_visible())
+        self.assertEqual(slot.asb_caption.get_label(), "")
+        self.assertFalse(card.asb_mute_glyph.get_visible())
+        self.assertFalse(card.asb_mute_time.get_visible())
+        self.assertFalse(card.asb_mute_box.get_visible())
+        self.assertTrue(card.asb_read_button.get_visible())
+        self.assertTrue(card.asb_read_button.has_css_class("asb-discard-offer"))
+        self.assertEqual(card.asb_read_button.asb_action, "win.discard-result")
+        self.assertTrue(panel.asb_actions["discard"].get_visible())
+        self.assertNotIn("Muted", card.asb_tooltip)
+        self.assertNotIn("Muted", card.asb_accessible_label)
+        self.assertTrue(card.asb_thread["muted"])
+        panel.popdown(); self.drain()
+
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer clicks need xdotool and a nested test display (DISPLAY=:9 or :10).")
     def test_muted_card_icon_by_the_name_panel_switch_and_no_discard_ring(self):
@@ -6961,7 +7050,7 @@ class WidgetCheck(unittest.TestCase):
         def row(identity, **extra):
             return {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,
                     "cwd": "/example/field-notes", "projectName": "field-notes", "state": "idle", "canOpen": True,
-                    "updatedAtMs": now - 60_000, "muted": True, **extra}
+                    "updatedAtMs": now - 60_000, "muted": True, "mutedUntilMs": int(now + 3_600_000), **extra}
         rows = [row("read"), row("busy", state="working"), row("remote", remote=True, machineName="homeLP", surface="app", canOpen=False),
                 row("limited", limitResetsAtMs=now + 3_600_000)]
         for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
@@ -6986,6 +7075,7 @@ class WidgetCheck(unittest.TestCase):
                     glyph, folder = cards[identity].asb_mute_glyph, cards[identity].asb_folder
                     self.assertTrue(glyph.get_visible() and glyph.get_mapped())
                     self.assertEqual(hex_color(glyph), hex_color(folder))
+                    self.assertEqual(hex_color(cards[identity].asb_mute_time), hex_color(glyph))
                     # The thin lines of the icon get nearly the ink of the folder text: no extra dimming.
                     self.assertGreaterEqual(self.ink(glyph), .8 * self.ink(folder))
 

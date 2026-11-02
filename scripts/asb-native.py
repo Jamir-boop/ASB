@@ -233,7 +233,44 @@ def refresh_interval(dashboard):
     return value if type(value) is int and value in (2000, 5000) else 5000
 
 
-def row_menu_actions(row):
+def mute_until_ms(row):
+    until = row.get("mutedUntilMs", 0)
+    return until if type(until) is int and until > 0 else 0
+
+
+def mute_active(row, now_ms=None):
+    now_ms = time.time() * 1000 if now_ms is None else now_ms
+    until = mute_until_ms(row)
+    return bool(row.get("muted")) and (not until or now_ms < until)
+
+
+def mute_left_text(until_ms, now_ms):
+    minutes = max(1, math.ceil((until_ms - now_ms) / 60_000))
+    hours, minutes = divmod(minutes, 60)
+    if hours >= 24:
+        return "1d"
+    return f"{hours}h" + (f"{minutes}m" if minutes else "") if hours else f"{minutes}m"
+
+
+def local_clock_text(ms):
+    # A locale with no AM/PM marker needs the 24-hour form, or 20:28 reads as 8:28.
+    at = time.localtime(ms / 1000)
+    return time.strftime("%I:%M %p", at).lstrip("0") if time.strftime("%p") else time.strftime("%H:%M", at)
+
+
+def mute_flag_text(row, now_ms=None):
+    now_ms = time.time() * 1000 if now_ms is None else now_ms
+    if not mute_active(row, now_ms):
+        return ""
+    until = mute_until_ms(row)
+    if not until:
+        return "Muted"
+    at = time.localtime(until / 1000)
+    day = "" if at[:3] == time.localtime(now_ms / 1000)[:3] else time.strftime("%A ", at)
+    return "Muted until " + day + local_clock_text(until)
+
+
+def row_menu_actions(row, now_ms=None):
     # A required action keeps its "?" mark after Read, so its own attention decides between Read and Unread.
     unread = row.get("actionAttention") or row.get("unread") if row.get("actionRequired") \
         else attention_indicator(row) in ("question", "alert", "dot")
@@ -242,11 +279,11 @@ def row_menu_actions(row):
         actions.append(("Take out of drawer", "drawer-out"))
     elif attention_indicator(row) in ("dot", "alert"):
         actions.append(("Put in drawer", "drawer-in"))
-    actions.append(("Unmute", "unmute") if row.get("muted") else ("Mute", "mute"))
+    actions.append(("Unmute", "unmute") if mute_active(row, now_ms) else ("Mute", "mute"))
     actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
     if row.get("pinned"):
         actions.extend((("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")))
-    if not row.get("muted") and not row.get("remote"):
+    if not mute_active(row, now_ms) and not row.get("remote"):
         if row.get("state") == "working":
             actions.append(("Keep result", "keep-result") if row.get("discardResult") else ("Discard result", "discard-result"))
         # An Idle row arms its next task: when it has no mark, or when the arm is on (Keep clears it).
@@ -264,10 +301,10 @@ ROW_PANEL_SLOTS = {"mark-read": ("read", "object-select-symbolic"), "mark-unread
                    "keep-result": ("discard", "edit-undo-symbolic"), "discard-result": ("discard", "edit-delete-symbolic")}
 
 
-def row_panel_controls(row):
+def row_panel_controls(row, now_ms=None):
     """The row panel action rows from row_menu_actions, in its order: slot -> (action, label, icon)."""
     return {ROW_PANEL_SLOTS[action][0]: (action, {"mark-read": "Mark read", "mark-unread": "Mark unread"}.get(action, title),
-                                         ROW_PANEL_SLOTS[action][1]) for title, action in row_menu_actions(row)}
+                                         ROW_PANEL_SLOTS[action][1]) for title, action in row_menu_actions(row, now_ms)}
 
 
 def session_reference(row):
@@ -1360,16 +1397,19 @@ def clock_interval(threads, now_ms=None):
 def clock_wait(threads, now_ms=None, background=False):
     """Seconds to the next local clock tick. In the background a Working time past one minute shows whole minutes,
     so the clock wakes at its next whole minute, else as clock_interval."""
-    if not background:
-        return clock_interval(threads, now_ms)
     now_ms = time.time() * 1000 if now_ms is None else now_ms
-    wait = 60
+    wait = 60 if background else clock_interval(threads, now_ms)
     for row in threads:
         if 0 < limit_left(row, now_ms) <= 3600:
-            return 2
-        if not row.get("archived") and working_duration(row, now_ms):
+            wait = min(wait, 2)
+        if background and not row.get("archived") and working_duration(row, now_ms):
             elapsed = now_ms - row["workingSinceMs"]
             wait = min(wait, (60_000 - elapsed % 60_000) / 1000, 2 if elapsed < 60_000 else 60)
+        if mute_active(row, now_ms) and mute_until_ms(row):
+            left = mute_until_ms(row) - now_ms
+            # At 24 rounded hours the caption stays 1d until it becomes 23h59m.
+            change = left - 1439 * 60_000 if left > 1439 * 60_000 else (left % 60_000 or 60_000)
+            wait = min(wait, left / 1000, change / 1000)
     return wait
 
 
@@ -1483,7 +1523,9 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
         note = "Discard is on for the next task." if row.get("state") == "idle" else "Discard is on for this task."
     elif row.get("questionPending"):
         note = "A question is still open in the chat."
-    flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer"), ("muted", "Muted")) if row.get(key))
+    flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer")) if row.get(key))
+    muted = mute_flag_text(row, now_ms)
+    flags += (" · " if flags and muted else "") + muted
     if is_view_only(row):
         machine = row.get("machineName") or "another machine"
         where = " · ".join(([f"On {machine}"] if row.get("remote") else []) + (["CLI session"] if row.get("surface") == "cli" else []))
@@ -1501,9 +1543,8 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
         source += (". " if source else "") + "Profile color marker: " + app_color
     limit = ""
     if limit_left(row, now_ms):
-        # A locale with no AM/PM marker needs the 24-hour form, or 20:28 reads as 8:28.
         reset_at = time.localtime(row["limitResetsAtMs"] / 1000)
-        reset = time.strftime("%I:%M %p", reset_at).lstrip("0") if time.strftime("%p") else time.strftime("%H:%M", reset_at)
+        reset = local_clock_text(row["limitResetsAtMs"])
         now_at = time.localtime((time.time() * 1000 if now_ms is None else now_ms) / 1000)
         day = "" if reset_at[:3] == now_at[:3] else " " + time.strftime("%A", reset_at)
         # A reset 6 to 7 days away has the weekday of today, so it also needs the date.
@@ -6371,19 +6412,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
         quiet = [base + ".asb-comfortable .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
-        parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-where",
+        parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-mute-time", " .asb-where",
                  " .asb-where-icon")
         # The Grey tone of a view-only row with no attention, in both views; hover and focus bring the normal colors back.
         calm = ".asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"
         view_only, view_only_rest = f"{base} .asb-view-only-quiet{calm}", f"{base} .asb-view-only-rest{calm}"
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
-{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-mute-glyph"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + state + part for state in (".asb-hovered", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
-{", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
 """
         self.css.load_from_string(css)
@@ -8566,6 +8607,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             mute.add_css_class("dim-label")
             widget.asb_folder.get_parent().insert_child_after(mute, widget.asb_folder)
             widget.asb_mute_glyph = mute
+        elif name == "mute-time" and widget.asb_mute_time is None:
+            mute_time = label("", "caption" if widget.asb_view == "comfortable" else "asb-state")
+            mute_time.add_css_class("asb-mute-time")
+            mute_time.add_css_class("dim-label")
+            # The glyph and the time share a 4 px box in the glyph's place; the line keeps its own spacing.
+            glyph = widget.asb_mute_glyph
+            pair = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+            glyph.get_parent().insert_child_after(pair, glyph)
+            glyph.get_parent().remove(glyph)
+            pair.append(glyph)
+            pair.append(mute_time)
+            widget.asb_mute_box = pair
+            widget.asb_mute_time = mute_time
         elif name == "where" and widget.asb_where_label is None:
             where_icon = Gtk.Image(pixel_size=11, visible=False)
             where_icon.add_css_class("asb-where-icon")
@@ -8630,7 +8684,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.hide_copy_tag(copy)
                 copy.asb_card = None
             for name in ("asb_actions", "asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
-                         "asb_mute_glyph", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
+                         "asb_mute_glyph", "asb_mute_time", "asb_mute_box", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
                          "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_feedback", "asb_feedback_label", "asb_footer_stack",
                          "asb_footer_line", "asb_where_box"):
                 if hasattr(widget, name):
@@ -8669,6 +8723,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_dot = dot
             state = label("", "asb-state")
             widget.asb_state_label = state
+            widget.asb_mute_time = None
             if self.view == "comfortable":
                 # These rarely shown parts are built by ensure_card_part when the row first needs them.
                 widget.asb_limit_clock = widget.asb_mute_glyph = widget.asb_where_icon = widget.asb_where_label = None
@@ -8784,19 +8839,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         (widget.add_css_class if indicator in ("dot", "alert") else widget.remove_css_class)("asb-unread")
         (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
-        discard_offer = self.view == "comfortable" and row.get("state") in ("working", "idle") and not indicator and not row.get("muted") \
-            and not row.get("remote")
-        if row.get("muted") and widget.asb_view == "comfortable":
-            self.ensure_card_part(widget, "mute")
-        if getattr(widget, "asb_mute_glyph", None):
-            widget.asb_mute_glyph.set_visible(bool(row.get("muted")))
-        widget.asb_dot.set_visible(bool(indicator) or discard_offer)
         widget.asb_dot.get_first_child().set_visible(indicator in ("question", "alert"))
         widget.asb_dot.get_first_child().set_label("!" if indicator == "alert" else "?")
         (widget.asb_dot.add_css_class if indicator == "alert" else widget.asb_dot.remove_css_class)("asb-alert")
         (widget.asb_dot.add_css_class if indicator == "question" else widget.asb_dot.remove_css_class)("asb-question")
         (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
-        (widget.asb_dot.add_css_class if indicator == "discard" or discard_offer else widget.asb_dot.remove_css_class)("asb-discard")
+        self.update_discard_dot(widget)
         state = widget.asb_state_label
         for css in (*("asb-" + value for value in STATES), "success", "dim-label"):
             state.remove_css_class(css)
@@ -8902,7 +8950,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.show_copy_tag(button, True)
         return False
 
-    def update_card_actions(self, widget):
+    def update_card_actions(self, widget, now_ms=None):
         if widget.asb_view != "comfortable":
             return
         if widget.asb_thread.get("id") == MORE_ID:
@@ -8915,7 +8963,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         copy_choice = card_copy(row, self.copy_kind)
         signature = (indicator, row.get("state"), row.get("actionRequired"), row.get("actionAttention"), row.get("unread"), row.get("discardResult"),
-                     row.get("pinned"), row.get("drawer"), row.get("muted"), row.get("title"), pending, bool(widget.asb_read_timer),
+                     row.get("pinned"), row.get("drawer"), mute_active(row, now_ms), row.get("title"), pending, bool(widget.asb_read_timer),
                      self.column_pixel_width >= 190, bool(getattr(widget, "asb_copy_timer", None)), copy_choice,
                      getattr(getattr(widget, "asb_copy_button", None), "asb_tag_shown", False) is True)
         if signature == getattr(widget, "asb_action_signature", None):
@@ -8925,7 +8973,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else indicator in ("question", "alert", "dot")
         idle = row.get("state") == "idle"
         # An Idle row offers Discard for its next task when it has no mark. The check after a Read keeps the slot until it ends.
-        discard = not row.get("muted") and not row.get("remote") and (
+        discard = not mute_active(row, now_ms) and not row.get("remote") and (
             row.get("state") == "working" and indicator not in ("question", "alert", "dot")
             or idle and (indicator == "discard" or not indicator and not widget.asb_read_timer))
         if discard and widget.asb_read_timer:
@@ -9080,14 +9128,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.sync_row_panel()
         # All rows, not only the shown ones: a filter change can show a countdown before the next tick.
         threads = (self.dashboard or {}).get("threads", [])
-        if not self.is_active():
-            # In the background the wait changes at each tick: a new timer each time.
+        if not threads:
+            if self.clock_timer:
+                GLib.source_remove(self.clock_timer)
+            self.clock_timer = self.clock_interval = None
+            return False
+        interval = clock_interval(threads, now_ms)
+        wait = clock_wait(threads, now_ms, not self.is_active())
+        if not self.is_active() or wait != interval:
+            # In the background, or before a timed mute changes, the wait changes at each tick: a new timer each time.
             if self.clock_timer:
                 GLib.source_remove(self.clock_timer)
             self.clock_interval = None
-            self.clock_timer = GLib.timeout_add(math.ceil(clock_wait(threads, now_ms, True) * 1000), self.update_clock)
+            self.clock_timer = GLib.timeout_add(math.ceil(wait * 1000), self.update_clock)
             return True
-        interval = clock_interval(threads, now_ms)
         if interval != self.clock_interval:
             if self.clock_timer:
                 GLib.source_remove(self.clock_timer)
@@ -9095,18 +9149,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.clock_timer = GLib.timeout_add_seconds(interval, self.update_clock)
         return True
 
+    def update_discard_dot(self, widget, now_ms=None):
+        """Show the attention dot or the Discard offer; a timed mute that ends brings the offer back."""
+        row = widget.asb_thread
+        indicator = attention_indicator(row, True)
+        discard_offer = self.view == "comfortable" and row.get("state") in ("working", "idle") and not indicator \
+            and not mute_active(row, now_ms) and not row.get("remote")
+        if getattr(widget, "asb_dot", None):
+            widget.asb_dot.set_visible(bool(indicator) or discard_offer)
+            (widget.asb_dot.add_css_class if indicator == "discard" or discard_offer else widget.asb_dot.remove_css_class)("asb-discard")
+
     def update_row_text(self, widget, now_ms=None):
         row = widget.asb_thread
+        now_ms = time.time() * 1000 if now_ms is None else now_ms
         # In the background a Working card shows whole minutes, so the clock wakes at most once a minute for it.
         duration = working_duration(row, now_ms, not self.is_active())
         meta = row_meta(row, now_ms)
         left = limit_left(row, now_ms)
         countdown = limit_text(left) if left else ""
-        signature = (duration, meta, countdown)
+        muted = mute_active(row, now_ms)
+        mute_time = mute_left_text(mute_until_ms(row), now_ms) if muted and mute_until_ms(row) else ""
+        mute_flag = mute_flag_text(row, now_ms)
+        signature = (duration, meta, countdown, muted, mute_time, mute_flag)
         if signature == widget.asb_time_signature:
             return
         widget.asb_time_signature = signature
         widget.asb_duration = duration
+        self.update_discard_dot(widget, now_ms)
         if row.get("id") == MORE_ID:
             age = meta.split(" · ")[1]
             widget.asb_state_label.set_label("Show all")
@@ -9121,6 +9190,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.update_property([Gtk.AccessibleProperty.LABEL], [
                 f"More sessions. {row['asbMore']} sessions after the first {row['asbLimit']}. Activate to show all cards."])
             return
+        if muted and getattr(widget, "asb_view", None) == "comfortable":
+            self.ensure_card_part(widget, "mute")
+        if getattr(widget, "asb_mute_glyph", None):
+            widget.asb_mute_glyph.set_visible(muted)
+        if mute_time and getattr(widget, "asb_mute_glyph", None) and getattr(widget, "asb_mute_time", None) is None:
+            self.ensure_card_part(widget, "mute-time")
+        if getattr(widget, "asb_mute_time", None):
+            widget.asb_mute_box.set_visible(muted)
+            widget.asb_mute_time.set_label(mute_time)
+            widget.asb_mute_time.set_visible(bool(mute_time))
+        if getattr(widget, "asb_view", None) == "comfortable":
+            self.update_card_actions(widget)
         state_text = "Stopped" if row.get("state") == "idle" and row.get("lastOutcome") in ("failed", "limit") \
             else row.get("state", "unknown").capitalize()
         # The row class keeps the grey look across a view change; at the reset the next tick lifts it.
@@ -9151,7 +9232,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else " Task completed." if row.get("completionAttention") else ""
         discard = (" Discard is on for the next task." if row.get("state") == "idle" else " Discard is on.") if row.get("discardResult") else ""
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
-        muted = " Muted." if row.get("muted") else ""
+        muted = " " + mute_flag + "." if mute_flag else ""
         limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
         where = (f" On {row.get('machineName') or 'another machine'}." if row.get("remote") else "") \
             + (" CLI session." if row.get("surface") == "cli" else "") + (" View only." if is_view_only(row) else "")
@@ -9232,7 +9313,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         root.append(Gtk.Separator())
         panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy, "short")
         panel.asb_copy_full = action_row("edit-copy-symbolic", self.panel_copy, "full")
-        for button, text in ((panel.asb_copy, "Copy relative reference"), (panel.asb_copy_full, "Copy absolute reference")):
+        for button, text in ((panel.asb_actions["mute"], "Mute"), (panel.asb_copy, "Copy relative reference"), (panel.asb_copy_full, "Copy absolute reference")):
             set_panel_label(button, text)
             button.asb_label.add_css_class("asb-panel-label")
             # The caption or the reason goes under the label.
@@ -9240,7 +9321,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.get_child().remove(button.asb_label)
             words.append(button.asb_label)
             button.asb_caption = label("", "asb-panel-caption")
-            button.asb_caption.set_wrap(True)
+            button.asb_caption.set_wrap(button is not panel.asb_actions["mute"])
             button.asb_caption.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             button.asb_caption.set_ellipsize(Pango.EllipsizeMode.END)
             button.asb_caption.set_max_width_chars(1)
@@ -9334,10 +9415,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         """Show the row data in the open panel; an unchanged row keeps every widget as it is."""
         pending = row["id"] in self.session_actions
         # While an action for the row runs, the action rows keep their labels.
-        controls = panel.asb_controls if pending and panel.asb_controls is not None else row_panel_controls(row)
-        model = tooltip_model(row, time.time() * 1000, Path.home(), "", self.drawer_view)
+        now_ms = time.time() * 1000
+        controls = panel.asb_controls if pending and panel.asb_controls is not None else row_panel_controls(row, now_ms)
+        model = tooltip_model(row, now_ms, Path.home(), "", self.drawer_view)
         values = copy_values(row)
-        signature = (model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
+        mute_caption = ""
+        if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
+            mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
+        signature = (mute_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row))
         if signature == panel.asb_signature:
@@ -9366,6 +9451,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 _action, text, icon = controls[slot]
                 set_panel_label(button, text)
                 set_icon(button.asb_icon, icon)
+        mute_button = panel.asb_actions["mute"]
+        mute_button.asb_caption.set_label(mute_caption)
+        mute_button.asb_caption.set_visible(bool(mute_caption))
+        (mute_button.add_css_class if mute_caption else mute_button.remove_css_class)("asb-panel-captioned")
+        mute_button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [mute_caption])
         # A control that turned insensitive under the pointer made GTK pick a new pointer target in the board: the panel got a leave and closed.
         for button in (panel.asb_open, *panel.asb_actions.values()):
             (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")

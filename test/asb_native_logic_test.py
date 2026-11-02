@@ -2172,6 +2172,83 @@ class DataChecks(unittest.TestCase):
         # A Working time near its first minute wakes at the minute, not 2 s later.
         self.assertEqual(wait([{**row, "workingSinceMs": NOW - 59_500}], NOW, True), .5)
 
+    def test_mute_left_text_rounds_up_to_minutes(self):
+        for left, text in ((1, "1m"), (30 * 60_000, "30m"), (61 * 60_000, "1h1m"),
+                           (8 * 3_600_000, "8h"), (432 * 60_000, "7h12m"),
+                           (24 * 3_600_000, "1d"), (30 * 3_600_000, "1d")):
+            with self.subTest(left=left):
+                self.assertEqual(asb.mute_left_text(NOW + left, NOW), text)
+
+    def test_mute_active_checks_the_end_and_rejects_non_integer_ends(self):
+        self.assertFalse(asb.mute_active({}, NOW))
+        self.assertTrue(asb.mute_active({"muted": True}, NOW))
+        for until, active in ((0, True), (NOW + 1, True), (NOW, False), (NOW - 1, False),
+                              ("123", True), (float(NOW + 1), True), (-1, True), (True, True)):
+            with self.subTest(until=until):
+                self.assertEqual(asb.mute_active({"muted": True, "mutedUntilMs": until}, NOW), active)
+        self.assertFalse(asb.mute_active({"muted": False, "mutedUntilMs": NOW + 1}, NOW))
+        with patch.object(SCOPE["time"], "time", return_value=NOW / 1000):
+            self.assertTrue(asb.mute_active({"muted": True, "mutedUntilMs": NOW + 1}))
+
+    def test_timed_mute_flag_uses_the_local_day_and_locale_clock(self):
+        clock = SCOPE["time"]
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        clock.tzset()
+        try:
+            now = clock.mktime((2026, 9, 21, 14, 0, 0, 0, 0, -1)) * 1000
+            for day, expected in ((21, "Muted until 3:40 PM"), (22, "Muted until Tuesday 3:40 PM")):
+                until = int(clock.mktime((2026, 9, day, 15, 40, 0, 0, 0, -1)) * 1000)
+                row = {"muted": True, "mutedUntilMs": until, "canOpen": True}
+                self.assertEqual(asb.tooltip_model(row, now, "/example")["flags"], expected)
+                self.assertEqual(asb.mute_flag_text(row, until), "")
+                strftime = clock.strftime
+                with patch.object(clock, "strftime", lambda form, *at: strftime(form.replace("%p", ""), *at)):
+                    self.assertEqual(asb.mute_flag_text(row, now), expected.replace("3:40 PM", "15:40"))
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            clock.tzset()
+
+    def test_ended_timed_mute_restores_mute_and_discard_actions(self):
+        for state, discard in (("working", "Discard result"), ("idle", "Discard next result")):
+            row = {"state": state, "muted": True, "mutedUntilMs": NOW}
+            self.assertIn(("Mute", "mute"), asb.row_menu_actions(row, NOW))
+            self.assertIn((discard, "discard-result"), asb.row_menu_actions(row, NOW))
+            self.assertIn(("Unmute", "unmute"), asb.row_menu_actions(row, NOW - 1))
+            self.assertNotIn((discard, "discard-result"), asb.row_menu_actions(row, NOW - 1))
+
+    def test_timed_mute_clock_wait_wakes_at_the_end_and_next_text_change(self):
+        for background in (False, True):
+            for left, expected in ((500, .5), (60_500, .5), (120_000, 60),
+                                   (1439 * 60_000 + 500, .5), (30 * 3_600_000, 60)):
+                row = {"state": "idle", "muted": True, "mutedUntilMs": NOW + left}
+                with self.subTest(background=background, left=left):
+                    self.assertEqual(asb.clock_wait([row], NOW, background), expected)
+            rows = [{"muted": True, "mutedUntilMs": NOW + 1000},
+                    {"muted": True, "mutedUntilMs": NOW + 60_250}]
+            self.assertEqual(asb.clock_wait(rows, NOW, background), .25)
+            self.assertEqual(asb.clock_wait([{**rows[0], "mutedUntilMs": NOW}], NOW, background), 60)
+
+    def test_timed_mute_clock_schedules_local_deadlines_and_stops_when_empty(self):
+        window = object.__new__(Window)
+        window.closed, window.focus_widgets = False, {}
+        window.dashboard = {"threads": [{"muted": True, "mutedUntilMs": NOW + 250}]}
+        window.clock_timer, window.clock_interval = 17, 60
+        window.update_row_text = Mock()
+        window.sync_row_panel = Mock()
+        glib = SimpleNamespace(source_remove=Mock(), timeout_add=Mock(return_value=18))
+        with patch.dict(SCOPE, {"GLib": glib}), patch.object(SCOPE["time"], "time", return_value=NOW / 1000):
+            window.update_clock()
+            glib.source_remove.assert_called_once_with(17)
+            glib.timeout_add.assert_called_once_with(250, window.update_clock)
+            window.dashboard = {"threads": []}
+            self.assertFalse(window.update_clock())
+            glib.source_remove.assert_called_with(18)
+            self.assertIsNone(window.clock_timer)
+
     def test_limited_drawer_row_has_no_dot_until_the_reset(self):
         at = SCOPE["time"].time() * 1000
         row = {"id": "a", "state": "idle", "drawer": True, "limitResetsAtMs": at + 3_600_000}
@@ -7275,10 +7352,11 @@ class NativeLogicChecks(unittest.TestCase):
         calls, disconnected = [], []
         window = object.__new__(Window)
         window.closed, window.focus_widgets = False, {"a": SimpleNamespace(asb_thread={"state": "idle"})}
-        window.dashboard, window.clock_interval = {"threads": []}, 60
+        window.dashboard, window.clock_interval, window.clock_timer = {"threads": []}, 60, None
         window.update_row_text = lambda *args: calls.append(args)
-        self.assertTrue(window.update_clock())
+        self.assertFalse(window.update_clock())
         self.assertEqual(len(calls), 1)
+        self.assertIsNone(window.clock_timer)
         controller = SimpleNamespace(disconnect=disconnected.append)
         widget = SimpleNamespace(asb_handlers=[(controller, [1, 2])], remove_controller=calls.append,
                                  get_parent=lambda: None, get_first_child=lambda: None)
@@ -8509,7 +8587,7 @@ class NativeIOAuditChecks(unittest.TestCase):
         for current, age in ((now, "2d ago"), (now + day, "3d ago")):
             window.update_row_text(widget, current)
             widget.asb_age_label.set_label.assert_called_with(age)
-            self.assertEqual(widget.asb_time_signature, ("", "Idle · " + age + " · Pinned · Archived", ""))
+            self.assertEqual(widget.asb_time_signature, ("", "Idle · " + age + " · Pinned · Archived", "", False, "", ""))
             self.assertEqual(SCOPE["tooltip_model"](row, current, "/fixture/home")["state_text"], "Idle · " + age)
         self.assertEqual(window.update_open_state.call_count, 2)
         widget.asb_thread = {**row, "state": "working", "workingSinceMs": now - 61_000}
