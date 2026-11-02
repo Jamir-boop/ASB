@@ -1199,7 +1199,9 @@ export function createSwitchboardServer(options = {}) {
   server.activityMember = (period) => activityMessages.memberReply(period);
   // The engine starts the background usage ledger after its group, and saves the ledger first when it stops.
   server.usageLedger = { start: () => { usage?.start(); backup?.start(); },
-    stop: async () => { await backup?.stop(); await (usage?.stop() ?? Promise.resolve()); } };
+    stop: async () => { await backup?.stop(); await (usage?.stop() ?? Promise.resolve()); },
+    // For tests: the running usage scan, with its saves.
+    idle: () => usage?.idle() ?? Promise.resolve() };
   // The receiving side of an exact member send (src/machine-relay.mjs): this engine's own binding, from the cached rows.
   server.bindMemberTarget = async (request) => bindMemberTarget(request, await referenceContext(await server.dashboardForRequest()), { ...boundIo, targetHomes });
   const close = server.close.bind(server);

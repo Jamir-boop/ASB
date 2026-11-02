@@ -157,7 +157,8 @@ test('only changes in local row identity, state, time, or archive cause a usage 
     server.invalidateDashboard('test', { hard: true });
     await server.dashboardForRequest();
     await usage();
-    await delay(30);
+    // A scan saves after its reply, and the fake clock must not move before the scan ends.
+    await server.usageLedger.idle();
     atMs += 10_000;
     return scans;
   };
