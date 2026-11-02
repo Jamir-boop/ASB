@@ -56,8 +56,9 @@ export function createClaudeMessages({ readSources = async () => [], homeDir = o
     const document = await readPrivateJson(stateFile, { platform });
     if (document?.version !== 1 || !document.files || typeof document.files !== 'object' || Array.isArray(document.files)) return;
     for (const [key, entry] of Object.entries(document.files)) {
-      if (!/^[a-f0-9]{64}$/.test(key) || !entry || !['size', 'offset', 'guardLength', 'ino', 'dev'].every((n) => Number.isSafeInteger(entry[n]) && entry[n] >= 0)
-        || entry.offset > entry.size || entry.guardLength > 64 || entry.guardLength > entry.size
+      // An NTFS file ID can be above 2^53. `ino` and `dev` are only compared, so a whole number above it keeps the saved scan.
+      if (!/^[a-f0-9]{64}$/.test(key) || !entry || !['size', 'offset', 'guardLength'].every((n) => Number.isSafeInteger(entry[n]) && entry[n] >= 0)
+        || !['ino', 'dev'].every((n) => Number.isInteger(entry[n]) && entry[n] >= 0) || entry.offset > entry.size || entry.guardLength > 64 || entry.guardLength > entry.size
         || !['mtimeMs', 'ctimeMs'].every((n) => Number.isFinite(entry[n])) || !/^[a-f0-9]{16}$/.test(entry.first)
         || !Array.isArray(entry.failed) || !entry.failed.every((id) => typeof id === 'string') || !Array.isArray(entry.rows)) continue;
       const rows = [];

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
 import { appendFile, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -185,6 +186,23 @@ test('a saved scan resumes after a restart, reads only appended bytes and saved 
   assert.deepEqual(await reader.records(0), rows);
   assert.equal(stats.readBytes, bytes);
   assert.equal(await reader.text(rows.find((row) => row.id === 'claude:persisted')), 'Private message text.');
+});
+
+test('a saved scan resumes after a restart when the file ID is above 2^53, as NTFS can give', async (t) => {
+  const { dir, root, file } = await fixture(t);
+  const stateFile = path.join(dir, 'private', 'claude-message-cache.json');
+  const sources = [{ enabled: true, provider: 'claude-desktop-code', projectsDir: root }];
+  const create = (extra = {}) => createClaudeMessages({ readSources: async () => sources, now: () => nowMs, stateFile, ...extra });
+  const originalStat = fs.stat;
+  t.mock.method(fs, 'stat', async (filePath, ...args) => Object.assign(await originalStat(filePath, ...args), { ino: 2 ** 60 + 4096 }));
+  await writeFile(file, lines([sent('persisted'), received(uuid(3), 'Synthetic incoming text.')]));
+  await create().records(0);
+  assert.deepEqual(Object.values(JSON.parse(await readFile(stateFile, 'utf8')).files).map((entry) => entry.ino), [2 ** 60 + 4096]);
+  await appendFile(file, lines([sent('new-call')]));
+  const stats = {};
+  const rows = await create({ stats }).records(0);
+  assert.deepEqual(rows.map((row) => row.id), ['claude:new-call', 'claude:persisted', `claude:${uuid(3)}`]);
+  assert.equal(stats.linesRead, 2);
 });
 
 test('saved scans reread a rewritten, shrunk, or replaced file, and ignore broken or old-version state', async (t) => {
