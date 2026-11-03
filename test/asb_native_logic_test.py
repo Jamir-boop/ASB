@@ -2958,6 +2958,19 @@ class DataChecks(unittest.TestCase):
         self.assertEqual([row["id"] for row in asb.filtered_rows(board(now))], ["p", "w", "m", "i"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board(0))], ["p", "w", "i", "m"])
 
+    def test_filtered_rows_sorts_a_muted_row_with_a_new_question_with_the_pending_rows(self):
+        now = 1_800_000_000_000
+        minute = 60_000
+        q = {"id": "q", "state": "waiting", "pending": True, "questionAttention": True, "muted": True,
+             "mutedAtMs": now - 30 * minute, "updatedAtMs": now - 5 * minute}
+        board = {"threads": [
+            {"id": "p", "state": "idle", "pending": True, "updatedAtMs": now - 10 * minute},
+            q,
+            {"id": "w", "state": "working", "updatedAtMs": now},
+            {"id": "i", "state": "idle", "updatedAtMs": now - minute}]}
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["q", "p", "w", "i"])
+        self.assertEqual(asb.attention_indicator(q), "question")
+
     def test_filter_chip_groups_clear_only_their_constraint(self):
         model = ({"machine": "", "machineName": "This machine", "apps": (
             {"provider": "codex", "profiles": ({"key": "|codex-1", "label": "Work", "color": "#112233"},)},

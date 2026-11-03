@@ -242,7 +242,7 @@ test('a muted session stays read when a task ends with success, also with a late
   }
 });
 
-test('a muted failure, question, and manual Unread stay hidden until Unmute and then show', async () => {
+test('a muted failure, question with no time, and manual Unread stay hidden until Unmute and then show', async () => {
   for (const end of [{ failedAtMs: 10 }, { completionAtMs: 5, failedAtMs: 10 }]) {
     const tracker = await mutedTracker();
     await scanRow(tracker, 'working');
@@ -327,6 +327,55 @@ const timedTracker = async (untilMs = now + HOUR) => {
   return tracker;
 };
 
+test('a question that the session asks after the start of a mute gets through, and the rest stays hidden', async () => {
+  for (const until of [now + HOUR, 0]) {
+    for (const manual of [false, true]) {
+      for (const end of ['read', 'mute-again']) {
+        const tracker = new PendingTracker(false);
+        const row = await timedScan(tracker, now);
+        if (manual) await tracker.markUnread(id);
+        await tracker.setMuted(row, true, until, now);
+        const scan = async (askedAt, scanAt) => (await tracker.observe(buildSwitchboardDashboard([
+          claude({ lifecycleRunning: true, agentActivityAtMs: askedAt, awaitingPermission: true,
+            pendingToolCount: 1, pendingTools: [{ tool: 'AskUserQuestion' }], pendingToolAtMs: askedAt,
+            awaitingUserInput: true, latestUserQuestionAtMs: askedAt }),
+        ], [], scanAt))).threads[0];
+        for (const askedAt of [now - 5, now]) {
+          const hidden = await scan(askedAt, now + 10);
+          assert.deepEqual([hidden.questionAttention, hidden.pending, hidden.pendingSource, hidden.questionPending, hidden.state],
+            [false, false, '', true, 'waiting']);
+        }
+        const asked = await scan(now + 1, now + 10);
+        assert.deepEqual([asked.questionAttention, asked.pending, asked.pendingSource, asked.unread, asked.alert,
+          asked.actionAttention, asked.manualUnread, asked.muted, asked.mutedAtMs, asked.mutedUntilMs],
+        [true, true, 'user-question', false, false, false, false, true, now, until]);
+        if (end === 'read') {
+          await tracker.acknowledge(id);
+          const read = await scan(now + 1, now + 20);
+          assert.deepEqual([read.questionAttention, read.pending, read.muted], [false, false, true]);
+        } else {
+          await tracker.setMuted(asked, false);
+          await tracker.setMuted(asked, true, until, now + 50);
+          const muted = await scan(now + 1, now + 60);
+          assert.deepEqual([muted.questionAttention, muted.pending, muted.muted], [false, false, true]);
+        }
+      }
+    }
+  }
+});
+
+test('a mute without mutedAt from an older pending.json lets each question through', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  await mutedTracker(statePath);
+  const saved = JSON.parse(await readFile(statePath, 'utf8'));
+  delete saved.records[id].mutedAt;
+  await writeFile(statePath, JSON.stringify(saved));
+  const tracker = new PendingTracker(statePath);
+  const row = await scanRow(tracker, 'waiting', { questionPending: true });
+  assert.deepEqual([row.muted, row.mutedAtMs, row.questionAttention, row.pending, row.pendingSource],
+    [true, 0, true, true, 'user-question']);
+});
+
 test('a timed mute silences success before its end but not at or after it', async () => {
   const until = now + HOUR;
   for (const end of [until - 1, until, until + 1]) {
@@ -373,7 +422,7 @@ test('timed mute row fields expire by the clock even without a scan', async () =
   assert.deepEqual([unknown.muted, unknown.mutedUntilMs], [false, 0]);
 });
 
-test('a timed-muted failure, question, and manual Unread stay hidden until the mute ends', async () => {
+test('a timed-muted failure, question with no time, and manual Unread stay hidden until the mute ends', async () => {
   const tracker = await timedTracker();
   await timedScan(tracker, now, 'working');
   const failed = await timedScan(tracker, now + 10, 'idle', { failedAtMs: now + 10 });

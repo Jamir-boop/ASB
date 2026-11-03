@@ -6,7 +6,7 @@ import http from 'node:http';
 import { promisify } from 'node:util';
 import { BIT_DONE, BIT_FAILED, BIT_INPUT, SOUND_DIR, WINDOWS_PLAYER_ARGS, createSoundPlayer, createSoundWatcher, soundBaseline, soundBits, soundEvents } from '../src/asb-sounds.mjs';
 import { mergePeerRows } from '../src/machine-peers.mjs';
-import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-10-07T14:00:00Z');
 const row = (fields = {}) => ({ id: 'a', ...fields });
@@ -297,7 +297,7 @@ test('the switchboard server plays the injected player once after a Working to I
   assert.deepEqual(played, [BIT_DONE]);
 });
 
-test('a muted session plays no Done, Failed, or Needs input sound', async () => {
+test('a muted session plays no Done or Failed sound, and no Needs input for a question with no time', async () => {
   const thread = (state, extra = {}) => ({ providers: [], threads: [{ id: 'a', state, nativeUnread: null, completionAtMs: 0, ...extra }] });
   const events = async (end) => {
     const tracker = new PendingTracker(false);
@@ -312,7 +312,7 @@ test('a muted session plays no Done, Failed, or Needs input sound', async () => 
   assert.deepEqual(await events(thread('waiting', { questionPending: true })), []);
 });
 
-test('a timed-muted session plays Done only for a task that ends after its end, and Failed and Needs input only after its end', async () => {
+test('a timed-muted session plays Done only for a task that ends after its end, and Failed and Needs input for a question with no time only after its end', async () => {
   const until = now + 3_600_000;
   const thread = (state, atMs, extra = {}) => ({ generatedAtMs: atMs, providers: [],
     threads: [{ id: 'a', state, nativeUnread: null, completionAtMs: 0, ...extra }] });
@@ -333,7 +333,7 @@ test('a timed-muted session plays Done only for a task that ends after its end, 
   assert.deepEqual(await events({ state: 'waiting', extra: { questionPending: true } }, until), [['a', BIT_INPUT]]);
 });
 
-test('the sound watcher plays nothing for a question during a timed mute and Needs input once after its end', async () => {
+test('the sound watcher plays nothing for a question with no time during a timed mute and Needs input once after its end', async () => {
   const until = now + 3_600_000;
   const asked = (atMs) => ({ generatedAtMs: atMs, providers: [],
     threads: [{ id: 'a', state: 'waiting', questionPending: true, nativeUnread: null, completionAtMs: 0 }] });
@@ -350,6 +350,27 @@ test('the sound watcher plays nothing for a question during a timed mute and Nee
   assert.deepEqual(played, []);
   const after = await tracker.observe(asked(until));
   assert.deepEqual([after.threads[0].muted, after.threads[0].questionAttention], [false, true]);
+  watch(after, until);
+  assert.deepEqual(played, [BIT_INPUT]);
+});
+
+test('the sound watcher plays Needs input once for a question that a muted session asks, and nothing again at the end of the mute', async () => {
+  const until = now + 3_600_000;
+  const thread = (extra = {}) => ({ id: 'a', externalId: 'local_a', provider: 'claude-desktop-code', nativeUnread: null, ...extra });
+  const askedAt = now + 10;
+  const question = thread({ lifecycleRunning: true, agentActivityAtMs: askedAt, awaitingPermission: true,
+    pendingToolCount: 1, pendingTools: [{ tool: 'AskUserQuestion' }], pendingToolAtMs: askedAt,
+    awaitingUserInput: true, latestUserQuestionAtMs: askedAt });
+  const tracker = new PendingTracker(false);
+  const played = [];
+  const watch = createSoundWatcher((kind) => played.push(kind));
+  const before = await tracker.observe(buildSwitchboardDashboard([thread()], [], now));
+  watch(before, now);
+  await tracker.setMuted(before.threads[0], true, until, now);
+  const during = await tracker.observe(buildSwitchboardDashboard([question], [], now + 20));
+  watch(during, now + 20);
+  assert.deepEqual(played, [BIT_INPUT]);
+  const after = await tracker.observe(buildSwitchboardDashboard([question], [], until));
   watch(after, until);
   assert.deepEqual(played, [BIT_INPUT]);
 });

@@ -831,9 +831,12 @@ export class PendingTracker {
     row.muted = muteActive(record, nowMs);
     row.mutedUntilMs = row.muted ? record.mutedUntil : 0;
     row.mutedAtMs = row.muted ? record.mutedAt : 0;
-    // A muted row asks for nothing until the mute ends. Its stored marks stay, so what still applies then comes back.
+    // A muted row asks for nothing until the mute ends, except a question that the session asks after the start of the mute.
+    // Its stored marks stay, so what still applies then comes back.
     if (row.muted) {
+      const asked = row.questionAttention && record.questionSeen > record.mutedAt;
       for (const key of ['manualUnread', 'questionAttention', 'actionAttention', 'nativeAttention', 'failedAttention', 'completionAttention', 'retainedUnread']) row[key] = false;
+      row.questionAttention = asked;
       row.retainedUnreadSource = '';
     }
     // A Working row shows only question attention. Stored marks stay and show again after Working ends.
