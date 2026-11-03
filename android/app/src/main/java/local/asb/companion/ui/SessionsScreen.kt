@@ -896,7 +896,7 @@ private fun SessionCard(
     val state = cardStateLabel(row)
     val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
     val indicatorMeaning = when (indicator) {
-        "question" -> if (row.actionRequired) "Action required on the PC" else "Question needs attention"
+        "question" -> if (showsAction(row)) "Action required on the PC" else "Question needs attention"
         "alert" -> if (row.lastOutcome == "failed") "Failed task, unread" else "Usage limit stopped the task, unread"
         "dot" -> when {
             row.failedAttention -> "Failed task, unread"

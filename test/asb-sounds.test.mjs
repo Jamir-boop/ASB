@@ -375,6 +375,29 @@ test('the sound watcher plays Needs input once for a question that a muted sessi
   assert.deepEqual(played, [BIT_INPUT]);
 });
 
+test('the sound watcher plays Needs input once for a permission request that a muted session makes, and nothing again at the end of the mute', async () => {
+  const until = now + 3_600_000;
+  const thread = (extra = {}) => ({ id: 'a', externalId: 'local_a', provider: 'claude-desktop-code', nativeUnread: null, ...extra });
+  for (const requestedAt of [now - 10, now + 10]) {
+    const request = thread({ lifecycleRunning: true, agentActivityAtMs: requestedAt, awaitingPermission: true,
+      pendingToolCount: 1, pendingTools: [{ tool: 'Bash' }], pendingToolAtMs: requestedAt });
+    const tracker = new PendingTracker(false);
+    const played = [];
+    const watch = createSoundWatcher((kind) => played.push(kind));
+    const before = await tracker.observe(buildSwitchboardDashboard([requestedAt < now ? request : thread()], [], now));
+    watch(before, now);
+    await tracker.setMuted(before.threads[0], true, until, now);
+    const during = await tracker.observe(buildSwitchboardDashboard([request], [], now + 20));
+    watch(during, now + 20);
+    assert.deepEqual(played, requestedAt > now ? [BIT_INPUT] : []);
+    if (requestedAt > now) {
+      const after = await tracker.observe(buildSwitchboardDashboard([request], [], until));
+      watch(after, until);
+      assert.deepEqual(played, [BIT_INPUT]);
+    }
+  }
+});
+
 test('a next-task Discard on an Idle session plays no Done sound but still plays Failed', async () => {
   const thread = (state, extra = {}) => ({ providers: [], threads: [{ id: 'a', state, nativeUnread: null, completionAtMs: 0, ...extra }] });
   const events = async (end, seenWorking) => {

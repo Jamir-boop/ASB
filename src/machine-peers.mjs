@@ -4,7 +4,7 @@ import https from 'node:https';
 import { createSecureContext } from 'node:tls';
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
-import { OFFLINE_MEMBER, QUESTION_AT, byRowTime, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
+import { ACTION_AT, OFFLINE_MEMBER, QUESTION_AT, byRowTime, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
 import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { rowReference, shortReference, validScopeTag } from './session-references.mjs';
 
@@ -28,6 +28,7 @@ const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
 // The row fields that go to group members (plan 9.2), with their types.
 // `questionAtMs` is the time of the latest open question, sent only while `questionPending`; the merge keeps it as `QUESTION_AT`.
+// `actionAtMs` is the time of the current permission request, sent only while `actionRequired`; the merge keeps it as `ACTION_AT`.
 const STRING = (value) => typeof value === 'string' && value.length <= 4096;
 const NUMBER = (value) => typeof value === 'number' && Number.isFinite(value);
 const BOOLEAN = (value) => typeof value === 'boolean';
@@ -35,7 +36,7 @@ export const EXPORT_FIELDS = {
   id: STRING, externalId: STRING, provider: STRING, providerLabel: STRING, surface: (value) => ['app', 'cli'].includes(value),
   title: STRING, cwd: STRING, projectName: STRING, archived: BOOLEAN, updatedAtMs: NUMBER, subagentCount: NUMBER,
   state: (value) => ['working', 'waiting', 'idle', 'unknown'].includes(value), reason: STRING, workingSinceMs: NUMBER,
-  nativeUnread: (value) => value === null || BOOLEAN(value), readStatus: STRING, questionPending: BOOLEAN, questionAtMs: NUMBER, actionRequired: BOOLEAN,
+  nativeUnread: (value) => value === null || BOOLEAN(value), readStatus: STRING, questionPending: BOOLEAN, questionAtMs: NUMBER, actionRequired: BOOLEAN, actionAtMs: NUMBER,
   lastOutcome: STRING, failedAtMs: NUMBER, completionAtMs: NUMBER, limitResetsAtMs: NUMBER,
   sourceId: STRING, sourceLabel: STRING, sourceColor: (value) => value === null || STRING(value), sourceShowMarker: BOOLEAN, sourceCount: NUMBER,
   referenceScope: validScopeTag, referenceUnavailable: STRING,
@@ -47,9 +48,11 @@ const pick = (row) => Object.fromEntries(Object.keys(EXPORT_FIELDS).filter((key)
 // Plan 9.2: the local rows only, with their native message keys and the incoming messages from senders on other machines.
 // Archived rows stay out, so the Archive filter of a member shows only its own archived rows.
 export function exportLocalSessions(dashboard, self, nowMs = Date.now()) {
-  // A member needs the time of an open question to tell a new question from one that the user read.
+  // A member needs the time of an open question to tell a new question from one that the user read, and the times of a question
+  // and of a permission request to tell one that the session made after the start of a mute.
   const rows = (dashboard.threads || []).filter((row) => !row.remote && !row.remoteCache && !row.archived)
-    .map((row) => pick(row.questionPending && row[QUESTION_AT] > 0 ? { ...row, questionAtMs: row[QUESTION_AT] } : row));
+    .map((row) => pick({ ...row, ...(row.questionPending && row[QUESTION_AT] > 0 ? { questionAtMs: row[QUESTION_AT] } : {}),
+      ...(row.actionRequired && row[ACTION_AT] > 0 ? { actionAtMs: row[ACTION_AT] } : {}) }));
   const ids = new Set(rows.map((row) => row.id));
   const { keysByRow, unresolved } = sessionMessageKeys(dashboard);
   // In row order with sorted keys and messages, so the scan order of the source threads does not move the export tag.
@@ -109,19 +112,19 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
     const offline = !peer.online;
     if (offline && nowMs - peer.lastOkAtMs >= OFFLINE_KEEP_MS) continue;
     const rowId = (id) => `m:${member.machineId}:${id}`;
-    for (const { referenceScope, referenceUnavailable, questionAtMs, ...row } of sessions.rows) {
+    for (const { referenceScope, referenceUnavailable, questionAtMs, actionAtMs, ...row } of sessions.rows) {
       // The machine comes only from the pinned member; a member with no scope tag is an older ASB.
       // A member-sent code only blocks: with no tag, 'ambiguous-source' (a shared CLI row) replaces 'old-peer'.
       const reference = !referenceScope && referenceUnavailable === 'ambiguous-source' ? { referenceUnavailable }
         : rowReference(row, { machineId: member.machineId, sourceId: row.sourceId, scopeTag: referenceScope }, 'old-peer');
       // A member row has no sourceName, so the host is the provider fallback.
       const sessionReference = shortReference(row);
-      // The question time is not a row field: the tracker reads it from QUESTION_AT, as for a local row.
-      peerRows.push(Object.defineProperty({ ...row, ...reference, ...(sessionReference ? { sessionReference } : {}), id: rowId(row.id),
+      // The question and permission times are not row fields: the tracker reads them from QUESTION_AT and ACTION_AT, as for a local row.
+      peerRows.push(Object.defineProperties({ ...row, ...reference, ...(sessionReference ? { sessionReference } : {}), id: rowId(row.id),
         machineId: member.machineId, machineName: member.name, remote: true, globalId: `${member.machineId}:${row.id}`,
         remoteCache: false, canOpen: false, appDeepLink: '',
         ...(offline ? { state: 'unknown', reason: `${member.name} is not reachable.`, workingSinceMs: 0, [OFFLINE_MEMBER]: true } : {}) },
-      QUESTION_AT, { value: questionAtMs || 0 }));
+      { [QUESTION_AT]: { value: questionAtMs || 0 }, [ACTION_AT]: { value: actionAtMs || 0 } }));
     }
     for (const [id, keys] of Object.entries(sessions.keys)) peerKeys.push([rowId(id), keys]);
     for (const message of sessions.incoming) peerIncoming.push({ ...message, to: rowId(message.to) });

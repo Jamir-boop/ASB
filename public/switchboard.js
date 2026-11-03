@@ -94,14 +94,16 @@ function sessionRow(thread) {
   entry.thread = thread;
   const where = rowWhere(thread);
   const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, where, thread.surface,
-    thread.pinned, thread.archived, thread.actionRequired, thread.questionAttention, thread.alert, thread.unread,
+    thread.pinned, thread.archived, thread.actionRequired, thread.actionAttention, thread.muted, thread.questionAttention, thread.alert, thread.unread,
     thread.lastOutcome, thread.failedAttention, thread.completionAttention]);
   setText(entry.age, relativeTime(thread.updatedAtMs));
   if (entry.signature === signature) return entry.row;
   entry.signature = signature;
-  const indicator = thread.actionRequired || thread.questionAttention ? 'question' : thread.alert ? 'alert' : thread.unread ? 'dot'
+  // On a muted row, a required action shows its mark only for a request that came after the start of the mute.
+  const action = thread.actionRequired && (!thread.muted || thread.actionAttention);
+  const indicator = action || thread.questionAttention ? 'question' : thread.alert ? 'alert' : thread.unread ? 'dot'
     : thread.state === 'idle' && thread.lastOutcome === 'stopped' ? 'stop' : '';
-  const attention = thread.actionRequired ? 'A user action is required in the original app.'
+  const attention = action ? 'A user action is required in the original app.'
     : indicator === 'question' ? 'A question needs your answer.' : indicator === 'dot' || indicator === 'alert' ? 'Unread in ASB.' : '';
   const outcome = thread.lastOutcome === 'stopped' ? 'Task stopped.' : thread.lastOutcome === 'limit' ? 'Usage limit stopped the task.'
     : thread.lastOutcome === 'failed' || thread.failedAttention ? 'Task failed.' : thread.completionAttention ? 'Task completed.' : '';

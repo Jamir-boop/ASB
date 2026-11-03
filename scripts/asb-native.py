@@ -272,7 +272,7 @@ def mute_flag_text(row, now_ms=None):
 
 def row_menu_actions(row, now_ms=None):
     # A required action keeps its "?" mark after Read, so its own attention decides between Read and Unread.
-    unread = row.get("actionAttention") or row.get("unread") if row.get("actionRequired") \
+    unread = row.get("actionAttention") or row.get("unread") if shows_action(row) \
         else attention_indicator(row) in ("question", "alert", "dot")
     actions = [("Read", "mark-read") if row.get("drawer") or unread else ("Unread", "mark-unread")]
     if row.get("drawer"):
@@ -570,12 +570,17 @@ def pin_move_body(rows, identity, direction):
 def attention_signature(row):
     return tuple(row.get(key) for key in ("unread", "alert", "questionAttention", "nativeUnread", "manualUnread",
                  "nativeAttention", "completionAttention", "failedAttention", "retainedUnread", "retainedUnreadSource",
-                 "completionAtMs", "failedAtMs", "lastOutcome", "actionRequired", "actionAttention", "discardResult", "updatedAtMs", "state", "workingSinceMs", "questionPending", "drawer"))
+                 "completionAtMs", "failedAtMs", "lastOutcome", "actionRequired", "actionAttention", "discardResult", "updatedAtMs", "state", "workingSinceMs", "questionPending", "drawer", "muted"))
+
+
+def shows_action(row):
+    """A required action shows its "?" mark; on a muted row, only a request that came after the start of the mute."""
+    return bool(row.get("actionRequired")) and (not row.get("muted") or bool(row.get("actionAttention")))
 
 
 def attention_indicator(row, drawer=False):
     """Return the row mark in question, alert, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark."""
-    return "question" if row.get("actionRequired") or row.get("questionAttention") else "alert" if row.get("alert") else "dot" \
+    return "question" if shows_action(row) or row.get("questionAttention") else "alert" if row.get("alert") else "dot" \
         if row.get("unread") or (drawer and row.get("drawer") and row.get("state") != "working" and not limit_left(row)) \
         else "discard" if row.get("state") in ("working", "idle") and row.get("discardResult") \
         else "stop" if row.get("state") == "idle" and row.get("lastOutcome") == "stopped" else ""
@@ -1527,7 +1532,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
     shape = "" if indicator == "dot" and not row.get("unread") and not drawer_view else indicator
     note = ""
     if indicator == "question":
-        note = "Waits for your permission." if row.get("actionRequired") else "Asks a question. Open the chat to answer."
+        note = "Waits for your permission." if shows_action(row) else "Asks a question. Open the chat to answer."
     elif indicator == "alert":
         note = "Usage limit stopped the task. Not read yet." if row.get("lastOutcome") == "limit" else "Failed. Not read yet."
     elif indicator == "dot":
@@ -9101,7 +9106,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if signature == getattr(widget, "asb_action_signature", None):
             return
         widget.asb_action_signature = signature
-        unread = bool(row.get("actionAttention") or row.get("unread")) if row.get("actionRequired") \
+        unread = bool(row.get("actionAttention") or row.get("unread")) if shows_action(row) \
             else indicator in ("question", "alert", "dot")
         idle = row.get("state") == "idle"
         # An Idle row offers Discard for its next task when it has no mark. The check after a Read keeps the slot until it ends.
@@ -9128,7 +9133,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (pin.add_css_class if pinned else pin.remove_css_class)("asb-pinned")
         # Keep native gestures active so busy controls and the Read cue cannot open the row.
         read_text = ("A user action is required in the original app. Mark read in ASB" if unread
-                     else "A user action is required in the original app") if row.get("actionRequired") else "Task stopped" \
+                     else "A user action is required in the original app") if shows_action(row) else "Task stopped" \
             if indicator == "stop" else "Read in ASB" if confirmed else "Mark read in ASB"
         if discard:
             read_text = ("Keep result: show the dot when the next task ends" if idle else "Keep result: show the dot when this task ends") \
@@ -9382,7 +9387,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         manual = " Marked as unread in ASB." if shown and row.get("manualUnread") else ""
         native_unread = " Unread in the original app." if shown and row.get("nativeAttention") else ""
         pinned = " Pinned in ASB." if row.get("pinned") else ""
-        question = " A user action is required in the original app." if row.get("actionRequired") \
+        question = " A user action is required in the original app." if shows_action(row) \
             else " Question needs your answer." if row.get("questionAttention") else ""
         retained = " Unread retained in ASB. Use Read to clear it." if shown and row.get("retainedUnread") else ""
         outcome = " Task stopped." if row.get("lastOutcome") == "stopped" \

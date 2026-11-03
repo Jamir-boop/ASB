@@ -10,7 +10,7 @@ import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { addressOrder, closePeerAgents, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, MAX_REPLY_BYTES, mergePeerRows,
   PEER_IDLE_SOCKET_MS, peerRequest, validExport } from '../src/machine-peers.mjs';
-import { buildSwitchboardDashboard, OFFLINE_MEMBER, PendingTracker, QUESTION_AT } from '../src/switchboard.mjs';
+import { ACTION_AT, buildSwitchboardDashboard, OFFLINE_MEMBER, PendingTracker, QUESTION_AT } from '../src/switchboard.mjs';
 
 let hasOpenSsl = true;
 try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); } catch { hasOpenSsl = false; }
@@ -273,6 +273,42 @@ test('a member question after Read gets attention again, and a member question a
   assert.deepEqual([hidden.muted, hidden.questionAttention, hidden.pending], [true, false, false]);
   // A member with an older ASB sends no time: its second question gets no attention.
   assert.equal((await steps(true)).row.questionAttention, false);
+});
+
+test('the export sends the time of a permission request only while it is open, and a member request made during a mute gets through', async () => {
+  const requesting = (t) => claude(1, { lifecycleRunning: true, agentActivityAtMs: t, awaitingPermission: true,
+    pendingToolCount: 1, pendingTools: [{ tool: 'Bash' }], pendingToolAtMs: t });
+  const exported = exportLocalSessions(board([requesting(nowMs - 2000), claude(2)], B), B, nowMs);
+  const byId = (rows, n) => rows.find((row) => row.id === `claude-desktop-code:${local(n)}`);
+  assert.deepEqual([byId(exported.rows, 1).actionAtMs, byId(exported.rows, 1).actionRequired], [nowMs - 2000, true]);
+  assert.equal(Object.hasOwn(byId(exported.rows, 2), 'actionAtMs'), false);
+  const parsed = JSON.parse(exportBody(exported).body);
+  const value = validExport({ ...parsed, rows: [...parsed.rows, { id: 'text', title: 'Text', actionAtMs: '5' },
+    { id: 'nan', title: 'NaN', actionAtMs: NaN }] }, B);
+  assert.deepEqual(value.rows.filter((row) => ['text', 'nan'].includes(row.id)), []);
+  const merged = mergePeerRows(board([], A), [peerState(exported)], A, nowMs);
+  const memberId = `m:${B.machineId}:claude-desktop-code:${local(1)}`;
+  const member = merged.threads.find((row) => row.id === memberId);
+  assert.equal(Object.hasOwn(member, 'actionAtMs'), false);
+  assert.equal(JSON.stringify(member).includes('actionAtMs'), false);
+  assert.deepEqual([member[ACTION_AT], member[QUESTION_AT]], [nowMs - 2000, 0]);
+  assert.equal(merged.threads.find((row) => row.id !== memberId)[ACTION_AT], 0);
+  const observe = async (tracker, thread, old = false) => {
+    const sessions = JSON.parse(exportBody(exportLocalSessions(board([thread], B), B, nowMs)).body);
+    if (old) for (const row of sessions.rows) delete row.actionAtMs;
+    const dashboard = mergePeerRows(board([], A), [peerState(sessions)], A, nowMs);
+    await tracker.observe(dashboard);
+    return dashboard.threads.find((row) => row.id === memberId);
+  };
+  for (const [requestedAt, old, expected] of [[nowMs - 10_000, false, true], [nowMs - 30_000, false, false],
+    [nowMs - 10_000, true, false]]) {
+    const tracker = new PendingTracker(false);
+    const idle = await observe(tracker, claude(1), old);
+    await tracker.setMuted(idle, true, 0, nowMs - 20_000);
+    const row = await observe(tracker, requesting(requestedAt), old);
+    assert.deepEqual([row.muted, row.actionAttention, row.pending, row.pendingSource],
+      [true, expected, expected, expected ? 'user-action' : '']);
+  }
 });
 
 test('addresses go in the order last good, LAN, ZeroTier, Tailscale', () => {

@@ -364,6 +364,49 @@ test('a question that the session asks after the start of a mute gets through, a
   }
 });
 
+test('a permission request that the session makes after the start of a mute gets through, and the rest stays hidden', async () => {
+  for (const until of [now + HOUR, 0]) {
+    const tracker = new PendingTracker(false);
+    const row = await timedScan(tracker, now);
+    await tracker.setMuted(row, true, until, now);
+    const scan = async (t, scanAt) => (await tracker.observe(buildSwitchboardDashboard([
+      claude({ lifecycleRunning: true, agentActivityAtMs: t, awaitingPermission: true,
+        pendingToolCount: 1, pendingTools: [{ tool: 'Bash' }], pendingToolAtMs: t }),
+    ], [], scanAt))).threads[0];
+    for (const t of [now - 5, now]) {
+      const hidden = await scan(t, now + 10);
+      assert.deepEqual([hidden.actionAttention, hidden.pending, hidden.pendingSource, hidden.actionRequired, hidden.state],
+        [false, false, '', true, 'waiting']);
+    }
+    const requested = await scan(now + 1, now + 10);
+    assert.deepEqual([requested.actionAttention, requested.pending, requested.pendingSource, requested.unread, requested.alert,
+      requested.questionAttention, requested.questionPending, requested.muted, requested.mutedAtMs, requested.mutedUntilMs],
+    [true, true, 'user-action', false, false, false, false, true, now, until]);
+    await tracker.acknowledge(id);
+    const read = await scan(now + 1, now + 20);
+    assert.deepEqual([read.actionAttention, read.pending, read.muted], [false, false, true]);
+    await timedScan(tracker, now + 30);
+    const next = await scan(now + 40, now + 50);
+    assert.deepEqual([next.actionAttention, next.pendingSource], [true, 'user-action']);
+    await tracker.setMuted(next, false);
+    await tracker.setMuted(next, true, until, now + 60);
+    const muted = await scan(now + 40, now + 70);
+    assert.deepEqual([muted.actionAttention, muted.pending], [false, false]);
+  }
+});
+
+test('a mute without mutedAt from an older pending.json lets each permission request through', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  await mutedTracker(statePath);
+  const saved = JSON.parse(await readFile(statePath, 'utf8'));
+  delete saved.records[id].mutedAt;
+  await writeFile(statePath, JSON.stringify(saved));
+  const tracker = new PendingTracker(statePath);
+  const row = await scanRow(tracker, 'waiting', {});
+  assert.deepEqual([row.muted, row.mutedAtMs, row.actionAttention, row.pending, row.pendingSource],
+    [true, 0, true, true, 'user-action']);
+});
+
 test('a mute without mutedAt from an older pending.json lets each question through', async (t) => {
   const statePath = path.join(await temp(t), 'pending.json');
   await mutedTracker(statePath);

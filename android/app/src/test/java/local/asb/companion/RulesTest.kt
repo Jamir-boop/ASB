@@ -269,6 +269,16 @@ class RulesTest {
         assertFalse(rowMenuActions(Thread(canOpen = true)).any { it.action == "open" })
     }
 
+    @Test fun mutedPermissionMarkFollowsActionAttention() {
+        val permission = Thread(state = "waiting", actionRequired = true, muted = true)
+        val hidden = permission.copy(actionAttention = false)
+        val requested = permission.copy(actionAttention = true)
+        assertEquals("", attentionIndicator(hidden))
+        assertEquals("question", attentionIndicator(requested))
+        assertEquals(MenuAction("Unread", "mark-unread"), rowMenuActions(hidden)[0])
+        assertEquals(MenuAction("Read", "mark-read"), rowMenuActions(requested)[0])
+    }
+
     @Test fun drawerFilterIndicatorAndMenuMatchDesktop() {
         val base = Thread(provider = "codex", state = "idle", title = "Chat", providerLabel = "Codex", canOpen = true)
         val unread = base.copy(id = "unread", unread = true, pending = true, updatedAtMs = 4)

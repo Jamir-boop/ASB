@@ -5381,6 +5381,24 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(actions({"state": "working", "muted": True}), [("Unread", "mark-unread"), ("Unmute", "unmute"), ("Pin", "pin")])
         self.assertEqual(actions({"state": "working", "muted": True, "discardResult": True})[-1], ("Pin", "pin"))
 
+    def test_a_muted_required_action_shows_its_mark_only_for_a_request_after_the_mute(self):
+        wait = {"state": "waiting", "actionRequired": True}
+        for row in (wait, {**wait, "actionAttention": False}, {**wait, "muted": True, "actionAttention": True}):
+            self.assertTrue(asb.shows_action(row))
+        for row in ({**wait, "muted": True, "actionAttention": False}, {**wait, "muted": True},
+                    {"state": "waiting", "muted": True, "actionAttention": True}):
+            self.assertFalse(asb.shows_action(row))
+        hidden = {**wait, "muted": True, "actionAttention": False}
+        requested = {**wait, "muted": True, "actionAttention": True}
+        for row in ({**wait, "actionAttention": False}, requested, {**hidden, "questionAttention": True}):
+            self.assertEqual(asb.attention_indicator(row), "question")
+        self.assertEqual(asb.attention_indicator(hidden), "")
+        self.assertEqual(asb.row_menu_actions(hidden)[0], ("Unread", "mark-unread"))
+        self.assertEqual(asb.row_menu_actions(requested)[0], ("Read", "mark-read"))
+        self.assertIn("Waits for your permission.", asb.tooltip_model(requested, NOW, "/home/test").values())
+        self.assertNotIn("Waits for your permission.", asb.tooltip_model(hidden, NOW, "/home/test").values())
+        self.assertNotEqual(asb.attention_signature({**wait, "actionAttention": False}), asb.attention_signature(hidden))
+
     def test_attention_indicator_prefers_question_and_working_rows_hide_unread_text(self):
         indicator = SCOPE["attention_indicator"]
         for row, expected in (({}, ""), ({"unread": True}, "dot"), ({"unread": True, "alert": True}, "alert"),

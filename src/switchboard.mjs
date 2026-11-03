@@ -27,7 +27,7 @@ import { spawn } from 'node:child_process';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const QUESTION_AT = Symbol('ASB question timestamp');
-const ACTION_AT = Symbol('ASB required action timestamp');
+export const ACTION_AT = Symbol('ASB required action timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
 // A CLI row that more than one source lists, with no single source of origin.
 const SHARED_CLI = Symbol('ASB shared CLI session');
@@ -831,12 +831,14 @@ export class PendingTracker {
     row.muted = muteActive(record, nowMs);
     row.mutedUntilMs = row.muted ? record.mutedUntil : 0;
     row.mutedAtMs = row.muted ? record.mutedAt : 0;
-    // A muted row asks for nothing until the mute ends, except a question that the session asks after the start of the mute.
-    // Its stored marks stay, so what still applies then comes back.
+    // A muted row asks for nothing until the mute ends, except a question or a permission request that the session makes after
+    // the start of the mute. Its stored marks stay, so what still applies then comes back.
     if (row.muted) {
       const asked = row.questionAttention && record.questionSeen > record.mutedAt;
+      const requested = row.actionAttention && record.actionSeen > record.mutedAt;
       for (const key of ['manualUnread', 'questionAttention', 'actionAttention', 'nativeAttention', 'failedAttention', 'completionAttention', 'retainedUnread']) row[key] = false;
       row.questionAttention = asked;
+      row.actionAttention = requested;
       row.retainedUnreadSource = '';
     }
     // A Working row shows only question attention. Stored marks stay and show again after Working ends.

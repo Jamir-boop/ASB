@@ -147,6 +147,23 @@ function harness(initial = board(), script = source) {
   };
 }
 
+test('a muted browser row shows the mark of a required action only for a request after the mute', async () => {
+  const initial = board(1);
+  Object.assign(initial.threads[0], { state: 'waiting', actionRequired: true, actionAttention: false });
+  const h = harness(initial);
+  await settle();
+  const meaning = 'A user action is required in the original app.';
+  for (const [muted, actionAttention, visible] of [[false, false, true], [true, false, false], [true, true, true]]) {
+    Object.assign(initial.threads[0], { muted, actionAttention });
+    await h.refresh(response(initial));
+    const row = h.row();
+    const mark = row.children.find((child) => child.classList.contains('attention'));
+    assert.equal(Boolean(mark), visible);
+    if (visible) assert.deepEqual([mark.className, mark.textContent], ['attention question', '?']);
+    assert.equal(row.attributes['aria-label'].includes(meaning), visible);
+  }
+});
+
 test('keyed browser rows keep nodes, listeners, focus, collapse, and scroll after one title change', async () => {
   for (const size of [120, 5_000]) {
     const initial = board(size);

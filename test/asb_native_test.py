@@ -7418,6 +7418,39 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(card("action").asb_thread["state"], "waiting")
         self.assertEqual(asb.row_menu_actions(card("action").asb_thread)[0], ("Unread", "mark-unread"))
 
+    def test_a_muted_required_action_hides_its_mark_until_a_request_after_the_mute(self):
+        def row(identity, order, **extra):
+            return {"id": identity, "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code",
+                    "title": "Approve the synthetic tool " + identity, "cwd": "/example/field-notes", "projectName": "field-notes",
+                    "state": "waiting", "canOpen": True, "actionRequired": True, "updatedAtMs": NOW - order * 1000,
+                    "muted": True, "mutedAtMs": NOW - 60_000, **extra}
+        old = row("old", 1, actionAttention=False, pending=False)
+        new = row("new", 2, actionAttention=True, pending=True, pendingSource="user-action")
+        dashboard = {"generatedAtMs": NOW, "providers": [], "threads": [old, new]}
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", dashboard, theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(640, 560)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        self.settle(window)
+        old_card, new_card = window.focus_widgets["old"], window.focus_widgets["new"]
+        self.assertEqual(asb.attention_indicator(old), "")
+        self.assertFalse(old_card.asb_read_button.get_visible())
+        self.assertNotIn("Waits for your permission.", asb.tooltip_model(old, NOW, "/home/test").values())
+        window.show_context(old_card); self.drain()
+        self.assertTrue(window.context_menu.asb_note.get_visible())
+        self.assertEqual(window.context_menu.asb_actions["read"].asb_label.get_label(), "Mark unread")
+        window.context_menu.popdown(); self.drain()
+        self.assertEqual(asb.attention_indicator(new), "question")
+        read = new_card.asb_read_button
+        self.assertEqual((read.get_tooltip_text(), read.asb_action, read.has_css_class("asb-passive-indicator")),
+                         ("A user action is required in the original app. Mark read in ASB", "win.mark-read", False))
+
     def test_idle_card_offers_discard_for_the_next_task_and_sends_next(self):
         def row(identity, order, **extra):
             return {"id": identity, "provider": "codex", "providerLabel": "Codex", "title": "Summarize the open issues " + identity,
