@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
-const QUESTION_AT = Symbol('ASB question timestamp');
+export const QUESTION_AT = Symbol('ASB question timestamp');
 const ACTION_AT = Symbol('ASB required action timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
 // A CLI row that more than one source lists, with no single source of origin.

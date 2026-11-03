@@ -10,7 +10,7 @@ import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { addressOrder, closePeerAgents, createPeerPoller, EXPORT_FIELDS, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, MAX_REPLY_BYTES, mergePeerRows,
   PEER_IDLE_SOCKET_MS, peerRequest, validExport } from '../src/machine-peers.mjs';
-import { buildSwitchboardDashboard, OFFLINE_MEMBER } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, OFFLINE_MEMBER, PendingTracker, QUESTION_AT } from '../src/switchboard.mjs';
 
 let hasOpenSsl = true;
 try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); } catch { hasOpenSsl = false; }
@@ -211,6 +211,68 @@ test('an offline member gives Unknown rows with the note, and its rows leave aft
   assert.equal(gone.threads.some((row) => row.remoteCache), true);
   // A member that never answered adds nothing.
   assert.equal(mergePeerRows(boardA(), [peerState(exported, { lastOkAtMs: 0 })], A, nowMs).threads.length, 3);
+});
+
+// A Claude question wait that started at `t`.
+const asking = (n, t) => claude(n, { lifecycleRunning: true, agentActivityAtMs: t, awaitingPermission: true, pendingToolCount: 1,
+  pendingTools: [{ tool: 'AskUserQuestion' }], pendingToolAtMs: t, awaitingUserInput: true, latestUserQuestionAtMs: t });
+
+test('the export sends the time of an open question only, and the merge keeps it out of the row fields', () => {
+  const exported = exportLocalSessions(board([asking(1, nowMs - 2000), claude(2)], B), B, nowMs);
+  const byId = (rows, n) => rows.find((row) => row.id === `claude-desktop-code:${local(n)}`);
+  assert.deepEqual([byId(exported.rows, 1).questionPending, byId(exported.rows, 1).questionAtMs], [true, nowMs - 2000]);
+  assert.equal(Object.hasOwn(byId(exported.rows, 2), 'questionAtMs'), false);
+  // A wait older than six hours is no open question, so it sends no time.
+  const [old] = exportLocalSessions(board([asking(3, nowMs - 7 * 60 * 60 * 1000)], B), B, nowMs).rows;
+  assert.equal(old.questionPending, false);
+  assert.equal(Object.hasOwn(old, 'questionAtMs'), false);
+  // The receiver keeps a number and drops a row whose time is not a finite number.
+  const parsed = JSON.parse(exportBody(exported).body);
+  const value = validExport({ ...parsed, rows: [...parsed.rows, { id: 'text', title: 'Text', questionAtMs: '5' },
+    { id: 'nan', title: 'NaN', questionAtMs: NaN }] }, B);
+  assert.equal(byId(value.rows, 1).questionAtMs, nowMs - 2000);
+  assert.deepEqual(value.rows.filter((row) => ['text', 'nan'].includes(row.id)), []);
+  const merged = mergePeerRows(board([], A), [peerState(exported)], A, nowMs);
+  const member = (n) => merged.threads.find((row) => row.id === `m:${B.machineId}:claude-desktop-code:${local(n)}`);
+  assert.equal(Object.hasOwn(member(1), 'questionAtMs'), false);
+  assert.equal(JSON.stringify(member(1)).includes('questionAtMs'), false);
+  assert.deepEqual([member(1)[QUESTION_AT], member(2)[QUESTION_AT]], [nowMs - 2000, 0]);
+});
+
+test('a member question after Read gets attention again, and a member question asked during a mute gets through', async () => {
+  const memberId = `m:${B.machineId}:claude-desktop-code:${local(1)}`;
+  // The member board goes through the wire; `old` removes the question time, as an older ASB sends.
+  const observe = async (tracker, thread, old = false) => {
+    const sessions = JSON.parse(exportBody(exportLocalSessions(board([thread], B), B, nowMs)).body);
+    if (old) for (const row of sessions.rows) delete row.questionAtMs;
+    const merged = mergePeerRows(board([], A), [peerState(sessions)], A, nowMs);
+    await tracker.observe(merged);
+    return merged.threads.find((row) => row.id === memberId);
+  };
+  const steps = async (old) => {
+    const tracker = new PendingTracker(false);
+    let row = await observe(tracker, asking(1, nowMs - 60_000), old);
+    assert.deepEqual([row.questionAttention, row.pending], [true, true]);
+    await tracker.acknowledge(memberId);
+    assert.equal((await observe(tracker, asking(1, nowMs - 60_000), old)).questionAttention, false);
+    assert.equal((await observe(tracker, claude(1), old)).questionPending, false);
+    row = await observe(tracker, asking(1, nowMs - 30_000), old);
+    return { tracker, row };
+  };
+  const { tracker, row: second } = await steps(false);
+  assert.deepEqual([second.questionAttention, second.pendingSource], [true, 'user-question']);
+  await tracker.acknowledge(memberId);
+  await tracker.setMuted(second, true, 0, nowMs - 20_000);
+  await observe(tracker, claude(1));
+  const third = await observe(tracker, asking(1, nowMs - 10_000));
+  assert.deepEqual([third.muted, third.questionAttention, third.pending], [true, true, true]);
+  // The same question with the mute started after it stays hidden.
+  await tracker.setMuted(third, false);
+  await tracker.setMuted(third, true, 0, nowMs - 5_000);
+  const hidden = await observe(tracker, asking(1, nowMs - 10_000));
+  assert.deepEqual([hidden.muted, hidden.questionAttention, hidden.pending], [true, false, false]);
+  // A member with an older ASB sends no time: its second question gets no attention.
+  assert.equal((await steps(true)).row.questionAttention, false);
 });
 
 test('addresses go in the order last good, LAN, ZeroTier, Tailscale', () => {
