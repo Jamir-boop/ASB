@@ -807,7 +807,7 @@ class ProfileSyncChecks(unittest.TestCase):
         replies = {
             "/api/threads/a/open": (500, b'{"error":"Failed to open thread","detail":"The app launcher must be an existing executable app file."}'),
             "/api/threads/b/open": (404, b'{"error":"Thread not found"}'),
-            "/api/threads/c/discard": (400, b'{"error":"Discard does not work on a session on another machine."}'),
+            "/api/threads/c/discard": (400, b'{"error":"Mark read when done does not work on a session on another machine."}'),
             "/api/threads/d/open": (500, b""),
             "/api/threads/e/open": (500, b'{"error":"Failed to open thread","detail":7}'),
             "/api/threads/f/discard": (400, b'{"detail":"x"}'),
@@ -836,7 +836,7 @@ class ProfileSyncChecks(unittest.TestCase):
         for route, text in (
                 ("/api/threads/a/open", "Cannot open this session: The app launcher must be an existing executable app file."),
                 ("/api/threads/b/open", "Cannot open this session. Refresh the session list, then try again."),
-                ("/api/threads/c/discard", "Discard does not work on a session on another machine."),
+                ("/api/threads/c/discard", "Mark read when done does not work on a session on another machine."),
                 ("/api/threads/d/open", "Cannot open this session. Check the app link handler, then try again."),
                 ("/api/threads/e/open", "Cannot open this session. Check the app link handler, then try again."),
                 ("/api/threads/f/discard", "Cannot change this session. Refresh the session list, then try again."),
@@ -2248,8 +2248,8 @@ class DataChecks(unittest.TestCase):
         slots = asb.ROW_PANEL_SLOTS
         self.assertEqual((slots["discard-result"], slots["keep-result"], slots["unpin"], slots["pin"]),
                          (("discard", "asb-discard-symbolic"), ("discard", "asb-keep-symbolic"), ("pin", "asb-unpin-symbolic"),
-                          ("pin", "view-pin-symbolic")))
-        for name in ("asb-discard-symbolic", "asb-keep-symbolic", "asb-unpin-symbolic"):
+                          ("pin", "asb-pin-symbolic")))
+        for name in ("asb-discard-symbolic", "asb-keep-symbolic", "asb-unpin-symbolic", "asb-pin-symbolic", "asb-pin-outline-symbolic"):
             self.assertTrue((SOURCE.parents[1] / "assets" / "icons" / f"{name}.svg").is_file(), name)
 
     def test_mute_left_text_rounds_up_to_minutes(self):
@@ -2293,7 +2293,7 @@ class DataChecks(unittest.TestCase):
             clock.tzset()
 
     def test_ended_timed_mute_restores_mute_and_discard_actions(self):
-        for state, discard in (("working", "Discard result"), ("idle", "Discard next result")):
+        for state, discard in (("working", "Mark read when done"), ("idle", "Mark next result read")):
             row = {"state": state, "muted": True, "mutedUntilMs": NOW}
             self.assertIn(("Mute", "mute"), asb.row_menu_actions(row, NOW))
             self.assertIn((discard, "discard-result"), asb.row_menu_actions(row, NOW))
@@ -5414,9 +5414,9 @@ class NativeLogicChecks(unittest.TestCase):
         working = {"state": "working"}
         self.assertEqual(controls(working), {"read": ("mark-unread", "Mark unread", "mail-unread-symbolic"),
                                              "mute": ("mute", "Mute", "asb-muted-symbolic"),
-                                             "pin": ("pin", "Pin", "view-pin-symbolic"),
-                                             "discard": ("discard-result", "Discard result", "asb-discard-symbolic")})
-        self.assertEqual(controls({**working, "discardResult": True})["discard"], ("keep-result", "Keep result", "asb-keep-symbolic"))
+                                             "pin": ("pin", "Pin", "asb-pin-symbolic"),
+                                             "discard": ("discard-result", "Mark read when done", "asb-discard-symbolic")})
+        self.assertEqual(controls({**working, "discardResult": True})["discard"], ("keep-result", "Leave unread when done", "asb-keep-symbolic"))
         for remote in (working, {**working, "discardResult": True}):
             self.assertNotIn("discard", controls({**remote, "remote": True}))
             self.assertFalse({"discard-result", "keep-result"} & {action for _title, action in actions({**remote, "remote": True})})
@@ -5491,7 +5491,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(actions({"nativeUnread": True, "nativeAttention": False})[0], ("Unread", "mark-unread"))
         self.assertEqual([action for _, action in actions({"pinned": True})], ["mark-unread", "mute", "unpin", "pin-up", "pin-down"])
         self.assertEqual(actions({"pinned": True, "muted": True})[1], ("Unmute", "unmute"))
-        self.assertEqual(actions({"state": "working"})[-2:], [("Pin", "pin"), ("Discard result", "discard-result")])
+        self.assertEqual(actions({"state": "working"})[-2:], [("Pin", "pin"), ("Mark read when done", "discard-result")])
         self.assertEqual(actions({"state": "working", "muted": True}), [("Unread", "mark-unread"), ("Unmute", "unmute"), ("Pin", "pin")])
         self.assertEqual(actions({"state": "working", "muted": True, "discardResult": True})[-1], ("Pin", "pin"))
 
@@ -5640,9 +5640,9 @@ class NativeLogicChecks(unittest.TestCase):
                                 ({"state": "idle", "lastOutcome": "stopped", "discardResult": False}, "stop"),
                                 ({"state": "idle", "discardResult": False}, "")):
             self.assertEqual(indicator({**working, **extra}), expected)
-        self.assertEqual(actions(working)[-1], ("Keep result", "keep-result"))
-        self.assertEqual(actions({**working, "discardResult": False})[-1], ("Discard result", "discard-result"))
-        self.assertNotIn(("Discard result", "discard-result"), actions({"state": "idle"}))
+        self.assertEqual(actions(working)[-1], ("Leave unread when done", "keep-result"))
+        self.assertEqual(actions({**working, "discardResult": False})[-1], ("Mark read when done", "discard-result"))
+        self.assertNotIn(("Mark read when done", "discard-result"), actions({"state": "idle"}))
         window = object.__new__(Window)
         window.session_actions = set()
         window.clear_read_feedback = Mock(side_effect=lambda item: setattr(item, "asb_read_timer", None))
@@ -5651,8 +5651,8 @@ class NativeLogicChecks(unittest.TestCase):
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
-            for armed, action, text in ((False, "win.discard-result", "Discard result: go to read Idle when this task ends"),
-                                       (True, "win.keep-result", "Keep result: show the dot when this task ends")):
+            for armed, action, text in ((False, "win.discard-result", "Mark read when done: no dot when this task ends"),
+                                       (True, "win.keep-result", "Leave unread when done: the dot shows when this task ends")):
                 widget.asb_thread = {**working, "discardResult": armed}
                 window.update_card_actions(widget)
                 widget.asb_read_button.set_visible.assert_called_with(True)
@@ -5730,10 +5730,10 @@ class NativeLogicChecks(unittest.TestCase):
                               ({**armed, "state": "waiting"}, ""), ({**armed, "state": "unknown"}, "")):
             self.assertEqual(indicator(row), expected, row)
         # The menu and the row panel offer Discard for the next task on an Idle row with no mark, and Keep on an armed one.
-        self.assertEqual(actions(idle)[-1], ("Discard next result", "discard-result"))
-        self.assertEqual(actions(armed)[-1], ("Keep next result", "keep-result"))
-        self.assertEqual(controls(idle)["discard"], ("discard-result", "Discard next result", "asb-discard-symbolic"))
-        self.assertEqual(controls(armed)["discard"], ("keep-result", "Keep next result", "asb-keep-symbolic"))
+        self.assertEqual(actions(idle)[-1], ("Mark next result read", "discard-result"))
+        self.assertEqual(actions(armed)[-1], ("Leave next result unread", "keep-result"))
+        self.assertEqual(controls(idle)["discard"], ("discard-result", "Mark next result read", "asb-discard-symbolic"))
+        self.assertEqual(controls(armed)["discard"], ("keep-result", "Leave next result unread", "asb-keep-symbolic"))
         # A mark, a drawer entry, Mute, another machine, or another state takes the offer away; Keep stays for an armed row with a mark.
         for extra in ({"unread": True}, {"questionAttention": True}, {"lastOutcome": "stopped"}, {"drawer": True}, {"muted": True},
                       {"remote": True}, {"state": "waiting"}, {"state": "unknown"}):
@@ -5744,12 +5744,12 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertNotIn("discard", controls({**armed, **extra}), extra)
         self.assertEqual(controls({**idle, "surface": "cli"})["discard"][0], "discard-result")
         # Working rows keep their texts.
-        self.assertEqual(actions({**idle, "state": "working"})[-1], ("Discard result", "discard-result"))
-        self.assertEqual(actions({**armed, "state": "working"})[-1], ("Keep result", "keep-result"))
+        self.assertEqual(actions({**idle, "state": "working"})[-1], ("Mark read when done", "discard-result"))
+        self.assertEqual(actions({**armed, "state": "working"})[-1], ("Leave unread when done", "keep-result"))
         # The tooltip note and the accessible label name the next task on an Idle row only.
         model = SCOPE["tooltip_model"]
-        self.assertEqual(model(armed, 100_000, "/home/test")["note"], "Discard is on for the next task.")
-        self.assertEqual(model({**armed, "state": "working"}, 100_000, "/home/test")["note"], "Discard is on for this task.")
+        self.assertEqual(model(armed, 100_000, "/home/test")["note"], "Mark next result read: no dot when the next task ends.")
+        self.assertEqual(model({**armed, "state": "working"}, 100_000, "/home/test")["note"], "Mark read when done: no dot when this task ends.")
         self.assertEqual(model(idle, 100_000, "/home/test")["note"], "")
         window = object.__new__(Window)
         window.view, window.opening, window.open_errors, window.session_actions = "compact", set(), {}, set()
@@ -5758,15 +5758,15 @@ class NativeLogicChecks(unittest.TestCase):
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_row_text(text, 100_000)
-            self.assertIn(" Discard is on for the next task.", text.asb_accessible_label)
-            self.assertNotIn("Discard is on.", text.asb_accessible_label)
+            self.assertIn(" No dot when the next task ends.", text.asb_accessible_label)
+            self.assertNotIn("No dot when this task ends.", text.asb_accessible_label)
             text.asb_thread, text.asb_time_signature = {**armed, "state": "working"}, None
             window.update_row_text(text, 100_000)
-            self.assertIn(" Discard is on.", text.asb_accessible_label)
+            self.assertIn(" No dot when this task ends.", text.asb_accessible_label)
             self.assertNotIn("next task", text.asb_accessible_label)
             text.asb_thread, text.asb_time_signature = dict(idle), None
             window.update_row_text(text, 100_000)
-            self.assertNotIn("Discard", text.asb_accessible_label)
+            self.assertNotIn("No dot", text.asb_accessible_label)
 
     def test_idle_card_offers_discard_for_the_next_task_in_the_read_slot(self):
         window = object.__new__(Window)
@@ -5779,8 +5779,8 @@ class NativeLogicChecks(unittest.TestCase):
             window.update_card_actions(widget)
             return widget, widget.asb_read_button
         with patch.dict(SCOPE, {"Gtk": gtk}):
-            for armed, action, text in ((False, "win.discard-result", "Discard next result: go to read Idle when the next task ends"),
-                                       (True, "win.keep-result", "Keep result: show the dot when the next task ends")):
+            for armed, action, text in ((False, "win.discard-result", "Mark next result read: no dot when the next task ends"),
+                                       (True, "win.keep-result", "Leave next result unread: the dot shows when the next task ends")):
                 _widget, read = card({**idle, "discardResult": armed})
                 read.set_visible.assert_called_with(True)
                 read.set_focusable.assert_called_with(True)
@@ -5942,8 +5942,8 @@ class NativeLogicChecks(unittest.TestCase):
                  ({"unread": True, "alert": True, "lastOutcome": "failed"}, "alert", "Failed. Not read yet."),
                  ({"unread": True, "alert": True, "lastOutcome": "limit"}, "alert", "Usage limit stopped the task. Not read yet."),
                  ({"lastOutcome": "stopped"}, "stop", "You stopped this task."),
-                 ({"state": "working", "discardResult": True}, "discard", "Discard is on for this task."),
-                 ({"discardResult": True}, "discard", "Discard is on for the next task."),
+                 ({"state": "working", "discardResult": True}, "discard", "Mark read when done: no dot when this task ends."),
+                 ({"discardResult": True}, "discard", "Mark next result read: no dot when the next task ends."),
                  ({"questionPending": True}, "", "A question is still open in the chat."),
                  ({"lastOutcome": "failed", "unread": False}, "", ""), ({}, "", "")]
         for extra, indicator, note in cases:
@@ -6043,7 +6043,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.query_row_tooltip(widget, 0, 0, True, tooltip)
             second = window.tooltip_content.call_args.args[1]
             self.assertEqual((first["title"], first["state_text"], first["error"]), ("First", "Working · 2s", "First error"))
-            self.assertEqual((second["title"], second["error"], second["note"]), ("Second", "", "Discard is on for this task."))
+            self.assertEqual((second["title"], second["error"], second["note"]), ("Second", "", "Mark read when done: no dot when this task ends."))
             self.assertIsNot(tooltip.set_custom.call_args.args[0], first_custom)
             builds = window.tooltip_content.call_count
             widget.asb_thread["pending"] = True
@@ -6130,8 +6130,10 @@ class NativeLogicChecks(unittest.TestCase):
         panel = SimpleNamespace(asb_identity=rows[0]["id"], asb_signature=None, asb_rows=None, asb_controls=None, asb_copy_values=None, asb_copied=None,
                                 asb_copy_error="", asb_title=Mock(), asb_error=Mock(), update_property=Mock(), asb_mute_tag=Mock(),
                                 asb_mute_words=Mock(), asb_mute_dots=[], asb_open=button(), asb_copy=button(), asb_copy_full=button(),
-                                asb_actions={slot: button() for slot in ("read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard")})
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=2))
+                                asb_actions={slot: button() for slot in ("read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard")},
+                                asb_times={choice: button() for choice in asb.MUTE_CHOICES}, asb_pages=Mock(**{"get_visible_child_name.return_value": "main"}))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=2, CHECKED=4),
+                              AccessibleTristate=SimpleNamespace(FALSE=0, TRUE=1))
         return window, panel, gtk
 
     def test_remote_row_panel_copies_no_relative_reference_and_says_where_it_runs(self):
@@ -6374,7 +6376,7 @@ class NativeLogicChecks(unittest.TestCase):
                 else:
                     copy.reset_property.assert_called_with(1)
         row = {"id": "a", "title": "Chat", "provider": "codex", "state": "idle", "canOpen": True}
-        for extra, tip, description in (({}, "Scroll or press Left and Right to change the time.", "Left or Right changes the time."),
+        for extra, tip, description in (({}, "Click the time to choose it. Scroll or press Left and Right to change it.", "Left or Right changes the time."),
                                         ({"muted": True}, None, "Until you unmute")):
             with self.subTest(panel=extra):
                 window, panel, gtk = self.row_panel_window([{**row, **extra}])
@@ -8330,7 +8332,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(actions(tucked), [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Take out of drawer", "drawer-out")])
         self.assertEqual(actions({**tucked, "state": "working"}),
                          [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Take out of drawer", "drawer-out"),
-                          ("Discard result", "discard-result")])
+                          ("Mark read when done", "discard-result")])
         self.assertEqual(actions({**tucked, "actionRequired": True}),
                          [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Take out of drawer", "drawer-out")])
         for row in (base, {**base, "questionAttention": True}, {**unread, "questionAttention": True}, {**unread, "actionRequired": True}):

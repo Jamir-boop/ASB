@@ -899,7 +899,7 @@ export class PendingTracker {
   async setDiscard(row, enabled, next = false) {
     await this.load();
     if (enabled && row.state !== 'working' && !(next && row.state === 'idle')) {
-      throw Object.assign(new Error(next ? 'Discard requires a Working or Idle task.' : 'Discard requires a Working task.'),
+      throw Object.assign(new Error(next ? 'Mark next result read requires a Working or Idle task.' : 'Mark read when done requires a Working task.'),
         { statusCode: 400, expose: next });
     }
     const record = this.records[row.id];
@@ -1183,7 +1183,7 @@ export function createSwitchboardServer(options = {}) {
       tracker.apply(thread);
     },
     discardThread: (thread, enabled, next) => {
-      if (thread.remote) throw Object.assign(new Error('Discard does not work on a session on another machine.'), { statusCode: 400, expose: true });
+      if (thread.remote) throw Object.assign(new Error('Mark read when done does not work on a session on another machine.'), { statusCode: 400, expose: true });
       return tracker.setDiscard(thread, enabled, next);
     },
     drawerThread: (thread, enabled) => tracker.setDrawer(thread, enabled),

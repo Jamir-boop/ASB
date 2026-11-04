@@ -27,6 +27,7 @@ export const RUNTIME_FILES = [
   'assets/icons/asb-filter-symbolic.svg', 'assets/icons/asb-chat-symbolic.svg', 'assets/icons/asb-messages-symbolic.svg',
   'assets/icons/asb-muted-symbolic.svg', 'assets/icons/asb-link-symbolic.svg', 'assets/icons/asb-globe-symbolic.svg',
   'assets/icons/asb-discard-symbolic.svg', 'assets/icons/asb-keep-symbolic.svg', 'assets/icons/asb-unpin-symbolic.svg',
+  'assets/icons/asb-pin-symbolic.svg', 'assets/icons/asb-pin-outline-symbolic.svg',
   'gnome-shell/metadata.json', 'gnome-shell/extension.js', 'gnome-shell/model.js', 'gnome-shell/stylesheet.css', 'gnome-shell/icons/asb-chat-symbolic.svg', 'gnome-shell/icons/asb-claude-symbolic.svg', 'gnome-shell/icons/asb-openai-symbolic.svg', 'gnome-shell/icons/asb-opencode-symbolic.svg',
   'assets/icons/README.md', 'assets/icons/ASB-disc-provenance.md', 'assets/pets/pets.json', 'assets/pets/README.md',
   'assets/sounds/opencode_staplebops_01.wav', 'assets/sounds/opencode_staplebops_02.wav', 'assets/sounds/opencode_nope_03.wav',

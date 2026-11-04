@@ -409,7 +409,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(len(children), 7)
         self.assertEqual(board_children(cell), [card.asb_dot, card.asb_compact_pin])
         self.assertEqual(cell.get_width(), 14)
-        self.assertEqual((card.asb_compact_pin.get_icon_name(), card.asb_compact_pin.get_pixel_size()), ("view-pin-symbolic", 10))
+        self.assertEqual((icon_name(card.asb_compact_pin), card.asb_compact_pin.get_pixel_size()), ("asb-pin-symbolic", 10))
         self.assertTrue(card.asb_compact_pin.has_css_class("asb-compact-pin"))
 
     def assert_accessible_label(self, widget, expected, prop=None):
@@ -3189,7 +3189,7 @@ class WidgetCheck(unittest.TestCase):
             panel = window.context_menu
             self.assertTrue(260 <= panel.get_child().get_width() <= 268, panel.get_child().get_width())
             self.assertEqual(actions(panel), {"read": ("Mark unread", True), "mute": ("Mute", True), "pin": ("Pin", True),
-                                              "discard": ("Discard result", True)})
+                                              "discard": ("Mark read when done", True)})
             self.assertEqual(icon_name(panel.asb_actions["discard"].asb_icon), "asb-discard-symbolic")
             # A clock tick that changes no shown data changes no widget.
             shown = panel.asb_signature
@@ -4273,7 +4273,7 @@ class WidgetCheck(unittest.TestCase):
                         self.assertEqual((mark.get_icon_name(), mark.get_gicon().get_file().get_basename()), (None, "asb-claude-symbolic.svg"))
                         self.assertTrue(mark.get_gicon().get_file().query_exists(None))
                         self.assertEqual(top.get_first_child().get_next_sibling().get_text(), "Tools")
-                        self.assertEqual(card.asb_pin_button.get_child().get_icon_name(), "view-pin-symbolic")
+                        self.assertEqual(icon_name(card.asb_pin_button.get_child()), "asb-pin-symbolic" if card.asb_thread.get("pinned") else "asb-pin-outline-symbolic")
                         self.assertIsInstance(title, asb.CardTitle)
                         self.assertTrue(title.title_layouts(title.get_width())[-1])
                         self.assertEqual(title.get_height(), 32)
@@ -8854,17 +8854,17 @@ class WidgetCheck(unittest.TestCase):
         read = card("idle").asb_read_button
         self.assertTrue(read.get_visible() and read.has_css_class("asb-discard-offer") and read.has_css_class("asb-discard-button"))
         self.assertGreater(self.ink(read), 0)
-        self.assertEqual(read.get_tooltip_text(), "Discard next result: go to read Idle when the next task ends")
+        self.assertEqual(read.get_tooltip_text(), "Mark next result read: no dot when the next task ends")
         self.hover_card(window, card("idle"), False); settle()
         self.assertEqual(self.ink(card("idle").asb_read_button), 0)
         armed = card("armed")
         self.assertTrue(armed.asb_dot.get_visible() and armed.asb_dot.has_css_class("asb-discard"))
         self.assertFalse(armed.asb_read_button.has_css_class("asb-discard-offer"))
         self.assertGreater(self.ink(armed.asb_read_button), 0)
-        self.assertEqual(armed.asb_read_button.get_tooltip_text(), "Keep result: show the dot when the next task ends")
-        self.assertIn("Discard is on for the next task.", armed.asb_tooltip)
-        self.assertIn(" Discard is on for the next task.", armed.asb_accessible_label)
-        self.assertNotIn("Discard", card("idle").asb_accessible_label)
+        self.assertEqual(armed.asb_read_button.get_tooltip_text(), "Leave next result unread: the dot shows when the next task ends")
+        self.assertIn("Mark next result read: no dot when the next task ends.", armed.asb_tooltip)
+        self.assertIn(" No dot when the next task ends.", armed.asb_accessible_label)
+        self.assertNotIn("No dot", card("idle").asb_accessible_label)
         # A mark, Mute, and a Working card without an arm keep their own look: no offer on a card with a mark or Mute.
         for identity in ("unread", "stopped", "muted"):
             self.hover_card(window, card(identity), True); settle()
@@ -8875,7 +8875,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(card("work").asb_read_button.has_css_class("asb-discard-offer"))
 
         # The row panel names the action for the next task on an Idle card, and keeps the Working texts.
-        for identity, label in (("idle", "Discard next result"), ("armed", "Keep next result"), ("work", "Discard result")):
+        for identity, label in (("idle", "Mark next result read"), ("armed", "Leave next result unread"), ("work", "Mark read when done")):
             window.show_context(card(identity)); self.drain()
             action = window.context_menu.asb_actions["discard"]
             self.assertEqual((action.get_visible(), action.asb_label.get_label()), (True, label), identity)
@@ -8903,7 +8903,7 @@ class WidgetCheck(unittest.TestCase):
         window.context_menu.asb_actions["discard"].emit("clicked")
         self.assertEqual(sent(), [("/api/threads/idle/discard-result", {"next": True})])
         answer("idle", discardResult=True)
-        self.assertEqual(window.context_menu.asb_actions["discard"].asb_label.get_label(), "Keep next result")
+        self.assertEqual(window.context_menu.asb_actions["discard"].asb_label.get_label(), "Leave next result unread")
         window.context_menu.popdown(); self.drain()
         del requests[:]
         card("work").asb_read_button.emit("clicked")
@@ -8931,6 +8931,232 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(read.has_css_class("asb-read-confirmed"))
         self.assertEqual(read.asb_action, "win.discard-result")
         self.assertTrue(read.has_css_class("asb-discard-offer"))
+
+    def test_corner_pin_glyphs_discard_offer_text_color_and_no_passive_plate(self):
+        rows = [self.card_row("pinned", pinned=True), self.card_row("plain"), self.card_row("stopped", lastOutcome="stopped"),
+                self.card_row("idle", updatedAtMs=NOW - 120_000)]
+        window = self.card_board(rows)
+        cards = window.focus_widgets
+        # One pin family: the filled ASB pin on an on toggle and the outline pin on an off one, both 12 px; Unpin keeps its glyph.
+        for identity, name in (("pinned", "asb-pin-symbolic"), ("plain", "asb-pin-outline-symbolic")):
+            glyph = cards[identity].asb_pin_button.get_child()
+            self.assertEqual((icon_name(glyph), glyph.get_pixel_size()), (name, 12), identity)
+            self.assertTrue(glyph.get_gicon().get_file().query_exists(None))
+        window.update_session_row(cards["plain"], {**cards["plain"].asb_thread, "pinned": True}); self.settle(window)
+        self.assertEqual(icon_name(cards["plain"].asb_pin_button.get_child()), "asb-pin-symbolic")
+        window.update_session_row(cards["plain"], {**cards["plain"].asb_thread, "pinned": False}); self.settle(window)
+        self.assertEqual(icon_name(cards["plain"].asb_pin_button.get_child()), "asb-pin-outline-symbolic")
+        for identity, name in (("plain", "asb-pin-symbolic"), ("pinned", "asb-unpin-symbolic")):
+            window.show_context(cards[identity]); self.drain(.3)
+            self.assertEqual(icon_name(window.context_menu.asb_actions["pin"].asb_icon), name, identity)
+            window.context_menu.popdown(); self.drain(.2)
+        self.assertNotIn("view-pin-symbolic", Path(asb.__file__).read_text())
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)  # The plates and the ring are read at their end color.
+        for look, palette in (("gnome", None), ("custom", CUSTOM),
+                              ("blue", {"background": "#0b1a2e", "text": "#e6eef8", "accent": "#5aa9ff", "muted": "#9fb3c8", "divider": "#2a3d55"})):
+            with self.subTest(look=look):
+                window.set_palette(palette); self.settle(window)
+                css = self.board_css(window)
+                text = palette["text"] if palette else "@window_fg_color"
+                self.assertIn(f".asb-discard-offer .asb-discard-cue {{ color: {text}; }}", css)
+                self.assertNotIn("asb-passive-indicator {", css.replace(".asb-read-button.asb-passive-indicator { background: transparent; }", ""))
+                # The Discard offer on card hover has the text color; at rest it shows no ink.
+                idle = cards["idle"]
+                self.hover_card(window, idle, True); self.settle(window)
+                cue = next(widget for widget in descendants(idle.asb_read_button) if isinstance(widget, asb.Gtk.DrawingArea))
+                expected = asb.Gdk.RGBA()
+                if palette:
+                    expected.parse(text)
+                else:
+                    expected = idle.get_color()  # @window_fg_color: the card text color in the GNOME look.
+                self.assertTrue(cue.get_color().equal(expected), (cue.get_color().to_string(), expected.to_string()))
+                self.hover_card(window, idle, False); self.settle(window)
+                self.assertEqual(self.ink(idle.asb_read_button), 0)
+                # The passive stop square has no plate on card hover: the button corners stay clear.
+                stopped = cards["stopped"]
+                self.assertTrue(stopped.asb_read_button.has_css_class("asb-passive-indicator"))
+                self.hover_card(window, stopped, True); self.settle(window)
+                pixels = self.rgba(stopped.asb_read_button)
+                self.assertEqual([pixels[12][x][3] for x in (2, 4, 6)], [0, 0, 0])
+                self.assertGreater(self.ink(stopped.asb_read_button), 0)
+                self.hover_card(window, stopped, False); self.settle(window)
+        # Compact uses the same filled pin at 10 px.
+        window.view_filter.set_selected(0); self.drain(.4)
+        pin = window.focus_widgets["pinned"].asb_compact_pin
+        self.assertEqual((icon_name(pin), pin.get_pixel_size(), pin.get_visible()), ("asb-pin-symbolic", 10, True))
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real clicks need xdotool and DISPLAY=:9 or :10")
+    def test_row_panel_real_click_on_the_mute_tag_shows_the_times_and_does_not_mute(self):
+        window = self.mute_wheel_board()
+        window.session_action = Mock()
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        window.show_context(window.focus_widgets["read"], 20, 20); self.drain(.4)
+        panel = window.context_menu
+        # The tag slides away under a still pointer; the panel stays open.
+        self.held_popover_click(window, panel.asb_mute_tag)
+        window.session_action.assert_not_called()
+        self.assertTrue(panel.get_visible())
+        self.assertEqual(panel.asb_pages.get_visible_child_name(), "times")
+        # Enter and Space pick a time, and Escape first goes back, then closes the main page.
+        for key, choice in (("Return", "1h"), ("space", "8h")):
+            subprocess.run(["xdotool", "key", "Down", key], check=True); self.drain(.4)
+            window.session_action.assert_not_called()
+            self.assertEqual((window.mute_for, panel.asb_pages.get_visible_child_name(), window.get_focus()),
+                             (choice, "main", panel.asb_actions["mute"]))
+            self.held_popover_click(window, panel.asb_mute_tag)
+        subprocess.run(["xdotool", "key", "Escape"], check=True); self.drain(.4)
+        self.assertEqual((window.mute_for, panel.asb_pages.get_visible_child_name()), ("8h", "main"))
+        self.assertTrue(panel.get_visible())
+        subprocess.run(["xdotool", "key", "Escape"], check=True); self.drain(.3)
+        self.assertFalse(panel.get_visible())
+        window.show_context(window.focus_widgets["read"], 20, 20); self.drain(.4)
+        panel = window.context_menu
+        self.held_popover_click(window, panel.asb_mute_tag)
+        self.held_popover_click(window, panel.asb_times["1d"])
+        window.session_action.assert_not_called()
+        self.assertEqual((window.mute_for, panel.asb_pages.get_visible_child_name()), ("1d", "main"))
+        self.held_popover_click(window, panel.asb_actions["mute"].asb_label)
+        window.session_action.assert_called_once_with("read", "mute", asb.mute_body("1d"))
+
+    def test_comfortable_state_line_is_3_px_up_with_the_same_card_height(self):
+        rows = [self.card_row("two", title="Write the release notes for the summer catalog and the winter catalog of the shop"),
+                self.card_row("one", title="Notes")]
+        window = self.card_board(rows)
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        def place(card):
+            found, point = card.asb_footer_stack.compute_point(card, asb.Graphene.Point().init(0, 0))
+            self.assertTrue(found)
+            found, title = card.asb_title_label.compute_point(card, asb.Graphene.Point().init(0, 0))
+            self.assertTrue(found)
+            return point.y, title.y, card.get_height()
+        for dpi, scale in ((98304, 1.0), (122880, 1.25), (147456, 1.5)):
+            with self.subTest(scale=scale):
+                settings.set_property("gtk-xft-dpi", dpi); self.drain(.6); window.check_geometry(); self.drain(.4)
+                self.assertEqual(window.text_scale, scale)
+                for identity in ("two", "one"):
+                    card = window.focus_widgets[identity]
+                    footer, title, height = place(card)
+                    # The old place: the same card without the 3 px move.
+                    card.asb_footer_stack.remove_css_class("asb-footer"); self.settle(window)
+                    old_footer, old_title, old_height = place(card)
+                    card.asb_footer_stack.add_css_class("asb-footer"); self.settle(window)
+                    self.assertEqual((old_footer - footer, title, height), (3, old_title, old_height), identity)
+                    self.assertEqual(height, window.card_heights[1])
+                    if scale == 1:
+                        self.assertEqual(height, asb.COMFORTABLE_ROW_HEIGHT)
+
+    def test_row_panel_mute_tag_opens_a_list_of_times(self):
+        window = self.mute_wheel_board()
+        window.session_action = Mock()
+        window.change_mute_for("1h")
+        card = window.focus_widgets["read"]
+        keys = lambda panel: SimpleNamespace(get_widget=lambda: panel)
+        def header(panel):
+            found, point = panel.asb_title.compute_point(window, asb.Graphene.Point().init(0, 0))
+            self.assertTrue(found)
+            return round(point.x), round(point.y)
+        def open_list(panel):
+            # The main page claims a press on the tag in the capture phase, before the Mute button.
+            main = panel.asb_pages.get_child_by_name("main")
+            gesture = next(controller for controller in main.observe_controllers() if isinstance(controller, asb.Gtk.GestureClick))
+            self.assertEqual(gesture.get_propagation_phase(), asb.Gtk.PropagationPhase.CAPTURE)
+            label = panel.asb_actions["mute"].asb_label
+            for widget, claimed in ((label, False), (panel.asb_mute_tag, True)):
+                found, point = widget.compute_point(main, asb.Graphene.Point().init(widget.get_width() / 2, widget.get_height() / 2))
+                self.assertTrue(found)
+                with patch.object(gesture, "set_state") as state:
+                    window.panel_tag_pressed(gesture, 1, point.x, point.y)
+                state.assert_called_once_with(asb.Gtk.EventSequenceState.CLAIMED if claimed else asb.Gtk.EventSequenceState.DENIED)
+            gesture.emit("released", 1, point.x, point.y)
+            self.drain(.4)
+        found, top = card.compute_point(window, asb.Graphene.Point().init(0, 0))
+        self.assertTrue(found)
+        settings = asb.Gtk.Settings.get_default()
+        for side, y in (("bottom", 20), ("top", window.get_height() - 30)):
+            with self.subTest(side=side):
+                window.show_context(card, card.get_width() / 2, y - top.y); self.drain(.4)
+                panel = window.context_menu
+                self.assertEqual(panel.get_position(), asb.Gtk.PositionType.TOP if side == "top" else asb.Gtk.PositionType.BOTTOM)
+                self.assertEqual(panel.asb_pages.get_vhomogeneous(), side == "top")
+                mute = panel.asb_actions["mute"]
+                self.assertEqual(mute.get_tooltip_text(), "Click the time to choose it. Scroll or press Left and Right to change it.")
+                self.assertEqual(panel.asb_mute_tag.get_tooltip_text(), "Choose how long to mute")
+                before, height = header(panel), panel.get_child().get_height()
+                open_list(panel)
+                window.session_action.assert_not_called()
+                self.assertEqual(panel.asb_pages.get_visible_child_name(), "times")
+                self.assertEqual(header(panel), before)
+                # Below its point the panel shrinks to the list; above it, it keeps its height.
+                self.assertEqual(panel.get_child().get_height() == height, side == "top", (panel.get_child().get_height(), height))
+                # A back row, a separator, then five 30 px radio rows in MUTE_CHOICES order, with the current time checked.
+                times = panel.asb_pages.get_child_by_name("times")
+                children = board_children(times)
+                self.assertIs(children[0], panel.asb_times_back)
+                self.assertIsInstance(children[1], asb.Gtk.Separator)
+                self.assertEqual(children[2:], [panel.asb_times[choice] for choice in asb.MUTE_CHOICES])
+                self.assertEqual((icon_name(panel.asb_times_back.asb_icon), panel.asb_times_back.asb_label.get_label(),
+                                  panel.asb_times_back.get_height()), ("go-previous-symbolic", "Mute", 30))
+                for choice, button in panel.asb_times.items():
+                    self.assertEqual((button.asb_label.get_label(), button.get_height(), button.get_accessible_role()),
+                                     (asb.MUTE_WORDS[choice], 30, asb.Gtk.AccessibleRole.RADIO))
+                    self.assertEqual(button.asb_icon.has_css_class("asb-radio-on"), choice == "1h")
+                    found, bounds = button.asb_icon.compute_bounds(button)
+                    self.assertEqual((found, bounds.size.width, bounds.size.height), (True, 14, 14))
+                    error = self.gtk_state(self.capsule_pointer(button.__gpointer__, None), int(asb.Gtk.AccessibleState.CHECKED),
+                                           ctypes.c_int(choice == "1h"))
+                    self.assertFalse(error, choice)
+                self.assertIs(window.get_focus(), panel.asb_times["1h"])
+                # Up and Down move in the list.
+                self.assertTrue(window.panel_key(keys(panel), asb.Gdk.KEY_Down, 0, asb.Gdk.ModifierType(0)))
+                self.assertIs(window.get_focus(), panel.asb_times["8h"])
+                self.assertTrue(window.panel_key(keys(panel), asb.Gdk.KEY_Up, 0, asb.Gdk.ModifierType(0)))
+                self.assertIs(window.get_focus(), panel.asb_times["1h"])
+                # A pick sets the time, rolls the tag word, and goes back to the Mute row; it does not mute.
+                panel.asb_times["8h"].activate(); self.drain(.5)
+                window.session_action.assert_not_called()
+                self.assertEqual((window.mute_for, panel.asb_pages.get_visible_child_name()), ("8h", "main"))
+                self.assertEqual(asb.read_layout(window.layout_path)["muteFor"], "8h")
+                self.assertEqual(panel.asb_mute_words.get_visible_child_name(), "8h")
+                self.assertIs(window.get_focus(), mute)
+                self.assertEqual(header(panel), before)
+                # The back row and Escape go back with no change; Escape on the main page is left to the popover, which closes.
+                open_list(panel)
+                self.assertTrue(panel.asb_times["8h"].asb_icon.has_css_class("asb-radio-on"))
+                self.assertFalse(panel.asb_times["1h"].asb_icon.has_css_class("asb-radio-on"))
+                self.assertIs(window.get_focus(), panel.asb_times["8h"])
+                panel.asb_times_back.emit("clicked"); self.drain(.4)
+                self.assertEqual((window.mute_for, panel.asb_pages.get_visible_child_name(), window.get_focus()), ("8h", "main", mute))
+                open_list(panel)
+                self.assertTrue(window.panel_key(keys(panel), asb.Gdk.KEY_Escape, 0, asb.Gdk.ModifierType(0)))
+                self.drain(.4)
+                self.assertEqual((window.mute_for, panel.asb_pages.get_visible_child_name(), window.get_focus()), ("8h", "main", mute))
+                self.assertFalse(window.panel_key(keys(panel), asb.Gdk.KEY_Escape, 0, asb.Gdk.ModifierType(0)))
+                window.session_action.assert_not_called()
+                # The slide lasts at most 200 ms, and with animations off the page changes with no motion.
+                self.assertLessEqual(panel.asb_pages.get_transition_duration(), 200)
+                self.assertEqual(panel.asb_pages.get_transition_type(), asb.Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+                previous = settings.get_property("gtk-enable-animations")
+                settings.set_property("gtk-enable-animations", False)
+                try:
+                    open_list(panel)
+                    self.assertEqual(panel.asb_pages.get_visible_child_name(), "times")
+                    self.assertFalse(panel.asb_pages.get_transition_running())
+                    panel.asb_times_back.emit("clicked")
+                    self.assertFalse(panel.asb_pages.get_transition_running())
+                finally:
+                    settings.set_property("gtk-enable-animations", previous)
+                window.change_mute_for("1h")
+                panel.popdown(); self.drain(.3)
+        # A click on the rest of the Mute row still mutes for the shown time and closes the panel.
+        window.show_context(card); self.drain(.3)
+        panel = window.context_menu
+        panel.asb_actions["mute"].emit("clicked"); self.drain(.3)
+        window.session_action.assert_called_once_with("read", "mute", asb.mute_body("1h"))
+        self.assertFalse(panel.get_visible())
 
     def test_message_courier_flight_paint_lit_icons_and_hidden_rows(self):
         def row(n, title):
@@ -13411,12 +13637,12 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             with self.subTest(identity=identity):
                 window.show_context(window.focus_widgets[identity]); self.drain(.3)
                 panel = window.context_menu
+                # The header, then the main page of the page stack: Open in, Show messages, and a separator.
                 root = panel.get_child().get_child()
-                order = [root.get_first_child()]
-                while len(order) < 4:
-                    order.append(order[-1].get_next_sibling())
-                self.assertEqual(order[:3], [panel.asb_title, panel.asb_open, panel.asb_messages])
-                self.assertIsInstance(order[3], asb.Gtk.Separator)
+                self.assertEqual(board_children(root), [panel.asb_title, panel.asb_pages])
+                order = board_children(panel.asb_pages.get_child_by_name("main"))[:3]
+                self.assertEqual(order[:2], [panel.asb_open, panel.asb_messages])
+                self.assertIsInstance(order[2], asb.Gtk.Separator)
                 messages = panel.asb_messages
                 self.assertEqual(messages.asb_label.get_label(), "Show messages")
                 self.assert_accessible_label(messages, "Show messages")

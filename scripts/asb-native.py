@@ -295,17 +295,17 @@ def row_menu_actions(row, now_ms=None):
         actions.extend((("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")))
     if not mute_active(row, now_ms) and not row.get("remote"):
         if row.get("state") == "working":
-            actions.append(("Keep result", "keep-result") if row.get("discardResult") else ("Discard result", "discard-result"))
+            actions.append(("Leave unread when done", "keep-result") if row.get("discardResult") else ("Mark read when done", "discard-result"))
         # An Idle row arms its next task: when it has no mark, or when the arm is on (Keep clears it).
         elif row.get("state") == "idle" and (row.get("discardResult") or not attention_indicator(row, True)):
-            actions.append(("Keep next result", "keep-result") if row.get("discardResult") else ("Discard next result", "discard-result"))
+            actions.append(("Leave next result unread", "keep-result") if row.get("discardResult") else ("Mark next result read", "discard-result"))
     return actions
 
 
 # The row panel slot and icon of each row_menu_actions action; the slots are in the menu order.
 ROW_PANEL_SLOTS = {"mark-read": ("read", "object-select-symbolic"), "mark-unread": ("read", "mail-unread-symbolic"),
                    "unmute": ("mute", "preferences-system-notifications-symbolic"), "mute": ("mute", "asb-muted-symbolic"),
-                   "unpin": ("pin", "asb-unpin-symbolic"), "pin": ("pin", "view-pin-symbolic"),
+                   "unpin": ("pin", "asb-unpin-symbolic"), "pin": ("pin", "asb-pin-symbolic"),
                    "drawer-out": ("drawer", "asb-drawer-symbolic"), "drawer-in": ("drawer", "asb-drawer-symbolic"),
                    "pin-up": ("pin-up", "go-up-symbolic"), "pin-down": ("pin-down", "go-down-symbolic"),
                    "keep-result": ("discard", "asb-keep-symbolic"), "discard-result": ("discard", "asb-discard-symbolic")}
@@ -601,7 +601,7 @@ def panel_copy_values(row):
 # The panel caption of the remote relative row; its tooltip and description have the full copy_relative_reason.
 REMOTE_RELATIVE_CAPTION = "Works only on this machine."
 PIN_MOVE_ENDS = {"pin-up": "Already the first pin", "pin-down": "Already the last pin"}
-PANEL_MUTE_TIP = "Scroll or press Left and Right to change the time."
+PANEL_MUTE_TIP = "Click the time to choose it. Scroll or press Left and Right to change it."
 PANEL_MUTE_KEYS = "Left or Right changes the time."
 PANEL_GONE_TEXT = "Not available now."
 CARD_ACTION_KEYS = {"read": "Alt+R", "drawer": "Alt+D", "mute": "Alt+M", "pin": "Alt+P", "copy": "Alt+C"}
@@ -1703,7 +1703,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
     elif indicator == "stop":
         note = "The usage limit stopped this task." if row.get("lastOutcome") == "limit" else "You stopped this task."
     elif indicator == "discard":
-        note = "Discard is on for the next task." if row.get("state") == "idle" else "Discard is on for this task."
+        note = "Mark next result read: no dot when the next task ends." if row.get("state") == "idle" else "Mark read when done: no dot when this task ends."
     elif row.get("questionPending"):
         note = "A question is still open in the chat."
     flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer")) if row.get(key))
@@ -6631,6 +6631,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {ink_moves}
 /* The terminal and machine glyphs: their ink center on the cap band of the caption next to them. */
 {base} .asb-where-icon {{ margin-top: 1px; margin-bottom: -1px; }}
+/* The Comfortable state line sits 3 px up; the 3 px under it keeps the card height. */
+{base} .asb-footer {{ margin-top: -3px; margin-bottom: 3px; }}
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; }}
 {base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid;
     border-radius: 50%; background: none; }}
@@ -6860,6 +6862,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 /* The raised row panel surface: its edge, its dim text at 4.5:1, and the Mute tag off dots at 3:1 on their tag. */
 {base} .asb-row-panel .dim-label {{ color: {panel['floor'][0]}; opacity: 1; }}
 {base} .asb-row-panel .asb-mute-tag .asb-copy-tag-dot:not(.asb-copy-tag-on) {{ background: {panel['dot']}; }}
+/* The Mute time list: a 14 px radio mark in the icon column, and a hover tint on the time tag that opens it. */
+{base} .asb-row-panel .asb-radio-mark {{ color: {panel['muted']}; }}
+{base} .asb-row-panel .asb-radio-mark.asb-radio-on {{ color: {colors['accent'] if colors else "@accent_bg_color"}; }}
+{base} .asb-row-panel .asb-mute-tag:hover {{ background: alpha({colors['text'] if colors else "@window_fg_color"}, .20); }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
@@ -6868,7 +6874,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ background: {quiet_caption}; }}
 {base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ border-color: {quiet_caption}; }}
 {base} .asb-discard-offer .asb-dot.asb-discard {{ border-color: transparent; }}
-{base} .asb-discard-offer .asb-discard-cue {{ color: {colors['muted'] if colors else "alpha(@window_fg_color, .55)"}; }}
+{base} .asb-discard-offer .asb-discard-cue {{ color: {colors['text'] if colors else "@window_fg_color"}; }}
 {base} .asb-pin-button.asb-pinned, {base} .asb-compact-pin {{ color: {quiet_caption}; }}
 {base} .asb-session.asb-hovered .asb-pin-button.asb-pinned, {base} .asb-key-focus .asb-pin-button.asb-pinned {{
     background: alpha({colors['text'] if colors else "@window_fg_color"}, .12); color: {colors['text'] if colors else "@window_fg_color"}; }}
@@ -6890,13 +6896,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-session:not(.asb-idle-read):not(.asb-limited) .asb-state:not(.success):not(.dim-label),
 {base} .asb-session.asb-drawer-lit:not(.asb-limited) .asb-state:not(.success) {{ color: {text}; }}
 {base} .asb-session.asb-unread.asb-hovered:not(.asb-limited) .asb-state:not(.success) {{ color: {muted}; }}
-/* Card hover or key focus: an 8% plate on every corner button, 12% and the text color on an on toggle; the button under the pointer or the focus keeps its tint. */
+/* Card hover or key focus: an 8% plate on every corner button, 12% and the text color on an on toggle; the button under the pointer or the focus keeps its tint.
+   A passive "?" or stop square is a mark, not a button, so it has no plate. */
 {base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-pin-button:not(:hover):not(:focus-visible),
 {base} .asb-key-focus:not(.asb-dismissed) .asb-pin-button:not(:hover):not(:focus-visible),
 {base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-read-button.asb-discard-button:not(:hover):not(:focus-visible),
-{base} .asb-key-focus:not(.asb-dismissed) .asb-read-button.asb-discard-button:not(:hover):not(:focus-visible),
-{base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-read-button.asb-passive-indicator,
-{base} .asb-key-focus:not(.asb-dismissed) .asb-read-button.asb-passive-indicator {{ background: alpha({text}, .08); }}
+{base} .asb-key-focus:not(.asb-dismissed) .asb-read-button.asb-discard-button:not(:hover):not(:focus-visible) {{ background: alpha({text}, .08); }}
 {base} .asb-session .asb-read-button.asb-discard-button:hover, {base} .asb-session .asb-read-button.asb-discard-button:focus-visible {{
     background: alpha({colors['accent'] if colors else "@accent_color"}, .15); }}
 {base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-pin-button.asb-pinned:not(:hover):not(:focus-visible),
@@ -9586,6 +9591,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 # The done text replaces the footer line for 1.6 s; the limit clock keeps its own rule on the line.
                 footer = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=100,
                                    hhomogeneous=True, vhomogeneous=True, margin_start=21)
+                footer.add_css_class("asb-footer")
                 footer.add_named(line, "line")
                 widget.asb_feedback = widget.asb_feedback_label = None
                 widget.asb_footer_stack = footer
@@ -9606,7 +9612,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 offer.add_css_class("asb-discard-cue")
                 read_icon.add_overlay(offer)
                 read = Gtk.Button(child=read_icon)
-                pin = Gtk.Button(child=Gtk.Image(icon_name="view-pin-symbolic", pixel_size=12))
+                pin = Gtk.Button(child=Gtk.Image(pixel_size=12))
+                set_icon(pin.get_child(), "asb-pin-outline-symbolic")
                 for button, name in ((read, "read"), (pin, "pin")):
                     button.add_css_class("flat")
                     button.add_css_class("asb-card-action")
@@ -9645,8 +9652,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 # children shows at a time, and a homogeneous box gives it the whole cell to center in.
                 cell = Gtk.Box(width_request=14, homogeneous=True)
                 dot.set_halign(Gtk.Align.CENTER)
-                pin = Gtk.Image(icon_name="view-pin-symbolic", pixel_size=10, visible=False,
-                                halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+                pin = Gtk.Image(pixel_size=10, visible=False, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+                set_icon(pin, "asb-pin-symbolic")
                 pin.add_css_class("asb-compact-pin")
                 widget.asb_compact_pin = pin
                 cell.append(dot)
@@ -9736,6 +9743,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pin = getattr(widget, "asb_compact_pin", None)
         if pin is not None:
             pin.set_visible(bool(row.get("pinned")) and not indicator)
+
+    @staticmethod
+    def draw_radio_mark(area, context, width, height):
+        """The time list radio: a 14 px ring with a 1.5 px stroke; when on, a filled disc with a 6 px hole."""
+        color = area.get_color()
+        context.set_source_rgba(color.red, color.green, color.blue, color.alpha)
+        if area.has_css_class("asb-radio-on"):
+            context.arc(width / 2, height / 2, 7, 0, 2 * math.pi)
+            # The hole runs the other way, so the nonzero fill leaves it clear.
+            context.new_sub_path()
+            context.arc_negative(width / 2, height / 2, 3, 2 * math.pi, 0)
+            context.fill()
+        else:
+            context.set_line_width(1.5)
+            context.arc(width / 2, height / 2, 6.25, 0, 2 * math.pi)
+            context.stroke()
 
     @staticmethod
     def draw_discard_offer(area, context, width, height):
@@ -9971,14 +9994,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pinned = bool(row.get("pinned"))
         pin.asb_action = ("win.unpin" if pinned else "win.pin") if not pending else None
         (pin.add_css_class if pinned else pin.remove_css_class)("asb-pinned")
+        if getattr(pin, "asb_pin_glyph", None) != pinned:
+            pin.asb_pin_glyph = pinned
+            set_icon(pin.get_child(), "asb-pin-symbolic" if pinned else "asb-pin-outline-symbolic")
         # Keep native gestures active so busy controls and the Read cue cannot open the row.
         read_text = ("A user action is required in the original app. Mark read in ASB" if unread
                      else "A user action is required in the original app") if shows_action(row) else "Task stopped" \
             if indicator == "stop" else "Read in ASB" if confirmed else "Mark read in ASB"
         if discard:
-            read_text = ("Keep result: show the dot when the next task ends" if idle else "Keep result: show the dot when this task ends") \
-                if row.get("discardResult") else ("Discard next result: go to read Idle when the next task ends" if idle
-                                                  else "Discard result: go to read Idle when this task ends")
+            read_text = ("Leave next result unread: the dot shows when the next task ends" if idle
+                         else "Leave unread when done: the dot shows when this task ends") \
+                if row.get("discardResult") else ("Mark next result read: no dot when the next task ends" if idle
+                                                  else "Mark read when done: no dot when this task ends")
         question_note = question_wait_note(row)
         if question_note:
             read_text = "Mark read. " + question_note
@@ -10267,7 +10294,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else " Usage limit stopped the task." if row.get("lastOutcome") == "limit" \
             else " Task failed." if row.get("lastOutcome") == "failed" or row.get("failedAttention") \
             else " Task completed." if row.get("completionAttention") else ""
-        discard = (" Discard is on for the next task." if row.get("state") == "idle" else " Discard is on.") if row.get("discardResult") else ""
+        discard = (" No dot when the next task ends." if row.get("state") == "idle" else " No dot when this task ends.") if row.get("discardResult") else ""
         drawer = " In the drawer. Still unread." if row.get("drawer") else ""
         muted = " " + mute_flag + "." if mute_flag else ""
         limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
@@ -10353,10 +10380,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_title.set_max_width_chars(1)
         panel.asb_title.set_hexpand(True)
         root.append(panel.asb_title)
-        def action_row(icon, handler, *data):
+        # The Mute time list is a second page under the same header; a panel placed above its point keeps its height.
+        panel.asb_pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False)
+        root.append(panel.asb_pages)
+        main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        panel.asb_pages.add_named(main, "main")
+        def action_row(icon, handler, *data, parent=main, role=Gtk.AccessibleRole.BUTTON):
             # One flat button per slot: an update changes its icon and label, so the focus stays on the slot.
             content = Gtk.Box(spacing=10)
-            button = Gtk.Button(child=content)
+            button = Gtk.Button(child=content, accessible_role=role)
             button.asb_icon, button.asb_label = Gtk.Image(pixel_size=14), Gtk.Label(xalign=0, hexpand=True)
             set_icon(button.asb_icon, icon)
             button.asb_label.set_ellipsize(Pango.EllipsizeMode.END)
@@ -10365,17 +10397,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.add_css_class("flat")
             button.add_css_class("asb-panel-action")
             button.connect("clicked", handler, *data)
-            root.append(button)
+            parent.append(button)
             return button
         panel.asb_open = action_row(None, self.panel_open)
         # Every row has messages to show: local, remote, and view-only, so the row is always sensitive.
         panel.asb_messages = action_row("asb-messages-symbolic", self.panel_show_messages)
         set_panel_label(panel.asb_messages, "Show messages")
-        root.append(Gtk.Separator())
+        main.append(Gtk.Separator())
         panel.asb_actions = {}
         for slot in dict.fromkeys(slot for slot, _icon in ROW_PANEL_SLOTS.values()):
             panel.asb_actions[slot] = action_row(None, *((self.panel_move_pin, slot[4:]) if slot.startswith("pin-") else (self.panel_action, slot)))
-        root.append(Gtk.Separator())
+        main.append(Gtk.Separator())
         panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy, "short")
         panel.asb_copy_full = action_row("edit-copy-symbolic", self.panel_copy, "full")
         for button, text in ((panel.asb_open, None), (panel.asb_actions["mute"], "Mute"), (panel.asb_copy, "Copy relative reference"),
@@ -10419,6 +10451,32 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         wheel.connect("scroll", self.panel_mute_scroll)
         mute_button.add_controller(wheel)
         panel.asb_mute_wheel = dict(COPY_WHEEL_STATE)
+        # A click or tap on the time tag shows the time list. The Mute button claims its press in the capture phase,
+        # so the main page claims a press on the tag first, and the Mute row does not mute.
+        panel.asb_mute_tag.set_tooltip_text("Choose how long to mute")
+        tag_click = Gtk.GestureClick(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        tag_click.connect("pressed", self.panel_tag_pressed)
+        tag_click.connect("released", lambda gesture, *_args: self.show_mute_times(gesture.get_widget().get_ancestor(Gtk.Popover), True))
+        main.add_controller(tag_click)
+        times = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.START)
+        panel.asb_pages.add_named(times, "times")
+        panel.asb_times_back = action_row("go-previous-symbolic", lambda button: self.show_mute_times(button.get_ancestor(Gtk.Popover), False),
+                                          parent=times)
+        set_panel_label(panel.asb_times_back, "Mute")
+        times.append(Gtk.Separator())
+        panel.asb_times = {}
+        for choice in MUTE_CHOICES:
+            button = action_row(None, self.panel_mute_pick, choice, parent=times, role=Gtk.AccessibleRole.RADIO)
+            set_panel_label(button, MUTE_WORDS[choice])
+            # The radio mark takes the 14 px icon column; it is drawn, as the Discard offer, so the 1.5 px ring stays 14 px.
+            mark = Gtk.DrawingArea(width_request=14, height_request=14, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, can_target=False)
+            mark.set_draw_func(self.draw_radio_mark)
+            mark.add_css_class("asb-radio-mark")
+            content = button.get_child()
+            content.remove(button.asb_icon)
+            content.prepend(mark)
+            button.asb_icon = mark
+            panel.asb_times[choice] = button
         # The absolute reference has no spaces: a plain tooltip would be one very wide line.
         panel.asb_copy_full.set_has_tooltip(True)
         panel.asb_copy_full.connect("query-tooltip", self.query_copy_tooltip)
@@ -10429,14 +10487,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_error.set_wrap(True)
         panel.asb_error.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         panel.asb_error.set_max_width_chars(1)
-        root.append(panel.asb_error)
+        main.append(panel.asb_error)
         # The clamp keeps a long label from widening the panel past about 280px.
         panel.set_child(Adw.Clamp(maximum_size=260, tightening_threshold=260, child=root))
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.panel_key)
         panel.add_controller(keys)
         motion = Gtk.EventControllerMotion()
-        motion.connect("leave", lambda controller: controller.get_widget().get_ancestor(Gtk.Popover).popdown())
+        motion.connect("leave", self.panel_pointer_left)
         # The content edge ignores motion between controls inside the panel.
         panel.get_child().get_parent().add_controller(motion)
         if gesture:
@@ -10471,6 +10529,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if gesture:
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
+    @staticmethod
+    def panel_pointer_left(controller):
+        # A page change hides the widget under a still pointer, and GTK sends a leave for it: the panel stays while the pointer is on it.
+        content = controller.get_widget()
+        panel = content.get_ancestor(Gtk.Popover)
+        surface, pointer = panel.get_surface(), content.get_display().get_default_seat().get_pointer()
+        found, bounds = content.compute_bounds(panel)
+        if surface is not None and pointer is not None and found:
+            inside, x, y, _mask = surface.get_device_position(pointer)
+            left, top = panel.get_surface_transform()
+            if inside and bounds.contains_point(Graphene.Point().init(x - left, y - top)):
+                return
+        panel.popdown()
+
     def panel_pointer_motion(self, controller, x, y):
         panel = controller.get_widget()
         if panel is self:
@@ -10504,6 +10576,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         rectangle.x, rectangle.y, rectangle.width, rectangle.height = round(local.x), round(local.y), 1, 1
         panel.set_pointing_to(rectangle)
         panel.set_position(Gtk.PositionType.TOP if side == "top" else Gtk.PositionType.BOTTOM)
+        # A panel below its point keeps its top edge, so it may shrink to the time list; one above keeps its height, so the header stays.
+        panel.asb_pages.set_vhomogeneous(side == "top")
 
     def update_row_panel(self, panel, row):
         """Show the row data in the open panel; an unchanged row keeps every widget as it is."""
@@ -10575,6 +10649,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (mute_button.add_css_class if mute_caption else mute_button.remove_css_class)("asb-panel-captioned")
         mute_button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [mute_caption or PANEL_MUTE_KEYS])
         mute_button.set_tooltip_text(None if mute_caption else PANEL_MUTE_TIP)
+        for choice, button in panel.asb_times.items():
+            if button.asb_icon.has_css_class("asb-radio-on") != (choice == self.mute_for):
+                (button.asb_icon.add_css_class if choice == self.mute_for else button.asb_icon.remove_css_class)("asb-radio-on")
+                button.asb_icon.queue_draw()
+            button.update_state([Gtk.AccessibleState.CHECKED], [int(Gtk.AccessibleTristate.TRUE if choice == self.mute_for else Gtk.AccessibleTristate.FALSE)])
+        if mute_caption and panel.asb_pages.get_visible_child_name() == "times":
+            self.show_mute_times(panel, False)
         # A pin move at an end stays focusable with no action, as an unavailable copy row; pin_move_body then has no target.
         ends = {slot for slot, open_side in zip(("pin-up", "pin-down"), moves or (True, True)) if not open_side}
         for slot in ("pin-up", "pin-down"):
@@ -10718,6 +10799,28 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.popdown()
         self.get_application().show_activity("messages", seat=identity, title=title)
 
+    def show_mute_times(self, panel, shown):
+        """Show the Mute time list page, with the focus on the checked time, or the main page with the focus on the Mute row."""
+        card = self.focus_widgets.get(panel.asb_identity)
+        if shown and (card is None or mute_active(card.asb_thread)):
+            return
+        panel.asb_pages.set_visible_child_name("times" if shown else "main")
+        (panel.asb_times[self.mute_for] if shown else panel.asb_actions["mute"]).grab_focus()
+
+    @staticmethod
+    def panel_tag_pressed(gesture, _presses, x, y):
+        main = gesture.get_widget()
+        tag = main.get_ancestor(Gtk.Popover).asb_mute_tag
+        target = main.pick(x, y, Gtk.PickFlags.DEFAULT)
+        on_tag = tag.get_visible() and target is not None and (target is tag or target.is_ancestor(tag))
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED if on_tag else Gtk.EventSequenceState.DENIED)
+
+    def panel_mute_pick(self, button, choice):
+        # A pick sets the time as the wheel does and goes back; it does not mute.
+        panel = button.get_ancestor(Gtk.Popover)
+        self.show_mute_times(panel, False)
+        self.change_mute_for(choice)
+
     def panel_mute_scroll(self, controller, dx, dy):
         panel = controller.get_widget().get_ancestor(Gtk.Popover)
         card = self.focus_widgets.get(panel.asb_identity)
@@ -10737,10 +10840,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if card:
                 self.step_mute_for(card, 1 if key == Gdk.KEY_Right else -1)
             return True
+        times = panel.asb_pages.get_visible_child_name() == "times"
+        if times and key == Gdk.KEY_Escape and not state & SHORTCUT_MASK:
+            self.show_mute_times(panel, False)
+            return True
         if key in (Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab) and not state & SHORTCUT_MASK:
             forward = key == Gdk.KEY_Down or key == Gdk.KEY_Tab and not state & Gdk.ModifierType.SHIFT_MASK
-            controls = [button for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(),
-                                             panel.asb_copy, panel.asb_copy_full)
+            controls = [button for button in ((panel.asb_times_back, *panel.asb_times.values()) if times else
+                                              (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full))
                         if button.get_visible() and button.get_sensitive()]
             focus = self.get_focus()
             index = controls.index(focus) if focus in controls else (-1 if forward else 0)

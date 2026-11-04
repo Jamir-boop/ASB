@@ -4,6 +4,10 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- The card Pin button now shows an outline pin on an unpinned card and a filled pin on a pinned card. The Compact pin mark and the row panel **Pin** row use the same filled pin. The Discard ring that shows on card hover now has the text color, and a passive `?` or stop square has no plate on card hover.
+- The Comfortable state line now sits 3 px higher. The card height does not change.
+- In the row panel, a click or tap on the Mute time tag now shows a list of the five times; a pick sets the time without a mute. A click on the rest of the Mute row still mutes.
+- Renamed Discard in the menus, the row panel, and the tooltips: **Mark read when done** and **Leave unread when done** for a Working task, and **Mark next result read** and **Leave next result unread** for an Idle task.
 - The board again plays the message light and the pets while it is shown but another window has the focus. Before, only the focused board played them. A minimized, hidden, or suspended board still plays nothing.
 - Refined the row panel. Every unavailable row now has its icon, label, and key hint in one dim tone with 4.5:1 contrast, and its reason in the caption color; before, the reason had 3.3:1. The Mute row puts its time tag after the label and **Alt+M** at the right end with the other hints. **Mark read** on a `?` card says in its tooltip that the session still waits for your answer or permission. Custom colors give the separators 15% text on the panel. **Show messages** has a new bubble glyph on whole pixels.
 - The mute and copy tags now have filled 4 px dots on a 6 px pitch, with 3:1 contrast for the dots that are not chosen; no ring dots. The card drawer button now draws the same drawer glyph as the row panel, filled for a row in the drawer.

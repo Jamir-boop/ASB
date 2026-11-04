@@ -2083,11 +2083,11 @@ test('a next-task arm stays through Idle, Waiting, and Unknown, shows only on Id
   // A Waiting or Unknown row cannot take a new arm, with `next` or without.
   for (const value of ['waiting', 'unknown']) for (const next of [false, true]) {
     await assert.rejects(restart.setDiscard((await restart.observe(state(value))).threads[0], true, next), { statusCode: 400,
-      message: next ? 'Discard requires a Working or Idle task.' : 'Discard requires a Working task.' });
+      message: next ? 'Mark next result read requires a Working or Idle task.' : 'Mark read when done requires a Working task.' });
   }
   // An Idle row takes an arm only with `next`.
   const row = (await restart.observe(state('idle'))).threads[0];
-  await assert.rejects(restart.setDiscard(row, true), { statusCode: 400, message: 'Discard requires a Working task.' });
+  await assert.rejects(restart.setDiscard(row, true), { statusCode: 400, message: 'Mark read when done requires a Working task.' });
   assert.deepEqual([restart.records[id].discard, restart.records[id].discardNext], [0, 0]);
 });
 
@@ -2165,14 +2165,14 @@ test('the Discard route takes {} for a Working task and exactly {"next":true} fo
   for (const value of ['waiting', 'unknown']) {
     state = value;
     const refused = await post('discard-result', { next: true });
-    assert.deepEqual([refused.status, (await refused.json()).error], [400, 'Discard requires a Working or Idle task.']);
+    assert.deepEqual([refused.status, (await refused.json()).error], [400, 'Mark next result read requires a Working or Idle task.']);
     assert.deepEqual(flags(), [0, 0]);
     assert.equal((await post('discard-result')).status, 400);
   }
   // A session on another machine keeps its refusal.
   state = 'idle';
   const remote = await post('discard-result', { next: true }, 'remote');
-  assert.deepEqual([remote.status, (await remote.json()).error], [400, 'Discard does not work on a session on another machine.']);
+  assert.deepEqual([remote.status, (await remote.json()).error], [400, 'Mark read when done does not work on a session on another machine.']);
 });
 
 test('the mute route takes exactly one allowed duration and sets the end with the server clock', async (t) => {

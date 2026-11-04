@@ -156,7 +156,7 @@ test('two engines join one group and show each other\'s sessions as remote cards
   const opened = await a.api(`/api/threads/${encoded}/open`, { method: 'POST', body: {} });
   assert.deepEqual(opened, { status: 500, body: { error: 'Failed to open thread', detail: 'This session cannot open from ASB.' } });
   assert.deepEqual(await a.api(`/api/threads/${encoded}/discard-result`, { method: 'POST', body: {} }),
-    { status: 400, body: { error: 'Discard does not work on a session on another machine.' } });
+    { status: 400, body: { error: 'Mark read when done does not work on a session on another machine.' } });
 
   // B finishes its task: A gets the new rows and plays the Done sound.
   b.fixture.threads = [done(5, clock.now, { cliSessionId: uuid(950) })];
