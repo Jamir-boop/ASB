@@ -106,6 +106,8 @@ class CardRulesTest {
         assertEquals(listOf("dot" to "mark-read", "pin" to "unpin"), kinds(idle.copy(unread = true, pinned = true)))
         // The armed Discard ring shows; the unarmed offer stays in the menu.
         assertEquals(listOf("discard" to "keep-result"), kinds(idle.copy(state = "working", discardResult = true)))
+        assertEquals(CornerControl("discard", "keep-result", "Leave unread when done: the dot shows when this task ends"),
+            cornerControls(idle.copy(state = "working", discardResult = true), false, false, now).single())
         assertEquals(emptyList<Pair<String, String?>>(), kinds(idle.copy(state = "working")))
         assertEquals(listOf("question" to "mark-read"),
             kinds(idle.copy(state = "working", discardResult = true, questionAttention = true)))

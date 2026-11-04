@@ -912,7 +912,7 @@ private fun SessionCard(
             row.completionAttention -> "Completed task, unread"
             else -> "Unread"
         }
-        "discard" -> "Discard result is on"
+        "discard" -> "No dot when this task ends"
         "stop" -> "Task stopped"
         else -> ""
     }
@@ -1406,7 +1406,7 @@ private fun SessionInspector(
                                     hexColor(move), text, !busy, focusable("later")) { viewModel.action(row.id, "pin-down"); started("later") }
                             }
                         }
-                        switch("discard", "Discard result", "Go to read Idle when this task ends")
+                        switch("discard", "Mark read when done", "No dot when this task ends.")
                     }
                 }
                 // Desktop asb-panel-error: the last failed action of this row, in the Adwaita error color made readable.

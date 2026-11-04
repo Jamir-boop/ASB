@@ -263,8 +263,8 @@ class RulesTest {
         assertFalse(actionNeedsAttention(read))
         assertFalse(actionNeedsAttention(Thread(actionAttention = null)))
         assertEquals(MenuAction("Unread", "mark-unread"), rowMenuActions(Thread(state = "idle", lastOutcome = "stopped")).first())
-        assertEquals(MenuAction("Keep result", "keep-result"), rowMenuActions(Thread(state = "working", discardResult = true)).last())
-        assertEquals(MenuAction("Discard result", "discard-result"), rowMenuActions(Thread(state = "working")).last())
+        assertEquals(MenuAction("Leave unread when done", "keep-result"), rowMenuActions(Thread(state = "working", discardResult = true)).last())
+        assertEquals(MenuAction("Mark read when done", "discard-result"), rowMenuActions(Thread(state = "working")).last())
         assertFalse(rowMenuActions(Thread(state = "idle")).any { it.action in setOf("discard-result", "keep-result") })
         assertFalse(rowMenuActions(Thread(canOpen = true)).any { it.action == "open" })
     }

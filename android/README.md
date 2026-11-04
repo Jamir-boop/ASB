@@ -183,8 +183,9 @@ The session cards use the desktop Compact and Comfortable views. Select the
 view in Settings; the default is Comfortable. Compact rows are at least 48 dp
 high for touch, and Comfortable rows are at least 68 dp. In Comfortable, the
 card corner shows the Read target, the pin of a pinned row, the drawer glyph of
-a drawer row, and the armed Discard ring. Tap a corner control to use it. Pin,
-Put in drawer, and Discard result are in the session inspector.
+a drawer row, and the armed **Mark read when done** ring. Tap a corner control
+to use it. Pin, Put in drawer, and **Mark read when done** are in the session
+inspector.
 
 Settings > Appearance > **Pets** is Off by default. Select a pixel crab,
 pigeon, or cat to carry each message from card to card, as on the PC. The stage
@@ -194,7 +195,7 @@ instead.
 Touch and hold a card to open the session inspector at that point. It shows
 the provider, folder, title, and state, and an **Open in <app>** button. Below
 it are the **Unread**, **Pinned**, and **In the drawer** switches, **Pin order**
-(**Earlier** and **Later**) for a pinned row, and **Discard result** for a
+(**Earlier** and **Later**) for a pinned row, and **Mark read when done** for a
 Working row. A control that the row does not allow is dimmed. The inspector
 stays open after a change and shows the new row data. It covers the message
 bar, so it shows the current message (for example an error) as a caption below

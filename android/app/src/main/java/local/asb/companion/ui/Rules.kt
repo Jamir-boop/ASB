@@ -177,7 +177,7 @@ fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
     }
     // A session on another machine cannot be discarded from here.
     if (row.state == "working" && !row.remote) add(
-        if (row.discardResult) MenuAction("Keep result", "keep-result") else MenuAction("Discard result", "discard-result"),
+        if (row.discardResult) MenuAction("Leave unread when done", "keep-result") else MenuAction("Mark read when done", "discard-result"),
     )
 }
 
@@ -412,7 +412,7 @@ fun cornerControls(
     val discard = row.state == "working" && indicator !in setOf("question", "alert", "dot")
     if (row.drawer) add(CornerControl("drawer", "drawer-out", "Take out of drawer: show as unread again"))
     when {
-        discard && row.discardResult -> add(CornerControl("discard", "keep-result", "Keep result: show the dot when this task ends"))
+        discard && row.discardResult -> add(CornerControl("discard", "keep-result", "Leave unread when done: the dot shows when this task ends"))
         discard -> Unit
         confirmed -> add(CornerControl("confirmed", null, "Read in ASB"))
         showsAction(row) && (actionNeedsAttention(row) || row.unread) ->
