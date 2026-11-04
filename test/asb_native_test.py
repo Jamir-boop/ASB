@@ -3072,7 +3072,7 @@ class WidgetCheck(unittest.TestCase):
             # ASB glyphs are file icons, so GTK recolors them like the theme icons.
             icons = [button.asb_icon.get_icon_name() or button.asb_icon.get_gicon().get_file().get_basename()
                      for button in panel.asb_actions.values() if button.get_visible()]
-            self.assertEqual(icons, ["object-select-symbolic", "asb-drawer-symbolic.svg", "asb-muted-symbolic.svg", "asb-unpin-symbolic.svg"])
+            self.assertEqual(icons, ["object-select-symbolic", "asb-muted-symbolic.svg", "asb-unpin-symbolic.svg", "asb-drawer-symbolic.svg"])
             self.assertTrue(all(button.asb_icon.get_gicon().get_file().query_exists(None) for button in panel.asb_actions.values()
                                 if button.get_visible() and not button.asb_icon.get_icon_name()))
             for button in panel.asb_actions.values():
@@ -3123,10 +3123,12 @@ class WidgetCheck(unittest.TestCase):
             self.assertIs(panel.asb_actions["read"], read)
             self.assertEqual((read.asb_label.get_label(), read.asb_icon.get_icon_name()), ("Mark unread", "mail-unread-symbolic"))
             self.assert_accessible_label(read, "Mark unread")
-            self.assertNotIn("drawer", actions(panel))
+            self.assertEqual(actions(panel)["drawer"], ("Put in drawer", True))
+            self.assertTrue(panel.asb_actions["drawer"].has_css_class("asb-action-pending"))
+            self.assert_accessible_disabled(panel.asb_actions["drawer"], True)
             self.assertIs(window.get_focus(), read)
             self.assertNotEqual(panel.asb_signature, signature)
-            self.assertFalse(any(control.has_css_class("asb-action-pending") for control in controls))
+            self.assertFalse(any(control.has_css_class("asb-action-pending") for control in controls if control is not panel.asb_actions["drawer"]))
             self.assert_accessible_busy(read, False)
             self.assert_accessible_disabled(read, False)
             self.assert_accessible_busy(panel.asb_copy_full, False)
@@ -3151,8 +3153,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
-            # The only visible pin has no move rows, so Unpin is the last action row.
-            self.assertIs(window.get_focus(), panel.asb_actions["pin"])
+            # The only visible pin has no move rows; the drawer follows Unpin.
+            self.assertIs(window.get_focus(), panel.asb_actions["drawer"])
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
@@ -5001,6 +5003,46 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(passive.asb_dot.has_css_class("asb-passive"))
             self.assertFalse(passive.asb_read_button.has_css_class("asb-read-disc"))
             self.assertTrue(passive.asb_read_button.has_css_class("asb-passive-indicator"))
+
+    def test_row_panel_keeps_open_rows_and_focus_after_read(self):
+        window = self.mute_wheel_board(520, self.card_rows(("unread", {"unread": True, "pending": True})))
+        card = window.focus_widgets["unread"]
+        window.show_context(card); self.drain(.3)
+        panel = window.context_menu
+        visible = lambda: [slot for slot, button in panel.asb_actions.items() if button.get_visible()]
+        before = visible()
+        self.assertEqual(before, ["read", "mute", "pin", "drawer"])
+        read, drawer = panel.asb_actions["read"], panel.asb_actions["drawer"]
+        drawer_icon = icon_name(drawer.asb_icon)
+        def positions():
+            return {slot: button.compute_bounds(panel)[1].origin.y for slot, button in panel.asb_actions.items() if button.get_visible()}
+        before_positions = positions()
+        read.grab_focus()
+        requests = []
+        with patch.object(asb, "request_async", lambda *args: requests.append(args)):
+            read.emit("clicked")
+            self.assertTrue(requests[-1][1].endswith("/mark-read"))
+            requests[-1][2]({"thread": {**card.asb_thread, "unread": False, "pending": False}}, None)
+            self.drain()
+        self.assertEqual(positions(), before_positions)
+        self.assertIs(window.get_focus(), read)
+        self.assertEqual(visible(), before)
+        self.assertEqual(read.asb_label.get_label(), "Mark unread")
+        self.assertEqual(icon_name(read.asb_icon), "mail-unread-symbolic")
+        self.assertEqual((drawer.asb_label.get_label(), icon_name(drawer.asb_icon)), ("Put in drawer", drawer_icon))
+        self.assertTrue(drawer.get_sensitive() and drawer.get_focusable() and drawer.has_css_class("asb-action-pending"))
+        self.assert_accessible_disabled(drawer, True)
+        self.assert_accessible_label(drawer, "Not available now.", asb.Gtk.AccessibleProperty.DESCRIPTION)
+        drawer.grab_focus()
+        self.assertIs(window.get_focus(), drawer)
+        with patch.object(window, "activate_action") as activate:
+            drawer.emit("clicked")
+            activate.assert_not_called()
+        self.assertFalse(panel.asb_actions["discard"].get_visible())
+        panel.popdown(); self.drain()
+        window.show_context(card); self.drain()
+        panel = window.context_menu
+        self.assertEqual(visible(), ["read", "mute", "pin", "discard"])
 
     def test_row_panel_open_caption_provider_mark_and_new_glyphs(self):
         rows = self.card_rows(("plain", {"pinned": True}),
@@ -7640,7 +7682,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(one.asb_accessible_label.endswith(" Task completed. In the drawer. Still unread."))
         self.assert_accessible_label(one, one.asb_accessible_label)
         self.assertIn("Finished. Not read yet.\nIn the drawer", one.asb_tooltip)
-        self.assertEqual(asb.row_menu_actions(one.asb_thread)[:2], [("Read", "mark-read"), ("Take out of drawer", "drawer-out")])
+        self.assertEqual(asb.row_menu_actions(one.asb_thread)[:4], [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Take out of drawer", "drawer-out")])
         self.hover_card(window, one, True); settle()
         self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 255, 255))
         self.assertGreater(self.ink(cue), 0)
@@ -7883,11 +7925,15 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(card.asb_read_button.get_visible())
         self.assertTrue(card.asb_read_button.has_css_class("asb-discard-offer"))
         self.assertEqual(card.asb_read_button.asb_action, "win.discard-result")
-        self.assertTrue(panel.asb_actions["discard"].get_visible())
+        # Discard is offered again, but an open panel shows a newly offered row only at the next open.
+        self.assertFalse(panel.asb_actions["discard"].get_visible())
         self.assertNotIn("Muted", card.asb_tooltip)
         self.assertNotIn("Muted", card.asb_accessible_label)
         self.assertTrue(card.asb_thread["muted"])
         panel.popdown(); self.drain()
+        window.show_context(card); self.drain()
+        self.assertTrue(window.context_menu.asb_actions["discard"].get_visible())
+        window.context_menu.popdown(); self.drain()
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer clicks need xdotool and a nested test display (DISPLAY=:9 or :10).")
@@ -7972,13 +8018,13 @@ class WidgetCheck(unittest.TestCase):
             beside(cards[identity], cards[identity].asb_state_label, cards[identity].asb_where_label)
         window.view_filter.set_selected(1); self.drain(.3); settle()
 
-        # The row panel: Mute comes right after the drawer slot and before Pin. Mute and Unmute close the panel, which covers the card.
+        # The row panel: Mute comes after Read and before Pin; the drawer follows Pin. Mute and Unmute close the panel, which covers the card.
         other = cards["other"]
         window.show_context(other); self.drain()
         panel = window.context_menu
         muted = panel.asb_actions["mute"]
-        self.assertEqual(list(panel.asb_actions)[:4], ["read", "drawer", "mute", "pin"])
-        self.assertIs(panel.asb_actions["drawer"].get_next_sibling(), muted)
+        self.assertEqual(list(panel.asb_actions)[:4], ["read", "mute", "pin", "drawer"])
+        self.assertIs(panel.asb_actions["read"].get_next_sibling(), muted)
         self.assertIs(muted.get_next_sibling(), panel.asb_actions["pin"])
         # The one-tone ASB mute glyph of the cards, as a file icon.
         self.assertEqual((muted.asb_label.get_label(), muted.asb_icon.get_icon_name(), muted.asb_icon.get_gicon().get_file().get_basename()),

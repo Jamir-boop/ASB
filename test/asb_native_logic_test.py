@@ -5383,6 +5383,17 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual([row["id"] for row in filtered(board, "Personal", state={"working"}, pending_only=True)], ["claude", "personal"])
         self.assertEqual({row["id"] for row in filtered(board, "Personal", app="codex", archived=True)}, {"personal", "archived"})
 
+    def test_row_panel_order_keeps_mute_and_pin_before_drawer(self):
+        for row, expected in (
+                ({"state": "idle", "unread": True}, ["read", "mute", "pin", "drawer"]),
+                ({"state": "idle", "unread": True, "pinned": True}, ["read", "mute", "pin", "drawer", "pin-up", "pin-down"]),
+                ({"state": "idle", "muted": True}, ["read", "mute", "pin"]),
+                ({"state": "working"}, ["read", "mute", "pin", "discard"]),
+                ({"state": "idle"}, ["read", "mute", "pin", "discard"])):
+            with self.subTest(row=row):
+                self.assertEqual(list(asb.row_panel_controls(row)), expected)
+                self.assertEqual([asb.ROW_PANEL_SLOTS[action][0] for _label, action in asb.row_menu_actions(row)], expected)
+
     def test_row_panel_controls_and_edges_follow_the_menu_rules(self):
         controls, edge, actions = SCOPE["row_panel_controls"], SCOPE["edge_color"], SCOPE["row_menu_actions"]
         contrast = SCOPE["contrast"]
@@ -5419,7 +5430,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(list(controls(muted)), [key for key in controls(row) if key != "discard"])
         # Every action has one slot; the slots follow the menu order, and only the offered actions show.
         slots = list(dict.fromkeys(slot for slot, _icon in SCOPE["ROW_PANEL_SLOTS"].values()))
-        self.assertEqual(slots, ["read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard"])
+        self.assertEqual(slots, ["read", "mute", "pin", "drawer", "pin-up", "pin-down", "discard"])
         for row in (idle, working, drawer, waiting, {**idle, "muted": True}, {**working, "muted": True}, {**working, "discardResult": True},
                     {"state": "idle", "pinned": True}, {"state": "idle", "manualUnread": True, "unread": True},
                     {"state": "working", "remote": True, "pinned": True}, {"state": "idle", "surface": "cli", "unread": True}):
@@ -5505,8 +5516,8 @@ class NativeLogicChecks(unittest.TestCase):
                                 "retainedUnread": True}, ""),
                               ({"state": "working", "unread": False, "questionAttention": True}, "question")):
             self.assertEqual(indicator(row), expected)
-        self.assertEqual(SCOPE["row_menu_actions"]({"unread": True, "alert": True})[:2],
-                         [("Read", "mark-read"), ("Put in drawer", "drawer-in")])
+        self.assertEqual(SCOPE["row_menu_actions"]({"unread": True, "alert": True})[:4],
+                         [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Put in drawer", "drawer-in")])
         window = object.__new__(Window)
         window.view, window.update_row_text, window.open_errors = "compact", Mock(), {}
         widget = SimpleNamespace(asb_view="compact", asb_thread={}, set_activatable=Mock(), set_child=Mock(), asb_mark=Mock(),
@@ -6090,7 +6101,7 @@ class NativeLogicChecks(unittest.TestCase):
             item = Mock()
             item.get_sensitive.return_value = True
             return item
-        panel = SimpleNamespace(asb_identity=rows[0]["id"], asb_signature=None, asb_controls=None, asb_copy_values=None, asb_copied=None,
+        panel = SimpleNamespace(asb_identity=rows[0]["id"], asb_signature=None, asb_rows=None, asb_controls=None, asb_copy_values=None, asb_copied=None,
                                 asb_copy_error="", asb_title=Mock(), asb_error=Mock(), update_property=Mock(), asb_mute_tag=Mock(),
                                 asb_mute_words=Mock(), asb_mute_dots=[], asb_open=button(), asb_copy=button(), asb_copy_full=button(),
                                 asb_actions={slot: button() for slot in ("read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard")})
@@ -8136,13 +8147,13 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(indicator(tucked), "")
         self.assertEqual(indicator({**tucked, "lastOutcome": "stopped"}), "stop")
 
-        self.assertEqual(actions(unread), [("Read", "mark-read"), ("Put in drawer", "drawer-in"), ("Mute", "mute"), ("Pin", "pin")])
-        self.assertEqual(actions(tucked), [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin")])
+        self.assertEqual(actions(unread), [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Put in drawer", "drawer-in")])
+        self.assertEqual(actions(tucked), [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Take out of drawer", "drawer-out")])
         self.assertEqual(actions({**tucked, "state": "working"}),
-                         [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin"),
+                         [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Take out of drawer", "drawer-out"),
                           ("Discard result", "discard-result")])
         self.assertEqual(actions({**tucked, "actionRequired": True}),
-                         [("Read", "mark-read"), ("Take out of drawer", "drawer-out"), ("Mute", "mute"), ("Pin", "pin")])
+                         [("Read", "mark-read"), ("Mute", "mute"), ("Pin", "pin"), ("Take out of drawer", "drawer-out")])
         for row in (base, {**base, "questionAttention": True}, {**unread, "questionAttention": True}, {**unread, "actionRequired": True}):
             self.assertFalse({"drawer-in", "drawer-out"} & {action for _title, action in actions(row)})
 

@@ -281,12 +281,13 @@ def row_menu_actions(row, now_ms=None):
     unread = row.get("actionAttention") or row.get("unread") if shows_action(row) \
         else attention_indicator(row) in ("question", "alert", "dot")
     actions = [("Read", "mark-read") if row.get("drawer") or unread else ("Unread", "mark-unread")]
+    actions.append(("Unmute", "unmute") if mute_active(row, now_ms) else ("Mute", "mute"))
+    actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
+    # The drawer comes after Pin, so Mute and Pin have the same panel rows on every card.
     if row.get("drawer"):
         actions.append(("Take out of drawer", "drawer-out"))
     elif attention_indicator(row) in ("dot", "alert"):
         actions.append(("Put in drawer", "drawer-in"))
-    actions.append(("Unmute", "unmute") if mute_active(row, now_ms) else ("Mute", "mute"))
-    actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
     if row.get("pinned"):
         actions.extend((("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")))
     if not mute_active(row, now_ms) and not row.get("remote"):
@@ -300,9 +301,9 @@ def row_menu_actions(row, now_ms=None):
 
 # The row panel slot and icon of each row_menu_actions action; the slots are in the menu order.
 ROW_PANEL_SLOTS = {"mark-read": ("read", "object-select-symbolic"), "mark-unread": ("read", "mail-unread-symbolic"),
-                   "drawer-out": ("drawer", "asb-drawer-symbolic"), "drawer-in": ("drawer", "asb-drawer-symbolic"),
                    "unmute": ("mute", "preferences-system-notifications-symbolic"), "mute": ("mute", "asb-muted-symbolic"),
                    "unpin": ("pin", "asb-unpin-symbolic"), "pin": ("pin", "view-pin-symbolic"),
+                   "drawer-out": ("drawer", "asb-drawer-symbolic"), "drawer-in": ("drawer", "asb-drawer-symbolic"),
                    "pin-up": ("pin-up", "go-up-symbolic"), "pin-down": ("pin-down", "go-down-symbolic"),
                    "keep-result": ("discard", "asb-keep-symbolic"), "discard-result": ("discard", "asb-discard-symbolic")}
 
@@ -599,6 +600,7 @@ REMOTE_RELATIVE_CAPTION = "Works only on this machine."
 PIN_MOVE_ENDS = {"pin-up": "Already the first pin", "pin-down": "Already the last pin"}
 PANEL_MUTE_TIP = "Scroll or press Left and Right to change the time."
 PANEL_MUTE_KEYS = "Left or Right changes the time."
+PANEL_GONE_TEXT = "Not available now."
 
 
 def attention_signature(row):
@@ -9875,7 +9877,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         row = widget.asb_thread
         panel = Gtk.Popover(has_arrow=False, autohide=False)
         panel.add_css_class("asb-row-panel")
-        panel.asb_identity, panel.asb_signature = row["id"], None
+        # asb_rows: the action slots that showed at open; they keep their places until the panel closes.
+        panel.asb_identity, panel.asb_signature, panel.asb_rows = row["id"], None, None
         panel.asb_pointer = gesture is not None
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, width_request=260)
         panel.asb_title = label("", "asb-panel-title")
@@ -10039,6 +10042,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if signature == panel.asb_signature:
             return
         panel.asb_signature, panel.asb_controls = signature, controls
+        if panel.asb_rows is None:
+            panel.asb_rows = tuple(controls)
+        # A row whose action is no longer offered stays in its place, unavailable, with its last label and icon.
+        gone = {slot for slot in panel.asb_rows if slot not in controls}
         if values != panel.asb_copy_values:
             # A new value or an availability change ends the feedback of a copy of the old one.
             panel.asb_copy_values = values
@@ -10067,7 +10074,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         else:
             panel.asb_open.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         for slot, button in panel.asb_actions.items():
-            button.set_visible(slot in controls)
+            # A row that becomes offered while the panel is open shows at the next open.
+            button.set_visible(slot in panel.asb_rows)
             if slot in controls:
                 _action, text, icon = controls[slot]
                 set_panel_label(button, text)
@@ -10088,9 +10096,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             panel.asb_actions[slot].set_tooltip_text(PIN_MOVE_ENDS[slot] if slot in ends else None)
         # A control that turned insensitive under the pointer made GTK pick a new pointer target in the board: the panel got a leave and closed.
         for slot, button in (("open", panel.asb_open), *panel.asb_actions.items()):
-            off = pending or slot in ends
+            off = pending or slot in ends or slot in gone
             (button.add_css_class if off else button.remove_css_class)("asb-action-pending")
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, off or not button.get_sensitive()])
+            if slot in gone:
+                button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [PANEL_GONE_TEXT])
+            elif slot not in ("open", "mute"):
+                button.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         self.show_copy_rows(panel)
 
     def sync_row_panel(self):
@@ -10183,7 +10195,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def panel_move_pin(self, button, direction):
         panel = button.get_ancestor(Gtk.Popover)
-        if panel.asb_identity in self.session_actions:
+        if panel.asb_identity in self.session_actions or "pin-" + direction not in (panel.asb_controls or {}):
             return
         self.activate_action("win.pin-" + direction, GLib.Variant("s", panel.asb_identity))
 
