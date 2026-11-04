@@ -3068,12 +3068,11 @@ class WidgetCheck(unittest.TestCase):
             window.sync_row_panel()
             self.assertFalse(panel.asb_error.get_visible())
             self.assertEqual(actions(panel), {"read": ("Mark read", True), "drawer": ("Put in drawer", True), "mute": ("Mute", True),
-                                              "pin": ("Unpin", True), "pin-up": ("Move pin earlier", True), "pin-down": ("Move pin later", True)})
+                                              "pin": ("Unpin", True)})
             # ASB glyphs are file icons, so GTK recolors them like the theme icons.
             icons = [button.asb_icon.get_icon_name() or button.asb_icon.get_gicon().get_file().get_basename()
                      for button in panel.asb_actions.values() if button.get_visible()]
-            self.assertEqual(icons, ["object-select-symbolic", "asb-drawer-symbolic.svg", "asb-muted-symbolic.svg", "asb-unpin-symbolic.svg",
-                                     "go-up-symbolic", "go-down-symbolic"])
+            self.assertEqual(icons, ["object-select-symbolic", "asb-drawer-symbolic.svg", "asb-muted-symbolic.svg", "asb-unpin-symbolic.svg"])
             self.assertTrue(all(button.asb_icon.get_gicon().get_file().query_exists(None) for button in panel.asb_actions.values()
                                 if button.get_visible() and not button.asb_icon.get_icon_name()))
             for button in panel.asb_actions.values():
@@ -3152,7 +3151,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
-            self.assertIs(window.get_focus(), panel.asb_actions["pin-down"])
+            # The only visible pin has no move rows, so Unpin is the last action row.
+            self.assertIs(window.get_focus(), panel.asb_actions["pin"])
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
@@ -4616,7 +4616,7 @@ class WidgetCheck(unittest.TestCase):
             window.ensure_card_controls(card)
         self.drain()
         card = window.focus_widgets[invalid_row["id"]].asb_copy_button
-        self.assertEqual((card.get_visible(), card.asb_action, card.get_tooltip_text()), (True, None, reason))
+        self.assertEqual((card.get_visible(), card.asb_action, card.get_tooltip_text()), (True, None, reason + " Scroll to change the kind."))
         self.assertTrue(card.has_css_class("asb-copy-off"))
         self.assert_accessible_disabled(card, True)
         self.assert_accessible_label(card, "Copy relative reference: " + invalid_row["title"])
@@ -4655,7 +4655,7 @@ class WidgetCheck(unittest.TestCase):
         # A local row, also a view-only CLI row, keeps the relative reference.
         for identity in ("local", "cli"):
             self.assertEqual((card(identity).get_visible(), card(identity).get_tooltip_text(), card(identity).asb_action),
-                             (True, "Copy relative reference", "win.copy-reference"))
+                             (True, "Copy relative reference. Scroll to change the kind.", "win.copy-reference"))
             self.assert_accessible_label(card(identity), "Copy relative reference: " + window.focus_widgets[identity].asb_thread["title"])
             card(identity).emit("clicked"); self.drain(.1)
         self.assertEqual(clipboard.texts, ["codex/" + app_id] * 2)
@@ -4698,7 +4698,7 @@ class WidgetCheck(unittest.TestCase):
             card(identity).emit("clicked"); self.drain(.1)
         self.assertNotIn(remote, window.open_errors)
         self.assertNotIn("local", window.open_errors)
-        # The row panel keeps both entries for a remote row.
+        # The row panel keeps both entries for a remote row; the unavailable relative row copies nothing.
         window.show_context(window.focus_widgets[remote]); self.drain(.3)
         panel = window.context_menu
         self.assertEqual((panel.asb_copy.asb_label.get_label(), panel.asb_copy_full.asb_label.get_label()),
@@ -4706,7 +4706,7 @@ class WidgetCheck(unittest.TestCase):
         count = len(clipboard.texts)
         panel.asb_copy.emit("clicked"); self.drain(.1)
         panel.asb_copy_full.emit("clicked"); self.drain(.1)
-        self.assertEqual(clipboard.texts[count:], ["codex/" + app_id, reference])
+        self.assertEqual(clipboard.texts[count:], [reference])
 
     def test_card_copy_kind_switch_tag_wheel_keys_click_and_feedback(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
@@ -4810,7 +4810,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(cards["local"].asb_age_label.get_parent().get_visible())
             self.assertEqual(local_copy.get_child().get_icon_name(), "object-select-symbolic")
             # The footer shows the copied text, so the tooltip stays.
-            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference")
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference. Scroll to change the kind.")
             self.assert_accessible_label(local_copy, "Absolute session copied", asb.Gtk.AccessibleProperty.DESCRIPTION)
             output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
             if output:
@@ -4821,14 +4821,14 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(footer.get_visible_child_name(), "line")
             self.assertTrue(cards["local"].asb_state_label.get_visible())
             self.assertTrue(cards["local"].asb_age_label.get_parent().get_visible())
-            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference")
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference. Scroll to change the kind.")
             # Relative copies the short reference and the relative done text.
             self.assertTrue(window.row_key(None, asb.Gdk.KEY_Up, 0, asb.Gdk.ModifierType.ALT_MASK, "local"))
             self.assertEqual(window.copy_kind, "relative")
             local_copy.emit("clicked"); self.drain(.1)
             self.assertEqual(clipboard.texts[-1], relative)
             self.assertEqual(cards["local"].asb_feedback_label.get_label(), "Relative session copied")
-            self.assertEqual(local_copy.get_tooltip_text(), "Copy relative reference")
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy relative reference. Scroll to change the kind.")
             if output:
                 window.scroll.get_hadjustment().set_value(0); self.drain(.1)
                 self.capture(window, Path(output) / "native-copy-relative-copied.png")
@@ -5073,7 +5073,8 @@ class WidgetCheck(unittest.TestCase):
                 child = child.get_next_sibling()
             self.assertEqual(controls, expected)
             # The drawer is at the left end, then the two tags, then mute, copy, read, and pin (the Tab order).
-            self.assertEqual(card.asb_actions.get_first_child(), card.asb_drawer_button)
+            self.assertEqual(card.asb_actions.get_first_child(), card.asb_corner_spacer)
+            self.assertEqual(card.asb_corner_spacer.get_next_sibling(), card.asb_drawer_button)
             self.assertEqual(card.asb_drawer_button.get_next_sibling(), card.asb_copy_tag)
             self.assertEqual(card.asb_copy_tag.get_next_sibling(), card.asb_mute_tag)
             self.assertEqual(card.asb_mute_tag.get_next_sibling(), card.asb_mute_button)
@@ -5122,7 +5123,8 @@ class WidgetCheck(unittest.TestCase):
         for dot in read.asb_mute_dots:
             found, bounds = dot.compute_bounds(read)
             self.assertTrue(found)
-            self.assertEqual((bounds.size.width, bounds.size.height), (4, 4))
+            # The 1.5px off-ring border can round its outer box to 5px; the on dot keeps its 4px minimum.
+            self.assertTrue(4 <= bounds.size.width <= 5 and 4 <= bounds.size.height <= 5, (bounds.size.width, bounds.size.height))
         found, tag = read.asb_mute_tag.get_child().compute_bounds(read)
         self.assertTrue(found)
         for button in (mute, read.asb_copy_button, read.asb_drawer_button, read.asb_read_button, read.asb_pin_button):
@@ -5163,7 +5165,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain(.3)
         window.scroll_horizontal(None, 0, 1)
         self.assertEqual(window.mute_for, "1h")
-        self.assertEqual(unread.asb_mute_button.get_tooltip_text(), "Mute for 1 hour")
+        self.assertEqual(unread.asb_mute_button.get_tooltip_text(), "Mute for 1 hour. Scroll to change.")
 
     def test_focused_mute_button_does_not_capture_the_wheel_away_from_the_pointer(self):
         window = self.mute_wheel_board(248)
@@ -5376,7 +5378,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNotNone(error)
         message = ctypes.string_at(error).decode()
         self.g_free(error)
-        self.assertEqual(message, "undefined")
+        self.assertIn("Alt+Up or Alt+Down changes the kind.", message)
         self.assertEqual(limited.asb_age_label.get_text(), "")
         self.assertFalse(limited.asb_age_label.get_visible())
         output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
@@ -6844,7 +6846,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertGreaterEqual(asb.contrast(grey, background), 4.5)
                     self.assertLess(asb.contrast(grey, background), asb.contrast(quiet, background))
             else:
-                self.assertRegex(limited.asb_state_label.get_text(), r"^Resets \d{1,2}s$")
+                self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
                 self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_label)
             self.assertRegex(limited.asb_accessible_label, r"^Open Plan the alarm export in Codex\. Idle\. Usage limit\. Resets in \d{1,2} seconds?\.$")
             self.assert_accessible_label(limited, limited.asb_accessible_label)
@@ -6915,7 +6917,7 @@ class WidgetCheck(unittest.TestCase):
             return {"id": identity, "externalId": identity, "provider": "claude-desktop-code", "providerLabel": "Claude Code CLI",
                     "title": "Check the " + identity, "cwd": "/example/" + identity, "projectName": identity, "state": "idle",
                     "canOpen": False, "appDeepLink": "", "updatedAtMs": now - 720_000, "unread": False, "pending": False, **extra}
-        rows = [row("cli", surface="cli"), row("remote", surface="app", remote=True, machineName="homeLP", state="working"),
+        rows = [row("cli", surface="cli"), row("remote", surface="app", remote=True, machineName="studio", state="working"),
                 row("desktop", providerLabel="Claude Desktop Code", surface="app", canOpen=True,
                     appDeepLink="claude://code/continue?session=local_x"),
                 row("unread", surface="cli", unread=True, pendingSource="observed-completion", completionAttention=True)]
@@ -6936,7 +6938,7 @@ class WidgetCheck(unittest.TestCase):
             window.view_filter.set_selected(view); self.settle(window)
             cards = {identity: window.focus_widgets[identity] for identity in ("cli", "remote", "desktop", "unread")}
             comfortable = window.view == "comfortable"
-            for identity, text, icon in (("cli", "CLI", "asb-terminal-symbolic"), ("remote", "homeLP", "asb-machine-symbolic")):
+            for identity, text, icon in (("cli", "CLI", "asb-terminal-symbolic"), ("remote", "studio", "asb-machine-symbolic")):
                 card = cards[identity]
                 self.assertEqual(card.asb_where_label.get_text(), text + " ·" if comfortable else "· " + text)
                 self.assertTrue(card.asb_where_label.get_visible())
@@ -6961,10 +6963,10 @@ class WidgetCheck(unittest.TestCase):
             self.assertNotEqual(hex_color(cards["cli"].asb_title_label), hex_color(cards["unread"].asb_title_label))
             self.assertNotEqual(hex_color(cards["cli"].asb_state_label), hex_color(cards["remote"].asb_state_label))
             self.assertRegex(cards["cli"].asb_accessible_label, r"^Session Check the cli in Claude Code CLI\. Idle\. CLI session\. View only\.$")
-            self.assertRegex(cards["remote"].asb_accessible_label, r"^Session Check the remote in Claude Code CLI\. Working\. On homeLP\. View only\.$")
+            self.assertRegex(cards["remote"].asb_accessible_label, r"^Session Check the remote in Claude Code CLI\. Working\. On studio\. View only\.$")
             self.assert_accessible_label(cards["cli"], cards["cli"].asb_accessible_label)
         # The row panel says why the card does not open.
-        for identity, label in (("cli", "Runs in a terminal"), ("remote", "On homeLP")):
+        for identity, label in (("cli", "Runs in a terminal"), ("remote", "Runs on studio")):
             window.show_context(window.focus_widgets[identity]); self.drain(.3)
             panel = window.context_menu
             self.assertEqual((panel.asb_open.asb_label.get_label(), panel.asb_open.get_sensitive()), (label, False))
@@ -6981,6 +6983,164 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(file_icon(card.asb_mark), (None, "asb-claude-symbolic.svg", True))
         window.update_session_row(card, {**card.asb_thread, "provider": "codex"})
         self.assertEqual(file_icon(card.asb_mark), (None, "asb-openai-symbolic.svg", True))
+
+    def rgba(self, widget):
+        """The unpremultiplied RGBA rows of one widget (Cairo renderer): rows[y][x] is (r, g, b, a)."""
+        snapshot = asb.Gtk.Snapshot()
+        width, height = widget.get_width(), widget.get_height()
+        asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, width, height)
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), asb.Graphene.Rect().init(0, 0, width, height)))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        renderer.unrealize()
+        data = data.get_data()
+        return [[tuple(data[y * stride + x * 4:y * stride + x * 4 + 4]) for x in range(width)] for y in range(height)]
+
+    def card_board(self, rows, palette=None, font="Cantarell 11"):
+        asb.Gtk.Settings.get_default().set_property("gtk-font-name", font)
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                    (asb, "request_async", lambda *args: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                       theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(520, 400)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        if palette:
+            window.set_palette(palette)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.settle(window)
+        return window
+
+    @staticmethod
+    def card_row(key, **extra):
+        return {"id": key, "provider": "codex", "providerLabel": "Codex", "title": "Write the release notes for the summer catalog",
+                "cwd": "/example/docs-site", "projectName": "docs-site", "state": "idle", "canOpen": True,
+                "updatedAtMs": NOW - 60_000, **extra}
+
+    def test_escape_with_nothing_to_clear_hides_the_card_controls_until_a_new_hover_or_focus(self):
+        unread = dict(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
+        window = self.card_board([self.card_row("a", **unread), self.card_row("b")])
+        settle, cards = (lambda: self.settle(window)), window.focus_widgets
+        one, two = cards["a"], cards["b"]
+        controls = lambda card: tuple(self.ink(button) for button in (card.asb_drawer_button, card.asb_mute_button, card.asb_copy_button))
+        cue = one.asb_read_button.get_child().get_first_child().get_next_sibling()
+        self.assertTrue(cue.has_css_class("asb-read-cue"))
+        self.hover_card(window, one, True); settle()
+        self.assertEqual((controls(one), self.ink(one.asb_dot)), ((255, 255, 255), 0))
+        window.show_copy_tag(one.asb_copy_button, True); settle()
+        self.assertTrue(one.asb_copy_tag.get_reveal_child())
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        self.assertTrue(one.has_css_class("asb-dismissed"))
+        self.assertFalse(one.asb_copy_tag.get_reveal_child())
+        # The corner buttons and the pocket go; the dot has its rest look and no check cue shows.
+        self.assertEqual((controls(one), self.ink(one.asb_dot), self.ink(cue)), ((0, 0, 0), 255, 0))
+        # A hidden button takes no pointer input: GTK does not pick a widget at opacity 0.
+        picked = window.pick(*self.center_in(window, one.asb_copy_button), asb.Gtk.PickFlags.DEFAULT)
+        self.assertFalse(picked is one.asb_copy_button or picked is not None and picked.is_ancestor(one.asb_copy_button))
+        # A second Escape changes nothing; the pointer on another card shows the controls there and on the first card again.
+        self.assertFalse(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        self.hover_card(window, one, False); self.hover_card(window, one, True); settle()
+        self.assertTrue(one.has_css_class("asb-dismissed"))
+        self.hover_card(window, one, False); self.hover_card(window, two, True); settle()
+        self.assertFalse(one.has_css_class("asb-dismissed"))
+        self.assertEqual(controls(two)[1:], (255, 255))
+        self.hover_card(window, two, False); self.hover_card(window, one, True); settle()
+        self.assertEqual(controls(one), (255, 255, 255))
+        self.hover_card(window, one, False); settle()
+        # Keyboard: Escape on a focused corner button gives the focus to the card; Tab into a button shows them again.
+        window.set_focus_visible(True); one.asb_copy_button.grab_focus(); settle()
+        self.assertGreater(controls(one)[2], 0)
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        self.assertIs(window.get_focus(), one)
+        self.assertEqual(controls(one), (0, 0, 0))
+        self.assertTrue(one.child_focus(asb.Gtk.DirectionType.TAB_FORWARD)); settle()
+        self.assertFalse(one.has_css_class("asb-dismissed"))
+        self.assertEqual(controls(one), (255, 255, 255))
+        one.grab_focus(); self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        two.grab_focus(); settle()
+        self.assertFalse(one.has_css_class("asb-dismissed"))
+        # With a query, Escape clears the search and all filters, as before, and hides no control.
+        two.grab_focus(); window.search.set_text("release"); settle()
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        self.assertEqual(window.search.get_text(), "")
+        self.assertFalse(any(card.has_css_class("asb-dismissed") for card in window.focus_widgets.values()))
+
+    def center_in(self, window, widget):
+        found, point = widget.compute_point(window, asb.Graphene.Point().init(widget.get_width() / 2, widget.get_height() / 2))
+        self.assertTrue(found)
+        return point.x, point.y
+
+    def test_a_tag_pocket_covers_the_text_column_and_fades_only_before_the_text_edge(self):
+        for palette in (None, CUSTOM):
+            with self.subTest(palette=palette):
+                window = self.card_board([self.card_row("a"), self.card_row("b")], palette)
+                card = window.focus_widgets["a"]
+                window.set_focus(None); self.settle(window)
+                corner = card.asb_actions
+                self.hover_card(window, card, True); self.settle(window)
+                self.assertEqual(corner.compute_bounds(card)[1].origin.x, card.get_width() - 5 - corner.get_width() - 16)
+                for button in (card.asb_mute_button, card.asb_copy_button):
+                    # The pointer rest path, as the rest timer runs it.
+                    window.copy_hover, button.asb_rest_at = button, time.monotonic() - 1
+                    window.show_copy_tag(button, True); self.settle(window)
+                    tag = button.asb_tag
+                    self.assertTrue(tag.get_visible())
+                    self.assertEqual(corner.compute_bounds(card)[1].origin.x, 22)
+                    left = round(tag.compute_bounds(card)[1].origin.x)
+                    self.assertGreaterEqual(left, 29)
+                    rows = self.rgba(card)
+                    # Opaque, one color, from the text edge to the tag over the folder line and title line 1: no ink of either shows.
+                    band = {rows[y][x] for y in range(2, 34) for x in range(29, left)}
+                    self.assertEqual(len(band), 1, band)
+                    self.assertEqual(band.pop()[3], 255)
+                    # The fade is in the gap between the provider mark (ends at 22) and the text edge.
+                    self.assertTrue(corner.has_css_class("asb-corner-tagged"))
+                    window.hide_copy_tag(button); self.drain(.5); self.settle(window)
+                    self.assertFalse(tag.get_visible())
+                    self.assertEqual(corner.compute_bounds(card)[1].origin.x, card.get_width() - 5 - corner.get_width() - 16)
+                self.hover_card(window, card, False)
+                window.close(); self.drain(.2)
+
+    def test_comfortable_marks_share_one_center(self):
+        rows = [self.card_row("question", state="waiting", pending=True, questionPending=True, questionAttention=True, pendingSource="user-question"),
+                self.card_row("dot", pending=True, unread=True, completionAttention=True, pendingSource="observed-completion"),
+                self.card_row("ring", state="working", discardResult=True, workingSinceMs=NOW - 60_000),
+                self.card_row("stop", lastOutcome="stopped"),
+                self.card_row("passive", state="waiting", actionRequired=True, actionAttention=False)]
+        # DejaVu Serif and JetBrains Mono put the ink of "?" off the center of its logical box, as Cascadia Code does in the user's style.
+        for font in ("Cantarell 11", "Cascadia Code NF 11", "DejaVu Serif 11", "JetBrains Mono 11"):
+            with self.subTest(font=font):
+                window = self.card_board(rows, CUSTOM, font)
+                centers = {}
+                for key, card in window.focus_widgets.items():
+                    read = card.asb_read_button
+                    pixels = self.rgba(read)
+                    background = pixels[0][0]
+                    ink = [(x, y) for y, line in enumerate(pixels) for x, value in enumerate(line)
+                           if max(abs(value[index] - background[index]) for index in range(4)) > 40]
+                    xs, ys = [x for x, _y in ink], [y for _x, y in ink]
+                    centers[key] = ((min(xs) + max(xs) + 1) / 2, (min(ys) + max(ys) + 1) / 2)
+                # The passive glyph has no disc. Check the actual Pango ink too, before raster rounding can hide a one-pixel shift.
+                card = window.focus_widgets["passive"]
+                glyph, read = card.asb_dot.get_first_child(), card.asb_read_button
+                found, point = glyph.compute_point(read, asb.Graphene.Point().init(0, 0))
+                self.assertTrue(found)
+                ink, _logical = glyph.get_layout().get_extents()
+                ox, oy = glyph.get_layout_offsets()
+                self.assertLessEqual(abs(point.x + ox + (ink.x + ink.width / 2) / asb.Pango.SCALE - 12), .5)
+                self.assertLessEqual(abs(point.y + oy + (ink.y + ink.height / 2) / asb.Pango.SCALE - 12), .5)
+                for key, (x, y) in centers.items():
+                    self.assertLessEqual(abs(x - 12), .5, (key, centers))
+                    self.assertLessEqual(abs(y - 12), .5, (key, centers))
+                window.close(); self.drain(.2)
 
     def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
         def row(n, **extra):
@@ -7041,10 +7201,11 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual({identity: card.asb_drawer_button.get_visible() for identity, card in cards.items()},
                          {"s1": True, "s2": True, "s3": False, "s4": False, "s5": False})
         one, question = cards["s1"], cards["s5"]
-        drawer, read, cue = one.asb_drawer_button, one.asb_read_button, one.asb_read_button.get_child().get_last_child()
+        drawer, read, cue = one.asb_drawer_button, one.asb_read_button, one.asb_read_button.get_child().get_first_child().get_next_sibling()
         copy_button = one.asb_copy_button
         # The drawer is first in the corner, then the two tags, mute, copy, read, pin. Every state has copy, and every wide corner has the pocket.
-        self.assertIs(drawer.get_parent().get_first_child(), drawer)
+        self.assertIs(drawer.get_parent().get_first_child(), one.asb_corner_spacer)
+        self.assertIs(one.asb_corner_spacer.get_next_sibling(), drawer)
         self.assertIs(drawer.get_next_sibling(), copy_button.asb_tag)
         self.assertIs(copy_button.asb_tag.get_next_sibling(), one.asb_mute_tag)
         self.assertIs(one.asb_mute_tag.get_next_sibling(), one.asb_mute_button)
@@ -7054,7 +7215,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.asb_action, copy_button.get_child().get_icon_name()),
                          (24, 24, "win.copy-reference", "edit-copy-symbolic"))
         self.assertEqual(copy_button.get_child().get_pixel_size(), 12)
-        self.assertEqual(copy_button.get_tooltip_text(), "Copy relative reference")
+        self.assertEqual(copy_button.get_tooltip_text(), "Copy relative reference. Scroll to change the kind.")
         self.assert_accessible_label(copy_button, "Copy relative reference: " + one.asb_thread["title"])
         self.assertTrue(all(card.asb_copy_button.get_visible() and card.asb_copy_button.get_parent().has_css_class("asb-corner-wide")
                             for card in cards.values()))
@@ -7433,7 +7594,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(self.ink(busy.asb_dot), 0)
         self.hover_card(window, plain, True); settle()
         self.assertTrue(plain.asb_read_button.get_visible() and plain.asb_read_button.has_css_class("asb-discard-offer"))
-        self.assertGreater(self.ink(plain.asb_dot), 0)
+        self.assertGreater(self.ink(plain.asb_read_button.get_child().get_last_child()), 0)
         self.hover_card(window, busy, False); self.hover_card(window, plain, False); settle()
         # A narrow column ellipsizes a long folder name first; the icon stays visible inside the card.
         dashboard["threads"][0]["projectName"] = "a-very-long-project-folder-name-for-the-mute-check"
@@ -8639,7 +8800,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(one.get_state_flags() & asb.Gtk.StateFlags.FOCUS_WITHIN)
         self.assertEqual((window.get_focus_visible(), one.has_css_class("asb-key-focus")), (False, False))
         self.assertFalse(one.get_state_flags() & asb.Gtk.StateFlags.PRELIGHT)
-        shown = lambda card: (self.ink(card.asb_dot), self.ink(card.asb_read_button.get_child().get_last_child()) > 0,
+        shown = lambda card: (self.ink(card.asb_dot), self.ink(card.asb_read_button.get_child().get_first_child().get_next_sibling()) > 0,
                               self.ink(card.asb_drawer_button))
         self.assertEqual(shown(one), (255, False, 0))
         self.assertGreater(self.ink(one.asb_pin_button), 0)  # The pin rule of 1.5.0.
