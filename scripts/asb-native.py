@@ -25,6 +25,8 @@ from urllib.request import ProxyHandler, Request, build_opener
 LOCAL_HTTP = build_opener(ProxyHandler({}))
 ROW_HEIGHT = 22
 COMFORTABLE_ROW_HEIGHT = 68
+# The hover pocket ends between title lines 1 and 2 (measured in Cascadia Code NF 11 and Cantarell 11).
+POCKET_BOTTOM = 8
 DEFAULT_COLUMN_WIDTH = 240
 # Cards on the board (Preferences > Sessions); 0 shows all cards.
 CARD_LIMITS = ((50, "50"), (100, "100"), (200, "200"), (500, "500"), (0, "All"))
@@ -249,7 +251,7 @@ def mute_left_text(until_ms, now_ms):
     hours, minutes = divmod(minutes, 60)
     if hours >= 24:
         return "1d"
-    return f"{hours}h" + (f"{minutes}m" if minutes else "") if hours else f"{minutes}m"
+    return f"{hours}h" + (f"{minutes:02d}m" if minutes else "") if hours else f"{minutes}m"
 
 
 def local_clock_text(ms):
@@ -296,9 +298,9 @@ def row_menu_actions(row, now_ms=None):
 ROW_PANEL_SLOTS = {"mark-read": ("read", "object-select-symbolic"), "mark-unread": ("read", "mail-unread-symbolic"),
                    "drawer-out": ("drawer", "asb-drawer-symbolic"), "drawer-in": ("drawer", "asb-drawer-symbolic"),
                    "unmute": ("mute", "preferences-system-notifications-symbolic"), "mute": ("mute", "asb-muted-symbolic"),
-                   "unpin": ("pin", "view-pin-symbolic"), "pin": ("pin", "view-pin-symbolic"),
+                   "unpin": ("pin", "asb-unpin-symbolic"), "pin": ("pin", "view-pin-symbolic"),
                    "pin-up": ("pin-up", "go-up-symbolic"), "pin-down": ("pin-down", "go-down-symbolic"),
-                   "keep-result": ("discard", "edit-undo-symbolic"), "discard-result": ("discard", "edit-delete-symbolic")}
+                   "keep-result": ("discard", "asb-keep-symbolic"), "discard-result": ("discard", "asb-discard-symbolic")}
 
 
 def row_panel_controls(row, now_ms=None):
@@ -579,11 +581,24 @@ def shows_action(row):
 
 
 def attention_indicator(row, drawer=False):
-    """Return the row mark in question, alert, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark."""
+    """Return the row mark in question, alert, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark.
+    A usage-limit stop shows the stop square only after the reset, not during the countdown."""
     return "question" if shows_action(row) or row.get("questionAttention") else "alert" if row.get("alert") else "dot" \
         if row.get("unread") or (drawer and row.get("drawer") and row.get("state") != "working" and not limit_left(row)) \
         else "discard" if row.get("state") in ("working", "idle") and row.get("discardResult") \
-        else "stop" if row.get("state") == "idle" and row.get("lastOutcome") == "stopped" else ""
+        else "stop" if row.get("state") == "idle" and (row.get("lastOutcome") == "stopped" or row.get("lastOutcome") == "limit" and not limit_left(row)) else ""
+
+
+def state_word(row):
+    """The card state word. An Idle row says Failed after a failed task, and Stopped after a user stop or a usage limit stop,
+    until the next task starts, also after Read. Filters and sorting keep the state names."""
+    state = row.get("state", "unknown")
+    state = state if state in STATES else "unknown"
+    if state == "idle" and row.get("lastOutcome") == "failed":
+        return "Failed"
+    if state == "idle" and row.get("lastOutcome") in ("stopped", "limit"):
+        return "Stopped"
+    return state.capitalize()
 
 
 def ignore_discard_after_read(action, last_read_at, now=None):
@@ -1192,6 +1207,32 @@ def quiet_color(colors, key, fraction, highlight):
     return colors[key], 1
 
 
+def lightness(color):
+    """CIE L* (D65) of an sRGB hex color, 0 to 100."""
+    y = luminance(color)
+    return 116 * y ** (1 / 3) - 16 if y > 216 / 24389 else 24389 / 27 * y
+
+
+def quiet_tones(colors, highlight, custom):
+    """The quiet title and caption colors with their fractions. The caption is at least 10 L* below the title:
+    first the caption goes down to its 4.5:1 floor, then the title goes up."""
+    key = "muted" if custom else "text"
+    title, title_fraction = quiet_color(colors, "text", .67, highlight)
+    caption, caption_fraction = quiet_color(colors, key, .85 if custom else .5, highlight)
+    if lightness(title) - lightness(caption) >= 10:
+        return (title, title_fraction), (caption, caption_fraction)
+    floor = quiet_color(colors, key, 0, highlight)[1]
+    for percent in range(round(caption_fraction * 100), round(floor * 100) - 1, -1):
+        caption, caption_fraction = mix_color(colors["background"], colors[key], percent / 100), percent / 100
+        if lightness(title) - lightness(caption) >= 10:
+            return (title, title_fraction), (caption, caption_fraction)
+    for percent in range(round(title_fraction * 100), 101):
+        title, title_fraction = mix_color(colors["background"], colors["text"], percent / 100), percent / 100
+        if lightness(title) - lightness(caption) >= 10:
+            break
+    return (title, title_fraction), (caption, caption_fraction)
+
+
 def limited_color(colors):
     """The text color of a limited row: the dimmest mix of text into the background with 4.5:1 on the background."""
     return quiet_color(colors, "text", 0, colors["background"])
@@ -1391,7 +1432,7 @@ def duration_text(seconds, whole_minutes=False):
     """The Working time; with whole_minutes (a board in the background) no seconds from one minute on."""
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
-    return f"{hours}h{minutes}m" if hours else f"{minutes}m" + ("" if whole_minutes else f"{seconds}s") if minutes else f"{seconds}s"
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m" + ("" if whole_minutes else f"{seconds:02d}s") if minutes else f"{seconds}s"
 
 
 def spoken_duration(seconds):
@@ -1406,7 +1447,7 @@ def spoken_duration(seconds):
 def limit_text(seconds):
     """The reset countdown: days and hours from 24 hours on (weekly limits), else the Working time format."""
     days, remainder = divmod(seconds, 86400)
-    return f"{days}d{remainder // 3600}h" if days else duration_text(seconds)
+    return f"{days}d{remainder // 3600:02d}h" if days else duration_text(seconds)
 
 
 def spoken_limit(seconds):
@@ -1522,8 +1563,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
     path = short_home_path(full_path, home_dir)
     state = row.get("state", "unknown")
     state = state if state in STATES else "unknown"
-    state_word = "Stopped" if state == "idle" and row.get("lastOutcome") in ("failed", "limit") else state.capitalize()
-    state_text = state_word + " · " + (working_duration(row, now_ms, whole_minutes) or row_meta(row, now_ms).split(" · ")[1])
+    state_text = state_word(row) + " · " + (working_duration(row, now_ms, whole_minutes) or row_meta(row, now_ms).split(" · ")[1])
     provider = row.get("providerLabel") or APP_NAMES.get(row.get("provider"), "Unknown app")
     source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
     app = provider + (" · " + source_label if source_label and source_label != provider else "")
@@ -1557,7 +1597,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
         else:
             note = "Unread kept in ASB. Use Read to clear it."
     elif indicator == "stop":
-        note = "You stopped this task."
+        note = "The usage limit stopped this task." if row.get("lastOutcome") == "limit" else "You stopped this task."
     elif indicator == "discard":
         note = "Discard is on for the next task." if row.get("state") == "idle" else "Discard is on for this task."
     elif row.get("questionPending"):
@@ -6284,20 +6324,25 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-number.asb-number-pressed {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
 {base} .asb-dot, .asb-tooltip .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
-{base} .asb-dot.asb-question, {base} .asb-dot.asb-alert, .asb-tooltip .asb-dot.asb-question, .asb-tooltip .asb-dot.asb-alert {{ min-width: 0; min-height: 0; border-radius: 0; background: none; color: @accent_color;
+{base} .asb-dot.asb-question, {base} .asb-dot.asb-alert {{ min-width: 0; min-height: 0; border-radius: 0; background: none; color: @accent_color;
     font-size: 11px; font-weight: 800; }}
-{base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; background: alpha(@window_fg_color, .55); }}
-{base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid @window_fg_color;
+{base} .asb-read-button .asb-dot.asb-question, {base} .asb-read-button .asb-dot.asb-alert, .asb-tooltip .asb-dot.asb-question,
+    .asb-tooltip .asb-dot.asb-alert {{ min-width: 16px; min-height: 16px; border-radius: 50%; background: @accent_color;
+    color: @window_bg_color; font-size: 11px; font-weight: 800; }}
+{base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; }}
+{base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid;
     border-radius: 50%; background: none; }}
-{base} .asb-discard-offer .asb-discard {{ border-style: dashed; border-color: alpha(@window_fg_color, .55); }}
+{base} .asb-discard-offer .asb-discard {{ border-style: dashed; }}
 {base} .asb-card-action {{ min-width: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; }}
 {base} .asb-card-action.asb-action-pending > * {{ opacity: .5; }}
 {base} .asb-pin-button {{ opacity: 0; }}
 {base} .asb-session.asb-hovered .asb-pin-button, {base} .asb-session:focus-within .asb-pin-button,
 {base} .asb-pin-button.asb-pinned {{ opacity: 1; }}
-{base} .asb-pin-button.asb-pinned {{ background: alpha(@window_fg_color, .12); }}
 {base} .asb-read-button {{ color: @accent_color; background: alpha(@window_fg_color, .08); }}
-{base} .asb-read-button:hover, {base} .asb-read-button:focus-visible {{ background: alpha(@accent_color, .15); }}
+{base} .asb-read-button.asb-read-disc {{ background: transparent; }}
+{base} .asb-session.asb-hovered .asb-read-button.asb-read-disc, {base} .asb-key-focus .asb-read-button.asb-read-disc {{ background: alpha(@window_fg_color, .08); }}
+{base} .asb-read-button:hover, {base} .asb-read-button:focus-visible,
+{base} .asb-session .asb-read-button.asb-read-disc:hover, {base} .asb-session .asb-read-button.asb-read-disc:focus-visible {{ background: alpha(@accent_color, .15); }}
 {base} .asb-read-cue {{ opacity: 0; }}
 {base} .asb-read-button:hover:not(.asb-passive-indicator):not(.asb-discard-button) .asb-dot,
 {base} .asb-read-button:focus-visible:not(.asb-passive-indicator):not(.asb-discard-button) .asb-dot,
@@ -6335,8 +6380,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-copy-tag-dot.asb-copy-tag-off {{ background: none; border: 1px solid alpha(@window_fg_color, .3); }}
 {base} .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off {{ min-width: 2px; min-height: 2px; }}
 {base} .asb-copy-feedback {{ color: @success_color; }}
-{base} .asb-corner-wide {{ padding: 0 0 2px 16px; border-radius: 0 0 0 12px; }}
-{base} .asb-session.asb-hovered .asb-corner-wide, {base} .asb-key-focus .asb-corner-wide {{
+{base} .asb-corner {{ padding-top: 2px; }}
+{base} .asb-corner-wide {{ padding: 2px 0 {POCKET_BOTTOM}px 16px; border-radius: 0; }}
+/* The pocket has the card surface: the hover paint, or with key focus only the window (a GNOME card has no focus background). */
+{base} .asb-session.asb-hovered .asb-corner-wide {{
+    background: linear-gradient(to right, alpha(mix(@window_bg_color, @window_fg_color, .07), 0), mix(@window_bg_color, @window_fg_color, .07) 16px); }}
+{base} .asb-key-focus:not(.asb-hovered) .asb-corner-wide {{
     background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color 16px); }}
 {base} .asb-unread.asb-hovered .asb-dot, {base} .asb-unread.asb-key-focus .asb-read-button .asb-dot,
 {base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}
@@ -6356,7 +6405,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel .asb-panel-title {{ font-size: 12px; font-weight: bold; margin: 4px 8px 8px; }}
 {base} .asb-row-panel .asb-panel-action {{ min-height: 30px; padding: 0 8px; border-radius: 5px; font-size: 13px; font-weight: normal; }}
 {base} .asb-row-panel separator {{ margin: 4px 0; }}
-{base} .asb-row-panel .asb-panel-note {{ margin: 5px 8px; color: alpha(@window_fg_color, .72); }}
+/* Themes such as Colloid ring a focused flat button; only a keyboard focus has a ring here. */
+{base} .asb-row-panel .asb-panel-action:focus:not(:focus-visible) {{ outline: none; }}
+{base} .asb-row-panel .asb-panel-action:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
 {base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: 11px; }}
 {base} .asb-row-panel .asb-panel-caption {{ font-size: 11px; color: alpha(@window_fg_color, .72); opacity: 1; }}
 {base} .asb-row-panel button.asb-panel-captioned {{ padding-top: 5px; padding-bottom: 5px; }}
@@ -6373,19 +6424,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             number_fill, number_edge, number_pressed = number_badge_colors(colors)
             css += f"""
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
+{scope} .asb-session {{ color: {colors['text']}; }}
 {scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
 {scope} popover.asb-row-panel > contents {{ background: {colors['background']}; border-color: {edge_color(colors['background'], colors['accent'], .7, (colors['background'],))}; }}
-{scope} .asb-row-panel .asb-panel-note, {scope} .asb-row-panel .asb-panel-caption {{ color: {colors['muted']}; }}
+{scope} .asb-row-panel .asb-panel-caption {{ color: {colors['muted']}; }}
 {scope} .asb-row-panel button.asb-copy-done image {{ color: {colors['accent']}; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-working {{ color: {colors['accent']}; }}
 {scope} .asb-message-lit .asb-provider {{ color: {colors['accent']}; }}
 {scope} .asb-dot, .asb-tooltip.asb-custom .asb-dot {{ background: {colors['accent']}; }}
-{scope} .asb-dot.asb-question, {scope} .asb-dot.asb-alert, .asb-tooltip.asb-custom .asb-dot.asb-question,
-    .asb-tooltip.asb-custom .asb-dot.asb-alert {{ background: none; color: {colors['accent']}; }}
-{scope} .asb-dot.asb-stop, .asb-tooltip.asb-custom .asb-dot.asb-stop {{ background: {colors['muted']}; }}
-{scope} .asb-dot.asb-discard, .asb-tooltip.asb-custom .asb-dot.asb-discard {{ background: none; border-color: {colors['text']}; }}
-{scope} .asb-discard-offer .asb-discard {{ border-color: {colors['muted']}; }}
+{scope} .asb-dot.asb-question, {scope} .asb-dot.asb-alert {{ background: none; color: {colors['accent']}; }}
+{scope} .asb-read-button .asb-dot.asb-question, {scope} .asb-read-button .asb-dot.asb-alert, .asb-tooltip.asb-custom .asb-dot.asb-question,
+    .asb-tooltip.asb-custom .asb-dot.asb-alert {{ background: {colors['accent']}; color: {colors['background']}; }}
+{scope} .asb-dot.asb-discard, .asb-tooltip.asb-custom .asb-dot.asb-discard {{ background: none; }}
 {scope} .asb-column + .asb-column {{ border-color: {colors['divider']}; }}
 {scope} .asb-number {{ background: {number_fill}; border-color: {number_edge}; color: {colors['text']}; }}
 {scope} .asb-number.asb-number-pressed {{ background: {colors['accent']}; color: {number_pressed}; }}
@@ -6403,8 +6454,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-pet-stage {{ background: {colors['background']}; border-color: alpha({colors['text']}, .15); }}
 {scope}.asb-preferences separator {{ background: {colors['divider']}; }}
 {scope} .asb-read-button {{ color: {colors['accent']}; background: alpha({colors['text']}, .08); }}
-{scope} .asb-pin-button.asb-pinned {{ background: alpha({colors['text']}, .12); }}
+{scope} .asb-read-button.asb-read-disc {{ background: transparent; }}
+{scope} .asb-session.asb-hovered .asb-read-button.asb-read-disc, {scope} .asb-key-focus .asb-read-button.asb-read-disc {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-read-button:hover, {scope} .asb-read-button:focus-visible,
+{scope} .asb-session .asb-read-button.asb-read-disc:hover, {scope} .asb-session .asb-read-button.asb-read-disc:focus-visible,
 {scope} .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
 {scope} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
 {scope} .asb-read-button.asb-discard-button {{ background: transparent; }}
@@ -6431,7 +6484,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-copy-feedback {{ color: {colors['accent']}; }}
 {scope} .asb-copy-tag-dot.asb-copy-tag-on {{ background: {colors['accent']}; }}
 {scope} .asb-session.asb-hovered .asb-corner-wide, {scope} .asb-key-focus .asb-corner-wide {{
-    background: linear-gradient(to right, alpha({colors['background']}, 0), {colors['background']} 16px); }}
+    background: linear-gradient(to right, alpha({highlight_color(colors)}, 0), {highlight_color(colors)} 16px); }}
 .asb-tooltip.asb-custom {{ color: {colors['text']}; }}
 .asb-tooltip.asb-custom .asb-tooltip-muted, .asb-tooltip.asb-custom .asb-state {{ color: {colors['muted']}; }}
 .asb-tooltip.asb-custom .dim-label {{ opacity: 1; }}
@@ -6444,8 +6497,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.profile_surfaces = (palette["background"], highlight)
         self.badge_colors.clear()
         self.badge_css.load_from_string("")
-        quiet_title, title_fraction = quiet_color(palette, "text", .67, highlight)
-        quiet_caption, caption_fraction = quiet_color(palette, "muted" if colors else "text", .85 if colors else .5, highlight)
+        (quiet_title, title_fraction), (quiet_caption, caption_fraction) = quiet_tones(palette, highlight, bool(colors))
         # A limited row is dimmer than a quiet row: 4.5:1 on the background, and on the highlight while it is shown.
         limited, limited_fraction = limited_color(palette)
         limited_hover, hover_fraction = quiet_color(palette, "text", 0, highlight)
@@ -6455,7 +6507,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             limited = f"mix(@window_bg_color, @window_fg_color, {limited_fraction})"
             limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
-        quiet = [base + ".asb-comfortable .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
+        quiet = [base + " .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
         parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-mute-time", " .asb-where",
                  " .asb-where-icon")
         # The Grey tone of a view-only row with no attention, in both views; hover and focus bring the normal colors back.
@@ -6463,13 +6515,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         view_only, view_only_rest = f"{base} .asb-view-only-quiet{calm}", f"{base} .asb-view-only-rest{calm}"
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
-{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-where", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + state + part for state in (".asb-hovered", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
+{base} .asb-session .asb-dot.asb-question.asb-passive {{ min-width: 0; min-height: 0; border-radius: 0; background: none;
+    color: {quiet_caption}; font-size: 11px; font-weight: 800; }}
+{base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ background: {quiet_caption}; }}
+{base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ border-color: {quiet_caption}; }}
+{base} .asb-discard-offer .asb-dot.asb-discard {{ border-color: {colors['muted'] if colors else "alpha(@window_fg_color, .55)"}; }}
+{base} .asb-pin-button.asb-pinned, {base} .asb-compact-pin {{ color: {quiet_caption}; }}
+{base} .asb-session.asb-hovered .asb-pin-button.asb-pinned, {base} .asb-key-focus .asb-pin-button.asb-pinned {{
+    background: alpha({colors['text'] if colors else "@window_fg_color"}, .12); color: {colors['text'] if colors else "@window_fg_color"}; }}
 """
         self.css.load_from_string(css)
         self.hover_colors = colors
@@ -8610,11 +8670,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if model["note"]:
                 line = Gtk.Box(spacing=7)
                 if model["indicator"]:
-                    mark = Gtk.Box(valign=Gtk.Align.CENTER)
+                    mark = Gtk.Box(valign=Gtk.Align.CENTER, homogeneous=True)
                     mark.add_css_class("asb-dot")
                     if model["indicator"] in ("question", "alert"):
                         mark.add_css_class("asb-" + model["indicator"])
-                        mark.append(label("?" if model["indicator"] == "question" else "!"))
+                        glyph = label("?" if model["indicator"] == "question" else "!")
+                        glyph.set_xalign(.5)
+                        mark.append(glyph)
                     elif model["indicator"] in ("stop", "discard"):
                         mark.add_css_class("asb-" + model["indicator"])
                     line.append(mark)
@@ -8652,8 +8714,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         box.append(words)
         box.append(dots)
         if reveal:
+            # A closed tag is not visible, so the corner box adds no spacing for it.
             box = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_RIGHT, transition_duration=200,
-                               reveal_child=False, child=box)
+                               reveal_child=False, child=box, visible=False)
+            box.connect("notify::child-revealed", lambda tag, _param: tag.get_child_revealed() or tag.get_reveal_child() or tag.set_visible(False))
         return box, words, children
 
     def update_mute_tag(self, words, dots, muted=False):
@@ -8698,7 +8762,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_copy_dot_relative, widget.asb_copy_dot_absolute = dots
         widget.asb_mute_button, widget.asb_mute_tag = mute, mute_tag
         widget.asb_mute_words, widget.asb_mute_dots = mute_words, mute_dots
-        for child in (drawer, copy, mute, mute_tag, tag):
+        # The drawer is at the left end, so the other controls keep their x when it shows; the Tab order follows.
+        for child in (copy, mute, mute_tag, tag, drawer):
             actions.prepend(child)
         widget.asb_action_signature = None
         self.update_card_actions(widget)
@@ -8781,7 +8846,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.open_errors.pop(row["id"], None)
         widget.asb_thread = dict(row)
         self.update_drawer_style(widget)
-        quiet = self.view == "comfortable" and row.get("state") in ("idle", "waiting") \
+        quiet = row.get("state") in ("idle", "waiting") \
             and not (row.get("unread") or row.get("questionAttention") or row.get("pending"))
         (widget.add_css_class if quiet else widget.remove_css_class)("asb-idle-read")
         widget.set_activatable(bool(row.get("canOpen")))
@@ -8800,7 +8865,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             for name in ("asb_mute_button", "asb_mute_tag", "asb_mute_words", "asb_mute_dots", "asb_actions", "asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
                          "asb_mute_glyph", "asb_mute_time", "asb_mute_box", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
                          "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_feedback", "asb_feedback_label", "asb_footer_stack",
-                         "asb_footer_line", "asb_where_box"):
+                         "asb_footer_line", "asb_where_box", "asb_compact_pin"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -8831,9 +8896,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             title.set_ellipsize(Pango.EllipsizeMode.END)
             title.set_hexpand(True)
             widget.asb_title_label = title
-            dot = Gtk.Box(valign=Gtk.Align.CENTER)
+            # Homogeneous: the glyph gets the whole box, so it is centered in the 16 px disc of the read slot.
+            dot = Gtk.Box(valign=Gtk.Align.CENTER, homogeneous=True)
             dot.add_css_class("asb-dot")
-            dot.append(label("?"))
+            glyph = label("?")
+            glyph.set_xalign(.5)
+            dot.append(glyph)
             widget.asb_dot = dot
             state = label("", "asb-state")
             widget.asb_state_label = state
@@ -8862,6 +8930,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 title.set_size_request(-1, 32)
                 title.set_margin_start(21)
                 title.set_margin_end(54)
+                # A one-line title sits at the top of its block, so the folder-to-title distance is the same on every card.
+                title.set_yalign(0)
                 content.append(title)
                 line = Gtk.Box(spacing=6)
                 line.append(state)
@@ -8885,8 +8955,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_footer_stack = footer
                 content.append(footer)
                 overlay = Gtk.Overlay(child=content)
-                actions = Gtk.Box(spacing=2, halign=Gtk.Align.END, valign=Gtk.Align.START,
-                                  margin_end=5, margin_top=2)
+                actions = Gtk.Box(spacing=2, halign=Gtk.Align.END, valign=Gtk.Align.START, margin_end=5)
+                actions.add_css_class("asb-corner")
                 read_slot = Gtk.Box(width_request=24, height_request=24)
                 read_icon = Gtk.Overlay(child=dot)
                 dot.set_halign(Gtk.Align.CENTER)
@@ -8927,7 +8997,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 where.set_max_width_chars(10)
                 where.set_visible(False)
                 widget.asb_where_icon, widget.asb_where_label = None, where
-                for child in (mark_overlay, title, clock, dot, state, where, mute):
+                # The mark cell is always 14 px wide, so the marks of a column share one x. Only one of its
+                # children shows at a time, and a homogeneous box gives it the whole cell to center in.
+                cell = Gtk.Box(width_request=14, homogeneous=True)
+                dot.set_halign(Gtk.Align.CENTER)
+                pin = Gtk.Image(icon_name="view-pin-symbolic", pixel_size=10, visible=False,
+                                halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+                pin.add_css_class("asb-compact-pin")
+                widget.asb_compact_pin = pin
+                cell.append(dot)
+                cell.append(pin)
+                for child in (mark_overlay, title, clock, state, where, mute, cell):
                     content.append(child)
             # Tooltips set before the card is rooted cause no tooltip query.
             self.update_card_actions(widget)
@@ -8950,15 +9030,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         tone = view_only_tone(row)
         (widget.add_css_class if tone else widget.remove_css_class)("asb-view-only-quiet")
         (widget.add_css_class if tone == "rest" else widget.remove_css_class)("asb-view-only-rest")
-        indicator = attention_indicator(row, True)
-        (widget.add_css_class if indicator in ("dot", "alert") else widget.remove_css_class)("asb-unread")
-        (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
-        widget.asb_dot.get_first_child().set_visible(indicator in ("question", "alert"))
-        widget.asb_dot.get_first_child().set_label("!" if indicator == "alert" else "?")
-        (widget.asb_dot.add_css_class if indicator == "alert" else widget.asb_dot.remove_css_class)("asb-alert")
-        (widget.asb_dot.add_css_class if indicator == "question" else widget.asb_dot.remove_css_class)("asb-question")
-        (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
-        self.update_discard_dot(widget)
+        self.update_indicator(widget)
         state = widget.asb_state_label
         for css in (*("asb-" + value for value in STATES), "success", "dim-label"):
             state.remove_css_class(css)
@@ -8982,6 +9054,25 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     widget.asb_more_glyph = glyph
         widget.asb_time_signature = None
         self.update_row_text(widget)
+
+    def update_indicator(self, widget):
+        """The row mark; a usage-limit stop changes it at the reset with no new data."""
+        row = widget.asb_thread
+        indicator = attention_indicator(row, True)
+        (widget.add_css_class if indicator in ("dot", "alert") else widget.remove_css_class)("asb-unread")
+        (widget.add_css_class if indicator == "dot" and not row.get("unread") else widget.remove_css_class)("asb-drawer")
+        widget.asb_dot.get_first_child().set_visible(indicator in ("question", "alert"))
+        widget.asb_dot.get_first_child().set_label("!" if indicator == "alert" else "?")
+        (widget.asb_dot.add_css_class if indicator == "alert" else widget.asb_dot.remove_css_class)("asb-alert")
+        (widget.asb_dot.add_css_class if indicator == "question" else widget.asb_dot.remove_css_class)("asb-question")
+        (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
+        # A read permission wait keeps a quiet "?" with no Read action, in both views.
+        unread = bool(row.get("actionAttention") or row.get("unread")) if shows_action(row) else indicator in ("question", "alert", "dot")
+        (widget.asb_dot.add_css_class if indicator == "question" and not unread else widget.asb_dot.remove_css_class)("asb-passive")
+        self.update_discard_dot(widget)
+        pin = getattr(widget, "asb_compact_pin", None)
+        if pin is not None:
+            pin.set_visible(bool(row.get("pinned")) and not indicator)
 
     def clear_read_feedback(self, widget):
         if getattr(widget, "asb_read_timer", None):
@@ -9010,6 +9101,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def mute_tag_fits(self, button):
         found, bounds = button.compute_bounds(button.asb_card)
         width = button.asb_tag.get_child().measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+        # A shown drawer button moves left of the tag, so it must fit too.
+        drawer = getattr(button.asb_card, "asb_drawer_button", None)
+        if drawer is not None and drawer.get_visible():
+            width += drawer.get_width() + 2
         # The word and dots must fit inside the content; the corner fade may extend past it.
         return self.column_pixel_width >= 240 and found and bounds.origin.x - width - 2 >= 8
 
@@ -9027,6 +9122,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         elif getattr(self, "choice_tag_button", None) is button:
             self.choice_tag_button = None
         button.asb_tag_shown = bool(shown)
+        if shown:
+            tag.set_visible(True)
         tag.set_reveal_child(bool(shown))
         if getattr(button, "asb_card", None) is not None and button.asb_card.asb_view == "comfortable":
             button.asb_card.asb_action_signature = None
@@ -9119,6 +9216,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         read.set_visible(bool(indicator) or discard or confirmed)
         read.set_focusable(not passive)
         (read.add_css_class if passive else read.remove_css_class)("asb-passive-indicator")
+        # A "?" or "!" disc has no plate at rest; the card hover or key focus shows it.
+        disc = indicator in ("question", "alert") and not passive and not discard and not confirmed
+        (read.add_css_class if disc else read.remove_css_class)("asb-read-disc")
         (read.add_css_class if discard else read.remove_css_class)("asb-discard-button")
         (read.add_css_class if discard and not row.get("discardResult") else read.remove_css_class)("asb-discard-offer")
         action = "win.keep-result" if row.get("discardResult") else "win.discard-result"
@@ -9365,8 +9465,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_mute_time.set_visible(bool(mute_time))
         if getattr(widget, "asb_view", None) == "comfortable":
             self.update_card_actions(widget)
-        state_text = "Stopped" if row.get("state") == "idle" and row.get("lastOutcome") in ("failed", "limit") \
-            else row.get("state", "unknown").capitalize()
+        state_text = state_word(row)
         # The row class keeps the grey look across a view change; at the reset the next tick lifts it.
         if countdown and widget.asb_limit_clock is None:
             self.ensure_card_part(widget, "clock")
@@ -9375,12 +9474,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (widget.add_css_class if countdown else widget.remove_css_class)("asb-limited")
             if widget.asb_limit_clock:
                 widget.asb_limit_clock.set_visible(bool(countdown))
+            # At the reset a limit stop gets its stop square with no new data.
+            self.update_indicator(widget)
+            if getattr(widget, "asb_view", None) == "comfortable":
+                widget.asb_action_signature = None
+                self.update_card_actions(widget)
         if countdown:
-            widget.asb_state_label.set_label("Resets in" if self.view == "comfortable" else "Resets " + countdown)
+            widget.asb_state_label.set_label(("Resets in " if self.view == "comfortable" else "Resets ") + countdown)
         else:
-            widget.asb_state_label.set_label(state_text + (" ·" + duration if self.view == "compact" and duration else ""))
+            widget.asb_state_label.set_label(state_text + (" · " + duration if self.view == "compact" and duration else ""))
         if self.view == "comfortable":
-            widget.asb_age_label.set_label(countdown or duration or row_meta(row, now_ms).split(" · ")[1])
+            widget.asb_age_label.set_label("" if countdown else duration or row_meta(row, now_ms).split(" · ")[1])
+            widget.asb_age_label.set_visible(not countdown)
+            where = row_where(row)[1]
+            if where and widget.asb_where_label:
+                # The separator goes with the age, so a limited view-only card shows only the machine or CLI.
+                widget.asb_where_label.set_label(where if countdown else where + " ·")
         shown = row.get("unread")
         action = "Open" if row.get("canOpen") else "Session"
         manual = " Marked as unread in ASB." if shown and row.get("manualUnread") else ""
@@ -9466,21 +9575,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.connect("clicked", handler, *data)
             root.append(button)
             return button
-        panel.asb_open = action_row("go-next-symbolic", self.panel_open)
+        panel.asb_open = action_row(None, self.panel_open)
         # Every row has messages to show: local, remote, and view-only, so the row is always sensitive.
         panel.asb_messages = action_row("asb-chat-symbolic", self.panel_show_messages)
         set_panel_label(panel.asb_messages, "Show messages")
         root.append(Gtk.Separator())
-        panel.asb_note = label("Waits for your permission.", "asb-panel-note")
-        root.append(panel.asb_note)
         panel.asb_actions = {}
         for slot in dict.fromkeys(slot for slot, _icon in ROW_PANEL_SLOTS.values()):
             panel.asb_actions[slot] = action_row(None, *((self.panel_move_pin, slot[4:]) if slot.startswith("pin-") else (self.panel_action, slot)))
         root.append(Gtk.Separator())
         panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy, "short")
         panel.asb_copy_full = action_row("edit-copy-symbolic", self.panel_copy, "full")
-        for button, text in ((panel.asb_actions["mute"], "Mute"), (panel.asb_copy, "Copy relative reference"), (panel.asb_copy_full, "Copy absolute reference")):
-            set_panel_label(button, text)
+        for button, text in ((panel.asb_open, None), (panel.asb_actions["mute"], "Mute"), (panel.asb_copy, "Copy relative reference"),
+                             (panel.asb_copy_full, "Copy absolute reference")):
+            if text:
+                set_panel_label(button, text)
             button.asb_label.add_css_class("asb-panel-label")
             # The caption or the reason goes under the label.
             words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True, valign=Gtk.Align.CENTER)
@@ -9596,7 +9705,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
             mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
         signature = (self.mute_for, mute_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
-                     bool(row.get("actionRequired")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
+                     bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row))
         if signature == panel.asb_signature:
             return
@@ -9608,7 +9717,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.update_property([Gtk.AccessibleProperty.LABEL], [model["title"]])
         panel.asb_title.set_label(" ".join(model["title"].split()))
         panel.asb_title.set_tooltip_text(model["path"] + ("\n" + values[0] if values[0] else ""))
-        panel.asb_note.set_visible(bool(row.get("actionRequired")))
         error = self.open_errors.get(row["id"], "") or panel.asb_copy_error
         panel.asb_error.set_label(error)
         panel.asb_error.set_visible(bool(error))
@@ -9618,6 +9726,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         else:
             set_panel_label(panel.asb_open, "Open in " + model["app"])
             panel.asb_open.set_sensitive(bool(row.get("canOpen")) and row["id"] not in self.opening)
+        set_icon(panel.asb_open.asb_icon, provider_icon(row.get("provider")))
+        open_caption = "Waits for your permission." if row.get("actionRequired") else "Waits for your answer." if row.get("questionPending") else ""
+        panel.asb_open.asb_caption.set_label(open_caption)
+        panel.asb_open.asb_caption.set_visible(bool(open_caption))
+        (panel.asb_open.add_css_class if open_caption else panel.asb_open.remove_css_class)("asb-panel-captioned")
+        if open_caption:
+            panel.asb_open.update_property([Gtk.AccessibleProperty.DESCRIPTION], [open_caption])
+        else:
+            panel.asb_open.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         for slot, button in panel.asb_actions.items():
             button.set_visible(slot in controls)
             if slot in controls:

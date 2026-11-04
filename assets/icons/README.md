@@ -8,6 +8,7 @@ These SVG paths come from the selected ASB Column Flow preview. The board loads 
 - Machine glyph (`asb-machine-symbolic.svg`), terminal glyph (`asb-terminal-symbolic.svg`), drawer glyph (`asb-drawer-symbolic.svg`), and filter glyph (`asb-filter-symbolic.svg`): drawn for ASB, no outside source.
 - Mute glyph (`asb-muted-symbolic.svg`, an outline bell with a slash): drawn for ASB, no outside source.
 - Messages glyph (`asb-chat-symbolic.svg`, an outline speech bubble): drawn for ASB, no outside source.
+- Row panel glyphs: Keep (`asb-keep-symbolic.svg`, a solid ring), Discard (`asb-discard-symbolic.svg`, the same ring in 8 dashes), and Unpin (`asb-unpin-symbolic.svg`, a pin outline with a slash): drawn for ASB, no outside source.
 - Copy kind glyphs (`asb-link-symbolic.svg`, two hollow rounded links, rotated -45 degrees; `asb-globe-symbolic.svg`, a globe with an equator and one meridian): drawn for ASB, no outside source.
 - Windows icon `asb.ico`: the ASB icon `local.asb.AgentSwitchBoard.svg` as PNG images at 16, 32, 48, and 256 px in one ICO file. The Start menu link that `asb engine install` writes uses it.
 

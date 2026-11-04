@@ -2143,7 +2143,7 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(asb.working_duration(row, NOW + 2_000), "2m15s")
         self.assertEqual(asb.working_duration({**row, "pending": True, "questionPending": True,
                                              "questionAttention": True, "manualUnread": True}, NOW), "2m13s")
-        for seconds, expected in ((0, "0s"), (59, "59s"), (60, "1m0s"), (3723, "1h2m")):
+        for seconds, expected in ((0, "0s"), (59, "59s"), (60, "1m00s"), (3723, "1h02m")):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": NOW - seconds * 1000}, NOW), expected)
         for start in (None, 0, -1, True, "unknown", NOW + 1, float("nan")):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": start}, NOW), "")
@@ -2152,7 +2152,7 @@ class DataChecks(unittest.TestCase):
 
     def test_a_board_in_the_background_shows_whole_minutes_and_wakes_at_the_next_minute(self):
         row = {"state": "working", "workingSinceMs": NOW - 252_000}
-        for seconds, expected in ((59, "59s"), (60, "1m"), (252, "4m"), (3599, "59m"), (3600, "1h0m")):
+        for seconds, expected in ((59, "59s"), (60, "1m"), (252, "4m"), (3599, "59m"), (3600, "1h00m")):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": NOW - seconds * 1000}, NOW, True), expected)
         self.assertEqual(asb.spoken_duration(252), "4 minutes 12 seconds")
         self.assertEqual(asb.working_duration(row, NOW), "4m12s")
@@ -2172,8 +2172,75 @@ class DataChecks(unittest.TestCase):
         # A Working time near its first minute wakes at the minute, not 2 s later.
         self.assertEqual(wait([{**row, "workingSinceMs": NOW - 59_500}], NOW, True), .5)
 
+    def test_card_state_words(self):
+        word = asb.state_word
+        for row, expected in (({"state": "idle", "lastOutcome": "failed"}, "Failed"), ({"state": "idle", "lastOutcome": "stopped"}, "Stopped"),
+                              ({"state": "idle", "lastOutcome": "limit"}, "Stopped"), ({"state": "idle"}, "Idle"),
+                              ({"state": "working", "lastOutcome": "failed"}, "Working"), ({"state": "waiting"}, "Waiting"),
+                              ({"state": "foo"}, "Unknown"), ({}, "Unknown")):
+            with self.subTest(row=row):
+                self.assertEqual(word(row), expected)
+        source = SOURCE.read_text()
+        self.assertEqual(source.count('"Stopped"'), 1)
+        self.assertIn('        return "Stopped"\n', source)
+
+    def test_usage_limit_stop_square_shows_after_the_reset(self):
+        indicator = asb.attention_indicator
+        now = time.time() * 1000
+        limit = {"state": "idle", "lastOutcome": "limit"}
+        self.assertEqual(indicator({"state": "idle", "lastOutcome": "stopped"}), "stop")
+        for reset in (now - 1000, 0):
+            self.assertEqual(indicator({**limit, "limitResetsAtMs": reset}), "stop")
+        self.assertEqual(indicator(limit), "stop")
+        self.assertEqual(indicator({**limit, "limitResetsAtMs": now + 3_600_000}), "")
+        self.assertEqual(indicator({**limit, "alert": True, "limitResetsAtMs": 0}), "alert")
+        self.assertEqual(indicator({**limit, "alert": True, "limitResetsAtMs": now + 3_600_000}), "alert")
+        model = lambda row: asb.tooltip_model({"id": "a", "title": "Chat", **row}, now, "/home/test")
+        self.assertEqual(model(limit)["note"], "The usage limit stopped this task.")
+        self.assertEqual(model({"state": "idle", "lastOutcome": "stopped"})["note"], "You stopped this task.")
+        self.assertTrue(model({"state": "idle", "lastOutcome": "failed"})["state_text"].startswith("Failed · "))
+        self.assertTrue(model(limit)["state_text"].startswith("Stopped · "))
+
+    def test_times_have_two_digits_in_the_second_unit(self):
+        for value, text in (((65,), "1m05s"), ((720,), "12m00s"), ((2820,), "47m00s"), ((3900,), "1h05m"), ((5,), "5s"), ((720, True), "12m")):
+            self.assertEqual(asb.duration_text(*value), text)
+        for seconds, text in ((16_320, "4h32m"), (3 * 86_400 + 4 * 3600, "3d04h"), (300, "5m00s")):
+            self.assertEqual(asb.limit_text(seconds), text)
+        for minutes, text in ((65, "1h05m"), (60, "1h"), (52, "52m"), (24 * 60, "1d"), (30 * 60, "1d")):
+            self.assertEqual(asb.mute_left_text(NOW + minutes * 60_000, NOW), text)
+        self.assertEqual(asb.spoken_duration(65), "1 minute 5 seconds")
+        self.assertEqual(asb.spoken_limit(3 * 86_400 + 4 * 3600), "3 days 4 hours")
+
+    def test_quiet_tones_have_a_clear_step(self):
+        self.assertAlmostEqual(asb.lightness("#ffffff"), 100, places=3)
+        self.assertEqual(asb.lightness("#000000"), 0)
+        self.assertAlmostEqual(asb.lightness("#777777"), 50.03, places=1)
+        yours = {"background": "#000000", "text": "#ffffff", "muted": "#bcbcbc", "accent": "#ffb900"}
+        navy = {"background": "#10141c", "text": "#e8eaee", "muted": "#9aa4b2", "accent": "#7cc4ff"}
+        gnome = {"background": "#222226", "text": "#ffffff"}
+        for palette, highlight, custom, expected in (
+                (yours, asb.highlight_color(yours), True, (("#ababab", .67), ("#8f8f8f", .76))),
+                (navy, asb.highlight_color(navy), True, (("#acaeb3", .72), ("#8b94a2", .89))),
+                (gnome, "#313135", False, (("#b6b6b7", .67), ("#99999b", .54)))):
+            with self.subTest(palette=palette):
+                tones = asb.quiet_tones(palette, highlight, custom)
+                self.assertEqual(tones, expected)
+                (title, _), (caption, _) = tones
+                self.assertGreaterEqual(asb.lightness(title) - asb.lightness(caption), 10)
+                for color in (title, caption):
+                    for surface in (palette["background"], highlight):
+                        self.assertGreaterEqual(asb.contrast(color, surface), 4.5)
+
+    def test_row_panel_glyphs_for_discard_keep_and_unpin(self):
+        slots = asb.ROW_PANEL_SLOTS
+        self.assertEqual((slots["discard-result"], slots["keep-result"], slots["unpin"], slots["pin"]),
+                         (("discard", "asb-discard-symbolic"), ("discard", "asb-keep-symbolic"), ("pin", "asb-unpin-symbolic"),
+                          ("pin", "view-pin-symbolic")))
+        for name in ("asb-discard-symbolic", "asb-keep-symbolic", "asb-unpin-symbolic"):
+            self.assertTrue((SOURCE.parents[1] / "assets" / "icons" / f"{name}.svg").is_file(), name)
+
     def test_mute_left_text_rounds_up_to_minutes(self):
-        for left, text in ((1, "1m"), (30 * 60_000, "30m"), (61 * 60_000, "1h1m"),
+        for left, text in ((1, "1m"), (30 * 60_000, "30m"), (61 * 60_000, "1h01m"),
                            (8 * 3_600_000, "8h"), (432 * 60_000, "7h12m"),
                            (24 * 3_600_000, "1d"), (30 * 3_600_000, "1d")):
             with self.subTest(left=left):
@@ -2269,11 +2336,11 @@ class DataChecks(unittest.TestCase):
         row = {"id": "a", "provider": "codex", "providerLabel": "Codex", "title": "Chat", "state": "idle", "canOpen": True,
                "updatedAtMs": NOW - 600_000, "limitResetsAtMs": NOW + 3_600_000}
         # Rounded up; from 24 hours on, days and hours. The Working timer keeps its format.
-        for seconds, text, spoken in ((86_400, "1d0h", "1 day"), (86_399, "23h59m", "23 hours 59 minutes"),
-                                      (273_600, "3d4h", "3 days 4 hours"), (90_000, "1d1h", "1 day 1 hour"),
-                                      (604_800, "7d0h", "7 days"), (176_399, "2d0h", "2 days")):
+        for seconds, text, spoken in ((86_400, "1d00h", "1 day"), (86_399, "23h59m", "23 hours 59 minutes"),
+                                      (273_600, "3d04h", "3 days 4 hours"), (90_000, "1d01h", "1 day 1 hour"),
+                                      (604_800, "7d00h", "7 days"), (176_399, "2d00h", "2 days")):
             self.assertEqual((asb.limit_text(seconds), asb.spoken_limit(seconds)), (text, spoken))
-        self.assertEqual(asb.working_duration({"state": "working", "workingSinceMs": NOW - 273_600_000}, NOW), "76h0m")
+        self.assertEqual(asb.working_duration({"state": "working", "workingSinceMs": NOW - 273_600_000}, NOW), "76h00m")
         self.assertEqual(asb.clock_interval([{**row, "limitResetsAtMs": NOW + 273_600_000}], NOW), 60)
 
         time = SCOPE["time"]
@@ -2296,16 +2363,17 @@ class DataChecks(unittest.TestCase):
         window.opening, window.open_errors = set(), {}
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
-            for view, state in (("comfortable", "Resets in"), ("compact", "Resets 3d4h")):
+            for view, state in (("comfortable", "Resets in 3d04h"), ("compact", "Resets 3d04h")):
                 window.view = view
                 widget = SimpleNamespace(asb_thread={**row, "limitResetsAtMs": NOW + 273_600_000}, asb_time_signature=None,
                                          asb_state_label=Mock(), asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
-                                         add_css_class=Mock(), remove_css_class=Mock(), set_sensitive=Mock(),
+                                         asb_dot=Mock(), add_css_class=Mock(), remove_css_class=Mock(), set_sensitive=Mock(),
                                          update_property=Mock(), update_state=Mock())
                 window.update_row_text(widget, NOW)
                 widget.asb_state_label.set_label.assert_called_with(state)
                 if view == "comfortable":
-                    widget.asb_age_label.set_label.assert_called_with("3d4h")
+                    widget.asb_age_label.set_label.assert_called_with("")
+                    widget.asb_age_label.set_visible.assert_called_with(False)
                 self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle. Usage limit. Resets in 3 days 4 hours.")
 
     def test_usage_limit_countdown_clock_colors_tooltip_and_accessible_text(self):
@@ -2313,9 +2381,9 @@ class DataChecks(unittest.TestCase):
                "updatedAtMs": NOW - 600_000, "limitResetsAtMs": NOW + 3_600_000}
         left = lambda seconds: asb.limit_left({**row, "limitResetsAtMs": NOW + seconds * 1000}, NOW)
         # Rounded up, so a limited row never shows 0s; the format is the Working timer format.
-        for seconds, text, spoken in ((3600, "1h0m", "1 hour"), (3599, "59m59s", "59 minutes 59 seconds"),
-                                      (16_330, "4h32m", "4 hours 32 minutes"), (3661, "1h1m", "1 hour 1 minute"),
-                                      (60, "1m0s", "1 minute"), (59, "59s", "59 seconds"), (1, "1s", "1 second"), (.2, "1s", "1 second")):
+        for seconds, text, spoken in ((3600, "1h00m", "1 hour"), (3599, "59m59s", "59 minutes 59 seconds"),
+                                      (16_330, "4h32m", "4 hours 32 minutes"), (3661, "1h01m", "1 hour 1 minute"),
+                                      (60, "1m00s", "1 minute"), (59, "59s", "59 seconds"), (1, "1s", "1 second"), (.2, "1s", "1 second")):
             self.assertEqual((asb.duration_text(left(seconds)), asb.spoken_duration(left(seconds))), (text, spoken))
         for reset in (NOW, NOW - 1, 0, None, True, "soon", float("nan"), float("inf")):
             self.assertEqual(asb.limit_left({**row, "limitResetsAtMs": reset}, NOW), 0)
@@ -2356,30 +2424,32 @@ class DataChecks(unittest.TestCase):
         window.opening, window.open_errors = set(), {}
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
-            for view, state in (("comfortable", "Resets in"), ("compact", "Resets 4h32m")):
+            for view, state in (("comfortable", "Resets in 4h32m"), ("compact", "Resets 4h32m")):
                 window.view = view
                 widget = SimpleNamespace(asb_thread={**row, "limitResetsAtMs": NOW + 16_330_000}, asb_time_signature=None,
                                          asb_state_label=Mock(), asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
-                                         add_css_class=Mock(), remove_css_class=Mock(), set_sensitive=Mock(),
+                                         asb_dot=Mock(), add_css_class=Mock(), remove_css_class=Mock(), set_sensitive=Mock(),
                                          update_property=Mock(), update_state=Mock())
                 window.update_row_text(widget, NOW)
-                widget.add_css_class.assert_called_once_with("asb-limited")
+                widget.add_css_class.assert_any_call("asb-limited")
                 widget.asb_limit_clock.set_visible.assert_called_once_with(True)
                 widget.asb_state_label.set_label.assert_called_with(state)
                 if view == "comfortable":
-                    widget.asb_age_label.set_label.assert_called_with("4h32m")
+                    widget.asb_age_label.set_label.assert_called_with("")
+                    widget.asb_age_label.set_visible.assert_called_with(False)
                 self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle. Usage limit. Resets in 4 hours 32 minutes.")
                 window.update_row_text(widget, NOW + 16_330_000)  # At the reset the row is a normal Idle row at once.
-                widget.remove_css_class.assert_called_once_with("asb-limited")
+                widget.remove_css_class.assert_any_call("asb-limited")
                 widget.asb_limit_clock.set_visible.assert_called_with(False)
                 widget.asb_state_label.set_label.assert_called_with("Idle")
                 if view == "comfortable":
                     widget.asb_age_label.set_label.assert_called_with("4h ago")
+                    widget.asb_age_label.set_visible.assert_called_with(True)
                 self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle.")
-        # A limited remote row keeps the limit look and says where it runs: "workLP · 4h32m", or "Resets 4h32m · workLP".
-        remote = {**row, "canOpen": False, "remote": True, "machineName": "workLP", "limitResetsAtMs": NOW + 16_330_000}
+        # A limited remote row keeps the limit look and says where it runs: "Resets in 4h32m" and "studio", or "Resets 4h32m · studio".
+        remote = {**row, "canOpen": False, "remote": True, "machineName": "studio", "limitResetsAtMs": NOW + 16_330_000}
         self.assertEqual(asb.view_only_tone(remote), "")
-        for view, state, where in (("comfortable", "Resets in", "workLP ·"), ("compact", "Resets 4h32m", "· workLP")):
+        for view, state, where in (("comfortable", "Resets in 4h32m", "studio"), ("compact", "Resets 4h32m", "· studio")):
             window.view = view
             window.clear_read_feedback = window.update_card_actions = window.update_drawer_style = Mock()
             classes = set()
@@ -2397,10 +2467,10 @@ class DataChecks(unittest.TestCase):
             widget.asb_state_label.set_label.assert_called_with(state)
             if view == "comfortable":
                 SCOPE["set_icon"].assert_any_call(widget.asb_where_icon, "asb-machine-symbolic")
-                widget.asb_age_label.set_label.assert_called_with("4h32m")
+                widget.asb_age_label.set_label.assert_called_with("")
             self.assertEqual(classes & {"asb-limited", "asb-view-only-quiet", "asb-view-only-rest"}, {"asb-limited"})
             self.assertEqual(widget.asb_accessible_label,
-                             "Session Chat in Codex. Idle. Usage limit. Resets in 4 hours 32 minutes. On workLP. View only.")
+                             "Session Chat in Codex. Idle. Usage limit. Resets in 4 hours 32 minutes. On studio. View only.")
 
     def test_view_only_rows_where_and_grey_tone(self):
         remote = {"remote": True, "machineName": "homeLP", "surface": "app"}
@@ -2877,6 +2947,7 @@ class DataChecks(unittest.TestCase):
         def button():
             tag = SimpleNamespace(shown=False)
             tag.set_reveal_child = lambda value: setattr(tag, "shown", value)
+            tag.set_visible = lambda _value: None
             return SimpleNamespace(asb_card_action="copy", asb_tag=tag, asb_tag_shown=False, asb_rest_at=None,
                                    asb_card=None, get_ancestor=lambda _type: None)
         a, b, c = button(), button(), button()
@@ -5294,15 +5365,15 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(controls(idle), {"read": ("mark-read", "Mark read", "object-select-symbolic"),
                                           "drawer": ("drawer-in", "Put in drawer", "asb-drawer-symbolic"),
                                           "mute": ("mute", "Mute", "asb-muted-symbolic"),
-                                          "pin": ("unpin", "Unpin", "view-pin-symbolic"),
+                                          "pin": ("unpin", "Unpin", "asb-unpin-symbolic"),
                                           "pin-up": ("pin-up", "Move pin earlier", "go-up-symbolic"),
                                           "pin-down": ("pin-down", "Move pin later", "go-down-symbolic")})
         working = {"state": "working"}
         self.assertEqual(controls(working), {"read": ("mark-unread", "Mark unread", "mail-unread-symbolic"),
                                              "mute": ("mute", "Mute", "asb-muted-symbolic"),
                                              "pin": ("pin", "Pin", "view-pin-symbolic"),
-                                             "discard": ("discard-result", "Discard result", "edit-delete-symbolic")})
-        self.assertEqual(controls({**working, "discardResult": True})["discard"], ("keep-result", "Keep result", "edit-undo-symbolic"))
+                                             "discard": ("discard-result", "Discard result", "asb-discard-symbolic")})
+        self.assertEqual(controls({**working, "discardResult": True})["discard"], ("keep-result", "Keep result", "asb-keep-symbolic"))
         for remote in (working, {**working, "discardResult": True}):
             self.assertNotIn("discard", controls({**remote, "remote": True}))
             self.assertFalse({"discard-result", "keep-result"} & {action for _title, action in actions({**remote, "remote": True})})
@@ -5485,7 +5556,7 @@ class NativeLogicChecks(unittest.TestCase):
             widget.asb_read_button.remove_css_class.assert_any_call("asb-passive-indicator")
         css = SOURCE.read_text()
         self.assertIn(".asb-dot.asb-stop {{ border-radius: 1px;", css)
-        self.assertIn(".asb-dot.asb-stop {{ background: {colors['muted']};", css)
+        self.assertIn(".asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ background: {quiet_caption}; }}", css)
         self.assertIn(":hover:not(.asb-passive-indicator):not(.asb-discard-button) .asb-read-cue", css)
 
     def test_no_css_for_widgets_and_classes_that_do_not_exist(self):
@@ -5510,9 +5581,10 @@ class NativeLogicChecks(unittest.TestCase):
                 widget.asb_time_signature = None
                 window.update_row_text(widget, 100_000)
                 self.assertIn(expected, widget.asb_accessible_label)
-                if extra.get("lastOutcome") in ("failed", "limit"):
-                    self.assertIn("Stopped.", widget.asb_accessible_label)
-                    self.assertTrue(SCOPE["tooltip_model"](widget.asb_thread, 100_000, "/example")["state_text"].startswith("Stopped"))
+                if extra.get("lastOutcome") in ("failed", "limit", "stopped"):
+                    word = "Failed" if extra["lastOutcome"] == "failed" else "Stopped"
+                    self.assertIn(word + ".", widget.asb_accessible_label)
+                    self.assertTrue(SCOPE["tooltip_model"](widget.asb_thread, 100_000, "/example")["state_text"].startswith(word + " · "))
                 self.assertNotIn("completed task", widget.asb_tooltip)
                 if extra.get("actionRequired"):
                     self.assertIn("Waits for your permission.", widget.asb_tooltip)
@@ -5600,7 +5672,8 @@ class NativeLogicChecks(unittest.TestCase):
             widget.asb_read_button.set_visible.assert_called_with(True)
             self.assertEqual(widget.asb_read_button.asb_action, "win.discard-result")
         source = SOURCE.read_text()
-        self.assertIn("min-width: 6px; min-height: 6px; border: 1.5px solid @window_fg_color", source)
+        self.assertIn("min-width: 6px; min-height: 6px; border: 1.5px solid;", source)
+        self.assertIn(".asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ border-color: {quiet_caption}; }}", source)
         self.assertIn(".asb-discard-button.asb-discard-offer {{ opacity: 0;", source)
         self.assertIn(".asb-session:focus-within .asb-discard-offer {{ opacity: 1;", source)
 
@@ -5616,8 +5689,8 @@ class NativeLogicChecks(unittest.TestCase):
         # The menu and the row panel offer Discard for the next task on an Idle row with no mark, and Keep on an armed one.
         self.assertEqual(actions(idle)[-1], ("Discard next result", "discard-result"))
         self.assertEqual(actions(armed)[-1], ("Keep next result", "keep-result"))
-        self.assertEqual(controls(idle)["discard"], ("discard-result", "Discard next result", "edit-delete-symbolic"))
-        self.assertEqual(controls(armed)["discard"], ("keep-result", "Keep next result", "edit-undo-symbolic"))
+        self.assertEqual(controls(idle)["discard"], ("discard-result", "Discard next result", "asb-discard-symbolic"))
+        self.assertEqual(controls(armed)["discard"], ("keep-result", "Keep next result", "asb-keep-symbolic"))
         # A mark, a drawer entry, Mute, another machine, or another state takes the offer away; Keep stays for an armed row with a mark.
         for extra in ({"unread": True}, {"questionAttention": True}, {"lastOutcome": "stopped"}, {"drawer": True}, {"muted": True},
                       {"remote": True}, {"state": "waiting"}, {"state": "unknown"}):
@@ -5836,7 +5909,7 @@ class NativeLogicChecks(unittest.TestCase):
             value = model({**base, "cwd": path}, 223_000, "/home/test/")
             self.assertEqual((value["path"], value["full_path"]), (expected, path))
             self.assertIn(path, description(value))
-            self.assertEqual(value["state_text"], "Working · 2m2s")
+            self.assertEqual(value["state_text"], "Working · 2m02s")
             self.assertEqual(value["title"], base["title"])
         self.assertEqual(model({**base, "projectName": "Project"}, 223_000, "/home/test")["path"], "Project")
         self.assertEqual(model(base, 223_000, "/home/test")["path"], "No project folder")
@@ -7444,9 +7517,10 @@ class NativeLogicChecks(unittest.TestCase):
                              ({}, True), ({"unread": True}, False), ({"questionAttention": True}, False), ({"pending": True}, False)):
             window.update_session_row(widget, {**row, **extra})
             self.assertEqual("asb-idle-read" in classes, quiet)
+        # Compact rows use the quiet tones too.
         window.view, widget.asb_view, widget.asb_thread = "compact", "compact", {}
         window.update_session_row(widget, row)
-        self.assertNotIn("asb-idle-read", classes)
+        self.assertIn("asb-idle-read", classes)
         colors = {"background": "#0f0f0f", "text": "#f6f5f4", "muted": "#aaaaaa", "accent": "#cccccc", "divider": "#444444"}
         for foreground in ("#f6f5f4", "#aaaaaa", "#929292"):
             palette = SCOPE["validate_theme"]({**colors, "text": foreground, "muted": foreground})
@@ -8701,8 +8775,8 @@ class NativeIOAuditChecks(unittest.TestCase):
         self.assertEqual(window.update_open_state.call_count, 2)
         widget.asb_thread = {**row, "state": "working", "workingSinceMs": now - 61_000}
         window.update_row_text(widget, now)
-        widget.asb_age_label.set_label.assert_called_with("1m1s")
-        self.assertEqual(SCOPE["tooltip_model"](widget.asb_thread, now, "/fixture/home")["state_text"], "Working · 1m1s")
+        widget.asb_age_label.set_label.assert_called_with("1m01s")
+        self.assertEqual(SCOPE["tooltip_model"](widget.asb_thread, now, "/fixture/home")["state_text"], "Working · 1m01s")
 
     def test_config_paths_use_home_when_xdg_config_home_is_empty(self):
         assignments = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "config_dir"
