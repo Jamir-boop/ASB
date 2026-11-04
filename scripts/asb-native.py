@@ -10589,7 +10589,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.asb_caption = label("", "asb-panel-caption")
             button.asb_caption.set_wrap(button is not panel.asb_actions["mute"])
             button.asb_caption.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-            button.asb_caption.set_ellipsize(Pango.EllipsizeMode.END)
+            # Pango shows one line of a wrapped, ellipsized label with no line limit. The Open, Read, and drawer captions show
+            # all their words; the Mute caption is one line, and the copy captions set their line limit in show_copy_rows.
+            if button not in (panel.asb_open, panel.asb_actions["read"], panel.asb_actions["drawer"]):
+                button.asb_caption.set_ellipsize(Pango.EllipsizeMode.END)
             button.asb_caption.set_max_width_chars(1)
             words.append(button.asb_caption)
             button.get_child().append(words)

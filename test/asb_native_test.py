@@ -5636,6 +5636,44 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(card.asb_dot.get_first_child().get_visible())
         self.assertNotIn("Not read yet", card.asb_accessible_label + card.asb_tooltip)
 
+    def test_row_panel_captions_show_every_word_without_a_wider_panel(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
+        settings.set_property("gtk-font-name", "Monospace 11")
+        ended = "The Claude Code process ended during a task."
+        claude = {"state": "unknown", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code"}
+        reasons = {"none": "No current task signal is available.", "stale": "The last task has no recent signal.",
+                   "child": "A linked child has no current task signal."}
+        failed = {**claude, "unread": True, "pending": True, "alert": True, "failedAttention": True, "pendingSource": "observed-failure"}
+        # Each caption row has a twin with the same panel rows and no caption: the panel fits its row labels, not the caption.
+        rows = self.card_rows(("plain", {}), ("ended", {**failed, "reason": ended, "processEnded": True}), ("ended-twin", failed),
+                              *[(key, {**claude, "reason": reason}) for key, reason in reasons.items()], ("unknown-twin", claude),
+                              ("working", {"state": "working", "workingSinceMs": NOW - 1000}))
+        window = self.mute_wheel_board(520, rows)
+        def open_panel(key):
+            window.show_context(window.focus_widgets[key]); self.drain(.3)
+            panel = window.context_menu
+            return panel, panel.get_child().get_width()
+        panel, plain_width = open_panel("plain")
+        self.assertFalse(panel.asb_open.asb_caption.get_visible())
+        panel.popdown(); self.drain()
+        for key, caption in (("ended", ended + " Not read yet."), *reasons.items()):
+            panel, twin_width = open_panel("ended-twin" if key == "ended" else "unknown-twin")
+            self.assertFalse(panel.asb_open.asb_caption.get_visible(), key)
+            panel.popdown(); self.drain()
+            panel, width = open_panel(key)
+            label = panel.asb_open.asb_caption
+            self.assertEqual((label.get_label(), label.get_visible()), (caption, True), key)
+            self.assertFalse(label.get_layout().is_ellipsized(), key)
+            self.assertEqual(width, twin_width, key)
+            panel.popdown(); self.drain()
+        panel, width = open_panel("working")
+        label = panel.asb_actions["read"].asb_caption
+        self.assertEqual((label.get_label(), label.get_visible()), ("The dot shows when this task ends.", True))
+        self.assertFalse(label.get_layout().is_ellipsized())
+        self.assertEqual(width, plain_width)
+        panel.popdown(); self.drain()
+
     def test_row_panel_open_caption_provider_mark_and_new_glyphs(self):
         rows = self.card_rows(("plain", {"pinned": True}),
                               ("permission", {"state": "waiting", "actionRequired": True, "actionAttention": True, "pending": True,
