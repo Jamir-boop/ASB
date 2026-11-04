@@ -4,7 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
-- Added Ctrl+wheel zoom on the board: up zooms in, down zooms out, in steps from 80% to 200%. The zoom changes the text, the row heights, and the column width of the board, and it is saved for the next start. Ctrl+wheel no longer scrolls the board.
+- Added Ctrl+wheel zoom on the board: up zooms in, down zooms out, in steps from 80% to 200%. The zoom changes the text, the row heights, and the column width of the board, and it is saved for the next start. Ctrl+0 resets it to 100%; Ctrl+1 to Ctrl+9 still open cards. Ctrl+wheel no longer scrolls the board.
 - A Waiting session (a question or a permission request in the original app) can now go in the drawer, from the row panel or the card drawer button, on the board and in the Android app. In the normal list it then looks read: no `?`, not Pending, no sound, and no phone notification. It leaves the drawer when it starts to work or asks a new question or for a new permission.
 - No time shows seconds now, on the board, in its tooltips, and in the Android app: a Working time shows `<1m` in its first minute, then whole minutes (`Working · 3m`), and a usage-limit countdown rounds up to whole minutes (`Resets in 1m`). The board clock wakes once a minute, also while the pointer is on the board.
 - The GNOME top-bar capsule shows two numbers now, the sessions that need you and the sessions that work. The count of all sessions is gone from the capsule and from the Machines part of its menu.

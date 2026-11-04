@@ -8611,6 +8611,30 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(edge, asb.mix_color(low["background"], low["text"], .36))
         self.assertGreaterEqual(asb.contrast(low["accent"], pressed), 4.5)
 
+    def test_ctrl_0_resets_the_zoom_and_ctrl_digits_still_open_cards(self):
+        modifiers = SimpleNamespace(SHIFT_MASK=1, CONTROL_MASK=4, ALT_MASK=8, SUPER_MASK=16, META_MASK=32, HYPER_MASK=64)
+        gdk = SimpleNamespace(KEY_Control_L=0xffe3, KEY_Control_R=0xffe4, ModifierType=modifiers)
+        window = object.__new__(Window)
+        window.number_hold = None
+        window.hide_numbers, window.set_board_zoom, window.open_number = Mock(), Mock(), Mock()
+        blocked = [False]
+        window.numbers_blocked = lambda: blocked[0]
+        with patch.dict(SCOPE, {"Gdk": gdk, "SHORTCUT_MASK": 4 | 8 | 16 | 32}):
+            for key in (0x30, 0xffb0):  # 0 and keypad 0.
+                window.set_board_zoom.reset_mock()
+                self.assertTrue(window.number_key_pressed(key, modifiers.CONTROL_MASK))
+                window.set_board_zoom.assert_called_once_with(100)
+            window.open_number.assert_not_called()
+            self.assertTrue(window.number_key_pressed(0x31, modifiers.CONTROL_MASK))
+            window.open_number.assert_called_once_with(1)
+            window.set_board_zoom.reset_mock()
+            # No reset with other modifiers, without Ctrl, or while a popup blocks the numbers.
+            self.assertIsNone(window.number_key_pressed(0x30, modifiers.CONTROL_MASK | modifiers.SHIFT_MASK))
+            self.assertIsNone(window.number_key_pressed(0x30, 0))
+            blocked[0] = True
+            self.assertIsNone(window.number_key_pressed(0x30, modifiers.CONTROL_MASK))
+            window.set_board_zoom.assert_not_called()
+
     def test_ctrl_hold_shows_numbers_and_ctrl_digit_opens_the_card(self):
         timers, removed = {}, []
         def timeout_add(delay, callback, *args):

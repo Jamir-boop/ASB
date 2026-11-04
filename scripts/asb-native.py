@@ -7503,7 +7503,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return popover is not None
 
     def number_key_pressed(self, key, modifiers):
-        """Hold Ctrl alone to show the numbers; Ctrl+1 to Ctrl+9 open a card. None keeps the usual key handling."""
+        """Hold Ctrl alone to show the numbers; Ctrl+1 to Ctrl+9 open a card, and Ctrl+0 resets the board zoom to 100%.
+        None keeps the usual key handling."""
         held = modifiers & (SHORTCUT_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.HYPER_MASK)
         if key in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
             # The state is from before the press: key repeat and a hold that a popup interrupted already have Control.
@@ -7513,6 +7514,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         number = number_key(key)
         if number and held == Gdk.ModifierType.CONTROL_MASK and not self.numbers_blocked():
             self.open_number(number)
+            return True
+        # 0 and keypad 0 (X keysyms): Ctrl+0 resets the zoom and opens no card.
+        if key in (0x30, 0xffb0) and held == Gdk.ModifierType.CONTROL_MASK and not self.numbers_blocked():
+            self.hide_numbers()
+            self.set_board_zoom(100)
             return True
         if held & Gdk.ModifierType.CONTROL_MASK:
             self.hide_numbers()
