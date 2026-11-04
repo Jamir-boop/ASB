@@ -9976,7 +9976,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if slot in CARD_ACTION_KEYS:
                 button.asb_hint = label(CARD_ACTION_KEYS[slot], "asb-panel-caption")
                 button.asb_hint.add_css_class("asb-panel-key")
-                button.get_child().append(button.asb_hint)
+                # Line 1 holds the label and the hint on one baseline, so a caption under them runs to the row end.
+                parent, line = button.asb_label.get_parent(), Gtk.Box(spacing=10, hexpand=True, valign=Gtk.Align.CENTER)
+                parent.insert_child_after(line, button.asb_label)
+                parent.remove(button.asb_label)
+                for part in (button.asb_label, button.asb_hint):
+                    part.set_valign(Gtk.Align.BASELINE_CENTER)
+                    line.append(part)
                 button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS[slot]])
         mute_button = panel.asb_actions["mute"]
         panel.asb_mute_tag, panel.asb_mute_words, panel.asb_mute_dots = self.choice_tag(MUTE_WORDS, mute=True, reveal=False)

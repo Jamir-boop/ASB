@@ -5132,9 +5132,18 @@ class WidgetCheck(unittest.TestCase):
                 self.assert_accessible_label(button, key, asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
                 self.assertEqual(button.asb_label.get_ellipsize(), asb.Pango.EllipsizeMode.END)
             mute = panel.asb_actions["mute"]
-            self.assertIs(mute.asb_hint.get_next_sibling(), panel.asb_mute_tag)
+            # The hint is on line 1 of the words, which come right before the time tag.
+            self.assertIs(mute.asb_hint.get_parent().get_parent().get_next_sibling(), panel.asb_mute_tag)
             for slot, button in (("short", panel.asb_copy), ("full", panel.asb_copy_full)):
                 self.assertEqual(button.asb_hint.get_visible(), slot == chosen)
+                if slot == chosen:
+                    # The caption runs under the hint to the row end; the hint shares the label baseline.
+                    self.drain()
+                    caption, hint = button.asb_caption.compute_bounds(panel)[1], button.asb_hint.compute_bounds(panel)[1]
+                    self.assertGreaterEqual(caption.origin.x + caption.size.width, hint.origin.x + hint.size.width - 1)
+                    baselines = [part.compute_point(panel, asb.Graphene.Point().init(0, part.get_baseline()))[1].y
+                                 for part in (button.asb_label, button.asb_hint)]
+                    self.assertAlmostEqual(baselines[0], baselines[1], delta=.5)
                 if slot == chosen:
                     self.assert_accessible_label(button, "Alt+C", asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
                 else:
