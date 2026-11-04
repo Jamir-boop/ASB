@@ -272,11 +272,13 @@ def mute_flag_text(row, now_ms=None):
     if not mute_active(row, now_ms):
         return ""
     until = mute_until_ms(row)
-    if not until:
-        return "Muted"
-    at = time.localtime(until / 1000)
-    day = "" if at[:3] == time.localtime(now_ms / 1000)[:3] else time.strftime("%A ", at)
-    return "Muted until " + day + local_clock_text(until)
+    return "Muted until " + local_end_text(until, now_ms) if until else "Muted"
+
+
+def local_end_text(until_ms, now_ms):
+    """The local end time: the clock, with the weekday name before it when the end is not today."""
+    at = time.localtime(until_ms / 1000)
+    return ("" if at[:3] == time.localtime(now_ms / 1000)[:3] else time.strftime("%A ", at)) + local_clock_text(until_ms)
 
 
 def row_menu_actions(row, now_ms=None):
@@ -366,6 +368,12 @@ def validate_mute_for(value):
     if value not in MUTE_CHOICES:
         raise ValueError("Mute for must be 30 min, 1 hour, 8 hours, 1 day, or Always.")
     return value
+
+
+def mute_end_text(choice, now_ms):
+    """When a mute for the choice that starts now would end, as the time list rows show it."""
+    duration = MUTE_DURATIONS[choice]
+    return local_end_text(now_ms + duration, now_ms) if duration else "Until you unmute"
 
 
 def mute_body(choice):
@@ -615,7 +623,11 @@ PIN_MOVE_ENDS = {"pin-up": "Already the first pin", "pin-down": "Already the las
 PANEL_MUTE_TIP = "Click the time to choose it. Scroll or press Left and Right to change it."
 PANEL_MUTE_KEYS = "Left or Right changes the time."
 PANEL_GONE_TEXT = "Not available now."
-CARD_ACTION_KEYS = {"read": "Alt+R", "drawer": "Alt+D", "mute": "Alt+M", "pin": "Alt+P", "copy": "Alt+C"}
+CARD_ACTION_KEYS = {"read": "Alt+R", "drawer": "Alt+D", "mute": "Alt+M", "pin": "Alt+P", "copy": "Alt+C", "discard": "Alt+W"}
+# Every label that a row panel slot can show while the panel is open; the panel width fits the longest at open.
+PANEL_SLOT_LABELS = {"read": ("Mark read", "Mark unread"), "mute": ("Mute", "Unmute"), "pin": ("Pin", "Unpin"),
+                     "drawer": ("Put in drawer", "Take out of drawer"),
+                     "discard": ("Mark read when done", "Leave unread when done", "Mark next result read", "Leave next result unread")}
 
 
 def attention_signature(row):
@@ -3043,7 +3055,7 @@ def unix_signal_add(priority, signum, callback):
 SHORTCUT_MASK = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK
 # The card keys take Alt alone: Ctrl, Shift, Super, or Meta with them keeps the native key handling.
 CARD_KEY_MASK, CARD_KEY_ALT = SHORTCUT_MASK | Gdk.ModifierType.SHIFT_MASK, Gdk.ModifierType.ALT_MASK
-CARD_KEY_SLOTS = {Gdk.KEY_r: "read", Gdk.KEY_d: "drawer", Gdk.KEY_m: "mute", Gdk.KEY_p: "pin", Gdk.KEY_c: "copy"}
+CARD_KEY_SLOTS = {Gdk.KEY_r: "read", Gdk.KEY_d: "drawer", Gdk.KEY_m: "mute", Gdk.KEY_p: "pin", Gdk.KEY_c: "copy", Gdk.KEY_w: "discard"}
 
 
 def set_panel_label(button, text):
@@ -6136,6 +6148,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     order_hold_seconds = 1.0
     order_hold_started = order_hold_timer = None
     order_pointer = order_point = order_press_guard = None
+    # The time and window point of the time list press that muted and closed the row panel.
+    pick_press = None
+    # The card of the last Read and its index in the board order (no More card) at that time.
+    read_place = None
     order_pointer_inside = order_pending = False
     order_pointer_at = order_motion_at = order_key_at = 0
     order_inputs = None
@@ -6490,6 +6506,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         order_press.connect("pressed", self.board_pointer_event)
         order_press.connect("pressed", self.order_press_guarded)
         self.list_body.add_controller(order_press)
+        pick_press = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        pick_press.connect("pressed", self.pick_press_guarded)
+        self.add_controller(pick_press)
         self.scroll_target = None
         self.scroll_direction, self.scroll_updating = 0, False
         target = Adw.CallbackAnimationTarget.new(self.advance_scroll)
@@ -8219,6 +8238,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.order_key_at = time.monotonic()
         self.release_order_hold()
         # Capture before GTK mnemonics or accelerators; only a card or its panel supplies an identity.
+        if modifiers & CARD_KEY_MASK == CARD_KEY_ALT and Gdk.keyval_to_lower(key) == Gdk.KEY_n:
+            self.focus_next_pending()
+            return True
         if modifiers & CARD_KEY_MASK == CARD_KEY_ALT and Gdk.keyval_to_lower(key) in CARD_KEY_SLOTS \
                 and self.card_key(key, modifiers, self.focus_key()):
             return True
@@ -8244,6 +8266,30 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.search.set_position(-1)
             return True
         return False
+
+    def focus_next_pending(self):
+        """Alt+N: focus and reveal the next Pending card in the board order, after the focused card, and wrap once."""
+        identity = self.focus_key()
+        if self.context_menu and self.context_menu.get_visible():
+            identity = self.context_menu.asb_identity
+            self.context_menu.popdown()
+        order = [key for key in getattr(self, "row_order", ()) if key != MORE_ID]
+        rows = {row["id"]: row for row in self.dashboard.get("threads", [])} if self.dashboard else {}
+        start = 0
+        if identity in order:
+            start = order.index(identity) + 1
+            # A card that left its place at once after Read: the card that took that place comes first.
+            if self.read_place and self.read_place[0] == identity and self.read_place[1] != start - 1:
+                start = self.read_place[1]
+        self.set_focus_visible(True)
+        for step in range(len(order)):
+            key = order[(start + step) % len(order)]
+            if key != identity and rows.get(key, {}).get("pending"):
+                card = self.card_for(key)
+                if card is not None:
+                    card.grab_focus()
+                    self.reveal_row(key)
+                return
 
     def visible_rows(self):
         return limit_rows(filtered_rows(self.dashboard, self.search.get_text(), "all", self.states,
@@ -10601,7 +10647,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             content.remove(button.asb_icon)
             content.prepend(mark)
             button.asb_icon = mark
+            # The end of a mute for this time, at the row end in the Alt hint style, on the label baseline.
+            button.asb_end = label("", "asb-panel-caption")
+            button.asb_end.add_css_class("asb-panel-key")
+            for part in (button.asb_label, button.asb_end):
+                part.set_valign(Gtk.Align.BASELINE_CENTER)
+            content.append(button.asb_end)
             panel.asb_times[choice] = button
+        panel.asb_end_timer = None
+        self.update_mute_ends(panel)
         # The absolute reference has no spaces: a plain tooltip would be one very wide line.
         panel.asb_copy_full.set_has_tooltip(True)
         panel.asb_copy_full.connect("query-tooltip", self.query_copy_tooltip)
@@ -10648,6 +10702,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 return
             self.cancel_panel_close(popup)
             self.clear_copy_feedback(popup)
+            self.stop_mute_ends(popup)
             GLib.idle_add(popup.unparent)
             if self.context_menu is popup:
                 self.context_menu = None
@@ -10660,6 +10715,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.connect("closed", closed)
         self.context_menu = panel
         self.update_row_panel(panel, row)
+        self.fit_row_panel(panel, root)
         self.place_row_panel(panel, widget, x, y)
         panel.popup()
         if gesture:
@@ -10996,7 +11052,59 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 rectangle.width = rectangle.height = 1
                 panel.set_pointing_to(rectangle)
             panel.asb_pages.set_visible_child_name(target)
+        if shown:
+            self.update_mute_ends(panel)
+        else:
+            self.stop_mute_ends(panel)
         (panel.asb_times[self.mute_for] if shown else panel.asb_actions["mute"]).grab_focus()
+
+    def update_mute_ends(self, panel):
+        """Show when a mute for each time would end; while the list shows, again at each new minute."""
+        self.stop_mute_ends(panel)
+        now_ms = time.time() * 1000
+        for choice, button in panel.asb_times.items():
+            text = mute_end_text(choice, now_ms)
+            if button.asb_end.get_label() != text:
+                button.asb_end.set_label(text)
+                button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [text])
+        if panel.asb_pages.get_visible_child_name() == "times":
+            panel.asb_end_timer = GLib.timeout_add(60_000 - int(now_ms) % 60_000 + 20, self.mute_ends_tick, panel)
+
+    def mute_ends_tick(self, panel):
+        panel.asb_end_timer = None
+        if panel.get_visible() and not self.closed:
+            self.update_mute_ends(panel)
+        return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def stop_mute_ends(panel):
+        if panel.asb_end_timer:
+            GLib.source_remove(panel.asb_end_timer)
+            panel.asb_end_timer = None
+
+    @staticmethod
+    def fit_row_panel(panel, root):
+        """Fit the panel to its longest row label at open, also the labels that its slots can change to; 260 px is the minimum."""
+        width = 260
+        rows = [(button, (button.asb_label.get_label(),)) for button in (panel.asb_open, panel.asb_messages, panel.asb_copy, panel.asb_copy_full,
+                                                                          panel.asb_times_back, *panel.asb_times.values())]
+        rows += [(button, (button.asb_label.get_label(), *PANEL_SLOT_LABELS.get(slot, ())))
+                 for slot, button in panel.asb_actions.items() if button.get_visible()]
+        tag = panel.asb_mute_tag.get_visible()
+        for button, texts in rows:
+            shown = button.asb_label.get_label()
+            for text in texts:
+                button.asb_label.set_label(text)
+                # Mute has its time tag; Unmute has none.
+                if button is panel.asb_actions["mute"]:
+                    panel.asb_mute_tag.set_visible(text == "Mute")
+                width = max(width, button.measure(Gtk.Orientation.HORIZONTAL, -1)[1])
+            button.asb_label.set_label(shown)
+        panel.asb_mute_tag.set_visible(tag)
+        root.set_size_request(width, -1)
+        clamp = panel.get_child()
+        clamp.set_maximum_size(width)
+        clamp.set_tightening_threshold(width)
 
     @staticmethod
     def panel_page_pressed(gesture, _presses, x, y):
@@ -11072,10 +11180,36 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             target.emit("clicked")
 
     def panel_mute_pick(self, button, choice):
-        # A pick sets the time as the wheel does and goes back; it does not mute.
+        """A pick saves the time as the wheel does, mutes for it, and closes the panel, as the Mute row does."""
         panel = button.get_ancestor(Gtk.Popover)
-        self.show_mute_times(panel, False)
+        if panel.asb_identity in self.session_actions:
+            return
         self.change_mute_for(choice)
+        if self.mute_for != choice:
+            return
+        # The second press of a double click must not reach the board under the closed panel.
+        self.pick_press = self.panel_press_in_window(panel)
+        panel.popdown()
+        self.activate_action("win.mute", GLib.Variant("s", panel.asb_identity))
+
+    def panel_press_in_window(self, panel):
+        """The last pointer press on the panel, in board window coordinates, with its time; None after a key."""
+        press, surface = panel.asb_last_press, panel.get_surface()
+        if press is None or not isinstance(surface, Gdk.Popup):
+            return None
+        panel_left, panel_top = panel.get_surface_transform()
+        left, top = self.get_surface_transform()
+        return press[0], press[1] + panel_left + surface.get_position_x() - left, press[2] + panel_top + surface.get_position_y() - top
+
+    def pick_press_guarded(self, gesture, _count, x, y):
+        guard, settings = self.pick_press, self.get_settings()
+        if guard is None:
+            return
+        distance = settings.get_property("gtk-double-click-distance")
+        if (time.monotonic() - guard[0]) * 1000 >= settings.get_property("gtk-double-click-time"):
+            self.pick_press = None
+        elif abs(x - guard[1]) <= distance and abs(y - guard[2]) <= distance:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
     def panel_mute_scroll(self, controller, dx, dy):
         panel = controller.get_widget().get_ancestor(Gtk.Popover)
@@ -11134,6 +11268,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if ignore_discard_after_read(action, getattr(guard_row, "asb_last_read_at", None)):
             return
         self.session_actions.add(identity)
+        if action == "mark-read":
+            order = [key for key in getattr(self, "row_order", ()) if key != MORE_ID]
+            self.read_place = (identity, order.index(identity)) if identity in order else None
         origin = self.focus_widgets.get(identity)
         generation = getattr(origin, "asb_read_generation", None)
         attention = attention_signature(origin.asb_thread) if origin else None

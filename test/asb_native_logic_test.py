@@ -55,7 +55,7 @@ SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
 # GDK key constants used by the card Alt-key handler, without importing GTK for logic checks.
 SCOPE.update(CARD_KEY_MASK=4 | 8 | 1 | (1 << 26) | (1 << 28), CARD_KEY_ALT=8,
-             CARD_KEY_SLOTS={ord(letter): slot for letter, slot in (("r", "read"), ("d", "drawer"), ("m", "mute"), ("p", "pin"), ("c", "copy"))})
+             CARD_KEY_SLOTS={ord(letter): slot for letter, slot in (("r", "read"), ("d", "drawer"), ("m", "mute"), ("p", "pin"), ("c", "copy"), ("w", "discard"))})
 # The Gtk.Window base is not in this scope: a window here is in the foreground, as a board that is active.
 Window.is_active = lambda _self: True
 # It is also shown: the GTK suite checks board_shown() with a real surface.
@@ -2285,6 +2285,34 @@ class DataChecks(unittest.TestCase):
                 strftime = clock.strftime
                 with patch.object(clock, "strftime", lambda form, *at: strftime(form.replace("%p", ""), *at)):
                     self.assertEqual(asb.mute_flag_text(row, now), expected.replace("3:40 PM", "15:40"))
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            clock.tzset()
+
+    def test_time_list_end_texts_use_the_local_day_and_locale_clock(self):
+        clock = SCOPE["time"]
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        clock.tzset()
+        try:
+            now = clock.mktime((2026, 9, 21, 14, 10, 0, 0, 0, -1)) * 1000
+            late = clock.mktime((2026, 9, 21, 20, 10, 0, 0, 0, -1)) * 1000
+            for start, choice, expected in ((now, "30m", "2:40 PM"), (now, "1h", "3:10 PM"), (now, "8h", "10:10 PM"),
+                                            (now, "1d", "Tuesday 2:10 PM"), (late, "8h", "Tuesday 4:10 AM"),
+                                            (now, "always", "Until you unmute")):
+                with self.subTest(choice=choice, start=start):
+                    self.assertEqual(asb.mute_end_text(choice, start), expected)
+                    # The end text is the mute flag of a mute for that time, without "Muted until ".
+                    if choice != "always":
+                        row = {"muted": True, "mutedUntilMs": int(start + asb.MUTE_DURATIONS[choice])}
+                        self.assertEqual(asb.mute_flag_text(row, start), "Muted until " + expected)
+                    strftime = clock.strftime
+                    with patch.object(clock, "strftime", lambda form, *at: strftime(form.replace("%p", ""), *at)):
+                        self.assertEqual(asb.mute_end_text(choice, start), {"2:40 PM": "14:40", "3:10 PM": "15:10", "10:10 PM": "22:10",
+                                                                            "Tuesday 2:10 PM": "Tuesday 14:10", "Tuesday 4:10 AM": "Tuesday 04:10"}.get(expected, expected))
         finally:
             if old_tz is None:
                 os.environ.pop("TZ", None)
