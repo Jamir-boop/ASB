@@ -60,18 +60,29 @@ const visible = (start, end) => animation('visibility', [0, start, end, loop], [
 
 // The card title at the measured 7.67 px advance: line 1 keeps the 54 px corner reserve (138 px, 18 characters) and breaks at a word;
 // line 2 runs to the right edge of the text column (192 px, 25 characters) and ends with "…" there.
+// As in CardTitle, a one-word line 2 takes the last word of a line 1 of three or more words when it still fits with no cut.
 function titleLines(title) {
   const words = title.split(' ');
   let line = words.shift();
   while (words.length && line.length + 1 + words[0].length <= 18) line += ' ' + words.shift();
-  const rest = words.join(' ');
+  let rest = words.join(' ');
+  const first = line.split(' ');
+  if (rest && !rest.includes(' ') && first.length >= 3 && first.at(-1).length + 1 + rest.length <= 25) {
+    rest = first.pop() + ' ' + rest;
+    line = first.join(' ');
+  }
   return rest ? [line, rest.length > 25 ? rest.slice(0, 24).trimEnd() + '…' : rest] : [line];
 }
-// The lines that the board draws for these titles (measured on the board, 2026-11-04).
+// The lines that the board draws for these titles (measured on the board at the 229 px card, 2026-11-04).
 assert.deepEqual(titleLines('Summarize the open issues into one short note'), ['Summarize the open', 'issues into one short no…']);
 assert.deepEqual(titleLines('Compare two parsers for the import step'), ['Compare two', 'parsers for the import s…']);
-assert.deepEqual(titleLines('Rename the config keys'), ['Rename the config', 'keys']);
+assert.deepEqual(titleLines('Rename the config keys'), ['Rename the', 'config keys']);
 assert.deepEqual(titleLines('Check the index and tune the ranking of results'), ['Check the index', 'and tune the ranking of…']);
+assert.deepEqual(titleLines('Plan the release of the import job'), ['Plan the release', 'of the import job']);
+assert.deepEqual(titleLines('Coordinate the retry work across the services'), ['Coordinate the', 'retry work across the se…']);
+assert.deepEqual(titleLines('Draft the migration plan for the queue'), ['Draft the', 'migration plan for the q…']);
+assert.deepEqual(titleLines('Check the retry limits in the billing worker'), ['Check the retry', 'limits in the billing wo…']);
+assert.deepEqual(titleLines('List the unused feature flags'), ['List the unused', 'feature flags']);
 
 // Toolbar: content x 7 to 957, items 4 px apart, text sized at 0.6 em for each character.
 let toolbar = '<circle cx="15" cy="21" r="8" fill="url(#disc)"/>';
@@ -98,20 +109,24 @@ for (const [d, width] of [['M3.5 8h.01M8 8h.01M12.5 8h.01', 2.2], ['M12.6 6.2A5 
 }
 assert.ok(Math.abs(x - 4 - 957) < .001, 'the toolbar fills its content width');
 
-// Cards, in strip coordinates; a divider fills the pixel column that starts at strip x 239, 480, or 721.
-let cards = [239, 480, 721].map(x => `<path d="M${x + .5} 0V212" stroke="#2b2b2b"/>`).join('');
+// Cards, in strip coordinates; a divider fills the pixel column that starts at strip x 239, 480, or 721,
+// in the middle of the 12 px column gap, from the card area top (y 3) to the bottom of the tallest column.
+const columnBottom = Math.max(...samples.map((_, i) => origin(i)[1] + 68));
+let cards = [239, 480, 721].map(x => `<path d="M${x + .5} 3V${columnBottom}" stroke="#2b2b2b"/>`).join('');
 samples.forEach(([folder, title, , state, unread, question, age], i) => {
   const [x, y] = origin(i), quiet = state === 'idle' && !unread;
   const muted = quiet ? '#8f8f8f' : '#bcbcbc';
   // A quiet card has the quiet caption color on its provider mark; a bright card has 65% of the text color.
-  cards += (quiet ? icon(i, '#8f8f8f') : icon(i, '#ffffff', .65)) + `<g transform="translate(${x} ${y})">`;
+  // The Claude mark has 75% of that alpha with a 3:1 floor: quiet #6b6b6b, bright #7c7c7c.
+  const claude = samples[i][2] === 'claude';
+  cards += (quiet ? icon(i, claude ? '#6b6b6b' : '#8f8f8f') : claude ? icon(i, '#7c7c7c') : icon(i, '#ffffff', .65)) + `<g transform="translate(${x} ${y})">`;
   cards += text(29, 9, folder, 11, muted);
   titleLines(title).forEach((line, row) => { cards += text(29, 24.5 + 15 * row, line, 13, quiet ? '#ababab' : '#fff'); });
   cards += text(29, 53, state === 'working' ? 'Working' : 'Idle', 11, unread ? '#fff' : state === 'working' ? accent : muted);
   cards += text(221, 53, age, 11, muted, ' text-anchor="end"');
-  // A question is an accent disc with no plate at rest; the dot rests on its 8% plate.
+  // A question is an accent disc with no plate at rest; the dot rests on its 16 px plate of 8% text.
   if (question) cards += `<circle cx="191" cy="14" r="8" fill="${accent}"/><text x="191" y="18" font-size="11" fill="#000000" text-anchor="middle" font-weight="800">?</text>`;
-  else if (unread) cards += `<circle cx="191" cy="14" r="12" fill="rgb(255 255 255 / .08)"/><circle cx="191" cy="14" r="3.5" fill="${accent}"/>`;
+  else if (unread) cards += `<circle cx="191" cy="14" r="8" fill="rgb(255 255 255 / .08)"/><circle cx="191" cy="14" r="3.5" fill="${accent}"/>`;
   cards += '</g>';
 });
 

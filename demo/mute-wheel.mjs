@@ -7,18 +7,21 @@ import { appDefs, cursor } from './hero-apps.mjs';
 
 const tl = timeline(9000);
 const C = { bg: '#000000', text: '#ffffff', accent: '#ffb900', muted: '#bcbcbc', title: '#ababab', caption: '#8f8f8f', hover: '#261c00' };
+// The Claude mark has 75% of the alpha of the other provider marks, with a 3:1 floor: bright #7c7c7c, quiet #6b6b6b.
+// The muted bell of a quiet card has the quiet mark color #6b6b6b (75% of the quiet caption, 3:1 floor).
+const claude = { bright: '#7c7c7c', quiet: '#6b6b6b' }, quietMark = '#6b6b6b';
 // Corner plates on the hovered card, measured on the board: 8% of the text color, 12% on an on toggle, and 15% of the accent under the pointer.
 const plate = { rest: '#372e14', on: '#40371e', pointer: '#463300' };
 const origin = i => [4 + 241 * Math.floor(i / 2), 3 + 68 * (i % 2)];
 const samples = [
-  ['billing', ['Check the retry', 'limits'], 'claude', '4m ago'],
+  ['billing', ['Check the', 'retry limits'], 'claude', '4m ago'],
   ['docs-site', ['Write the release', 'notes for 2.4'], 'chatgpt', '12m ago'],
-  ['field-notes', ['Summarize the open', 'issues'], 'chatgpt', '40m ago'],
-  ['api-gateway', ['Add rate limit', 'headers'], 'claude', '1h ago'],
+  ['field-notes', ['Summarize the', 'open issues'], 'chatgpt', '40m ago'],
+  ['api-gateway', ['Add rate', 'limit headers'], 'claude', '1h ago'],
   ['design-kit', ['Tidy the icon set'], 'chatgpt', '3h ago'],
-  ['release-kit', ['Draft the upgrade', 'guide'], 'claude', '5h ago'],
+  ['release-kit', ['Draft the', 'upgrade guide'], 'claude', '5h ago'],
   ['web-app', ['Fix the login', 'screen test'], 'chatgpt', '6h ago'],
-  ['infra', ['Rotate the staging', 'certificates'], 'claude', '8h ago', true],
+  ['infra', ['Rotate the', 'staging certificates'], 'claude', '8h ago', true],
 ];
 const text = (x, y, label, size, color, extra = '') => `<text x="${x}" y="${y}" font-size="${size}" fill="${color}" dominant-baseline="central"${extra}>${escape(label)}</text>`;
 const use = (name, x, y, size = 12, color = C.muted, opacity = 1) => `<use href="#${name}" x="${x}" y="${y}" width="${size}" height="${size}" fill="${color}"${opacity < 1 ? ` opacity="${opacity}"` : ''}/>`;
@@ -28,14 +31,14 @@ const feedback = [[0, 0], [3600, 0], [3700, 1], [5200, 1], [5300, 0]];
 const muteAlpha = [[0, 0], [3600, 0], [3600, 1], [8600, 1], [9000, 0]];
 const footer = color => text(29, 53, 'Idle', 11, color) + text(221, 53, '4m ago', 11, color, ' text-anchor="end"');
 const caption = footer(C.caption) + hover(footer(C.muted));
-const mutedMark = color => use('mute', 82.2, 3, 12, color) + text(98.2, 9, '1h', 11, color);
+const mutedMark = (color, bell = color) => use('mute', 82.2, 3, 12, bell) + text(98.2, 9, '1h', 11, color);
 
 const rawPin = await readFile(new URL('../assets/icons/asb-pin-outline-symbolic.svg', import.meta.url), 'utf8');
 const rawMute = await readFile(new URL('../assets/icons/asb-muted-symbolic.svg', import.meta.url), 'utf8');
 const icons = `<symbol id="mute" viewBox="0 0 16 16">${rawMute.match(/<path\b[^>]*\/>/g).join('')}</symbol>`
   + '<symbol id="bell" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M3 5a5 5 0 0 1 10 0c0 1.7.4 3.3 1 4.7a1 1 0 0 1-1 1.3H3a1 1 0 0 1-1-1.3C2.6 8.3 3 6.7 3 5zm2 0c0 1.4-.2 2.7-.6 4h7.2c-.4-1.3-.6-2.6-.6-4a3 3 0 0 0-6 0z"/><path d="M5.2 13a1 1 0 0 1 1.6-1.2 1.5 1.5 0 0 0 2.4 0 1 1 0 0 1 1.6 1.2 3.5 3.5 0 0 1-5.6 0z"/></symbol>'
   + '<symbol id="copy" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M3 0h5a3 3 0 0 1 3 3 1 1 0 0 1-2 0 1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1 1 1 0 0 1 0 2 3 3 0 0 1-3-3V3a3 3 0 0 1 3-3zm5 5h5a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3zm0 2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1z"/></symbol>'
-  + `<symbol id="pin" viewBox="0 0 16 16">${rawPin.match(/<path\b[^>]*\/>/g).join('')}</symbol>`
+  + `<symbol id="pin" viewBox="${rawPin.match(/viewBox="([^"]+)"/)[1]}">${rawPin.match(/<path\b[^>]*\/>/g).join('')}</symbol>`
   + '<symbol id="check" viewBox="0 0 16 16"><path d="m3 9 3 3 7-8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>';
 
 // Pocket: the hovered card surface from the card top to y 34, square, with a fade on the left side only:
@@ -77,23 +80,35 @@ corner += shown(1100, 1600, disc(139, plate.rest)) + shown(1600, 4500, disc(139,
 corner += disc(165, plate.rest) + shown(1100, 3600, disc(191, plate.rest)) + disc(217, plate.rest);
 corner += shown(1100, 3600, use('mute', 133, 8, 12, C.text)) + shown(3600, 4500, use('bell', 133, 8, 12, C.accent)) + shown(4500, 5400, use('bell', 133, 8, 12, C.text));
 corner += use('copy', 159, 8, 12, C.text) + use('pin', 211, 8, 12, C.text);
-corner += shown(1100, 3600, `<circle cx="191" cy="14" r="3.75" fill="none" stroke="${C.text}" stroke-width="1.5" stroke-dasharray="1.47262 1.47262" stroke-dashoffset=".73631"/>`);
+// The Discard offer ring of draw_discard_offer: radius 4 to the stroke center, 2 px stroke, eight 27 degree arcs, the first centered at the top.
+const ring = (cx, cy) => Array.from({ length: 8 }, (_, i) => {
+  const middle = -Math.PI / 2 + i * Math.PI / 4, a = middle - 13.5 * Math.PI / 180, b = middle + 13.5 * Math.PI / 180;
+  return `M${number(cx + 4 * Math.cos(a))} ${number(cy + 4 * Math.sin(a))}A4 4 0 0 1 ${number(cx + 4 * Math.cos(b))} ${number(cy + 4 * Math.sin(b))}`;
+}).join('');
+corner += shown(1100, 3600, `<path d="${ring(191, 14)}" fill="none" stroke="${C.text}" stroke-width="2"/>`);
 corner += shown(1850, 3600, durationTag) + shown(3600, 4700, unmuteTag);
 
 function board(still = false) {
-  let svg = [239, 480, 721].map(x => `<path d="M${x + .5} 0V142" stroke="#2b2b2b"/>`).join('');
+  // Each divider: 1 px in the middle of the 12 px column gap, from the card area top (y 3) to the bottom of the tallest column.
+  const columnBottom = Math.max(...samples.map((_, i) => origin(i)[1] + 68));
+  let svg = [239, 480, 721].map(x => `<path d="M${x + .5} 3V${columnBottom}" stroke="#2b2b2b"/>`).join('');
   samples.forEach(([folder, lines, app, age, unread], i) => {
     const [x, y] = origin(i);
     svg += `<g transform="translate(${x} ${y})">`;
-    if (i === 0 && !still) svg += hover(`<rect width="233" height="68" rx="4" fill="${C.hover}"/>`);
+    if (i === 0 && !still) svg += hover(`<rect width="229" height="68" rx="4" fill="${C.hover}"/>`);
     // A read Idle card is quiet: the provider mark has the quiet caption color; a bright card has 65% of the text color.
-    const bright = use(`hero-app-${app}`, 8, 2, 14, C.text, .65), quiet = use(`hero-app-${app}`, 8, 2, 14, C.caption);
+    // The Claude mark has its own bright and quiet colors.
+    const bright = app === 'claude' ? use(`hero-app-${app}`, 8, 2, 14, claude.bright) : use(`hero-app-${app}`, 8, 2, 14, C.text, .65);
+    const quiet = use(`hero-app-${app}`, 8, 2, 14, app === 'claude' ? claude.quiet : C.caption);
     if (unread) svg += bright;
     else if (i === 0 && !still) svg += `<g visibility="hidden">${tl.visibility([[0, 1100], [5400, 9000]])}${quiet}</g>` + hover(bright);
     else svg += quiet;
     svg += text(29, 9, folder, 11, unread ? C.muted : C.caption);
     if (i === 0 && !still) svg += hover(text(29, 9, folder, 11, C.muted));
-    if (i === 0) svg += still ? mutedMark(C.caption) : `<g opacity="0">${tl.animate('opacity', muteAlpha)}${mutedMark(C.caption)}${hover(mutedMark(C.muted))}</g>`;
+    if (i === 0) {
+      const rest = mutedMark(C.caption, quietMark);
+      svg += still ? rest : `<g opacity="0">${tl.animate('opacity', muteAlpha)}<g visibility="hidden">${tl.visibility([[0, 1100], [5400, 9000]])}${rest}</g>${hover(mutedMark(C.muted))}</g>`;
+    }
     lines.forEach((line, row) => {
       svg += text(29, 25 + 16 * row, line, 13, unread ? C.text : C.title);
       if (i === 0 && !still) svg += hover(text(29, 25 + 16 * row, line, 13, C.text));
@@ -107,7 +122,8 @@ function board(still = false) {
       const y = lines.length === 1 ? 37 : 53, color = unread ? C.muted : C.caption;
       svg += text(29, y, 'Idle', 11, color) + text(221, y, age, 11, color, ' text-anchor="end"');
     }
-    if (unread) svg += `<circle cx="191" cy="14" r="12" fill="#141414"/><circle cx="191" cy="14" r="3.5" fill="${C.accent}"/>`;
+    // At rest the unread dot has a 16 px plate of 8% text, not the 24 px button plate.
+    if (unread) svg += `<circle cx="191" cy="14" r="8" fill="#141414"/><circle cx="191" cy="14" r="3.5" fill="${C.accent}"/>`;
     svg += '</g>';
   });
   return svg;
@@ -130,7 +146,7 @@ assert.ok(ratio(C.caption, plate.on) >= 3, 'the filled tag dots have 3:1 on the 
 assert.ok(ratio(C.text, plate.on) >= 4.5, 'the tag words have 4.5:1 on the tag');
 assert.equal(samples.length, 8);
 assert.deepEqual(origin(7), [727, 71]);
-assert.ok(samples.every(([, lines]) => lines.length <= 2 && lines.every(line => line.length <= 18)));
+assert.ok(samples.every(([, lines]) => lines.length <= 2 && lines.every(line => line.length <= 20)));
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="962" height="142" viewBox="0 0 962 142" role="img" aria-labelledby="mute-title">
 <title id="mute-title">ASB board: rest on the bell, turn the wheel from 30 min to 1 hour, and click. The card shows a muted bell and 1h.</title>
 ${css(`text{font-family:${FONT_MONO}}`)}
