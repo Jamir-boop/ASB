@@ -45,10 +45,12 @@ export function boardDefs() {
   return [...icons.values()].join('')
     + '<radialGradient id="board-disc" cx="35%" cy="30%" r="95.5%"><stop offset="0" stop-color="#f3e6c4"/><stop offset=".6" stop-color="#a8905a"/><stop offset="1" stop-color="#5c4b28"/></radialGradient>'
     + `<linearGradient id="board-corner" gradientUnits="userSpaceOnUse" x1="0" x2="16"><stop stop-color="${scene.hover.c}" stop-opacity="0"/><stop offset="1" stop-color="${scene.hover.c}"/></linearGradient>`
+    // A corner with a tag fades in 7 px (POCKET_TAG_FADE), the plain corner in 16 px.
+    + `<linearGradient id="board-corner-tagged" gradientUnits="userSpaceOnUse" x1="0" x2="7"><stop stop-color="${scene.hover.c}" stop-opacity="0"/><stop offset="1" stop-color="${scene.hover.c}"/></linearGradient>`
     + '<clipPath id="board-viewport"><rect y="33" width="660" height="387"/></clipPath>';
 }
 function itemSvg(item) {
-  if (item.c !== 'url(#board-corner)') return draw(item);
+  if (!['url(#board-corner)', 'url(#board-corner-tagged)'].includes(item.c)) return draw(item);
   // The fade starts at the corner's left edge, not at the card origin.
   return `<g transform="translate(${n(item.x)} ${n(item.y)})">${draw({ ...item, x: 0, y: 0 })}</g>`;
 }

@@ -130,7 +130,7 @@ keys.push([10300, 730, 77], [11150, copyBox.x + copyBox.w + 6, 80],
   [16750, 30 + pasteApp.composer.x + 40, appY + pasteApp.composer.y + 25],
   [17300, 30 + pasteApp.send.x, appY + pasteApp.send.y], [17400, 30 + pasteApp.send.x, appY + pasteApp.send.y],
   [17950, 730, 77], [22800, 730, 77], [23000, 480, 80],
-  [23200, openBox.x + openBox.w - 10, openBox.y + 25], [23800, openBox.x + openBox.w - 10, openBox.y + 25],
+  [23200, openBox.x + openBox.w - 10, openBox.y + 40], [23800, openBox.x + openBox.w - 10, openBox.y + 40],
   [24800, 100 + opened.composer.x + 35, 30 + opened.composer.y + 24],
   [28000, 100 + opened.composer.x + 35, 30 + opened.composer.y + 24], [28400, 730, 77], [30000, 730, 77]);
 const pointer = cursor(tl, { keys, presses: [1250, 2200, 3450, 4400, 5650, 6600, 12300, 14500, 16750, 17400, 23800], wheels: [[14000, 'down']] });
