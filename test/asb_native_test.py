@@ -4413,7 +4413,7 @@ class WidgetCheck(unittest.TestCase):
                     self.drain(1)
                 render.assert_not_called()
 
-    def test_row_panel_copies_the_app_and_session_id_and_matches_the_board_background(self):
+    def test_row_panel_copies_the_app_and_session_id_and_has_the_raised_surface(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -4527,13 +4527,17 @@ class WidgetCheck(unittest.TestCase):
         for custom in (None, {"background": "#171c22", "text": "#f0f2f5", "accent": "#f3c66b", "muted": "#b8c0cc", "divider": "#586372"}):
             with self.subTest(custom=bool(custom)):
                 window.set_palette(custom); self.drain(.2)
-                board = custom["background"] if custom else window.native_colors()["background"]
+                # The panel is raised: the GNOME popover surface, or 10% text in the custom background, with a 1px edge.
+                surface, ink = window.popover_colors() if not custom else (asb.mix_color(custom["background"], custom["text"], .10), custom["text"])
+                edge = asb.mix_color(surface, ink, .15) if not custom else asb.edge_color(custom["background"], custom["text"], .36, (custom["background"],))
+                board = surface
                 window.set_focus(panel.asb_open); self.drain(.3)
                 pixel = render_panel()
                 found, bounds = panel.get_child().compute_bounds(panel)
                 painted = pixel(bounds.origin.x - 4, bounds.origin.y + 20)  # Inside the 8px padding.
-                self.assertTrue(near(painted, board), (painted, board))
-                # The action rows are flat on the board; native hover and press tint them, and a focused row has its focus ring.
+                self.assertTrue(near(painted, surface), (painted, surface))
+                self.assertTrue(near(pixel(bounds.origin.x - 8.5, bounds.origin.y + 20), edge, 2), (pixel(bounds.origin.x - 8.5, bounds.origin.y + 20), edge))
+                # The action rows are flat on the surface; native hover and press tint them, and a focused row has its focus ring.
                 x, copy_y, _width, copy_height = bounds_of(button)
                 self.assertTrue(near(pixel(x + 2, copy_y + copy_height / 2), board, 2), pixel(x + 2, copy_y + copy_height / 2))
                 for state in (asb.Gtk.StateFlags.PRELIGHT, asb.Gtk.StateFlags.ACTIVE):

@@ -1285,6 +1285,26 @@ def limited_color(colors):
     return quiet_color(colors, "text", 0, colors["background"])
 
 
+def contrast_floor(color, ink, surface, minimum=4.5):
+    """The weakest mix of ink into color with the minimum contrast on the surface."""
+    for percent in range(101):
+        value = mix_color(color, ink, percent / 100)
+        if contrast(value, surface) >= minimum:
+            return value
+    return ink
+
+
+def row_panel_colors(colors, caption, surface=None):
+    """The row panel roles. Custom colors raise the surface 10% toward the text; GNOME colors give the popover surface.
+    The floor is the dimmest text with 4.5:1 on the surface, and the Mute tag off dots get 3:1 on their tag."""
+    custom = surface is None
+    surface = surface or mix_color(colors["background"], colors["text"], .10)
+    edge = edge_color(colors["background"], colors["text"], .36, (colors["background"],)) if custom else mix_color(surface, colors["text"], .15)
+    return {"surface": surface, "edge": edge, "muted": contrast_floor(colors["muted"], colors["text"], surface),
+            "floor": quiet_color({"background": surface, "text": colors["text"]}, "text", 0, surface),
+            "dot": contrast_floor(caption, colors["text"], mix_color(surface, colors["text"], .12), 3)}
+
+
 def number_badge_colors(colors):
     """Custom Ctrl-number badge: 17% text into the background, less only as far as the text needs for 4.5:1."""
     for percent in range(17, -1, -1):
@@ -6421,6 +6441,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def native_colors(self):
         return native_colors(self)
 
+    def popover_colors(self):
+        """The GNOME popover surface and text of the row panel; the window colors where the theme has none."""
+        context, palette = self.get_style_context(), self.native_colors()
+        found = [context.lookup_color(name) for name in ("popover_bg_color", "popover_fg_color")]
+        return [self.hex_color(value) if ok else palette[key] for (ok, value), key in zip(found, ("background", "text"))]
+
     def set_palette(self, colors):
         base = ".asb-column-flow"
         css = f"""
@@ -6553,8 +6579,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 .asb-tooltip .asb-working {{ color: @success_color; }}
 .asb-tooltip .asb-provider {{ opacity: .65; }}
 .asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
-{base} popover.asb-row-panel > contents {{ padding: 8px; border: 1px solid alpha(@accent_color, .7); border-radius: 12px; background: @window_bg_color;
-    box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
+{base} popover.asb-row-panel > contents {{ padding: 8px; border: 1px solid mix(@popover_bg_color, @popover_fg_color, .15); border-radius: 12px;
+    background: @popover_bg_color; box-shadow: 0 1px 5px 1px alpha(black, .09), 0 2px 14px 3px alpha(black, .05); }}
 {base} .asb-row-panel .asb-panel-title {{ font-size: 12px; font-weight: bold; margin: 4px 8px 8px; }}
 {base} .asb-row-panel .asb-panel-action {{ min-height: 30px; padding: 0 8px; border-radius: 5px; font-size: 13px; font-weight: normal; }}
 {base} .asb-row-panel separator {{ margin: 4px 0; }}
@@ -6579,8 +6605,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope}, {scope} headerbar, {scope} popover contents {{ background: {colors['background']}; color: {colors['text']}; }}
 {scope} .asb-session {{ color: {colors['text']}; }}
 {scope} popover > contents {{ border: 1px solid {edge_color(colors['background'], colors['text'], .36, (colors['background'],))}; }}
-{scope} popover.asb-row-panel > contents {{ background: {colors['background']}; border-color: {edge_color(colors['background'], colors['accent'], .7, (colors['background'],))}; }}
-{scope} .asb-row-panel .asb-panel-caption {{ color: {colors['muted']}; }}
 {scope} .asb-row-panel button.asb-copy-done image {{ color: {colors['accent']}; }}
 {scope} .asb-state, {scope} .dim-label {{ color: {colors['muted']}; opacity: 1; }}
 {scope} .asb-working {{ color: {colors['accent']}; }}
@@ -6656,6 +6680,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.badge_colors.clear()
         self.badge_css.load_from_string("")
         (quiet_title, title_fraction), (quiet_caption, caption_fraction) = quiet_tones(palette, highlight, bool(colors))
+        if colors:
+            panel = row_panel_colors(colors, quiet_caption)
+            css += f"""
+{scope} popover.asb-row-panel > contents {{ background: {panel['surface']}; border-color: {panel['edge']};
+    box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
+{scope} .asb-row-panel .asb-panel-caption, {scope} .asb-row-panel .dim-label {{ color: {panel['muted']}; }}
+"""
+        else:
+            surface, ink = self.popover_colors()
+            panel = row_panel_colors({**palette, "text": ink}, quiet_caption, surface)
         # A limited row is dimmer than a quiet row: 4.5:1 on the background, and on the highlight while it is shown.
         limited, limited_fraction = limited_color(palette)
         limited_hover, hover_fraction = quiet_color(palette, "text", 0, highlight)
@@ -6680,7 +6714,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
 /* A view-only first row stays insensitive, in the limited tone (4.5:1) in place of the theme's disabled opacity. */
 {base} .asb-row-panel button.asb-panel-where:disabled, {base} .asb-row-panel button.asb-panel-where:disabled * {{
-    color: {limited}; opacity: 1; filter: none; }}
+    color: {panel['floor'][0]}; opacity: 1; filter: none; }}
+/* The raised row panel surface: its edge, its dim text at 4.5:1, and the Mute tag off dots at 3:1 on their tag. */
+{base} .asb-row-panel .dim-label {{ color: {panel['floor'][0]}; opacity: 1; }}
+{base} .asb-row-panel .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off {{ border-color: {panel['dot']}; }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}

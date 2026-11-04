@@ -6041,6 +6041,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.badge_css, window.badge_colors = Mock(), {}
         palette = {"background": "#0f0f0f", "text": "#f6f5f4", "muted": "#aaaaaa", "accent": "#cccccc", "divider": "#444444"}
         window.native_colors = lambda: palette
+        window.popover_colors = lambda: ("#36363a", "#ffffff")
         rows = {name: SimpleNamespace(asb_thread={"id": name}, asb_source_badge=Mock(),
                                      asb_tooltip_content=object(), asb_tooltip_key=(name,)) for name in ("visible", "hidden")}
         window.row_cache, window.focus_widgets = rows, {"visible": rows["visible"]}
@@ -6088,6 +6089,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
         window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
         window.native_colors = lambda: {"background": "#222226", "text": "#ffffff", "muted": "#99999b", "accent": "#3584e4", "divider": "#3a3a3e"}
+        window.popover_colors = lambda: ("#36363a", "#ffffff")
         yours = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
         navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}
         for colors, expected in ((yours, "#ffb900"), (navy, "#7cc4ff"), (None, "@accent_color")):
@@ -6154,7 +6156,45 @@ class NativeLogicChecks(unittest.TestCase):
         window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
         window.set_palette({"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"})
         self.assertRegex(window.css.load_from_string.call_args.args[0],
-                         r"button\.asb-panel-where:disabled, [^{]*button\.asb-panel-where:disabled \* \{\s*color: #757575; opacity: 1; filter: none; \}")
+                         r"button\.asb-panel-where:disabled, [^{]*button\.asb-panel-where:disabled \* \{\s*color: #838383; opacity: 1; filter: none; \}")
+
+    def test_row_panel_surface_edge_and_text_ratios(self):
+        yours = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
+        navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}
+        gnome = {"background": "#222226", "text": "#ffffff", "accent": "#3584e4", "muted": "#b8b8b9", "divider": "#3a3a3e"}
+        expected = {"yours": ("#1a1a1a", "#5c5c5c", "#838383", "#8f8f8f"), "navy": ("#262931", "#60636a", "#8f9197", "#8b94a2"),
+                    "gnome": ("#36363a", "#545458", "#9f9fa0", "#9c9c9e")}
+        for name, colors, caption, surface in (("yours", yours, "#8f8f8f", None), ("navy", navy, "#8b94a2", None), ("gnome", gnome, "#99999b", "#36363a")):
+            with self.subTest(look=name):
+                panel = asb.row_panel_colors(colors, caption, surface)
+                self.assertEqual((panel["surface"], panel["edge"], panel["floor"][0], panel["dot"]), expected[name])
+                if not surface:
+                    self.assertGreaterEqual(asb.contrast(panel["edge"], colors["background"]), 3)
+                for text in (colors["text"], panel["muted"], panel["floor"][0]):
+                    self.assertGreaterEqual(asb.contrast(text, panel["surface"]), 4.5)
+                self.assertGreaterEqual(asb.contrast(panel["dot"], asb.mix_color(panel["surface"], colors["text"], .12)), 3)
+        # The custom edge starts at 36% and rises in 1% steps to 3:1 on the background: navy needs 37%.
+        self.assertEqual((asb.mix_color(yours["background"], yours["text"], .36), asb.mix_color(navy["background"], navy["text"], .37)),
+                         ("#5c5c5c", "#60636a"))
+        self.assertLess(asb.contrast(asb.mix_color(navy["background"], navy["text"], .36), navy["background"]), 3)
+        self.assertLess(asb.contrast("#9b9b9d", "#36363a"), 4.5)  # The GNOME dim-label tone that the panel raises.
+        window = object.__new__(Window)
+        window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+        window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
+        window.native_colors = lambda: gnome
+        window.popover_colors = lambda: ("#36363a", "#ffffff")
+        window.set_palette(None)
+        css = window.css.load_from_string.call_args.args[0]
+        self.assertIn("popover.asb-row-panel > contents { padding: 8px; border: 1px solid mix(@popover_bg_color, @popover_fg_color, .15); "
+                      "border-radius: 12px;\n    background: @popover_bg_color; box-shadow: 0 1px 5px 1px alpha(black, .09), 0 2px 14px 3px alpha(black, .05); }", css)
+        self.assertIn(".asb-column-flow .asb-row-panel .dim-label { color: #9f9fa0; opacity: 1; }", css)
+        self.assertIn(".asb-row-panel .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off { border-color: #9c9c9e; }", css)
+        window.set_palette(navy)
+        css = window.css.load_from_string.call_args.args[0]
+        self.assertIn(".asb-column-flow.asb-custom popover.asb-row-panel > contents { background: #262931; border-color: #60636a;\n"
+                      "    box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }", css)
+        self.assertIn(".asb-column-flow.asb-custom .asb-row-panel .asb-panel-caption, .asb-column-flow.asb-custom .asb-row-panel .dim-label "
+                      "{ color: #9aa4b2; }", css)
 
     def test_row_panel_pin_moves_show_only_with_two_visible_pins_and_say_when_at_an_end(self):
         moves = asb.pin_moves
@@ -6959,6 +6999,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.badge_css, window.badge_colors = Mock(), {}
         palette = {"background": "#0f0f0f", "text": "#f6f5f4", "muted": "#aaaaaa", "accent": "#cccccc", "divider": "#444444"}
         window.native_colors = lambda: palette
+        window.popover_colors = lambda: ("#36363a", "#ffffff")
         window.set_palette(None)
         window.set_palette({**palette, "background": "#202020"})
         self.assertIn("border-color: #202020", window.badge_css.load_from_string.call_args.args[0])
