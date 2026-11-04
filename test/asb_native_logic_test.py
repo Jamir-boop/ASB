@@ -68,6 +68,7 @@ Marker = SCOPE["SourceMarker"]
 REQUEST_ASYNC = SCOPE["request_async"]
 # The real set_icon() loads a Gio.FileIcon; the GTK suite checks the files.
 SCOPE["set_icon"] = Mock()
+SCOPE["CardTitle"] = lambda: SCOPE["label"]("")
 # The heap trim test sets its own malloc_trim; the GLib stubs of the other tests have no timers for it.
 SCOPE["MALLOC_TRIM"] = None
 asb = SimpleNamespace(**SCOPE)
@@ -1724,7 +1725,7 @@ class PhoneChecks(unittest.TestCase):
         gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(
                                   active=kwargs["active"], get_active=Mock(return_value=kwargs["active"]))),
                               Button=Mock(), Align=SimpleNamespace(CENTER=0),
-                              AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3))
+                              AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3))
         editor.enabled.get_active.return_value, editor.port.get_value.return_value = True, 4630
         editor.address_list.get_first_child.side_effect = [Mock(), None, None, None]
         with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=Mock(return_value=row))}):
@@ -1765,7 +1766,7 @@ class PhoneChecks(unittest.TestCase):
         devices = [{"id": "a", "name": "Test phone", "createdAtMs": NOW - 86_400_000, "lastSeenAtMs": NOW - 60_000},
                    {"id": "b", "name": "Test tablet", "createdAtMs": NOW - 172_800_000, "lastSeenAtMs": NOW - 120_000}]
         gtk = SimpleNamespace(Button=Mock(side_effect=lambda **_kwargs: Mock()), Align=SimpleNamespace(CENTER=0),
-                              AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3))
+                              AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3))
         rows = Mock(side_effect=lambda **kwargs: Mock(title=kwargs["title"]))
         appended = lambda: [call.args[0] for call in editor.devices.append.call_args_list]
         with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=rows)}):
@@ -1805,7 +1806,7 @@ class PhoneChecks(unittest.TestCase):
         tailscale = {"address": "100.101.102.103", "interface": "tailscale0", "kind": "tailscale"}
         gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(
                                   active=kwargs["active"], get_active=Mock(return_value=kwargs["active"]))),
-                              Button=Mock(), Align=SimpleNamespace(CENTER=0), AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3))
+                              Button=Mock(), Align=SimpleNamespace(CENTER=0), AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3))
         actions = Mock(side_effect=lambda **kwargs: Mock(title=kwargs["title"]))
         editor.address_list.get_first_child.return_value = None
         checks = lambda: {address: check.get_active() for address, check in editor.address_checks.items()}
@@ -4961,7 +4962,7 @@ class NativeLogicChecks(unittest.TestCase):
         window = fixture.editor()
         default = {"id": "opencode", "provider": "opencode", "label": "OpenCode", "builtin": True, "enabled": True,
                    "launcher": "", "dataDir": "/data/opencode", "color": "#899e91"}
-        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))}):
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))}):
             window.sources = [default]
             window.set_form(default)
             self.assertEqual(window.fixed_provider, "opencode")
@@ -5142,7 +5143,7 @@ class NativeLogicChecks(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         window = fixture.editor()
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.set_form({"id": "codex", "provider": "codex", "label": "Codex", "enabled": True,
                              "color": "#404040", "showMarker": False})
@@ -5576,7 +5577,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.session_actions = set()
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=stop, asb_read_timer=None,
                                  asb_read_button=Mock(), asb_pin_button=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for row in (stop, wait):
@@ -5644,7 +5645,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.clear_read_feedback = Mock(side_effect=lambda item: setattr(item, "asb_read_timer", None))
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=working, asb_read_timer=None,
                                  asb_read_button=Mock(), asb_pin_button=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for armed, action, text in ((False, "win.discard-result", "Discard result: go to read Idle when this task ends"),
@@ -5769,7 +5770,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.session_actions = set()
         window.clear_read_feedback = Mock(side_effect=lambda item: setattr(item, "asb_read_timer", None))
         idle = {"id": "a", "title": "Chat", "state": "idle"}
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         def card(row, timer=None):
             widget = SimpleNamespace(asb_view="comfortable", asb_thread=row, asb_read_timer=timer, asb_read_button=Mock(), asb_pin_button=Mock())
             window.update_card_actions(widget)
@@ -6465,7 +6466,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(classes, {"asb-session", expected})
         # The ASB CSS names no hover pseudo-class on a card; only buttons keep it.
         css = SOURCE.read_text()
-        for rule in (".asb-session:hover", ".asb-unread:hover", ":not(:hover)", '":hover"'):
+        for rule in (".asb-session:hover", ".asb-unread:hover", '":hover"'):
             self.assertNotIn(rule, css)
 
     def test_scroll_does_not_restart_hover_paint_for_a_stationary_pointer(self):
@@ -7706,6 +7707,15 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(window.theme_path.read_bytes(), saved)
             window.theme_error.set_label.assert_called_with("Cannot reset the ASB theme. Check its config folder.")
 
+    def test_compact_working_whole_minutes_and_unknown_quiet_rule(self):
+        for seconds, expected in ((45, "45s"), (192, "3m"), (2820, "47m"), (3900, "1h05m")):
+            self.assertEqual(asb.working_duration({"state": "working", "workingSinceMs": 1}, seconds * 1000 + 1, True), expected)
+        row = {"state": "unknown"}
+        self.assertTrue(asb.quiet_card(row))
+        for extra in ({"unread": True}, {"pending": True}, {"questionAttention": True}, {"alert": True}, {"actionRequired": True}):
+            self.assertFalse(asb.quiet_card({**row, **extra}), extra)
+        self.assertFalse(asb.quiet_card({"state": "working"}))
+
     def test_idle_read_quiet_class_and_color_contrast(self):
         window = object.__new__(Window)
         window.view = "comfortable"
@@ -7718,7 +7728,7 @@ class NativeLogicChecks(unittest.TestCase):
         row = {"id": "a", "provider": "codex", "state": "idle", "unread": False, "pending": False}
         for extra, quiet in (({}, True), ({"pinned": True}, True), ({"readStatus": "unknown"}, True),
                              ({"readStatus": "unread", "nativeUnread": True, "nativeAttention": False}, True),
-                             ({"state": "working"}, False), ({"state": "waiting"}, True), ({"state": "unknown"}, False),
+                             ({"state": "working"}, False), ({"state": "waiting"}, True), ({"state": "unknown"}, True),
                              ({}, True), ({"unread": True}, False), ({"questionAttention": True}, False), ({"pending": True}, False)):
             window.update_session_row(widget, {**row, **extra})
             self.assertEqual("asb-idle-read" in classes, quiet)
@@ -7776,7 +7786,7 @@ class NativeLogicChecks(unittest.TestCase):
             timers.append((interval, callback))
             return len(timers)
         glib = SimpleNamespace(idle_add=Mock(), timeout_add=timeout, source_remove=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         request = Mock()
         with patch.dict(SCOPE, {"request_async": request, "GLib": glib, "Gtk": gtk}):
             window.session_action("a", "mark-read")
@@ -8038,7 +8048,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_widgets, window.opening, window.session_actions = {"a": widget}, set(), {"a"}
         window.get_focus = lambda: read
         gtk = SimpleNamespace(Button=object, PickFlags=SimpleNamespace(DEFAULT=0, INSENSITIVE=1),
-                              AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+                              AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         gdk = SimpleNamespace(KEY_space=32, KEY_Return=13, KEY_KP_Enter=44, KEY_Up=1, KEY_Down=2,
                               ModifierType=SimpleNamespace(ALT_MASK=1, CONTROL_MASK=2, SUPER_MASK=4, META_MASK=8),
                               ContentProvider=SimpleNamespace(new_for_value=lambda value: value))
@@ -8260,7 +8270,7 @@ class NativeLogicChecks(unittest.TestCase):
                 (corner.add_css_class if width >= 190 else corner.remove_css_class).assert_called_with("asb-corner-wide")
         css = SOURCE.read_text()
         for rule in ("{base} .asb-unread.asb-hovered .asb-dot,", "{base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}",
-                     "{base} .asb-unread.asb-hovered .asb-read-cue,", "{base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}"):
+                     "{base} .asb-unread.asb-hovered .asb-read-cue {{", "{base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}"):
             self.assertIn(rule, css)
         self.assertIn('"drawer-in", "drawer-out", "mute", "unmute"):', css)
 

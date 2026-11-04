@@ -404,7 +404,7 @@ class WidgetCheck(unittest.TestCase):
         content = card.get_child()
         children = board_children(content)
         cell = children[-1]
-        self.assertEqual(children[1:6], [card.asb_title_label, card.asb_limit_clock, card.asb_state_label, card.asb_where_label,
+        self.assertEqual(children[1:6], [card.asb_title_label, card.asb_limit_clock, card.asb_state_box, card.asb_where_label,
                                          card.asb_mute_box if card.asb_mute_time else card.asb_mute_glyph])
         self.assertEqual(len(children), 7)
         self.assertEqual(board_children(cell), [card.asb_dot, card.asb_compact_pin])
@@ -4274,10 +4274,10 @@ class WidgetCheck(unittest.TestCase):
                         self.assertTrue(mark.get_gicon().get_file().query_exists(None))
                         self.assertEqual(top.get_first_child().get_next_sibling().get_text(), "Tools")
                         self.assertEqual(card.asb_pin_button.get_child().get_icon_name(), "view-pin-symbolic")
-                        self.assertTrue(title.get_wrap())
-                        self.assertEqual(title.get_lines(), 2)
+                        self.assertIsInstance(title, asb.CardTitle)
+                        self.assertTrue(title.title_layouts(title.get_width())[-1])
                         self.assertEqual(title.get_height(), 32)
-                        self.assertEqual(title.get_ellipsize(), asb.Pango.EllipsizeMode.END)
+                        self.assertEqual(title.title_layouts(title.get_width())[1].get_ellipsize(), asb.Pango.EllipsizeMode.END)
                         # R1: the footer is a stack of the line and the copied page; the line keeps clock, state, right.
                         footer = window.focus_widgets["sample-15"].get_child().get_child().get_last_child()
                         self.assertIsInstance(footer, asb.Gtk.Stack)
@@ -4937,6 +4937,100 @@ class WidgetCheck(unittest.TestCase):
                  "cwd": "/example/garden", "projectName": "garden", "state": "idle", "canOpen": True,
                  "updatedAtMs": NOW - n * 1000, **extra} for n, (identity, extra) in enumerate(rows)]
 
+    def test_round_two_title_lines_compact_discs_and_button_focus(self):
+        rows = self.card_rows(("short", {"title": "Short title"}),
+                              ("long", {"title": "Which tax region should invoices use?"}),
+                              ("cut", {"title": "Rebuild the search index and tune the ranking for the summer catalog"}),
+                              ("question", {"questionAttention": True, "pending": True}),
+                              ("permission", {"state": "waiting", "actionRequired": True, "actionAttention": True, "pending": True}),
+                              ("dot", {"unread": True, "pending": True}),
+                              ("alert", {"alert": True, "unread": True, "pending": True}),
+                              ("pinned", {"pinned": True}), ("muted", {"muted": True}), ("armed", {"discardResult": True}))
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)  # The plates are read at their end color, not in a transition.
+        window = self.mute_wheel_board(520, rows)
+        window.set_palette({"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"})
+        window.set_focus(None); self.settle(window)
+        cards = window.focus_widgets
+        def y(part, card):
+            return part.compute_bounds(card)[1].origin.y
+        short, long, cut = [cards[key] for key in ("short", "long", "cut")]
+        for card in (short, long, cut):
+            self.assertEqual(card.get_height(), 68)
+            self.assertEqual(y(card.asb_folder, card), y(long.asb_folder, long))
+        first, second, offset, two = long.asb_title_label.title_layouts(long.asb_title_label.get_width())
+        self.assertEqual(first.get_text() + " " + second.get_text(), "Which tax region should invoices use?")
+        self.assertFalse(first.is_ellipsized())
+        self.assertTrue(two)
+        self.assertAlmostEqual(y(long.asb_state_label, long) - y(short.asb_state_label, short), offset, delta=1)
+        for card in (long, cut):
+            title = card.asb_title_label
+            a, b, _offset, _two = title.title_layouts(title.get_width())
+            self.assertEqual(a.get_width(), (title.get_width() - 54) * asb.Pango.SCALE)
+            self.assertEqual(b.get_width(), title.get_width() * asb.Pango.SCALE)
+            self.assertEqual(title.compute_bounds(card)[1].get_x() + title.get_width(),
+                             card.asb_age_label.compute_bounds(card)[1].get_x() + card.asb_age_label.get_width())
+        self.assertTrue(cut.asb_title_label.title_layouts(cut.asb_title_label.get_width())[1].is_ellipsized())
+        def plate(button):
+            # The alpha at the top of the round plate, clear of the 12 px glyph.
+            snapshot = asb.Gtk.Snapshot()
+            asb.Gtk.WidgetPaintable.new(button).snapshot(snapshot, button.get_width(), button.get_height())
+            node = snapshot.to_node()
+            if node is None:
+                return 0
+            renderer = asb.Gsk.CairoRenderer(); renderer.realize(None)
+            data, stride = asb.Gdk.TextureDownloader.new(renderer.render_texture(node, None)).download_bytes()
+            renderer.unrealize()
+            return data.get_data()[3 * stride + 12 * 4 + 3]
+        for key, parts in (("short", (("asb_pin_button", 20), ("asb_read_button", 20), ("asb_copy_button", 20), ("asb_mute_button", 20))),
+                           ("pinned", (("asb_pin_button", 31),)), ("muted", (("asb_mute_button", 31),)), ("armed", (("asb_read_button", 31),))):
+            card = cards[key]
+            self.assertTrue(all(plate(getattr(card, name)) == 0 for name, _alpha in parts if name != "asb_pin_button" or key != "pinned"), key)
+            self.hover_card(window, card, True); self.settle(window)
+            for name, alpha in parts:
+                self.assertAlmostEqual(plate(getattr(card, name)), alpha, delta=2, msg=(key, name))
+            self.hover_card(window, card, False); self.settle(window)
+        self.assertEqual(asb.hex_color(cards["muted"].asb_mute_button.get_color()), "#ffb900")
+        for key, wait in (("question", "answer"), ("permission", "permission")):
+            card = cards[key]
+            button = card.asb_read_button
+            note = "The session still waits for your " + wait + "."
+            self.assertEqual(button.get_tooltip_text(), "Mark read. " + note)
+            self.assert_accessible_label(button, "Mark read: " + card.asb_thread["title"])
+            self.assert_accessible_label(button, note, asb.Gtk.AccessibleProperty.DESCRIPTION)
+            self.hover_card(window, card, True); self.settle(window)
+            cue = button.get_child().get_first_child().get_next_sibling()
+            self.assertGreater(self.ink(card.asb_dot), 0)
+            self.assertEqual(self.ink(cue), 0)
+            self.hover_card(window, card, False)
+            window.set_focus_visible(True); card.grab_focus(); self.settle(window)
+            self.assertGreater(self.ink(card.asb_dot), 0)
+            self.assertEqual(self.ink(cue), 0)
+            button.grab_focus(); self.settle(window)
+            self.assertEqual(self.ink(card.asb_dot), 0)
+            self.assertGreater(self.ink(cue), 0)
+        card = cards["dot"]
+        window.set_focus_visible(True); card.grab_focus(); self.settle(window)
+        cue = card.asb_read_button.get_child().get_first_child().get_next_sibling()
+        self.assertEqual((self.ink(card.asb_dot), self.ink(cue)), (255, 0))
+        self.assertEqual(asb.hex_color(card.asb_state_label.get_color()), "#ffffff")
+        card.asb_read_button.grab_focus(); self.settle(window)
+        self.assertEqual(self.ink(card.asb_dot), 0)
+        self.assertGreater(self.ink(cue), 0)
+        window.set_focus(None); self.hover_card(window, card, True); self.settle(window)
+        self.assertEqual(asb.hex_color(card.asb_state_label.get_color()), "#bcbcbc")  # The read tone on hover of an unread card.
+        self.hover_card(window, card, False); self.settle(window)
+        window.view_filter.set_selected(0); window.set_focus(None); self.settle(window)
+        for key in ("question", "permission", "alert"):
+            card = cards[key]
+            dot = card.asb_dot
+            self.assertEqual((dot.get_width(), dot.get_height()), (12, 12))
+            self.assertEqual(dot.get_parent().get_width(), 14)
+            box = dot.compute_bounds(card)[1]
+            self.assertEqual((box.origin.y, card.get_height() - box.origin.y - box.size.height), (5, 5))
+            self.assertEqual(asb.hex_color(dot.get_color()), "#000000")
+
     def test_compact_mark_cell_pin_quiet_tone_and_working_separator(self):
         rows = self.card_rows(("plain", {}), ("pinned", {"pinned": True}),
                               ("pinned-unread", {"pinned": True, "unread": True, "pending": True, "manualUnread": True,
@@ -4966,7 +5060,8 @@ class WidgetCheck(unittest.TestCase):
             self.hover_card(window, cards["plain"], False); self.drain(.2)
             # The pin has the quiet caption color, as the state of a quiet row.
             self.assertEqual(hex_color(cards["pinned"].asb_compact_pin), hex_color(cards["pinned"].asb_state_label))
-            self.assertEqual(cards["working"].asb_state_label.get_text(), "Working · 3m12s")
+            self.assertEqual(cards["working"].asb_state_label.get_text(), "Working")
+            self.assertEqual(cards["working"].asb_working_time.get_text(), " · 3m")
             self.assertTrue(cards["waiting-read"].asb_dot.has_css_class("asb-passive"))
             self.assertFalse(cards["pinned-unread"].asb_dot.has_css_class("asb-passive"))
 
@@ -4984,7 +5079,7 @@ class WidgetCheck(unittest.TestCase):
             cards = window.focus_widgets
             limited = cards["limited"]
             for card in cards.values():
-                self.assertEqual(card.asb_title_label.get_yalign(), 0)
+                self.assertIsInstance(card.asb_title_label, asb.CardTitle)
             self.assertEqual(limited.asb_state_label.get_text(), "Resets in 4h32m")
             self.assertFalse(limited.asb_age_label.get_visible())
             self.assertFalse(limited.asb_dot.has_css_class("asb-stop"))
@@ -7399,7 +7494,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertLess(asb.contrast(grey, background), asb.contrast(quiet, background))
             else:
                 self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
-                self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_label)
+                self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_box)
             self.assertRegex(limited.asb_accessible_label, r"^Open Plan the alarm export in Codex\. Idle\. Usage limit\. Resets in \d{1,2} seconds?\.$")
             self.assert_accessible_label(limited, limited.asb_accessible_label)
             tooltip = SimpleNamespace(set_custom=lambda _content: None)
@@ -7440,7 +7535,8 @@ class WidgetCheck(unittest.TestCase):
         window.present(); self.drain(.3)
         card = window.focus_widgets["w"]
         def assert_time(text):
-            self.assertEqual(card.asb_state_label.get_text(), "Working · " + text)
+            self.assertEqual(card.asb_state_label.get_text(), "Working")
+            self.assertEqual(card.asb_working_time.get_text(), " · " + asb.working_duration(card.asb_thread, now[0], True))
             self.assertEqual(card.asb_tooltip.split("\n")[2], "Working · " + text)
             self.assert_accessible_label(card, card.asb_accessible_label + " Working time " + text + ".")
             self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
@@ -7504,7 +7600,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertEqual(card.asb_age_label.get_text(), "12m ago")
                 else:
                     self.assertIsNone(card.asb_where_icon)
-                    self.assertIs(card.asb_state_label.get_next_sibling(), card.asb_where_label)
+                    self.assertIs(card.asb_state_box.get_next_sibling(), card.asb_where_label)
             self.assertFalse(cards["desktop"].asb_where_label and cards["desktop"].asb_where_label.get_visible())
             self.assertTrue(cards["desktop"].get_activatable())
             # The Grey tone: a resting view-only row dims its title and state, a Working one keeps the state color.
@@ -7801,7 +7897,7 @@ class WidgetCheck(unittest.TestCase):
         # The title has the same allocation with three buttons and with two.
         self.assertIs(one.get_parent(), question.get_parent())
         self.assertEqual(one.asb_title_label.get_width(), question.asb_title_label.get_width())
-        self.assertEqual(one.asb_title_label.get_width(), one.get_width() - 16 - 21 - 54)
+        self.assertEqual(one.asb_title_label.get_width(), one.get_width() - 16 - 21)
         self.assertEqual((one.get_height(), one.asb_title_label.get_height()), (68, 32))
         self.assertEqual((self.ink(one.asb_dot), self.ink(cue), self.ink(drawer), self.ink(one.asb_state_label)), (255, 0, 0, 255))
         self.assertEqual(self.ink(copy_button), 0)
@@ -7825,7 +7921,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual((self.ink(one.asb_dot), self.ink(drawer), self.ink(copy_button)), (255, 0, 0))
             window.set_focus_visible(True); settle()
             self.assertTrue(one.has_css_class("asb-key-focus"))
-            self.assertEqual(shown(), (0, 255, True, 255, True))
+            self.assertEqual(shown(), (0, 255, True, 255, True) if focus is read else (255, 255, False, 255, True))
         window.set_focus(cards["s2"]); settle()
         self.assertFalse(one.has_css_class("asb-key-focus"))
         self.assertEqual(shown(), (255, 0, False, 255, 0))
@@ -8066,7 +8162,7 @@ class WidgetCheck(unittest.TestCase):
         window.width_control.set_value(240); self.settle(window)
         window.view_filter.set_selected(0); self.settle(window)
         check_pair(card.asb_where_label, card.asb_state_label)
-        self.assertIs(card.asb_where_label.get_prev_sibling(), card.asb_state_label)
+        self.assertIs(card.asb_where_label.get_prev_sibling(), card.asb_state_box)
         self.assertIsNone(forever.asb_mute_time)
         window.view_filter.set_selected(1); self.settle(window)
         flag = asb.mute_flag_text(rows[0], NOW)
@@ -8190,7 +8286,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual({identity: bool(card.asb_mute_glyph and card.asb_mute_glyph.get_visible()) for identity, card in cards.items()},
                          {"read": True, "busy": True, "plain": False, "asked": True, "other": False})
         for identity in ("read", "busy", "asked"):
-            self.assertIs(cards[identity].asb_where_label.get_prev_sibling(), cards[identity].asb_state_label)
+            self.assertIs(cards[identity].asb_where_label.get_prev_sibling(), cards[identity].asb_state_box)
             self.assertFalse(cards[identity].asb_where_label and cards[identity].asb_where_label.get_visible())
             beside(cards[identity], cards[identity].asb_state_label, cards[identity].asb_where_label)
         window.view_filter.set_selected(1); self.drain(.3); settle()
@@ -8302,7 +8398,7 @@ class WidgetCheck(unittest.TestCase):
         window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
         self.settle(window)
         card = lambda identity: window.focus_widgets[identity]
-        unread_text = "A user action is required in the original app. Mark read in ASB"
+        unread_text = "Mark read. The session still waits for your permission."
         read_text = "A user action is required in the original app"
         for identity in ("action", "seen"):
             self.assertTrue(card(identity).asb_dot.get_visible(), identity)
@@ -8364,7 +8460,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(asb.attention_indicator(new), "question")
         read = new_card.asb_read_button
         self.assertEqual((read.get_tooltip_text(), read.asb_action, read.has_css_class("asb-passive-indicator")),
-                         ("A user action is required in the original app. Mark read in ASB", "win.mark-read", False))
+                         ("Mark read. The session still waits for your permission.", "win.mark-read", False))
 
     def test_idle_card_offers_discard_for_the_next_task_and_sends_next(self):
         def row(identity, order, **extra):
@@ -9390,11 +9486,11 @@ class WidgetCheck(unittest.TestCase):
         xdo("key", "Up"); self.settle(window)
         self.assertIs(window.get_focus(), two)
         self.assertEqual((window.get_focus_visible(), two.has_css_class("asb-key-focus"), one.has_css_class("asb-key-focus")), (True, True, False))
-        self.assertEqual((shown(one), shown(two)), ((255, False, 0), (0, True, 255)))
+        self.assertEqual((shown(one), shown(two)), ((255, False, 0), (255, False, 255)))
         for control in (two.asb_drawer_button, two.asb_mute_button, two.asb_copy_button, two.asb_read_button, two.asb_pin_button):
             xdo("key", "Tab"); self.settle(window)
             self.assertIs(window.get_focus(), control)
-            self.assertEqual(shown(two), (0, True, 255))
+            self.assertEqual(shown(two), (0, True, 255) if control is two.asb_read_button else (255, False, 255))
             self.assertGreater(self.ink(two.asb_copy_button), 0)  # The kind glyph is present (hollow link peaks below 255).
         # Space and Enter on the focused Copy go through the row keys: a copy, with no request and no open.
         two.asb_copy_button.grab_focus(); self.settle(window)
