@@ -5,7 +5,7 @@ import { escape, number as n } from './hero-smil.mjs';
 
 export const scene = JSON.parse(readFileSync(new URL('hero-board.json', import.meta.url), 'utf8'));
 const icons = new Map();
-for (const name of ['claude', 'openai', 'opencode', 'machine', 'terminal', 'link', 'globe', 'drawer', 'filter']) {
+for (const name of ['claude', 'openai', 'opencode', 'machine', 'terminal', 'link', 'globe', 'drawer', 'filter', 'muted']) {
   const key = `asb-${name}-symbolic`;
   const raw = readFileSync(new URL(`../assets/icons/${key}.svg`, import.meta.url), 'utf8');
   icons.set(key, `<symbol id="board-${key}" viewBox="${raw.match(/viewBox="([^"]+)"/)[1]}">${raw.match(/<path\b[^>]*\/>/g).join('')}</symbol>`);
@@ -44,7 +44,7 @@ const frame = () => {
 export function boardDefs() {
   return [...icons.values()].join('')
     + '<radialGradient id="board-disc" cx="35%" cy="30%" r="95.5%"><stop offset="0" stop-color="#f3e6c4"/><stop offset=".6" stop-color="#a8905a"/><stop offset="1" stop-color="#5c4b28"/></radialGradient>'
-    + '<linearGradient id="board-corner" gradientUnits="userSpaceOnUse" x1="0" x2="16"><stop stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000"/></linearGradient>'
+    + `<linearGradient id="board-corner" gradientUnits="userSpaceOnUse" x1="0" x2="16"><stop stop-color="${scene.hover.c}" stop-opacity="0"/><stop offset="1" stop-color="${scene.hover.c}"/></linearGradient>`
     + '<clipPath id="board-viewport"><rect y="33" width="660" height="387"/></clipPath>';
 }
 function itemSvg(item) {
@@ -73,7 +73,8 @@ function springMs(distance) {
 const durationText = (seconds, whole) => {
   seconds = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60), rest = seconds % 60;
-  return hours ? `${hours}h${minutes}m` : minutes ? `${minutes}m${whole ? '' : `${rest}s`}` : `${rest}s`;
+  const two = value => String(value).padStart(2, '0');
+  return hours ? `${hours}h${two(minutes)}m` : minutes ? `${minutes}m${whole ? '' : `${two(rest)}s`}` : `${rest}s`;
 };
 const footerRoles = new Set(['state', 'age', 'where', 'feedback']);
 const tagRoles = new Set(['tag', 'tag-word', 'tag-dot']);
