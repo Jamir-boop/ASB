@@ -5009,7 +5009,11 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(b.get_width(), title.get_width() * asb.Pango.SCALE)
             self.assertEqual(title.compute_bounds(card)[1].get_x() + title.get_width(),
                              card.asb_age_label.compute_bounds(card)[1].get_x() + card.asb_age_label.get_width())
-        self.assertTrue(cut.asb_title_label.title_layouts(cut.asb_title_label.get_width())[1].is_ellipsized())
+        # Line 2 of a cut title ends with "…" right after its last visible character, and the cut text fits.
+        second = cut.asb_title_label.title_layouts(cut.asb_title_label.get_width())[1]
+        self.assertTrue(second.get_text().endswith("…"))
+        self.assertFalse(second.get_text()[-2].isspace())
+        self.assertFalse(second.is_ellipsized())
         def plate(button):
             # The alpha at the top of the round plate, clear of the 12 px glyph.
             snapshot = asb.Gtk.Snapshot()
@@ -6981,6 +6985,103 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(any(isinstance(more.observe_controllers().get_item(index), asb.Gtk.GestureLongPress)
                              for index in range(more.observe_controllers().get_n_items())))
 
+    def test_order_hold_stays_while_a_corner_tag_or_a_card_tooltip_shows(self):
+        for name in ("tag", "tooltip"):
+            with self.subTest(shown=name):
+                window = self.order_hold_window()
+                window.view_filter.set_selected(1); self.drain(.3)
+                card = window.focus_widgets[window.row_order[3]]
+                window.ensure_card_controls(card); self.drain(.1)
+                tooltip = Mock()
+                self.assertTrue(window.query_row_tooltip(card, 0, 0, False, tooltip))
+                self.assertIs(window.tooltip_shown, card.asb_tooltip_content)
+                before = list(window.row_order)
+                board, moved = self.order_change(window)
+                window.board_pointer_motion(None, 100, 100)
+                window.apply_dashboard(board, None)
+                if name == "tag":
+                    window.show_copy_tag(card.asb_copy_button, True)
+                    self.assertTrue(card.asb_copy_button.asb_tag_shown)
+                else:
+                    window.tooltip_shown = SimpleNamespace(get_mapped=lambda: True)
+                self.drain(.45)  # More than three hold times with no real motion.
+                self.assertEqual(window.row_order, before)
+                self.assertTrue(window.order_pending)
+                if name == "tag":
+                    window.show_copy_tag(card.asb_copy_button, False)
+                else:
+                    window.tooltip_shown = SimpleNamespace(get_mapped=lambda: False)
+                self.drain(.3)
+                self.assertEqual(window.row_order[0], moved)
+                window.close(); self.drain(.05)
+
+    def test_order_hold_counts_a_corner_wheel_step_as_real_motion(self):
+        window = self.order_hold_window()
+        window.view_filter.set_selected(1); self.drain(.3)
+        card = window.focus_widgets[window.row_order[3]]
+        window.ensure_card_controls(card); self.drain(.1)
+        copy = card.asb_copy_button
+        before = list(window.row_order)
+        board, moved = self.order_change(window)
+        window.board_pointer_motion(None, 100, 100)
+        window.apply_dashboard(board, None)
+        # The pointer rests on the copy button, so the wheel switches the kind; its tag is not shown.
+        window.copy_hover, copy.asb_rest_at = copy, time.monotonic() - 1
+        for _n in range(5):
+            self.drain(.08)
+            motion = window.order_motion_at
+            window.scroll_horizontal(None, 0, 1)
+            self.assertGreater(window.order_motion_at, motion)
+            self.assertFalse(copy.asb_tag_shown)
+        self.assertEqual(window.row_order, before)  # 0.4 s of wheel steps is more than three hold times.
+        self.drain(.3)
+        self.assertEqual(window.row_order[0], moved)
+
+    def test_order_hold_card_that_glides_under_a_still_pointer_takes_no_press(self):
+        window = self.order_hold_window()
+        aimed = window.focus_widgets[window.row_order[0]]
+        found, point = aimed.compute_point(window.list_body, asb.Graphene.Point().init(20, 10))
+        self.assertTrue(found)
+        x, y = point.x, point.y
+        self.assertEqual(window.card_at(x, y), aimed.asb_thread["id"])
+        controllers = window.list_body.observe_controllers()
+        self.assertTrue(any(isinstance(item, asb.Gtk.GestureClick) and item.get_button() == 0
+                            and item.get_propagation_phase() == asb.Gtk.PropagationPhase.CAPTURE
+                            for item in (controllers.get_item(index) for index in range(controllers.get_n_items()))))
+        window.board_pointer_motion(None, x, y)
+        board, moved = self.order_change(window)
+        window.apply_dashboard(board, None)
+        self.drain(.6)  # The hold ends and the cards glide.
+        self.assertEqual(window.row_order[0], moved)
+        self.assertEqual(window.card_at(x, y), moved)
+        def press():
+            gesture = Mock()
+            window.order_press_guarded(gesture, 1, x, y)
+            return gesture.set_state.call_args_list
+        self.assertEqual(press(), [call(asb.Gtk.EventSequenceState.CLAIMED)])
+        # Motion that GTK generates at the same position is not real motion.
+        window.board_pointer_motion(None, x, y)
+        self.assertEqual(press(), [call(asb.Gtk.EventSequenceState.CLAIMED)])
+        window.board_pointer_motion(None, x + 1, y)
+        self.assertEqual(press(), [])
+        # A held change that keeps the aimed card under the pointer does not guard it.
+        last = window.focus_widgets[window.row_order[-1]]
+        found, point = last.compute_point(window.list_body, asb.Graphene.Point().init(20, 10))
+        x, y = point.x, point.y
+        window.board_pointer_motion(None, x, y)
+        board, _moved = self.order_change(window)
+        window.apply_dashboard(board, None)
+        self.drain(.6)
+        self.assertEqual(window.card_at(x, y), last.asb_thread["id"])
+        self.assertEqual(press(), [])
+        # A release when the pointer leaves the board sets no guard.
+        board, _moved = self.order_change(window)
+        window.apply_dashboard(board, None)
+        self.assertTrue(window.order_pending)
+        window.board_pointer_leave()
+        self.assertFalse(window.order_pending)
+        self.assertIsNone(window.order_press_guard)
+
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real pointer proof needs xdotool on the hidden display :9 or :10.")
     def test_order_hold_real_pointer_proof_and_mouse_hold(self):
@@ -7742,6 +7843,213 @@ class WidgetCheck(unittest.TestCase):
         return {"id": key, "provider": "codex", "providerLabel": "Codex", "title": "Write the release notes for the summer catalog",
                 "cwd": "/example/docs-site", "projectName": "docs-site", "state": "idle", "canOpen": True,
                 "updatedAtMs": NOW - 60_000, **extra}
+
+    def compact_card_board(self, rows, font="Cantarell 11", width=520):
+        asb.Gtk.Settings.get_default().set_property("gtk-font-name", font)
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                    (asb, "request_async", lambda *args: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        temporary = tempfile.TemporaryDirectory(prefix="asb-compact-board-")
+        self.addCleanup(temporary.cleanup)
+        layout = Path(temporary.name) / "layout.json"
+        asb.write_layout(layout, 240, "compact")
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                       theme_path=False, layout_path=layout)
+        self.addCleanup(window.close)
+        window.set_default_size(width, 300)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.check_geometry(); self.drain(.3)
+        self.settle(window)
+        return window
+
+    @staticmethod
+    def font_families():
+        return {family.get_name() for family in asb.Gtk.Label().get_pango_context().list_families()}
+
+    def test_compact_title_ends_with_the_ellipsis_right_after_its_last_visible_character(self):
+        titles = ("Which tax region should invoices use?", "Regenerate the API client", "Migrate the old settings file",
+                  "Write the release notes for 2.4", "Short")
+        rows = [self.card_row(f"t{n}", title=title, state="working" if n == 1 else "idle", workingSinceMs=NOW - 12 * 60_000)
+                for n, title in enumerate(titles)]
+        window = self.compact_card_board(rows, width=252)  # One 240 px column.
+        cut = 0
+        for n, full in enumerate(titles):
+            title = window.focus_widgets[f"t{n}"].asb_title_label
+            self.assertIsInstance(title, asb.CompactTitle)
+            shown = title.get_layout().get_text()
+            # The title keeps its full text for the board, the tooltip, and the accessible name.
+            self.assertEqual(title.get_text(), full)
+            self.assert_accessible_label(title, full)
+            self.assertFalse(title.get_layout().is_ellipsized())
+            self.assertEqual(shown, asb.layout_cut(title.create_pango_layout(""), full, title.get_width()))
+            if shown != full:
+                cut += 1
+                self.assertTrue(shown.endswith("…") and full.startswith(shown[:-1]), shown)
+                self.assertFalse(shown[-2].isspace(), shown)
+                # The longest start that fits: one more character after the spaces that the cut strips, with the …, does not fit.
+                end = len(shown) - 1
+                while full[end].isspace():
+                    end += 1
+                layout = title.create_pango_layout(full[:end + 1] + "…")
+                self.assertGreater(layout.get_pixel_size()[0], title.get_width())
+            # The size request stays that of the full title, so the cut never changes the allocation.
+            full_layout = title.create_pango_layout(full)
+            self.assertGreaterEqual(title.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1], full_layout.get_pixel_size()[0])
+        self.assertGreaterEqual(cut, 3)
+        widths = [window.focus_widgets[f"t{n}"].asb_title_label.get_width() for n in range(len(titles))]
+        with patch.object(window, "render", wraps=window.render) as render:
+            self.drain(.3)
+        render.assert_not_called()
+        self.assertEqual([window.focus_widgets[f"t{n}"].asb_title_label.get_width() for n in range(len(titles))], widths)
+        # A new title and a new width cut again.
+        card = window.focus_widgets["t4"]
+        window.update_session_row(card, {**card.asb_thread, "title": "Approve the certificate rotation for the staging cluster"})
+        self.drain(.1)
+        shown = card.asb_title_label.get_layout().get_text()
+        self.assertTrue(shown.endswith("…") and not shown[-2].isspace(), shown)
+        self.assertEqual(GTK_WARNINGS, [])
+
+    def test_gnome_bright_card_mark_has_the_folder_tone(self):
+        rows = [self.card_row("bright", unread=True, pending=True, completionAttention=True, pendingSource="observed-completion"),
+                self.card_row("working", state="working", workingSinceMs=NOW - 60_000),
+                self.card_row("quiet"), self.card_row("limited", lastOutcome="limit", limitResetsAtMs=NOW + 3_600_000)]
+        window = self.card_board(rows)
+        cards = window.focus_widgets
+        for key in ("bright", "working"):
+            mark, folder = cards[key].asb_mark.get_color(), cards[key].asb_folder.get_color()
+            # The folder is the text color at the dim-label opacity .55; the mark has the same tone, so it is never lighter.
+            self.assertEqual((mark.red, mark.green, mark.blue), (folder.red, folder.green, folder.blue))
+            self.assertAlmostEqual(mark.alpha, .55, delta=.01)
+        quiet = cards["quiet"]
+        self.assertEqual(quiet.asb_mark.get_color().to_string(), quiet.asb_folder.get_color().to_string())
+        self.assertEqual(cards["limited"].asb_mark.get_color().alpha, 1)
+        rule = ".asb-session:not(.asb-limited):not(.asb-message-lit) .asb-provider { color: alpha(@window_fg_color, .55); opacity: 1; }"
+        self.assertIn(rule, self.board_css(window))
+        window.set_palette(CUSTOM)
+        self.drain(.1)
+        self.assertNotIn(rule, self.board_css(window))
+        self.assertEqual(cards["bright"].asb_mark.get_color().alpha, 1)
+
+    def board_css(self, window):
+        with patch.object(window.css, "load_from_string") as load:
+            window.set_palette(window.hover_colors)
+        return load.call_args.args[0]
+
+    def test_gnome_card_keyboard_focus_has_the_solid_accent_ring(self):
+        window = self.card_board([self.card_row("a"), self.card_row("b")])
+        css = self.board_css(window)
+        self.assertIn(".asb-session:focus-visible { outline: 2px solid @accent_color; outline-offset: -2px; }", css)
+        card = window.focus_widgets["b"]
+        window.set_focus_visible(True)
+        card.grab_focus(); self.settle(window)
+        found, accent = window.get_style_context().lookup_color("accent_color")
+        self.assertTrue(found)
+        rows = self.rgba(card)
+        # The theme accent can be outside sRGB; the pixels clamp it.
+        expected = tuple(max(0, min(255, round(value * 255))) for value in (accent.red, accent.green, accent.blue))
+        near = lambda pixel: all(abs(a - b) <= 1 for a, b in zip(pixel[:3], expected))
+        for x, y in ((40, 0), (40, 1), (0, 30), (1, 30), (card.get_width() - 1, 30), (40, card.get_height() - 1)):
+            self.assertTrue(near(rows[y][x]), (x, y, rows[y][x], expected))
+        self.assertFalse(near(rows[2][40]))
+        window.set_palette(CUSTOM)
+        self.assertNotIn("outline: 2px solid @accent_color; outline-offset: -2px; }", self.board_css(window).split(".asb-row-panel .asb-panel-action:focus-visible")[0])
+
+    def glyph_offsets(self, card, center):
+        """The ink center of the card's ? or ! minus the center of the box, in px."""
+        glyph = card.asb_dot.get_first_child()
+        found, point = glyph.compute_point(center, asb.Graphene.Point().init(0, 0))
+        self.assertTrue(found)
+        x, y = glyph.get_layout_offsets()
+        ink, _logical = glyph.get_layout().get_extents()
+        return (point.x + x + (ink.x + ink.width / 2) / asb.Pango.SCALE - center.get_width() / 2,
+                point.y + y + (ink.y + ink.height / 2) / asb.Pango.SCALE - center.get_height() / 2)
+
+    def test_disc_glyphs_and_view_only_glyphs_center_their_ink(self):
+        rows = [self.card_row("question", state="waiting", questionPending=True, questionAttention=True, pending=True,
+                              pendingSource="user-question"),
+                self.card_row("permission", state="waiting", actionRequired=True, actionAttention=True, pending=True,
+                              pendingSource="user-action"),
+                self.card_row("alert", lastOutcome="failed", failedAttention=True, alert=True, unread=True, pending=True,
+                              pendingSource="observed-failure"),
+                self.card_row("cli", surface="cli", canOpen=False),
+                self.card_row("remote", remote=True, machineName="studio", machineId="m-studio", canOpen=False)]
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if "Cascadia Code NF" in self.font_families() else [])
+        # The ink rows of the 12-unit glyph SVGs: the terminal from 1 to 11, the machine from 1 to 11.5.
+        ink = {"asb-terminal-symbolic": (1, 11), "asb-machine-symbolic": (1, 11.5)}
+        for font in fonts:
+            with self.subTest(font=font, view="comfortable"):
+                window = self.card_board(rows, font=font)
+                self.drain(.2)
+                for key, size in (("question", 16), ("permission", 16), ("alert", 16)):
+                    card = window.focus_widgets[key]
+                    self.assertEqual((card.asb_dot.get_width(), card.asb_dot.get_height()), (size, size))
+                    dx, dy = self.glyph_offsets(card, card.asb_dot)
+                    self.assertLessEqual(max(abs(dx), abs(dy)), .5, (key, dx, dy))
+                for key in ("cli", "remote"):
+                    card = window.focus_widgets[key]
+                    icon, where = card.asb_where_icon, card.asb_where_label
+                    top, bottom = ink[Path(icon.get_gicon().get_file().get_path()).stem]
+                    found, box = icon.compute_bounds(card)
+                    self.assertTrue(found)
+                    icon_center = box.origin.y + (box.size.height - 11) / 2 + (top + bottom) / 2 / 12 * 11
+                    found, point = where.compute_point(card, asb.Graphene.Point().init(0, 0))
+                    _x, y = where.get_layout_offsets()
+                    cap = where.create_pango_layout("H")
+                    cap_ink, _logical = cap.get_extents()
+                    shift = (where.get_layout().get_baseline() - cap.get_baseline()) / asb.Pango.SCALE
+                    cap_center = point.y + y + shift + (cap_ink.y + cap_ink.height / 2) / asb.Pango.SCALE
+                    self.assertLessEqual(abs(icon_center - cap_center), .5, (key, icon_center, cap_center))
+                window.close(); self.drain(.1)
+            with self.subTest(font=font, view="compact"):
+                window = self.compact_card_board(rows[:3], font=font)
+                self.drain(.2)
+                for key in ("question", "permission", "alert"):
+                    card = window.focus_widgets[key]
+                    self.assertEqual((card.asb_dot.get_width(), card.asb_dot.get_height()), (12, 12))
+                    dx, dy = self.glyph_offsets(card, card.asb_dot)
+                    self.assertLessEqual(max(abs(dx), abs(dy)), .5, (key, dx, dy))
+                # A new mark centers again: the ? becomes a !.
+                card = window.focus_widgets["question"]
+                window.update_session_row(card, {**card.asb_thread, "questionAttention": False, "questionPending": False,
+                                                 "alert": True, "unread": True, "lastOutcome": "failed"})
+                self.settle(window); self.drain(.2)
+                self.assertEqual(card.asb_dot.get_first_child().get_label(), "!")
+                dx, dy = self.glyph_offsets(card, card.asb_dot)
+                self.assertLessEqual(max(abs(dx), abs(dy)), .5, (dx, dy))
+                window.close(); self.drain(.1)
+
+    def test_pocket_ends_at_title_line_two_at_each_text_scale(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        window = self.card_board([self.card_row("a", title="Which tax region should invoices use?"), self.card_row("b")])
+        card = window.focus_widgets["a"]
+        for dpi, scale in ((98304, 1.0), (122880, 1.25), (147456, 1.5), (98304, 1.0)):
+            with self.subTest(scale=scale):
+                settings.set_property("gtk-xft-dpi", dpi); self.drain(.5)
+                window.ensure_card_controls(card); self.settle(window); self.drain(.3)
+                self.assertTrue(card.asb_actions.has_css_class("asb-corner-wide"))
+                found, box = card.asb_actions.compute_bounds(card)
+                self.assertTrue(found)
+                bottom = box.origin.y + box.size.height
+                title = card.asb_title_label
+                first, second, offset, two = title.title_layouts(title.get_width())
+                self.assertTrue(two)
+                found, point = title.compute_point(card, asb.Graphene.Point().init(0, 0))
+                line_two = point.y + offset
+                if scale == 1:
+                    self.assertEqual(bottom, 34)
+                else:
+                    self.assertEqual(bottom, math.ceil(line_two))
+                first_ink, _logical = first.get_extents()
+                second_ink, _logical = second.get_extents()
+                self.assertLessEqual(point.y + (first_ink.y + first_ink.height) / asb.Pango.SCALE, bottom)
+                self.assertGreaterEqual(line_two + second_ink.y / asb.Pango.SCALE, bottom)
+                with patch.object(window, "render", wraps=window.render) as render:
+                    self.drain(.4)
+                render.assert_not_called()
 
     def test_escape_with_nothing_to_clear_hides_the_card_controls_until_a_new_hover_or_focus(self):
         unread = dict(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
@@ -9868,8 +10176,10 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(more.asb_source_badge.get_visible())
         self.assert_accessible_label(more, "More sessions. 30 sessions after the first 100. Activate to show all cards.")
         shown = []
-        self.assertTrue(window.query_row_tooltip(more, 0, 0, False, SimpleNamespace(set_text=shown.append)))
-        self.assertEqual(shown, ["30 more sessions after the first 100. Click to show all cards."])
+        self.assertTrue(window.query_row_tooltip(more, 0, 0, False, SimpleNamespace(set_custom=shown.append)))
+        self.assertEqual([label.get_label() for label in shown], ["30 more sessions after the first 100. Click to show all cards."])
+        # A custom label, so the order hold sees that the tooltip shows.
+        self.assertIs(window.tooltip_shown, shown[0])
         adjustment = window.scroll.get_hadjustment()
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size()); self.drain(.3)
         window.update_number_keys()

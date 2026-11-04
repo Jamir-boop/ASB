@@ -16,6 +16,7 @@ import sys
 import threading
 import tempfile
 import time
+import unicodedata
 import uuid
 import zlib
 from urllib.error import HTTPError, URLError
@@ -31,6 +32,8 @@ POCKET_BOTTOM = 8
 # the 7 px gap to the text edge at 29 px.
 POCKET_TAG_START = 22
 POCKET_TAG_FADE = 7
+# The whole-pixel ink moves of a disc glyph, in px; each has a CSS class (asb-ink-x-1, asb-ink-y2, ...).
+INK_MOVES = (-2, -1, 1, 2)
 DEFAULT_COLUMN_WIDTH = 240
 # Cards on the board (Preferences > Sessions); 0 shows all cards.
 CARD_LIMITS = ((50, "50"), (100, "100"), (200, "200"), (500, "500"), (0, "All"))
@@ -1629,6 +1632,25 @@ def card_title(title):
     return text if len(text) <= CARD_TITLE_CHARS else text[:CARD_TITLE_CHARS - 1].rstrip() + "…"
 
 
+def ellipsis_cut(text, width, measure):
+    """The text when it fits the width, else its longest start that fits with "…" after it, with no white space before the "…".
+    measure(text) gives a width in the unit of width."""
+    if measure(text) <= width:
+        return text
+    # shortcut: a cut never falls before a combining mark, a variation selector, or a joiner, but it can split other
+    # grapheme clusters (some flags); use the Pango cursor positions when PyGObject reads their bit fields correctly.
+    stops = [index for index in range(len(text)) if index == 0 or not unicodedata.combining(text[index])
+             and text[index] not in "\u200d\ufe0e\ufe0f" and text[index - 1] != "\u200d"]
+    low, high = 0, len(stops) - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        if measure(text[:stops[middle]] + "…") <= width:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:stops[low]].rstrip() + "…"
+
+
 def short_home_path(path, home_dir):
     home = str(Path(home_dir))
     # A Windows home (a drive or UNC root) uses a backslash; in a Linux path a backslash is part of a file name.
@@ -3058,6 +3080,18 @@ def label(text, css=None):
     return widget
 
 
+def layout_cut(layout, text, width):
+    """ellipsis_cut() of a Pango layout at a width in pixels; the layout keeps the shown text, which fits."""
+    layout.set_ellipsize(Pango.EllipsizeMode.NONE)
+    layout.set_width(-1)
+    def measure(value):
+        layout.set_text(value, -1)
+        return layout.get_size()[0]
+    shown = ellipsis_cut(text, width * Pango.SCALE, measure)
+    layout.set_text(shown, -1)
+    return shown
+
+
 def save_snapshot(window, output):
     """Development check: render only this GTK window."""
     paintable = Gtk.WidgetPaintable.new(window)
@@ -3138,6 +3172,8 @@ class CardTitle(Gtk.Widget):
         first.set_ellipsize(Pango.EllipsizeMode.END)
         first.set_height(-1)
         second = self.create_pango_layout(rest)
+        # Line 2 ends with "…" right after its last visible character, not after a space.
+        layout_cut(second, rest, width)
         second.set_width(width * Pango.SCALE)
         second.set_ellipsize(Pango.EllipsizeMode.END)
         second.set_height(-1)
@@ -3176,6 +3212,70 @@ class CardTitle(Gtk.Widget):
         if two:
             snapshot.translate(Graphene.Point().init(0, offset))
             snapshot.append_layout(second, self.get_color())
+
+
+class CompactTitle(Gtk.Label):
+    """The one-line Compact title. When it does not fit, it shows its longest start that fits with "…" right after its last
+    visible character (Pango's own cut can leave a space before the "…"). The size requests stay those of the full title,
+    so the cut never changes the allocation: the cut follows in an idle callback after a text, style, or width change."""
+    def __init__(self):
+        super().__init__(xalign=0, single_line_mode=True, ellipsize=Pango.EllipsizeMode.END, hexpand=True)
+        self.add_css_class("asb-title")
+        self.text, self.natural, self.cut_key, self.cut_idle = "", None, None, None
+
+    def set_label(self, text):
+        if text != self.text:
+            self.text, self.natural = text, None
+            Gtk.Label.set_label(self, text)
+            # The accessible name keeps the full title.
+            self.update_property([Gtk.AccessibleProperty.LABEL], [text])
+            self.queue_cut()
+
+    def get_label(self):
+        return self.text
+
+    get_text = get_label
+
+    def queue_cut(self):
+        if not self.cut_idle:
+            self.cut_idle = GLib.idle_add(self.show_cut)
+
+    def show_cut(self):
+        self.cut_idle = None
+        if self.get_root() is None:
+            return False
+        key = (self.text, self.get_width(), self.get_pango_context().get_font_description().to_string())
+        if key == self.cut_key:
+            return False
+        if self.natural is None or key[2] != (self.cut_key or (None,) * 3)[2]:
+            # The natural width of the full title, measured with the full text in the label.
+            if Gtk.Label.get_label(self) != self.text:
+                Gtk.Label.set_label(self, self.text)
+            self.natural = Gtk.Label.do_measure(self, Gtk.Orientation.HORIZONTAL, -1)[1]
+        self.cut_key = key
+        shown = layout_cut(self.create_pango_layout(""), self.text, key[1]) if key[1] > 0 else self.text
+        if shown != Gtk.Label.get_label(self):
+            Gtk.Label.set_label(self, shown)
+            self.update_property([Gtk.AccessibleProperty.LABEL], [self.text])
+        return False
+
+    def do_css_changed(self, change):
+        Gtk.Label.do_css_changed(self, change)
+        self.queue_cut()
+
+    def do_measure(self, orientation, for_size):
+        minimum, natural, low, high = Gtk.Label.do_measure(self, orientation, for_size)
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            # A direct call of the vfunc leaves the baselines unset; a width has none.
+            low = high = -1
+            if self.natural is not None:
+                natural = max(minimum, self.natural)
+        return minimum, natural, low, high
+
+    def do_size_allocate(self, width, height, baseline):
+        Gtk.Label.do_size_allocate(self, width, height, baseline)
+        if self.cut_key is None or width != self.cut_key[1]:
+            self.queue_cut()
 
 
 class SessionStrip(Gtk.Box):
@@ -5939,6 +6039,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     wide_controls, tiny_controls, search_expanded = False, False, False
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     text_scale, card_heights, text_scale_signal = 1.0, (ROW_HEIGHT, COMFORTABLE_ROW_HEIGHT), None
+    pocket_bottom = POCKET_BOTTOM
     copy_kind = "relative"
     mute_for = "30m"
     pet = "off"
@@ -5963,7 +6064,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     card_pointer = None
     order_hold_seconds = 1.0
     order_hold_started = order_hold_timer = None
-    order_pointer = None
+    order_pointer = order_point = order_press_guard = tooltip_shown = None
     order_pointer_inside = order_pending = False
     order_pointer_at = order_motion_at = order_key_at = 0
     order_inputs = None
@@ -5992,6 +6093,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.filter_model = ()
         self.text_scale = read_text_scale(self.get_settings())
         self.card_heights = self.measure_card_heights()
+        self.pocket_bottom = self.measure_pocket_bottom()
         self.row_height = self.card_heights[self.view == "comfortable"]
         self.focused_id = None
         if self.view == "comfortable":
@@ -6315,6 +6417,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.add_controller(card_press)
         order_press = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
         order_press.connect("pressed", self.board_pointer_event)
+        order_press.connect("pressed", self.order_press_guarded)
         self.list_body.add_controller(order_press)
         self.scroll_target = None
         self.scroll_direction, self.scroll_updating = 0, False
@@ -6469,6 +6572,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def set_palette(self, colors):
         base = ".asb-column-flow"
         scale = self.text_scale  # The GNOME text scale; mark glyphs, the number keycap, icons, and buttons keep their sizes.
+        ink_moves = "\n".join(f"{base} .asb-ink-x{n} {{ margin-left: {n}px; margin-right: {-n}px; }} "
+                              f"{base} .asb-ink-y{n} {{ margin-top: {n}px; margin-bottom: {-n}px; }}" for n in INK_MOVES)
         css = f"""
 {base}.asb-preferences button.asb-pet-tile {{ min-width: 0; min-height: 0; padding: 0; border-radius: 8px;
     background: alpha(@window_fg_color, .10); border: 1px solid alpha(@window_fg_color, .15); box-shadow: none; }}
@@ -6522,6 +6627,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base}:not(.asb-comfortable) .asb-dot.asb-question:not(.asb-passive),
 {base}:not(.asb-comfortable) .asb-dot.asb-alert {{ min-width: 12px; min-height: 12px; border-radius: 50%;
     background: @accent_color; color: @window_bg_color; font-size: 9px; font-weight: 800; }}
+/* Whole-pixel ink moves of a disc glyph (center_passive_glyph): a margin pair of n and -n keeps the disc size. */
+{ink_moves}
+/* The terminal and machine glyphs: their ink center on the cap band of the caption next to them. */
+{base} .asb-where-icon {{ margin-top: 1px; margin-bottom: -1px; }}
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; }}
 {base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid;
     border-radius: 50%; background: none; }}
@@ -6574,7 +6683,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-copy-tag-dot.asb-copy-tag-off {{ opacity: .5; }}
 {base} .asb-copy-feedback {{ color: @success_color; }}
 {base} .asb-corner {{ padding-top: 2px; }}
-{base} .asb-corner-wide {{ padding: 2px 0 {POCKET_BOTTOM}px 16px; border-radius: 0; }}
+{base} .asb-corner-wide {{ padding: 2px 0 {self.pocket_bottom}px 16px; border-radius: 0; }}
 /* The pocket has the card surface: the hover paint, or with key focus only the window (a GNOME card has no focus background). */
 {base} .asb-session.asb-hovered .asb-corner-wide {{
     background: linear-gradient(to right, alpha(mix(@window_bg_color, @window_fg_color, .07), 0), mix(@window_bg_color, @window_fg_color, .07) 16px); }}
@@ -6692,6 +6801,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 """
         else:
             self.remove_css_class("asb-custom")
+            css += f"""
+/* GNOME colors: a bright card mark has the folder tone (dim-label .55), so it is never lighter than its folder; the quiet and
+   limited marks keep their rules. A key-focused card has the solid ring of the row panel. */
+{base} .asb-session:not(.asb-limited):not(.asb-message-lit) .asb-provider {{ color: alpha(@window_fg_color, .55); opacity: 1; }}
+{base} .asb-session:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
+"""
         palette = colors or self.native_colors()
         highlight = highlight_color(palette) if colors else mix_color(palette["background"], palette["text"], .07)
         self.profile_surfaces = (palette["background"], highlight)
@@ -7191,16 +7306,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (Compact one 13 px line; Comfortable two 13 px title lines, the folder line, and the 11 px state line)."""
         if self.text_scale == 1:
             return ROW_HEIGHT, COMFORTABLE_ROW_HEIGHT  # No growth, and no Pango work at the usual scale.
+        growth = self.line_growth
+        return ROW_HEIGHT + growth(13), COMFORTABLE_ROW_HEIGHT + 2 * growth(13) + 2 * growth(11)
+
+    def line_growth(self, size):
+        """How many px a line of the size at text scale 1.0 grows at the current scale."""
         layout = self.create_pango_layout("Ag")
         font = self.get_pango_context().get_font_description().copy()
-        def growth(size):
-            heights = []
-            for px in (size, size * self.text_scale):
-                font.set_absolute_size(px * Pango.SCALE)
-                layout.set_font_description(font)
-                heights.append(layout.get_pixel_size()[1])
-            return heights[1] - heights[0]
-        return ROW_HEIGHT + growth(13), COMFORTABLE_ROW_HEIGHT + 2 * growth(13) + 2 * growth(11)
+        heights = []
+        for px in (size, size * self.text_scale):
+            font.set_absolute_size(px * Pango.SCALE)
+            layout.set_font_description(font)
+            heights.append(layout.get_pixel_size()[1])
+        return heights[1] - heights[0]
+
+    def measure_pocket_bottom(self):
+        """The bottom padding of the hover pocket: it ends at the top of title line 2 (y 34 at text scale 1.0). Before a
+        Comfortable card has a layout, the estimate grows with the folder line and title line 1; check_geometry measures it."""
+        if self.text_scale == 1:
+            return POCKET_BOTTOM
+        for card in getattr(self, "focus_widgets", {}).values():
+            title = card.asb_title_label
+            if getattr(card, "asb_view", None) == "comfortable" and hasattr(title, "title_layouts") and title.get_width() > 0:
+                found, point = title.compute_point(card, Graphene.Point().init(0, title.title_layouts(title.get_width())[2]))
+                if found:
+                    # The corner buttons take 2 px of top padding and 24 px.
+                    return max(0, math.ceil(point.y) - 26)
+        return POCKET_BOTTOM + self.line_growth(13) + self.line_growth(11)
 
     def text_scale_changed(self, *_args):
         # The board CSS and the card heights follow the GNOME text scale; check_geometry repacks with the measured cards.
@@ -7208,6 +7340,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         self.text_scale = read_text_scale(self.get_settings())
         self.card_heights = self.measure_card_heights()
+        self.pocket_bottom = self.measure_pocket_bottom()
         self.set_palette(self.hover_colors)
         self.queue_geometry()
 
@@ -7228,9 +7361,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         geometry = (viewport.get_width(), viewport.get_height())
         row_height = max((widget.get_height() for widget in self.focus_widgets.values()), default=0) or self.row_height
         index = self.view == "comfortable"
+        restyle = False
         if self.text_scale != 1 and row_height > self.card_heights[index]:
             # Lines of two fonts on one baseline can be taller than their estimate: every card takes the tallest card height.
             self.card_heights = tuple(row_height if part == index else height for part, height in enumerate(self.card_heights))
+            restyle = True
+        if self.text_scale != 1 and index:
+            # The pocket ends at title line 2 as the cards lay it out, not at its estimate.
+            pocket = self.measure_pocket_bottom()
+            restyle = restyle or pocket != self.pocket_bottom
+            self.pocket_bottom = pocket
+        if restyle:
             self.set_palette(self.hover_colors)
         if geometry[0] > 0 and geometry[1] > 0 and (geometry, row_height) != (self.geometry, self.row_height):
             if self.search_row.get_child_revealed() != self.search_row.get_reveal_child():
@@ -7413,6 +7554,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 step, self.copy_wheel_state = copy_wheel_step(self.copy_wheel_state, delta, now,
                                                               surface=unit != Gdk.ScrollUnit.WHEEL)
                 if step:
+                    # A wheel step on a corner button is real motion for the order hold.
+                    self.order_motion_at = self.order_pointer_at = now
                     if copy.asb_card_action == "mute":
                         self.step_mute_for(copy.asb_card, step)
                     else:
@@ -7585,12 +7728,27 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.order_pointer_inside = True
         # GTK sends motion when the cards move under a still pointer. Only a new position extends a hold.
         if pointer != self.order_pointer:
-            self.order_pointer = pointer
+            self.order_pointer, self.order_point, self.order_press_guard = pointer, (x, y), None
             self.order_motion_at = self.order_pointer_at = time.monotonic()
 
     def board_pointer_leave(self, *_args):
-        self.order_pointer_inside, self.order_pointer = False, None
+        self.order_pointer_inside, self.order_pointer, self.order_point, self.order_press_guard = False, None, None, None
         self.release_order_hold()
+
+    def card_at(self, x, y):
+        """The ID of the card at a point of the strip, or None."""
+        picked = self.list_body.pick(x, y, Gtk.PickFlags.DEFAULT)
+        card = picked if isinstance(picked, Gtk.ListBoxRow) else picked.get_ancestor(Gtk.ListBoxRow) if picked else None
+        return getattr(card, "asb_thread", {}).get("id") if card is not None else None
+
+    def order_press_guarded(self, gesture, _count, x, y):
+        # After a held change, a card that glided under the still pointer takes no press (open, corner button, Read)
+        # until the pointer has real motion: the user did not aim at it.
+        guard = self.order_press_guard
+        if guard is not None:
+            identity = self.card_at(x, y)
+            if identity is not None and identity != guard:
+                gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
     def cancel_order_hold(self):
         if self.order_hold_timer is not None:
@@ -7603,11 +7761,25 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         pending = self.order_pending
         self.cancel_order_hold()
         if pending and not self.closed:
+            if self.order_pointer_inside and self.order_point is not None:
+                # The card that the still pointer aims at now; "" when it is on no card.
+                self.order_press_guard = self.card_at(*self.order_point) or ""
             self.render(order_now=True)
+
+    def order_hold_kept(self):
+        """A corner tag (mute or copy) or a card tooltip that shows keeps the hold."""
+        button = getattr(self, "choice_tag_button", None)
+        if button is not None and getattr(button, "asb_tag_shown", False):
+            return True
+        shown = self.tooltip_shown
+        return shown is not None and hasattr(shown, "get_mapped") and shown.get_mapped()
 
     def order_hold_expired(self):
         self.order_hold_timer = None
         remaining = self.order_hold_seconds - (time.monotonic() - max(self.order_motion_at, self.order_hold_started))
+        if remaining <= 0 and self.order_hold_kept():
+            # The hold ends at most 1 s after the tag or the tooltip goes.
+            remaining = self.order_hold_seconds
         if remaining > 0:
             self.order_hold_timer = GLib.timeout_add(max(1, math.ceil(remaining * 1000)), self.order_hold_expired)
         else:
@@ -9054,7 +9226,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         row = widget.asb_thread
         if row.get("id") == MORE_ID:
-            tooltip.set_text(f"{row['asbMore']} more sessions after the first {row['asbLimit']}. Click to show all cards.")
+            # A custom label, as the card tooltips, so the order hold can see that it shows.
+            text = f"{row['asbMore']} more sessions after the first {row['asbLimit']}. Click to show all cards."
+            if getattr(widget, "asb_more_tooltip", None) is None:
+                widget.asb_more_tooltip = Gtk.Label(wrap=True, max_width_chars=70, xalign=0)
+            widget.asb_more_tooltip.set_label(text)
+            tooltip.set_custom(widget.asb_more_tooltip)
+            self.tooltip_shown = widget.asb_more_tooltip
             return True
         model = tooltip_model(widget.asb_thread, time.time() * 1000, Path.home(), self.open_errors.get(widget.asb_thread["id"], ""),
                               self.drawer_view)
@@ -9063,6 +9241,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_tooltip_content = self.tooltip_content(widget.asb_thread, model)
             widget.asb_tooltip_key = key
         tooltip.set_custom(widget.asb_tooltip_content)
+        self.tooltip_shown = widget.asb_tooltip_content
         return True
 
     def tooltip_content(self, row, model):
@@ -9373,11 +9552,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             mark_overlay.add_overlay(number_label)
             mark_overlay.set_measure_overlay(number_label, False)
             widget.asb_number_label = number_label
-            title = CardTitle() if self.view == "comfortable" else label("", "asb-title")
-            if self.view != "comfortable":
-                title.set_single_line_mode(True)
-                title.set_ellipsize(Pango.EllipsizeMode.END)
-                title.set_hexpand(True)
+            title = CardTitle() if self.view == "comfortable" else CompactTitle()
             widget.asb_title_label = title
             # Homogeneous: the glyph gets the whole box, so it is centered in the 16 px disc of the read slot.
             dot = Gtk.Box(valign=Gtk.Align.CENTER, homogeneous=True)
@@ -9567,13 +9742,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         unread = bool(row.get("actionAttention") or row.get("unread")) if shows_action(row) else indicator in ("question", "alert", "dot")
         passive = indicator == "question" and not unread
         (widget.asb_dot.add_css_class if passive else widget.asb_dot.remove_css_class)("asb-passive")
-        if getattr(widget, "asb_view", None) == "comfortable":
-            glyph = widget.asb_dot.get_first_child()
-            if not passive:
-                for setter in (glyph.set_margin_start, glyph.set_margin_end, glyph.set_margin_top, glyph.set_margin_bottom):
-                    setter(0)
-            elif glyph.get_mapped():
-                self.passive_glyph_mapped(glyph)
+        # A "?" or "!" is centered by its ink: the bare passive "?" in the Comfortable read slot, a disc in both views.
+        glyph = widget.asb_dot.get_first_child()
+        kind = (passive, glyph.get_label()) if indicator in ("question", "alert") else None
+        if kind != getattr(glyph, "asb_ink_kind", None):
+            glyph.asb_ink_kind = kind
+            self.clear_glyph_moves(glyph)
+        if kind is not None and glyph.get_mapped():
+            self.passive_glyph_mapped(glyph, widget)
         self.update_discard_dot(widget)
         pin = getattr(widget, "asb_compact_pin", None)
         if pin is not None:
@@ -9591,32 +9767,62 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             context.arc(width / 2, height / 2, 3.75, middle - math.pi / 16, middle + math.pi / 16)
             context.stroke()
 
-    def passive_glyph_mapped(self, glyph):
+    @staticmethod
+    def glyph_center(card):
+        """The box that a mark glyph is centered in by its ink: the Comfortable read button for a bare passive "?", the disc
+        for a "?" or "!" disc in both views. A Compact passive "?" has no read button and keeps its place."""
+        dot = card.asb_dot
+        if not dot.has_css_class("asb-question") and not dot.has_css_class("asb-alert"):
+            return None
+        if not dot.has_css_class("asb-passive"):
+            return dot
+        return getattr(card, "asb_read_button", None) if getattr(card, "asb_view", None) == "comfortable" else None
+
+    @staticmethod
+    def clear_glyph_moves(glyph):
+        for setter in (glyph.set_margin_start, glyph.set_margin_end, glyph.set_margin_top, glyph.set_margin_bottom):
+            setter(0)
+        for axis in "xy":
+            for n in INK_MOVES:
+                glyph.remove_css_class(f"asb-ink-{axis}{n}")
+        glyph.asb_ink_move = (0, 0)
+
+    def passive_glyph_mapped(self, glyph, card=None):
         # The centering reads the font and allocation of the mapped label, so a new card or a font change runs it again.
-        # Only the Comfortable read slot centers the glyph; a Compact card has no read button.
-        card = glyph.get_ancestor(Gtk.ListBoxRow)
-        if (card is not None and getattr(card, "asb_view", None) == "comfortable" and glyph.get_mapped()
-                and card.asb_dot.has_css_class("asb-passive")
+        card = card or glyph.get_ancestor(Gtk.ListBoxRow)
+        if (card is not None and glyph.get_mapped() and self.glyph_center(card) is not None
                 and not getattr(glyph, "asb_center_tick", None)):
             glyph.asb_center_frames = 3
             glyph.asb_center_tick = glyph.add_tick_callback(self.center_passive_glyph)
 
     def center_passive_glyph(self, glyph, _clock):
-        """Center the bare question by its actual font ink after style and allocation, with at most three layout frames."""
+        """Center a mark glyph by its actual font ink after style and allocation, with at most three layout frames."""
         card = glyph.get_ancestor(Gtk.ListBoxRow)
-        if card is not None and card.asb_dot.has_css_class("asb-passive"):
-            read = card.asb_read_button
-            found, point = glyph.compute_point(read, Graphene.Point().init(0, 0))
+        center = self.glyph_center(card) if card is not None else None
+        if center is not None:
+            found, point = glyph.compute_point(center, Graphene.Point().init(0, 0))
             ink, _logical = glyph.get_layout().get_extents()
             x, y = glyph.get_layout_offsets()
             if found:
-                # Whole-pixel steps: a margin pair that changes by 2 px moves the centered label 1 px with no rounding of the parent.
-                ex = read.get_width() / 2 - point.x - x - (ink.x + ink.width / 2) / Pango.SCALE
-                ey = read.get_height() / 2 - point.y - y - (ink.y + ink.height / 2) / Pango.SCALE
-                mx = glyph.get_margin_start() - glyph.get_margin_end() + (2 * round(ex) if abs(ex) > .5 else 0)
-                my = glyph.get_margin_top() - glyph.get_margin_bottom() + (2 * round(ey) if abs(ey) > .5 else 0)
-                glyph.set_margin_start(max(0, mx)); glyph.set_margin_end(max(0, -mx))
-                glyph.set_margin_top(max(0, my)); glyph.set_margin_bottom(max(0, -my))
+                ex = center.get_width() / 2 - point.x - x - (ink.x + ink.width / 2) / Pango.SCALE
+                ey = center.get_height() / 2 - point.y - y - (ink.y + ink.height / 2) / Pango.SCALE
+                if center is card.asb_dot:
+                    # A disc keeps its size: a CSS margin pair of n and -n moves the glyph n px (INK_MOVES).
+                    mx, my = getattr(glyph, "asb_ink_move", (0, 0))
+                    mx = max(INK_MOVES[0], min(INK_MOVES[-1], mx + (round(ex) if abs(ex) > .5 else 0)))
+                    my = max(INK_MOVES[0], min(INK_MOVES[-1], my + (round(ey) if abs(ey) > .5 else 0)))
+                    if (mx, my) != getattr(glyph, "asb_ink_move", (0, 0)):
+                        self.clear_glyph_moves(glyph)
+                        for axis, n in (("x", mx), ("y", my)):
+                            if n:
+                                glyph.add_css_class(f"asb-ink-{axis}{n}")
+                        glyph.asb_ink_move = (mx, my)
+                else:
+                    # Whole-pixel steps: a margin pair that changes by 2 px moves the centered label 1 px with no rounding of the parent.
+                    mx = glyph.get_margin_start() - glyph.get_margin_end() + (2 * round(ex) if abs(ex) > .5 else 0)
+                    my = glyph.get_margin_top() - glyph.get_margin_bottom() + (2 * round(ey) if abs(ey) > .5 else 0)
+                    glyph.set_margin_start(max(0, mx)); glyph.set_margin_end(max(0, -mx))
+                    glyph.set_margin_top(max(0, my)); glyph.set_margin_bottom(max(0, -my))
         glyph.asb_center_frames -= 1
         if glyph.asb_center_frames > 0:
             return True

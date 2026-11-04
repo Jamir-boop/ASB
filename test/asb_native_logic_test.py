@@ -71,6 +71,7 @@ REQUEST_ASYNC = SCOPE["request_async"]
 # The real set_icon() loads a Gio.FileIcon; the GTK suite checks the files.
 SCOPE["set_icon"] = Mock()
 SCOPE["CardTitle"] = lambda: SCOPE["label"]("")
+SCOPE["CompactTitle"] = lambda: SCOPE["label"]("", "asb-title")
 # The heap trim test sets its own malloc_trim; the GLib stubs of the other tests have no timers for it.
 SCOPE["MALLOC_TRIM"] = None
 asb = SimpleNamespace(**SCOPE)
@@ -5897,6 +5898,23 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertFalse(hasattr(widget, "asb_read_button"))
         self.assertEqual(SCOPE["ROW_HEIGHT"], 22)
         self.assertEqual(SCOPE["COMFORTABLE_ROW_HEIGHT"], 68)
+
+    def test_ellipsis_cut_ends_right_after_the_last_visible_character(self):
+        # Cascadia Code NF at 13 px has a 7.64 px advance; Pango's own cut at the Compact capture widths left a space before the ….
+        measure = lambda text: len(text) * 7.64
+        for title, width, shown in (("Which tax region should invoices use?", 138, "Which tax region…"),
+                                    ("Regenerate the API client", 99, "Regenerate…"),
+                                    ("Migrate the old settings file", 137, "Migrate the old…"),
+                                    ("Write the release notes for 2.4", 158, "Write the release n…")):
+            with self.subTest(title=title):
+                self.assertEqual(asb.ellipsis_cut(title, width, measure), shown)
+        self.assertEqual(asb.ellipsis_cut("Short", 100, measure), "Short")
+        self.assertEqual(asb.ellipsis_cut("Short", 5 * 7.64, measure), "Short")  # Exactly fits.
+        self.assertEqual(asb.ellipsis_cut("Too long", 3, measure), "…")
+        self.assertEqual(asb.ellipsis_cut("   spaced", 2 * 7.64, measure), "…")
+        # A cut never falls before a combining mark or inside a joined emoji.
+        self.assertEqual(asb.ellipsis_cut("cafe\u0301 bar", 5 * 7.64, measure), "caf…")
+        self.assertEqual(asb.ellipsis_cut("ab\U0001F469\u200d\U0001F4BBcd", 5 * 7.64, measure), "ab…")
 
     def test_card_title_folds_space_and_cuts_long_titles(self):
         self.assertEqual(asb.CARD_TITLE_CHARS, 85)
