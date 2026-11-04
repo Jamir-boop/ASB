@@ -5832,6 +5832,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     numbers_shown = False
     number_keys = open_popovers = ()
     card_pointer = None
+    order_hold_seconds = 1.0
+    order_hold_started = order_hold_timer = None
+    order_pointer = None
+    order_pointer_inside = order_pending = False
+    order_pointer_at = order_motion_at = order_key_at = 0
+    order_inputs = None
 
     def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH, first_load=None):
         super().__init__(application=application, title="ASB · Agent Switch Board",
@@ -6175,6 +6181,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         card_press.connect("pressed", self.card_pointer_event)
         card_press.connect("released", self.card_pointer_event)
         self.list_body.add_controller(card_press)
+        order_press = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        order_press.connect("pressed", self.board_pointer_event)
+        self.list_body.add_controller(order_press)
         self.scroll_target = None
         self.scroll_direction, self.scroll_updating = 0, False
         target = Adw.CallbackAnimationTarget.new(self.advance_scroll)
@@ -6204,7 +6213,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.add_controller(drag)
         motion = Gtk.EventControllerMotion(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         motion.connect("motion", lambda _event, x, _y: self.list_body.set_cursor_from_name("col-resize" if self.dragging or self.divider_at(x) else None))
+        motion.connect("enter", self.board_pointer_motion)
+        motion.connect("motion", self.board_pointer_motion)
         motion.connect("motion", self.hover_motion)
+        motion.connect("leave", self.board_pointer_leave)
         motion.connect("leave", lambda *_args: self.list_body.set_cursor_from_name(None))
         motion.connect("leave", lambda *_args: self.list_body.show_hover(None))
         self.list_body.add_controller(motion)
@@ -7162,6 +7174,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return any(abs(x - (index * step - 6)) <= 6 for index in range(1, getattr(self, "actual_columns", 0)))
 
     def scroll_horizontal(self, controller, dx, dy):
+        if self.order_pointer_inside:
+            self.board_pointer_event()
         self.hide_numbers()
         delta = dx if dx else dy
         if self.closed or not delta:
@@ -7336,6 +7350,85 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         animation = getattr(self, "motion_animation", None)
         if animation:
             animation.skip()
+
+    def board_pointer_event(self, *_args):
+        self.order_pointer_inside = True
+        self.order_pointer_at = time.monotonic()
+
+    def board_pointer_motion(self, controller, x, y):
+        event = controller.get_current_event() if controller else None
+        found, px, py = event.get_position() if event else (False, x, y)
+        pointer = (px, py) if found else (x, y)
+        self.order_pointer_inside = True
+        # GTK sends motion when the cards move under a still pointer. Only a new position extends a hold.
+        if pointer != self.order_pointer:
+            self.order_pointer = pointer
+            self.order_motion_at = self.order_pointer_at = time.monotonic()
+
+    def board_pointer_leave(self, *_args):
+        self.order_pointer_inside, self.order_pointer = False, None
+        self.release_order_hold()
+
+    def cancel_order_hold(self):
+        if self.order_hold_timer is not None:
+            GLib.source_remove(self.order_hold_timer)
+            self.order_hold_timer = None
+        self.order_hold_started = None
+        self.order_pending = False
+
+    def release_order_hold(self):
+        pending = self.order_pending
+        self.cancel_order_hold()
+        if pending and not self.closed:
+            self.render(order_now=True)
+
+    def order_hold_expired(self):
+        self.order_hold_timer = None
+        remaining = self.order_hold_seconds - (time.monotonic() - max(self.order_motion_at, self.order_hold_started))
+        if remaining > 0:
+            self.order_hold_timer = GLib.timeout_add(max(1, math.ceil(remaining * 1000)), self.order_hold_expired)
+        else:
+            self.release_order_hold()
+        return GLib.SOURCE_REMOVE
+
+    def hold_board_parts(self, rows, parts, inputs, pins, order_now):
+        """The columns to show: the target columns, or the shown columns with current data while the order holds."""
+        old_inputs, old_pins = self.order_inputs or (None, pins)
+        # A search, filter, view, size, Show all, or pin move applies at once; a pin or an unpin is a normal change.
+        bypass = old_inputs != inputs or set(old_pins) == set(pins) and old_pins != pins
+        self.order_inputs = inputs, pins
+        changed = tuple(tuple(row["id"] for row in part) for part in parts) != \
+            tuple(tuple(row["id"] for row in part) for part in self.column_parts) or \
+            any(row.get("asbOrderGap") for part in self.column_parts for row in part)
+        panel = self.context_menu and self.context_menu.get_visible()
+        pointer = self.order_pointer_inside and self.order_pointer_at > self.order_key_at
+        if bypass or not changed or not (panel or pointer and not order_now):
+            self.cancel_order_hold()
+            return parts
+        self.order_pending = True
+        if panel:
+            if self.order_hold_timer is not None:
+                GLib.source_remove(self.order_hold_timer)
+                self.order_hold_timer = None
+            self.order_hold_started = None
+        elif self.order_hold_started is None:
+            self.order_hold_started = time.monotonic()
+            self.order_hold_timer = GLib.timeout_add(max(1, math.ceil(self.order_hold_seconds * 1000)), self.order_hold_expired)
+        latest = {row["id"]: row for row in reversed(self.dashboard.get("threads", []))}
+        latest.update({row["id"]: row for row in rows if row["id"] == MORE_ID})
+        # A deleted session leaves empty space, not a shift of the cards below it or across columns.
+        held = []
+        for part in self.column_parts:
+            column, gap = [], 0
+            for row in part:
+                gap += row.get("asbOrderGap", 0)
+                if row["id"] in latest:
+                    column.append({**latest[row["id"]], "asbOrderGap": gap})
+                    gap = 0
+                else:
+                    gap += 1
+            held.append(column)
+        return held
 
     def hover_motion(self, _controller, x, y):
         event = _controller.get_current_event() if _controller else None
@@ -7629,6 +7722,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.reset_property(Gtk.AccessibleProperty.KEY_SHORTCUTS)
 
     def window_key(self, _controller, key, _code, modifiers):
+        self.order_key_at = time.monotonic()
+        self.release_order_hold()
         handled = self.number_key_pressed(key, modifiers)
         if handled is not None:
             return handled
@@ -8227,7 +8322,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     listings[number].append(card)
         return detached
 
-    def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
+    def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None, order_now=False):
         if self.dashboard is None or self.closed:
             return
         self.cancel_side_fill()
@@ -8241,6 +8336,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         rows = self.visible_rows()
         width, height = self.geometry or (self.get_default_size().width, 600)
         self.columns, self.capacity, parts = pack_columns(rows, width, height, self.column_width, self.row_height)
+        inputs = (self.search.get_text(), frozenset(self.states), frozenset(self.profiles), self.pending, self.archived,
+                  self.drawer_view, self.view, self.card_limit, self.show_all_cards, width, height, self.column_width, self.row_height)
+        pins = tuple(row["id"] for row in sorted((row for row in self.dashboard.get("threads", []) if row.get("pinned")),
+                                                  key=lambda row: (row.get("pinIndex", 0), row["id"])))
+        parts = self.hold_board_parts(rows, parts, inputs, pins, order_now)
+        rows = [row for part in parts for row in part]
         # The copy and drawer buttons show from 190 px, the mute button from 240 px.
         narrow = (self.column_pixel_width < 190, self.column_pixel_width < 240)
         self.column_pixel_width = max(1, (width - 8 - 12 * (self.columns - 1)) // self.columns)
@@ -8253,9 +8354,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         empty_text = "The drawer is empty. Put an unread session in it to get it out of the way." if self.drawer_view and not drawer \
             else "No matching sessions. Change the search or filters." if self.dashboard.get("threads") \
             else "No desktop sessions found. Create a session, then refresh."
-        layout_signature = (tuple(self.row_order), self.columns, self.capacity, self.column_pixel_width, self.view, empty_text)
+        layout_signature = (tuple(self.row_order), self.columns, self.capacity, self.column_pixel_width, self.view, empty_text,
+                            tuple(tuple((row["id"], row.get("asbOrderGap", 0)) for row in part) for part in parts))
         repack = layout_signature != self.layout_signature
-        reorder = repack and self.layout_signature is not None and layout_signature[1:] == self.layout_signature[1:] \
+        reorder = repack and self.layout_signature is not None and layout_signature[1:6] == self.layout_signature[1:6] \
             and set(layout_signature[0]) == set(self.layout_signature[0])
         repack = repack and not reorder
         if repack or reorder:
@@ -8402,6 +8504,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.update_card_actions(widget)
             elif narrow_changed:
                 self.update_card_actions(widget)
+        widget.set_margin_top(row.get("asbOrderGap", 0) * self.row_height)
         return widget
 
     def attach_column(self, number):
@@ -8640,6 +8743,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             handlers = [controller.connect(name, callback, row["id"]) for name, callback in signals]
             widget.asb_handlers.append((controller, handlers))
             widget.add_controller(controller)
+        if row["id"] != MORE_ID:
+            long_press = Gtk.GestureLongPress(touch_only=True, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+            handler = long_press.connect("pressed", self.row_long_press, row["id"])
+            widget.asb_handlers.append((long_press, [handler]))
+            widget.add_controller(long_press)
         self.update_session_row(widget, row)
         return widget
 
@@ -8969,6 +9077,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def row_context(self, gesture, _count, x, y, identity):
         widget = self.focus_widgets.get(identity)
         if widget:
+            self.show_context(widget, x, y, gesture)
+
+    def row_long_press(self, gesture, x, y, identity):
+        widget = self.focus_widgets.get(identity)
+        if widget:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             self.show_context(widget, x, y, gesture)
 
     def pin_drag_end(self, *_args):
@@ -9858,6 +9972,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 focus = self.get_focus()
                 if card and not self.closed and card.get_mapped() and (focus is None or focus.is_ancestor(popup)):
                     card.grab_focus()
+                if self.order_pending and not self.closed:
+                    GLib.idle_add(self.render)
         panel.connect("closed", closed)
         self.context_menu = panel
         self.update_row_panel(panel, row)
@@ -10299,7 +10415,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_flights()
         self.events.close()
         self.cancel_side_fill()
-        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim", "heap_trim"):
+        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim", "heap_trim", "order_hold_timer"):
             source = getattr(self, name)
             if source:
                 GLib.source_remove(source)

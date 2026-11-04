@@ -55,6 +55,8 @@ SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
 # The Gtk.Window base is not in this scope: a window here is in the foreground, as a board that is active.
 Window.is_active = lambda _self: True
+# Layout-only windows have no GTK search entry. Tests that edit the search set their own.
+Window.search = SimpleNamespace(get_text=lambda: "")
 Strip = SCOPE["SessionStrip"]
 SourcesEditor = SCOPE["AppSourcesEditor"]
 Preferences = SCOPE["PreferencesWindow"]
@@ -92,6 +94,9 @@ class Box:
 
     def get_spacing(self):
         return 12
+
+    def set_margin_top(self, value):
+        self.margin_top = value
 
     def add_tick_callback(self, *_args):
         return 1
@@ -6212,7 +6217,7 @@ class NativeLogicChecks(unittest.TestCase):
             return value
         gtk = SimpleNamespace(ListBoxRow=lambda **_kwargs: widget, EventControllerKey=controller,
                               EventControllerFocus=controller, EventControllerMotion=controller, GestureClick=controller,
-                              DragSource=controller,
+                              GestureLongPress=controller, DragSource=controller,
                               DropTarget=SimpleNamespace(new=lambda *_args: controller()),
                               PropagationPhase=SimpleNamespace(CAPTURE=0))
         with patch.dict(SCOPE, {"Gtk": gtk, "Gdk": SimpleNamespace(DragAction=SimpleNamespace(MOVE=0)),
@@ -6220,7 +6225,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIs(window.session_row({"id": "a"}), widget)
             widget.set_has_tooltip.assert_called_once_with(True)
             widget.connect.assert_called_once_with("query-tooltip", window.query_row_tooltip)
-            self.assertEqual(len(widget.asb_handlers), 6)
+            self.assertEqual(len(widget.asb_handlers), 7)
             widget.add_css_class.assert_any_call("asb-unhovered")
             controllers[2].connect.assert_called_once_with("notify::contains-pointer", window.row_hover, "a")
             self.assertIsNone(widget.asb_tooltip_content)
@@ -6230,7 +6235,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIsNone(widget.asb_tooltip_content)
             self.assertIsNone(widget.asb_tooltip_key)
             widget.disconnect.assert_called_once_with(77)
-            self.assertEqual(widget.remove_controller.call_count, 6)
+            self.assertEqual(widget.remove_controller.call_count, 7)
             self.assertTrue(all(call.args[0] is not widget for call in widget.remove_controller.call_args_list))
             self.assertIsNone(widget.asb_tooltip_handler)
             widget.set_tooltip_text.assert_not_called()
@@ -7070,6 +7075,7 @@ class NativeLogicChecks(unittest.TestCase):
                                         {"id": "b", "state": "idle", "updatedAtMs": 10}]}
         window.closed, window.layout_signature, window.focused_id = False, None, None
         window.context_menu, window.cancel_scroll = Mock(asb_identity="a"), Mock()
+        window.context_menu.get_visible.return_value = False
         window.update_row_panel = Mock()
         window.focus_generation = 0
         window.get_focus = lambda: focus[0]
@@ -7095,7 +7101,7 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib}):
             window.render()
             columns, widgets = list(window.list_body.children), dict(window.focus_widgets)
-            # The open panel of row "a" stays open when the row moves, and shows the new row data.
+            # A hidden panel model still receives the new row data when its card moves.
             window.context_menu.get_parent.return_value = widgets["a"]
             focus[0] = widgets["a"]
             for key in operations:

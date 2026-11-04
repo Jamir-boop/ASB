@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- The board now holds card places while you use the pointer, until 1 second without motion, a board leave, or a key press. Content still updates. An open row panel holds places until it closes. Search, filters, view and size changes, Show all, and pin moves apply at once.
+- A touch-screen long press now opens the card row panel at the press point. A mouse hold stays unchanged.
+
 - Pending cards now sort by their mark: a Working `?`, other `?` cards, `!`, the dot, then the rest. Each mark group keeps newest first.
 
 - Made the card marks clearer. In Comfortable and in the tooltip, `?` and `!` are 16 px filled discs in the accent color with the glyph in the background color, and their Read button has no plate until the pointer or keyboard focus is on the card. A read permission wait shows a quiet `?` with no disc. The pinned pin at rest has no plate, and the pin, the stop square, and the armed Discard ring use the quiet caption color. Compact keeps the `?` and `!` glyphs.
