@@ -3321,8 +3321,9 @@ class CardTitle(Gtk.Widget):
         self.queue_resize()
         return False
 
-    def pocket_line_end(self, first):
-        """The last whole word before an untagged, visible pocket; line breaks stay unchanged."""
+    def pocket_line(self, first):
+        """Line 1 before an untagged, visible pocket that it reaches: a copy of the layout with the longest whole-word start whose
+        "…" ends at or left of the fade, or "…" alone; None when line 1 ends left of the fade. Line breaks stay unchanged."""
         card = self.get_ancestor(Gtk.ListBoxRow)
         pocket = getattr(card, "asb_actions", None)
         if pocket is None or not pocket.has_css_class("asb-corner-wide") or pocket.has_css_class("asb-corner-tagged") \
@@ -3331,26 +3332,29 @@ class CardTitle(Gtk.Widget):
         found, pocket_bounds = pocket.compute_bounds(self)
         if not found:
             return None
+        text = first.get_text()
         measure = first.copy()
         measure.set_width(-1)
-        end = None
-        words = first.get_text().split(" ")
-        for count in range(1, len(words) + 1):
-            measure.set_text(" ".join(words[:count]), -1)
-            width = measure.get_size()[0] / Pango.SCALE
-            if width > pocket_bounds.origin.x:
+        measure.set_ellipsize(Pango.EllipsizeMode.NONE)
+        def fits(value):
+            measure.set_text(value, -1)
+            return measure.get_size()[0] / Pango.SCALE <= pocket_bounds.origin.x
+        if fits(text):
+            return None
+        shown = "…"
+        words = text.split(" ")
+        for count in range(1, len(words)):
+            start = " ".join(words[:count]).rstrip()
+            if start and not fits(start + "…"):
                 break
-            end = width
-        return end
+            if start:
+                shown = start + "…"
+        measure.set_text(shown, -1)
+        return measure
 
     def do_snapshot(self, snapshot):
         first, second, offset, two = self.title_layouts(self.get_width())
-        end = self.pocket_line_end(first)
-        if end is not None:
-            snapshot.push_clip(Graphene.Rect().init(0, 0, end, self.get_height()))
-        snapshot.append_layout(first, self.get_color())
-        if end is not None:
-            snapshot.pop()
+        snapshot.append_layout(self.pocket_line(first) or first, self.get_color())
         if two:
             snapshot.translate(Graphene.Point().init(0, offset))
             snapshot.append_layout(second, self.get_color())
@@ -3393,13 +3397,19 @@ class CompactTitle(Gtk.Label):
             # The natural width of the full title, measured with the full text in the label.
             if Gtk.Label.get_label(self) != self.text:
                 Gtk.Label.set_label(self, self.text)
-            self.natural = Gtk.Label.do_measure(self, Gtk.Orientation.HORIZONTAL, -1)[1]
+            natural, self.natural = self.natural, Gtk.Label.do_measure(self, Gtk.Orientation.HORIZONTAL, -1)[1]
+            if natural is not None and natural != self.natural:
+                # GTK measured with the old natural width after the style change.
+                self.queue_resize()
         self.cut_key = key
-        shown = layout_cut(self.create_pango_layout(""), self.text, key[1]) if key[1] > 0 else self.text
+        shown = self.cut_text(key[1]) if key[1] > 0 else self.text
         if shown != Gtk.Label.get_label(self):
             Gtk.Label.set_label(self, shown)
             self.update_property([Gtk.AccessibleProperty.LABEL], [self.text])
         return False
+
+    def cut_text(self, width):
+        return layout_cut(self.create_pango_layout(""), self.text, width)
 
     def do_css_changed(self, change):
         Gtk.Label.do_css_changed(self, change)
@@ -3418,6 +3428,23 @@ class CompactTitle(Gtk.Label):
         Gtk.Label.do_size_allocate(self, width, height, baseline)
         if self.cut_key is None or width != self.cut_key[1]:
             self.queue_cut()
+
+
+class WhereCaption(CompactTitle):
+    """The Comfortable where caption, `<name> ·`. When it does not fit, the name shows its longest start that fits with "…" right
+    after its last visible character, and the " ·" after it stays whole. A caption without the separator keeps the Pango cut."""
+    def __init__(self):
+        Gtk.Label.__init__(self, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.text, self.natural, self.cut_key, self.cut_idle = "", None, None, None
+
+    def cut_text(self, width):
+        if not self.text.endswith(" ·"):
+            return self.text
+        name, layout = self.text[:-2], self.create_pango_layout("")
+        def measure(value):
+            layout.set_text(value + " ·", -1)
+            return layout.get_size()[0]
+        return ellipsis_cut(name, width * Pango.SCALE, measure) + " ·"
 
 
 class SessionStrip(Gtk.Box):
@@ -9752,10 +9779,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             where_icon = Gtk.Image(pixel_size=11, visible=False, valign=Gtk.Align.CENTER)
             where_icon.add_css_class("asb-where-icon")
             where_icon.add_css_class("dim-label")
-            where = label("", "caption")
+            where = WhereCaption()
+            where.add_css_class("caption")
             where.add_css_class("asb-where")
             where.add_css_class("dim-label")
-            where.set_ellipsize(Pango.EllipsizeMode.END)
             where.set_max_width_chars(12)
             where.set_visible(False)
             where.set_valign(Gtk.Align.BASELINE_CENTER)

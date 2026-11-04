@@ -8376,19 +8376,9 @@ class WidgetCheck(unittest.TestCase):
                     self.assertTrue(two)
                     line_two = title.compute_point(card, asb.Graphene.Point().init(0, 0))[1].y + offset
                     self.assertEqual(box.origin.y + box.size.height, 34 if (scale, zoom) == (1.0, 100) else math.ceil(line_two))
-                    # pocket_line_end measures whole words at the zoomed font, not a scaled pixel estimate.
-                    end = title.pocket_line_end(_first)
-                    if end is not None:
-                        measure = _first.copy(); measure.set_width(-1)
-                        fits = []
-                        words = _first.get_text().split(" ")
-                        pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
-                        for count in range(1, len(words) + 1):
-                            measure.set_text(" ".join(words[:count]), -1)
-                            length = measure.get_size()[0] / asb.Pango.SCALE
-                            if length <= pocket_x:
-                                fits.append(length)
-                        self.assertEqual(end, max(fits))
+                    # pocket_line measures whole words at the zoomed font, not a scaled pixel estimate.
+                    line = title.pocket_line(_first)
+                    self.assertEqual(line and line.get_text(), self.pocket_start(title, card, _first))
                     # The balanced break uses the zoomed font too: avoid a one-word second line when its preceding word fits.
                     original = title.get_label()
                     title.set_label("Approve the schema change")
@@ -9582,37 +9572,26 @@ class WidgetCheck(unittest.TestCase):
                 title = card.asb_title_label
                 first, second, offset, two = title.title_layouts(title.get_width())
                 self.assertEqual((first.get_text(), second.get_text(), two), ("Approve the", "schema change", True))
-                self.assertIsNone(title.pocket_line_end(first))
+                self.assertIsNone(title.pocket_line(first))
                 self.hover_card(window, card, True); self.settle(window)
                 first = title.title_layouts(title.get_width())[0]
-                end = title.pocket_line_end(first)
-                self.assertIsNotNone(end)
-                pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
-                measure = first.copy(); measure.set_width(-1)
-                fits = []
-                words = first.get_text().split(" ")
-                for n in range(1, len(words) + 1):
-                    measure.set_text(" ".join(words[:n]), -1)
-                    width = measure.get_size()[0] / asb.Pango.SCALE
-                    if width <= pocket_x:
-                        fits.append(width)
-                self.assertEqual(end, max(fits))
+                line = title.pocket_line(first)
+                shown = self.pocket_start(title, card, first)
+                self.assertEqual(line and line.get_text(), shown)
                 snapshot = Mock()
                 title.do_snapshot(snapshot)
-                self.assertAlmostEqual(snapshot.push_clip.call_args.args[0].size.width, end)
+                snapshot.push_clip.assert_not_called()
                 self.assertEqual(snapshot.append_layout.call_count, 2)
+                self.assertEqual(snapshot.append_layout.call_args_list[0].args[0].get_text(), shown or first.get_text())
                 self.assertEqual(title.title_layouts(title.get_width())[1].get_text(), "schema change")
                 card.asb_actions.add_css_class("asb-corner-tagged")
-                self.assertIsNone(title.pocket_line_end(first))
+                self.assertIsNone(title.pocket_line(first))
                 card.asb_actions.remove_css_class("asb-corner-tagged")
                 self.hover_card(window, card, False); self.settle(window)
-                self.assertIsNone(title.pocket_line_end(first))
+                self.assertIsNone(title.pocket_line(first))
                 window.set_focus_visible(True); card.grab_focus(); self.settle(window)
-                self.assertEqual(title.pocket_line_end(first), end)
-                # No whole word fits: keep the original paint rather than suppressing all text.
-                title.set_label("Supercalifragilisticexpialidocious and a word")
-                self.settle(window)
-                self.assertIsNone(title.pocket_line_end(title.title_layouts(title.get_width())[0]))
+                line = title.pocket_line(first)
+                self.assertEqual(line and line.get_text(), shown)
                 # One line, two words on line 1, and a cut second line must not rebalance.
                 for text, expected in (("Short title", ("Short title", "")),
                                        ("Approve the certificate rotation", ("Approve the", "certificate rotation")),
@@ -9626,6 +9605,103 @@ class WidgetCheck(unittest.TestCase):
                         if font.startswith("Cascadia"):
                             self.assertEqual(a.get_text(), "Rebuild the search")
                 window.close()
+
+    def pocket_start(self, title, card, first):
+        """The longest whole-word start of title line 1 whose "…" ends at or left of the pocket fade, or "…" alone; None when
+        all of line 1 ends at or left of the fade."""
+        pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
+        measure = first.copy(); measure.set_width(-1); measure.set_ellipsize(asb.Pango.EllipsizeMode.NONE)
+        if measure.get_size()[0] / asb.Pango.SCALE <= pocket_x:
+            return None
+        shown = "…"
+        words = first.get_text().split(" ")
+        for n in range(1, len(words)):
+            measure.set_text(" ".join(words[:n]) + "…", -1)
+            if measure.get_size()[0] / asb.Pango.SCALE <= pocket_x:
+                shown = " ".join(words[:n]) + "…"
+        return shown
+
+    def snapshot_title(self, title):
+        snapshot = Mock()
+        title.do_snapshot(snapshot)
+        return [call.args[0] for call in snapshot.append_layout.call_args_list]
+
+    def test_cut_title_line_one_ends_with_an_ellipsis_left_of_the_pocket_fade(self):
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if "Cascadia Code NF" in self.font_families() else [])
+        for font in fonts:
+            with self.subTest(font=font):
+                window = self.card_board([self.card_row("a", title="Draft the upgrade guide for teams"),
+                                          self.card_row("short", title="Notes"),
+                                          self.card_row("long", title="Supercalifragilisticexpialidocious and a word")]
+                                         + [self.card_row(str(i)) for i in range(13)], CUSTOM, font)
+                card = window.focus_widgets["a"]
+                title = card.asb_title_label
+                rest = [layout.get_text() for layout in self.snapshot_title(title)]
+                line_one = rest[0]
+                for mode in ("hover", "focus"):
+                    if mode == "hover":
+                        self.hover_card(window, card, True)
+                    else:
+                        self.hover_card(window, card, False)
+                        window.set_focus_visible(True); card.grab_focus()
+                    self.settle(window)
+                    first, second = self.snapshot_title(title)
+                    shown = first.get_text()
+                    # A whole-word start of line 1 with "…" right after its last character, at or left of the fade start.
+                    self.assertTrue(shown.endswith("…") and not shown[-2].isspace(), (mode, shown))
+                    self.assertTrue((line_one + " ").startswith(shown[:-1] + " "), (mode, shown, line_one))
+                    self.assertEqual(shown, self.pocket_start(title, card, title.title_layouts(title.get_width())[0]))
+                    pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
+                    self.assertLessEqual(first.get_size()[0] / asb.Pango.SCALE, pocket_x)
+                    # Line 2, the line breaks, and the full title do not change.
+                    self.assertEqual(second.get_text(), rest[1])
+                    self.assertEqual(title.title_layouts(title.get_width())[0].get_text(), line_one)
+                    self.assertEqual(title.get_text(), "Draft the upgrade guide for teams")
+                window.set_focus(None); self.settle(window)
+                # Line 1 ends left of the fade: no "…".
+                card = window.focus_widgets["short"]
+                self.hover_card(window, card, True); self.settle(window)
+                self.assertEqual(self.snapshot_title(card.asb_title_label)[0].get_text(), "Notes")
+                self.hover_card(window, card, False)
+                # The first word does not fit with the "…": "…" alone.
+                card = window.focus_widgets["long"]
+                title = card.asb_title_label
+                self.hover_card(window, card, True); self.settle(window)
+                first = title.title_layouts(title.get_width())[0]
+                measure = first.copy(); measure.set_width(-1); measure.set_ellipsize(asb.Pango.EllipsizeMode.NONE)
+                measure.set_text(first.get_text().split(" ")[0] + "…", -1)
+                self.assertGreater(measure.get_size()[0] / asb.Pango.SCALE, card.asb_actions.compute_bounds(title)[1].origin.x)
+                self.assertEqual(self.snapshot_title(title)[0].get_text(), "…")
+                window.close(); self.drain(.1)
+
+    def test_cut_remote_caption_keeps_its_separator_whole(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        window = self.card_board([self.card_row("remote", title="Check the nightly backup", remote=True, machineName="studio",
+                                                machineId="m-studio", canOpen=False, updatedAtMs=time.time() * 1000 - 65 * 60_000),
+                                  self.card_row("b")])
+        card = window.focus_widgets["remote"]
+        where = card.asb_where_label
+        # Five 170 px columns: at 1.5 the footer line has no room for all of "studio ·".
+        for dpi, scale in ((147456, 1.5), (98304, 1.0)):
+            with self.subTest(scale=scale):
+                settings.set_property("gtk-xft-dpi", dpi); self.drain(.5)
+                window.width_control.set_value(170); window.set_default_size(8 + 5 * 170 + 4 * 12, 620); self.settle(window); self.drain(.3)
+                shown = where.get_layout().get_text()
+                self.assertEqual(where.get_text(), "studio ·")
+                self.assertFalse(where.get_layout().is_ellipsized(), shown)
+                self.assertLessEqual(where.get_layout().get_pixel_size()[0], where.get_width())
+                full = where.create_pango_layout("studio ·").get_pixel_size()[0]
+                if scale == 1.5:
+                    self.assertGreater(full, where.get_width())
+                    # A cut name, "…" right after its last visible character, then the whole separator.
+                    self.assertTrue(shown.endswith("… ·") and "studio".startswith(shown[:-3]) and shown[:-3], shown)
+                    self.assertNotIn("studio…", shown)
+                else:
+                    self.assertEqual(shown, "studio ·")
+                self.assertIs(where.get_next_sibling(), card.asb_age_label)
+                self.assertEqual(card.asb_age_label.get_text(), "1h ago")
+                self.assertIn("On studio.", card.asb_accessible_label)
 
     def test_round_four_corner_colors_focus_and_dot_plate(self):
         settings = asb.Gtk.Settings.get_default()
