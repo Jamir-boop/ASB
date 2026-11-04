@@ -53,6 +53,9 @@ exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [USAGE_CHART, STRIP, CO
 Column = SCOPE["SessionColumn"]
 SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
+# GDK key constants used by the card Alt-key handler, without importing GTK for logic checks.
+SCOPE.update(CARD_KEY_MASK=4 | 8 | 1 | (1 << 26) | (1 << 28), CARD_KEY_ALT=8,
+             CARD_KEY_SLOTS={ord(letter): slot for letter, slot in (("r", "read"), ("d", "drawer"), ("m", "mute"), ("p", "pin"), ("c", "copy"))})
 # The Gtk.Window base is not in this scope: a window here is in the foreground, as a board that is active.
 Window.is_active = lambda _self: True
 # Layout-only windows have no GTK search entry. Tests that edit the search set their own.
@@ -319,7 +322,7 @@ class ProfileSyncChecks(unittest.TestCase):
         self.gtk = SimpleNamespace(Box=Mock(), Image=Mock(), ListBoxRow=Row, Align=SimpleNamespace(CENTER=0),
                                    NaturalWrapMode=SimpleNamespace(NONE=0), Justification=SimpleNamespace(RIGHT=0),
                                    AccessibleState=SimpleNamespace(BUSY=0),
-                                   AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1))
+                                   AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3))
         self.patcher = patch.dict(SCOPE, {"Gtk": self.gtk, "Adw": SimpleNamespace(ActionRow=Row, Dialog=Mock()),
             "Pango": SimpleNamespace(EllipsizeMode=SimpleNamespace(END=0), WrapMode=SimpleNamespace(WORD=0)),
             "SourceMarker": FakeMarker,
@@ -1721,7 +1724,7 @@ class PhoneChecks(unittest.TestCase):
         gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(
                                   active=kwargs["active"], get_active=Mock(return_value=kwargs["active"]))),
                               Button=Mock(), Align=SimpleNamespace(CENTER=0),
-                              AccessibleProperty=SimpleNamespace(LABEL=0))
+                              AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3))
         editor.enabled.get_active.return_value, editor.port.get_value.return_value = True, 4630
         editor.address_list.get_first_child.side_effect = [Mock(), None, None, None]
         with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=Mock(return_value=row))}):
@@ -1762,7 +1765,7 @@ class PhoneChecks(unittest.TestCase):
         devices = [{"id": "a", "name": "Test phone", "createdAtMs": NOW - 86_400_000, "lastSeenAtMs": NOW - 60_000},
                    {"id": "b", "name": "Test tablet", "createdAtMs": NOW - 172_800_000, "lastSeenAtMs": NOW - 120_000}]
         gtk = SimpleNamespace(Button=Mock(side_effect=lambda **_kwargs: Mock()), Align=SimpleNamespace(CENTER=0),
-                              AccessibleProperty=SimpleNamespace(LABEL=0))
+                              AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3))
         rows = Mock(side_effect=lambda **kwargs: Mock(title=kwargs["title"]))
         appended = lambda: [call.args[0] for call in editor.devices.append.call_args_list]
         with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=rows)}):
@@ -1802,7 +1805,7 @@ class PhoneChecks(unittest.TestCase):
         tailscale = {"address": "100.101.102.103", "interface": "tailscale0", "kind": "tailscale"}
         gtk = SimpleNamespace(CheckButton=Mock(side_effect=lambda **kwargs: Mock(
                                   active=kwargs["active"], get_active=Mock(return_value=kwargs["active"]))),
-                              Button=Mock(), Align=SimpleNamespace(CENTER=0), AccessibleProperty=SimpleNamespace(LABEL=0))
+                              Button=Mock(), Align=SimpleNamespace(CENTER=0), AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3))
         actions = Mock(side_effect=lambda **kwargs: Mock(title=kwargs["title"]))
         editor.address_list.get_first_child.return_value = None
         checks = lambda: {address: check.get_active() for address, check in editor.address_checks.items()}
@@ -2367,7 +2370,7 @@ class DataChecks(unittest.TestCase):
 
         window = object.__new__(Window)
         window.opening, window.open_errors = set(), {}
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for view, state in (("comfortable", "Resets in 3d04h"), ("compact", "Resets in 3d04h")):
                 window.view = view
@@ -2428,7 +2431,7 @@ class DataChecks(unittest.TestCase):
 
         window = object.__new__(Window)
         window.opening, window.open_errors = set(), {}
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for view, state in (("comfortable", "Resets in 4h32m"), ("compact", "Resets in 4h32m")):
                 window.view = view
@@ -4760,7 +4763,7 @@ class ProfileDialogChecks(unittest.TestCase):
                         adw.Dialog = Mock()
                     gtk = SimpleNamespace(**{name: Mock() for name in ("Button", "Image", "Box", "ColorDialogButton", "ColorDialog", "EventControllerKey", "StringList")},
                         Align=SimpleNamespace(CENTER=0, START=1), NaturalWrapMode=SimpleNamespace(NONE=0),
-                        AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+                        AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
                     editor.preferences.has_css_class.return_value = True
                     choice = Mock()
                     with patch.dict(SCOPE, {"Adw": adw, "Gtk": gtk, "SourceMarker": Mock(), "label": Mock(),
@@ -4958,7 +4961,7 @@ class NativeLogicChecks(unittest.TestCase):
         window = fixture.editor()
         default = {"id": "opencode", "provider": "opencode", "label": "OpenCode", "builtin": True, "enabled": True,
                    "launcher": "", "dataDir": "/data/opencode", "color": "#899e91"}
-        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0))}):
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))}):
             window.sources = [default]
             window.set_form(default)
             self.assertEqual(window.fixed_provider, "opencode")
@@ -5139,7 +5142,7 @@ class NativeLogicChecks(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         window = fixture.editor()
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.set_form({"id": "codex", "provider": "codex", "label": "Codex", "enabled": True,
                              "color": "#404040", "showMarker": False})
@@ -5212,7 +5215,7 @@ class NativeLogicChecks(unittest.TestCase):
                "sourceLabel": "ChatGPT Personal", "sourceId": "codex-personal"}
         widget = SimpleNamespace(asb_thread=row, asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
                                  set_sensitive=Mock(), set_tooltip_text=Mock(), update_property=Mock(), update_state=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_row_text(widget, 100_000)
             self.assertIn("Profile: ChatGPT Personal (codex-personal)", widget.asb_tooltip)
@@ -5539,7 +5542,7 @@ class NativeLogicChecks(unittest.TestCase):
                  "retainedUnread": True, "retainedUnreadSource": "native-unread"}
         widget = SimpleNamespace(asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(), set_sensitive=Mock(),
                                  set_tooltip_text=Mock(), update_property=Mock(), update_state=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for extra, shown, hidden in (({"state": "working", "unread": False}, (), ("unread", "Unread", "retained")),
                                          ({"state": "working", "unread": False, "questionAttention": True},
@@ -5573,7 +5576,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.session_actions = set()
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=stop, asb_read_timer=None,
                                  asb_read_button=Mock(), asb_pin_button=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for row in (stop, wait):
@@ -5606,7 +5609,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.view, window.opening, window.open_errors = "compact", set(), {}
         widget = SimpleNamespace(asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
                                  set_tooltip_text=Mock(), update_property=Mock(), update_state=Mock(), set_sensitive=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for extra, expected in (({"lastOutcome": "stopped"}, "Task stopped."),
@@ -5641,7 +5644,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.clear_read_feedback = Mock(side_effect=lambda item: setattr(item, "asb_read_timer", None))
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=working, asb_read_timer=None,
                                  asb_read_button=Mock(), asb_pin_button=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             for armed, action, text in ((False, "win.discard-result", "Discard result: go to read Idle when this task ends"),
@@ -5687,7 +5690,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.view, window.opening, window.open_errors, window.session_actions = "compact", set(), {}, set()
         text = SimpleNamespace(asb_thread=dict(row), asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
                                set_sensitive=Mock(), update_property=Mock(), update_state=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_row_text(text, 100_000)
@@ -5748,7 +5751,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.view, window.opening, window.open_errors, window.session_actions = "compact", set(), {}, set()
         text = SimpleNamespace(asb_thread=dict(armed), asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
                                set_sensitive=Mock(), update_property=Mock(), update_state=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_row_text(text, 100_000)
             self.assertIn(" Discard is on for the next task.", text.asb_accessible_label)
@@ -5766,7 +5769,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.session_actions = set()
         window.clear_read_feedback = Mock(side_effect=lambda item: setattr(item, "asb_read_timer", None))
         idle = {"id": "a", "title": "Chat", "state": "idle"}
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         def card(row, timer=None):
             widget = SimpleNamespace(asb_view="comfortable", asb_thread=row, asb_read_timer=timer, asb_read_button=Mock(), asb_pin_button=Mock())
             window.update_card_actions(widget)
@@ -6105,7 +6108,7 @@ class NativeLogicChecks(unittest.TestCase):
                                 asb_copy_error="", asb_title=Mock(), asb_error=Mock(), update_property=Mock(), asb_mute_tag=Mock(),
                                 asb_mute_words=Mock(), asb_mute_dots=[], asb_open=button(), asb_copy=button(), asb_copy_full=button(),
                                 asb_actions={slot: button() for slot in ("read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard")})
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=2))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=2))
         return window, panel, gtk
 
     def test_remote_row_panel_copies_no_relative_reference_and_says_where_it_runs(self):
@@ -6175,7 +6178,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertIsNone(asb.pin_move_body(pins, "a", "up"))
 
     def test_card_and_panel_mute_and_copy_say_how_to_change_the_choice(self):
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         window = object.__new__(Window)
         window.session_actions, window.column_pixel_width, window.mute_for, window.copy_kind = set(), 240, "1h", "relative"
         window.update_mute_tag, window.update_copy_tag, window.update_copy_feedback = Mock(), Mock(), Mock()
@@ -6966,7 +6969,7 @@ class NativeLogicChecks(unittest.TestCase):
                               StackTransitionType=SimpleNamespace(SLIDE_UP=0, SLIDE_DOWN=1, CROSSFADE=2),
                               RevealerTransitionType=SimpleNamespace(SLIDE_RIGHT=0),
                               SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0, CENTER=1, END=2, BASELINE_CENTER=3),
-                              Orientation=SimpleNamespace(VERTICAL=0), AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+                              Orientation=SimpleNamespace(VERTICAL=0), AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         request = Mock()
         glib = SimpleNamespace(idle_add=Mock(), source_remove=Mock(), Variant=lambda _kind, value: value)
@@ -7264,7 +7267,7 @@ class NativeLogicChecks(unittest.TestCase):
         widget = SimpleNamespace(asb_view="comfortable", asb_thread={"id": "a", "title": "Chat", "state": "idle", "unread": True},
                                  asb_read_timer=None, asb_copy_timer=None, asb_read_button=read, asb_pin_button=pin,
                                  asb_drawer_button=drawer, asb_copy_button=copy)
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_card_actions(widget)
@@ -7374,7 +7377,7 @@ class NativeLogicChecks(unittest.TestCase):
                     return widget
                 window.session_row = Mock(side_effect=create)
                 gtk = SimpleNamespace(ListBox=Listing, SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0),
-                                      AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+                                      AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                                       AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
                 with patch.dict(SCOPE, {"Gtk": gtk, "GLib": SimpleNamespace(idle_add=Mock(), source_remove=Mock()),
                                        "label": lambda *_args: Mock()}):
@@ -7773,7 +7776,7 @@ class NativeLogicChecks(unittest.TestCase):
             timers.append((interval, callback))
             return len(timers)
         glib = SimpleNamespace(idle_add=Mock(), timeout_add=timeout, source_remove=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         request = Mock()
         with patch.dict(SCOPE, {"request_async": request, "GLib": glib, "Gtk": gtk}):
             window.session_action("a", "mark-read")
@@ -8035,7 +8038,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_widgets, window.opening, window.session_actions = {"a": widget}, set(), {"a"}
         window.get_focus = lambda: read
         gtk = SimpleNamespace(Button=object, PickFlags=SimpleNamespace(DEFAULT=0, INSENSITIVE=1),
-                              AccessibleProperty=SimpleNamespace(LABEL=0), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+                              AccessibleProperty=SimpleNamespace(LABEL=0, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         gdk = SimpleNamespace(KEY_space=32, KEY_Return=13, KEY_KP_Enter=44, KEY_Up=1, KEY_Down=2,
                               ModifierType=SimpleNamespace(ALT_MASK=1, CONTROL_MASK=2, SUPER_MASK=4, META_MASK=8),
                               ContentProvider=SimpleNamespace(new_for_value=lambda value: value))
@@ -8176,7 +8179,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.view, window.opening, window.open_errors = "compact", set(), {}
         text = SimpleNamespace(asb_thread=dict(tucked), asb_time_signature=None, asb_state_label=Mock(), asb_title_label=Mock(),
                                set_sensitive=Mock(), update_property=Mock(), update_state=Mock())
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_row_text(text, 100_000)
@@ -8468,7 +8471,7 @@ class NativeLogicChecks(unittest.TestCase):
             short.remove_css_class.assert_any_call("asb-copy-off")
 
     def test_the_disabled_card_copy_button_has_no_action_and_never_copies(self):
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         row = {"id": "a", "title": "Chat", "state": "idle", "externalId": "bad id", "provider": "codex", "referenceUnavailable": "invalid-app-id"}
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=row, asb_focus_key="a", asb_read_timer=None, asb_copy_timer=None,
                                  asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
@@ -8514,7 +8517,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.focus_widgets = dict(widgets)
         request = Mock()
         target = lambda identity: SimpleNamespace(get_string=lambda: identity)
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         def feedback(widget):
             button = widget.asb_copy_button
             glyph = SCOPE["set_icon"].call_args.args[1]
@@ -8566,7 +8569,7 @@ class NativeLogicChecks(unittest.TestCase):
             request.assert_not_called()
 
     def test_card_copy_button_shows_its_check_and_never_takes_a_pending_state(self):
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         row = {"id": "a", "title": "Chat", "state": "idle"}
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=dict(row), asb_focus_key="a", asb_read_timer=None, asb_copy_timer=None,
                                  asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
@@ -8610,7 +8613,7 @@ class NativeLogicChecks(unittest.TestCase):
                          (None, "ASB cannot make a full reference for this session.", "absolute"))
 
     def test_remote_card_copy_button_has_the_absolute_texts_and_follows_the_reference(self):
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
         old_peer = "homeLP has an older ASB. Update ASB on that machine."
         row = {"id": "m:0123456789abcdef:x", "title": "Chat", "state": "idle", "externalId": "123e4567-e89b-12d3-a456-426614174000",
@@ -8673,7 +8676,7 @@ class NativeLogicChecks(unittest.TestCase):
 
     def test_card_copy_errors_name_the_reference_kind_and_a_later_copy_clears_either(self):
         glib = SimpleNamespace(timeout_add=lambda *_args: 1, source_remove=Mock(), Error=type("GError", (Exception,), {}))
-        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
         base = {"title": "Chat", "state": "idle", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "codex",
                 "sessionReference": "codex/123e4567-e89b-12d3-a456-426614174000", "reference": full}

@@ -370,6 +370,9 @@ class WidgetCheck(unittest.TestCase):
         cls.gtk_state = ctypes.CDLL(ctypes.util.find_library("gtk-4")).gtk_test_accessible_check_state
         cls.gtk_state.argtypes = (ctypes.c_void_p, ctypes.c_int)
         cls.gtk_state.restype = ctypes.c_void_p
+        cls.gtk_has_property = ctypes.CDLL(ctypes.util.find_library("gtk-4")).gtk_test_accessible_has_property
+        cls.gtk_has_property.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        cls.gtk_has_property.restype = ctypes.c_bool
         cls.g_free = ctypes.CDLL(ctypes.util.find_library("glib-2.0")).g_free
         cls.g_free.argtypes = (ctypes.c_void_p,)
 
@@ -3897,7 +3900,9 @@ class WidgetCheck(unittest.TestCase):
             row = window.focus_widgets["sample-15"]
             row.grab_focus()
             for modifier in (asb.Gdk.ModifierType.CONTROL_MASK, asb.Gdk.ModifierType.ALT_MASK, asb.Gdk.ModifierType.SUPER_MASK):
-                self.assertFalse(window.window_key(None, asb.Gdk.KEY_c, 0, modifier))
+                # Alt+C is the card copy key; it starts no search either.
+                with patch.object(window, "get_clipboard"):
+                    self.assertEqual(window.window_key(None, asb.Gdk.KEY_c, 0, modifier), modifier == asb.Gdk.ModifierType.ALT_MASK)
                 self.assertEqual(window.search.get_text(), "")
                 self.assertFalse(window.row_key(None, asb.Gdk.KEY_Home, 0, modifier, "sample-15"))
             self.assertTrue(window.window_key(None, asb.Gdk.KEY_c, 0, 0))
@@ -5003,6 +5008,169 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(passive.asb_dot.has_css_class("asb-passive"))
             self.assertFalse(passive.asb_read_button.has_css_class("asb-read-disc"))
             self.assertTrue(passive.asb_read_button.has_css_class("asb-passive-indicator"))
+
+    def test_card_alt_keys_on_card_corners_and_panel(self):
+        references = {"sessionReference": "codex/example-session", "reference": "asb:1/example/reference"}
+        rows = self.card_rows(("unread", {"unread": True, "pending": True, **references}))
+        window = self.mute_wheel_board(520, rows)
+        card = window.focus_widgets["unread"]
+        alt = asb.Gdk.ModifierType.ALT_MASK
+        keys = ((asb.Gdk.KEY_r, "mark-read"), (asb.Gdk.KEY_d, "drawer-in"), (asb.Gdk.KEY_m, "mute"), (asb.Gdk.KEY_p, "pin"))
+        # The window capture phase gives card keys priority, also while a corner button has focus.
+        for focus in (card, card.asb_copy_button):
+            focus.grab_focus()
+            for key, action in keys:
+                with patch.object(window, "activate_action") as activate:
+                    self.assertTrue(window.window_key(None, key, 0, alt))
+                    self.assertEqual(activate.call_args.args[0], "win." + action)
+                    self.assertEqual(activate.call_args.args[1].get_string(), "unread")
+                    self.assertIs(window.get_focus(), focus)
+            with patch.object(window, "get_clipboard") as clipboard:
+                self.assertTrue(window.window_key(None, asb.Gdk.KEY_c, 0, alt))
+                clipboard.return_value.set.assert_called_once_with("codex/example-session")
+                self.assertTrue(card.asb_copy_timer)
+                self.assertEqual(card.asb_feedback_label.get_label(), "Relative session copied")
+                self.assertIs(window.get_focus(), focus)
+        for key, action in keys:
+            window.show_context(card); self.drain()
+            panel = window.context_menu
+            focus = panel.asb_actions["pin"]
+            focus.grab_focus()
+            with patch.object(window, "activate_action") as activate:
+                self.assertTrue(window.window_key(None, key, 0, alt))
+                self.assertEqual(activate.call_args.args[0], "win." + action)
+                self.assertEqual(activate.call_args.args[1].get_string(), "unread")
+                if key == asb.Gdk.KEY_m:
+                    self.assertFalse(panel.get_visible())
+                else:
+                    self.assertTrue(panel.get_visible())
+                    self.assertIs(window.get_focus(), focus)
+            panel.popdown(); self.drain()
+        window.show_context(card); self.drain()
+        panel = window.context_menu
+        focus = panel.asb_actions["read"]
+        focus.grab_focus()
+        with patch.object(window, "get_clipboard") as clipboard:
+            self.assertTrue(window.panel_key(SimpleNamespace(get_widget=lambda: panel), asb.Gdk.KEY_c, 0, alt))
+            clipboard.return_value.set.assert_called_once_with("codex/example-session")
+        self.assertEqual(panel.asb_copied, "short")
+        self.assertTrue(card.asb_copy_timer)
+        self.assertIs(window.get_focus(), focus)
+        # Caps Lock gives an uppercase keyval; it still acts as Alt+R. Shift+Alt+R does nothing new.
+        card.grab_focus()
+        with patch.object(window, "activate_action") as activate:
+            self.assertTrue(window.window_key(None, asb.Gdk.KEY_R, 0, alt | asb.Gdk.ModifierType.LOCK_MASK))
+            self.assertEqual(activate.call_args.args[0], "win.mark-read")
+            self.assertTrue(window.row_key(None, asb.Gdk.KEY_R, 0, alt | asb.Gdk.ModifierType.LOCK_MASK, "unread"))
+            self.assertEqual(activate.call_count, 2)
+            self.assertFalse(window.window_key(None, asb.Gdk.KEY_R, 0, alt | asb.Gdk.ModifierType.SHIFT_MASK))
+            self.assertEqual(activate.call_count, 2)
+        # Modifiers do not add new actions. A card with no drawer action does nothing on Alt+D.
+        with patch.object(window, "activate_action") as activate:
+            for extra in (asb.Gdk.ModifierType.CONTROL_MASK, asb.Gdk.ModifierType.SHIFT_MASK,
+                          asb.Gdk.ModifierType.SUPER_MASK, asb.Gdk.ModifierType.META_MASK):
+                self.assertFalse(window.window_key(None, asb.Gdk.KEY_r, 0, alt | extra))
+            card.asb_thread = {**card.asb_thread, "unread": False, "pending": False}
+            window.sync_row_panel()
+            self.assertTrue(window.window_key(None, asb.Gdk.KEY_d, 0, alt))
+            activate.assert_not_called()
+            panel.popdown(); self.drain()
+            card.grab_focus()
+            self.assertTrue(window.row_key(None, asb.Gdk.KEY_d, 0, alt, "unread"))
+            activate.assert_not_called()
+        # The flipped actions use the current row rules, not stale button bindings.
+        card.asb_thread = {**card.asb_thread, "drawer": True, "pinned": True, "muted": True}
+        for key, action in ((asb.Gdk.KEY_r, "mark-read"), (asb.Gdk.KEY_d, "drawer-out"),
+                            (asb.Gdk.KEY_m, "unmute"), (asb.Gdk.KEY_p, "unpin")):
+            with patch.object(window, "activate_action") as activate:
+                self.assertTrue(window.row_key(None, key, 0, alt, "unread"))
+                self.assertEqual(activate.call_args.args[0], "win." + action)
+        for kind, remote in (("absolute", False), ("relative", True)):
+            window.copy_kind = kind
+            card.asb_thread = {**card.asb_thread, "remote": remote}
+            with patch.object(window, "get_clipboard") as clipboard:
+                window.row_key(None, asb.Gdk.KEY_c, 0, alt, "unread")
+                clipboard.return_value.set.assert_called_once_with("asb:1/example/reference")
+        card.asb_thread = {**card.asb_thread, "remote": False, "reference": None}
+        window.copy_kind = "absolute"
+        with patch.object(window, "get_clipboard") as clipboard:
+            self.assertTrue(window.row_key(None, asb.Gdk.KEY_c, 0, alt, "unread"))
+            clipboard.assert_not_called()
+        # Mute and Unmute take the same request and feedback path as the corner button.
+        requests = []
+        with patch.object(asb, "request_async", lambda *args: requests.append(args)):
+            card.asb_thread = {**card.asb_thread, "muted": False}
+            window.change_mute_for("8h")
+            window.row_key(None, asb.Gdk.KEY_m, 0, alt, "unread")
+            self.assertEqual(requests[-1][-1], {"durationMs": 28_800_000})
+            requests[-1][2]({"thread": {**card.asb_thread, "muted": True}}, None)
+            self.drain()
+            self.assertEqual(card.asb_mute_done, "Muted for 8 hours")
+            window.row_key(None, asb.Gdk.KEY_m, 0, alt, "unread")
+            requests[-1][2]({"thread": {**card.asb_thread, "muted": False}}, None)
+            self.drain()
+            self.assertEqual(card.asb_mute_done, "Unmuted")
+
+    def test_row_panel_key_hints_and_accessible_shortcuts(self):
+        rows = self.card_rows(("unread", {"unread": True, "pending": True,
+                                         "sessionReference": "codex/example-session", "reference": "asb:1/example/reference"}))
+        window = self.mute_wheel_board(520, rows)
+        card = window.focus_widgets["unread"]
+        for slot, key in asb.CARD_ACTION_KEYS.items():
+            self.assert_accessible_label(getattr(card, "asb_" + slot + "_button"), key, asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
+        for kind, remote, chosen in (("relative", False, "short"), ("absolute", False, "full"), ("relative", True, "full")):
+            window.copy_kind = kind
+            card.asb_thread = {**card.asb_thread, "remote": remote}
+            window.show_context(card); self.drain()
+            panel = window.context_menu
+            for slot, key in asb.CARD_ACTION_KEYS.items():
+                if slot == "copy":
+                    continue
+                button = panel.asb_actions[slot]
+                self.assertEqual(button.asb_hint.get_label(), key)
+                self.assertTrue(button.asb_hint.has_css_class("asb-panel-caption") and button.asb_hint.has_css_class("asb-panel-key"))
+                self.assert_accessible_label(button, key, asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
+                self.assertEqual(button.asb_label.get_ellipsize(), asb.Pango.EllipsizeMode.END)
+            mute = panel.asb_actions["mute"]
+            self.assertIs(mute.asb_hint.get_next_sibling(), panel.asb_mute_tag)
+            for slot, button in (("short", panel.asb_copy), ("full", panel.asb_copy_full)):
+                self.assertEqual(button.asb_hint.get_visible(), slot == chosen)
+                if slot == chosen:
+                    self.assert_accessible_label(button, "Alt+C", asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
+                else:
+                    self.assertFalse(self.gtk_has_property(self.capsule_pointer(button.__gpointer__, None),
+                                                           int(asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)))
+            card.asb_thread = {**card.asb_thread, "unread": False, "pending": False}
+            window.sync_row_panel()
+            drawer = panel.asb_actions["drawer"]
+            self.assertTrue(drawer.has_css_class("asb-action-pending"))
+            self.assertTrue(drawer.asb_hint.get_visible())
+            panel.popdown(); self.drain()
+            card.asb_thread = {**card.asb_thread, "unread": True, "pending": True}
+
+    def test_read_corner_has_alt_r_only_while_it_marks_read(self):
+        rows = self.card_rows(("unread", {"unread": True, "pending": True}), ("idle", {}),
+                              ("passive", {"state": "waiting", "actionRequired": True, "actionAttention": False}))
+        window = self.mute_wheel_board(520, rows)
+        has_keys = lambda button: self.gtk_has_property(self.capsule_pointer(button.__gpointer__, None),
+                                                        int(asb.Gtk.AccessibleProperty.KEY_SHORTCUTS))
+        unread, idle, passive = (window.focus_widgets[key].asb_read_button for key in ("unread", "idle", "passive"))
+        self.assertEqual(unread.asb_action, "win.mark-read")
+        self.assert_accessible_label(unread, "Alt+R", asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
+        self.assertEqual(idle.asb_action, "win.discard-result")
+        self.assertTrue(idle.has_css_class("asb-discard-button"))
+        self.assertFalse(has_keys(idle))
+        self.assertTrue(passive.has_css_class("asb-passive-indicator"))
+        self.assertFalse(has_keys(passive))
+        # A pending Read takes the key away until the action ends.
+        window.session_actions.add("unread")
+        window.update_card_actions(window.focus_widgets["unread"])
+        self.assertFalse(has_keys(unread))
+        window.session_actions.discard("unread")
+        window.update_card_actions(window.focus_widgets["unread"])
+        self.assert_accessible_label(unread, "Alt+R", asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
+        # The pin keeps Alt+P on every card.
+        self.assert_accessible_label(window.focus_widgets["idle"].asb_pin_button, "Alt+P", asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
 
     def test_row_panel_keeps_open_rows_and_focus_after_read(self):
         window = self.mute_wheel_board(520, self.card_rows(("unread", {"unread": True, "pending": True})))

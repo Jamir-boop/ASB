@@ -601,6 +601,7 @@ PIN_MOVE_ENDS = {"pin-up": "Already the first pin", "pin-down": "Already the las
 PANEL_MUTE_TIP = "Scroll or press Left and Right to change the time."
 PANEL_MUTE_KEYS = "Left or Right changes the time."
 PANEL_GONE_TEXT = "Not available now."
+CARD_ACTION_KEYS = {"read": "Alt+R", "drawer": "Alt+D", "mute": "Alt+M", "pin": "Alt+P", "copy": "Alt+C"}
 
 
 def attention_signature(row):
@@ -2958,6 +2959,9 @@ def unix_signal_add(priority, signum, callback):
 
 
 SHORTCUT_MASK = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK
+# The card keys take Alt alone: Ctrl, Shift, Super, or Meta with them keeps the native key handling.
+CARD_KEY_MASK, CARD_KEY_ALT = SHORTCUT_MASK | Gdk.ModifierType.SHIFT_MASK, Gdk.ModifierType.ALT_MASK
+CARD_KEY_SLOTS = {Gdk.KEY_r: "read", Gdk.KEY_d: "drawer", Gdk.KEY_m: "mute", Gdk.KEY_p: "pin", Gdk.KEY_c: "copy"}
 
 
 def set_panel_label(button, text):
@@ -6470,7 +6474,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: 11px; }}
 {base} .asb-row-panel .asb-panel-caption {{ font-size: 11px; color: alpha(@window_fg_color, .72); opacity: 1; }}
 {base} .asb-row-panel button.asb-panel-captioned {{ padding-top: 5px; padding-bottom: 5px; }}
-{base} .asb-row-panel button.asb-copy-off .asb-panel-label, {base} .asb-row-panel button.asb-copy-off image {{ opacity: .5; }}
+{base} .asb-row-panel button.asb-copy-off .asb-panel-label, {base} .asb-row-panel button.asb-copy-off .asb-panel-key, {base} .asb-row-panel button.asb-copy-off image {{ opacity: .5; }}
 {base} .asb-row-panel button.asb-copy-off:hover, {base} .asb-row-panel button.asb-copy-off:active {{ background: none; }}
 {base} .asb-row-panel button.asb-action-pending > * {{ opacity: .5; }}
 {base} .asb-row-panel button.asb-action-pending:hover, {base} .asb-row-panel button.asb-action-pending:active {{ background: none; }}
@@ -7726,6 +7730,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def window_key(self, _controller, key, _code, modifiers):
         self.order_key_at = time.monotonic()
         self.release_order_hold()
+        # Capture before GTK mnemonics or accelerators; only a card or its panel supplies an identity.
+        if modifiers & CARD_KEY_MASK == CARD_KEY_ALT and Gdk.keyval_to_lower(key) in CARD_KEY_SLOTS \
+                and self.card_key(key, modifiers, self.focus_key()):
+            return True
         handled = self.number_key_pressed(key, modifiers)
         if handled is not None:
             return handled
@@ -8990,6 +8998,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.add_css_class("asb-card-action")
             button.add_css_class("asb-" + name + "-button")
             button.asb_card_action = name
+            button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS[name]])
             button.asb_identity, button.asb_action = row["id"], None
             button.connect("clicked", self.card_action_clicked)
         for button, reveal in ((copy, tag), (mute, mute_tag)):
@@ -9238,6 +9247,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     button.add_css_class("asb-card-action")
                     button.add_css_class("asb-" + name + "-button")
                     button.asb_card_action = name
+                    if name == "pin":
+                        # The read button gets Alt+R in update_card_actions, only while it marks read.
+                        button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS[name]])
                     button.asb_identity, button.asb_action = row["id"], None
                     button.connect("clicked", self.card_action_clicked)
                 widget.asb_actions = actions
@@ -9542,6 +9554,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (read.add_css_class if discard and not row.get("discardResult") else read.remove_css_class)("asb-discard-offer")
         action = "win.keep-result" if row.get("discardResult") else "win.discard-result"
         read.asb_action = (action if discard else "win.mark-read") if (unread or discard) and not pending else None
+        if read.asb_action == "win.mark-read":
+            read.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS["read"]])
+        else:
+            read.reset_property(Gtk.AccessibleProperty.KEY_SHORTCUTS)
         if confirmed:
             read.add_css_class("asb-read-confirmed")
         else:
@@ -9649,7 +9665,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             label.set_label(done)
         footer.set_visible_child_name("copied" if done else "line")
 
-    def copy_reference(self, _action, target):
+    def copy_reference(self, _action, target, panel=None):
         identity = target.get_string()
         widget = self.focus_widgets.get(identity)
         value, _reason, kind = card_copy(widget.asb_thread, self.copy_kind) if widget else (None, None, "")
@@ -9672,6 +9688,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.open_errors.pop(identity)
             self.update_open_state(widget)
         self.confirm_card_feedback(widget)
+        if panel:
+            self.confirm_panel_copy(panel, "short" if kind == "relative" else "full")
 
     def cancel_card_copy(self, widget):
         if getattr(widget, "asb_copy_timer", None):
@@ -9836,7 +9854,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}{muted}{where}"
         self.update_open_state(widget, now_ms)
 
+    def card_key(self, key, state, identity):
+        """Card Alt keys, also from its corner buttons or its open panel; consume unavailable keys too."""
+        if state & CARD_KEY_MASK != CARD_KEY_ALT:
+            return False
+        slot = CARD_KEY_SLOTS.get(Gdk.keyval_to_lower(key))
+        widget = self.focus_widgets.get(identity)
+        if not slot or widget is None or identity == MORE_ID:
+            return False
+        if self.closed or identity in self.session_actions:
+            return True
+        panel = self.context_menu if self.context_menu and self.context_menu.get_visible() else None
+        if panel and panel.asb_identity != identity:
+            return False
+        if slot == "copy":
+            if card_copy(widget.asb_thread, self.copy_kind)[0]:
+                self.copy_reference(None, GLib.Variant("s", identity), panel)
+            return True
+        action = row_panel_controls(widget.asb_thread).get(slot, (None,))[0]
+        if action and (not panel or slot in panel.asb_rows and slot in panel.asb_controls):
+            if panel and slot == "mute":
+                panel.popdown()
+            self.activate_action("win." + action, GLib.Variant("s", identity))
+        return True
+
     def row_key(self, _controller, key, _code, _state, identity):
+        if self.card_key(key, _state, identity):
+            return True
         # Alt+Up and Alt+Down switch the copy kind on a focused copy button. Ctrl shows the number keycaps.
         if key in (Gdk.KEY_Up, Gdk.KEY_Down) and _state & Gdk.ModifierType.ALT_MASK \
                 and not _state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK):
@@ -9928,6 +9972,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.asb_caption.set_max_width_chars(1)
             words.append(button.asb_caption)
             button.get_child().append(words)
+        for slot, button in (*panel.asb_actions.items(), ("copy", panel.asb_copy), ("copy", panel.asb_copy_full)):
+            if slot in CARD_ACTION_KEYS:
+                button.asb_hint = label(CARD_ACTION_KEYS[slot], "asb-panel-caption")
+                button.asb_hint.add_css_class("asb-panel-key")
+                button.get_child().append(button.asb_hint)
+                button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS[slot]])
         mute_button = panel.asb_actions["mute"]
         panel.asb_mute_tag, panel.asb_mute_words, panel.asb_mute_dots = self.choice_tag(MUTE_WORDS, mute=True, reveal=False)
         mute_button.get_child().append(panel.asb_mute_tag)
@@ -10036,7 +10086,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         mute_caption = ""
         if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
             mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
-        signature = (self.mute_for, mute_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
+        signature = (self.mute_for, self.copy_kind, mute_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
         if signature == panel.asb_signature:
@@ -10103,6 +10153,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [PANEL_GONE_TEXT])
             elif slot not in ("open", "mute"):
                 button.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+        # Alt+C follows the card choice (always Absolute for a remote card), not the last panel copy.
+        kind = card_copy(row, self.copy_kind)[2]
+        for button, copy_kind in ((panel.asb_copy, "relative"), (panel.asb_copy_full, "absolute")):
+            button.asb_hint.set_visible(copy_kind == kind)
+            if copy_kind == kind:
+                button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS["copy"]])
+            else:
+                button.reset_property(Gtk.AccessibleProperty.KEY_SHORTCUTS)
         self.show_copy_rows(panel)
 
     def sync_row_panel(self):
@@ -10142,14 +10200,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         except (GLib.Error, TypeError) as error:
             panel.asb_copy_error = f"Cannot copy the {'relative' if slot == 'short' else 'absolute'} reference: {error}"
         else:
-            panel.asb_copy_error, panel.asb_copied = "", slot
-            self.show_copy_rows(panel)
-            def clear():
-                panel.asb_copy_timer = None
-                self.clear_copy_feedback(panel)
-                return False
-            panel.asb_copy_timer = GLib.timeout_add(1600, clear)
+            self.confirm_panel_copy(panel, slot)
         self.update_row_panel(panel, widget.asb_thread)
+
+    def confirm_panel_copy(self, panel, slot):
+        self.clear_copy_feedback(panel)
+        panel.asb_copy_error, panel.asb_copied = "", slot
+        self.show_copy_rows(panel)
+        def clear():
+            panel.asb_copy_timer = None
+            self.clear_copy_feedback(panel)
+            return False
+        panel.asb_copy_timer = GLib.timeout_add(1600, clear)
 
     def clear_copy_feedback(self, panel):
         if panel.asb_copy_timer:
@@ -10226,6 +10288,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def panel_key(self, controller, key, _code, state):
         panel = controller.get_widget()
+        if self.card_key(key, state, panel.asb_identity):
+            return True
         if key in (Gdk.KEY_Left, Gdk.KEY_Right) and not state & SHORTCUT_MASK and self.get_focus() is panel.asb_actions["mute"]:
             card = self.focus_widgets.get(panel.asb_identity)
             if card:
