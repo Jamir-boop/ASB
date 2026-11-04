@@ -6013,6 +6013,48 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertIsNone(row.asb_tooltip_key)
                 row.asb_source_badge.set_color.assert_called_with("")
 
+    def test_row_panel_focus_ring_uses_the_accent_of_the_applied_look(self):
+        def ring_color(css, custom):
+            # The winning outline color for a focused panel row: highest specificity, then the later rule.
+            path = [("window", {"asb-column-flow"} | ({"asb-custom"} if custom else set())), ("popover", {"asb-row-panel"}),
+                    ("button", {"asb-panel-action", "flat"})]
+            def matches(compound, node):
+                tag, classes = node
+                name = re.match(r"[a-z]*", compound).group()
+                pseudo = re.findall(r":([a-z-]+(?:\([^)]*\))?)", compound)
+                return ((not name or name == tag) and set(re.findall(r"\.([\w-]+)", re.sub(r":not\([^)]*\)", "", compound))) <= classes
+                        and all(part == "focus-visible" if node is path[-1] else False for part in pseudo))
+            def selector_matches(selector):
+                compounds, nodes = selector.split(), list(path)
+                if not compounds or not matches(compounds[-1], nodes[-1]):
+                    return False
+                index = len(nodes) - 2
+                for compound in reversed(compounds[:-1]):
+                    while index >= 0 and not matches(compound, nodes[index]):
+                        index -= 1
+                    if index < 0:
+                        return False
+                    index -= 1
+                return True
+            best = None
+            for order, (selectors, body) in enumerate(re.findall(r"([^{}]+)\{([^{}]*)\}", re.sub(r"/\*.*?\*/", "", css, flags=re.S))):
+                color = re.search(r"outline-color:\s*([^;]+);", body) or re.search(r"outline:\s*\S+\s+solid\s+([^;]+);", body)
+                for selector in selectors.split(","):
+                    if color and selector_matches(selector.strip()):
+                        weight = (len(re.findall(r"[.:]", selector)), order)
+                        best = max(best or (weight, ""), (weight, color.group(1).strip()))
+            return best[1]
+        window = object.__new__(Window)
+        window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+        window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
+        window.native_colors = lambda: {"background": "#222226", "text": "#ffffff", "muted": "#99999b", "accent": "#3584e4", "divider": "#3a3a3e"}
+        yours = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
+        navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}
+        for colors, expected in ((yours, "#ffb900"), (navy, "#7cc4ff"), (None, "@accent_color")):
+            with self.subTest(colors=colors):
+                window.set_palette(colors)
+                self.assertEqual(ring_color(window.css.load_from_string.call_args.args[0], bool(colors)), expected)
+
     def test_tooltip_query_handler_has_one_row_lifetime_and_no_static_row_tooltip(self):
         window = object.__new__(Window)
         window.update_session_row, window.clear_read_feedback = Mock(), Mock()

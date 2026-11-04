@@ -6461,7 +6461,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
 {scope} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
 {scope} .asb-read-button.asb-discard-button {{ background: transparent; }}
-{scope} :focus-visible {{ outline-color: {colors['accent']}; }}
+/* The row panel ring sets @accent_color in a more specific rule, so it is named here too. */
+{scope} :focus-visible, {scope} .asb-row-panel .asb-panel-action:focus-visible {{ outline-color: {colors['accent']}; }}
 {scope} entry:focus-within {{ box-shadow: inset 0 0 0 1px {colors['accent']}; }}
 {scope} entry selection {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} switch:checked, {scope} checkbutton check:checked {{ background: {colors['accent']}; border-color: {colors['accent']}; }}
