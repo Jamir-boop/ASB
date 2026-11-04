@@ -6985,36 +6985,6 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(any(isinstance(more.observe_controllers().get_item(index), asb.Gtk.GestureLongPress)
                              for index in range(more.observe_controllers().get_n_items())))
 
-    def test_order_hold_stays_while_a_corner_tag_or_a_card_tooltip_shows(self):
-        for name in ("tag", "tooltip"):
-            with self.subTest(shown=name):
-                window = self.order_hold_window()
-                window.view_filter.set_selected(1); self.drain(.3)
-                card = window.focus_widgets[window.row_order[3]]
-                window.ensure_card_controls(card); self.drain(.1)
-                tooltip = Mock()
-                self.assertTrue(window.query_row_tooltip(card, 0, 0, False, tooltip))
-                self.assertIs(window.tooltip_shown, card.asb_tooltip_content)
-                before = list(window.row_order)
-                board, moved = self.order_change(window)
-                window.board_pointer_motion(None, 100, 100)
-                window.apply_dashboard(board, None)
-                if name == "tag":
-                    window.show_copy_tag(card.asb_copy_button, True)
-                    self.assertTrue(card.asb_copy_button.asb_tag_shown)
-                else:
-                    window.tooltip_shown = SimpleNamespace(get_mapped=lambda: True)
-                self.drain(.45)  # More than three hold times with no real motion.
-                self.assertEqual(window.row_order, before)
-                self.assertTrue(window.order_pending)
-                if name == "tag":
-                    window.show_copy_tag(card.asb_copy_button, False)
-                else:
-                    window.tooltip_shown = SimpleNamespace(get_mapped=lambda: False)
-                self.drain(.3)
-                self.assertEqual(window.row_order[0], moved)
-                window.close(); self.drain(.05)
-
     def test_order_hold_counts_a_corner_wheel_step_as_real_motion(self):
         window = self.order_hold_window()
         window.view_filter.set_selected(1); self.drain(.3)
@@ -7138,7 +7108,12 @@ class WidgetCheck(unittest.TestCase):
         xdo("windowfocus", xid, "key", "Shift_L"); self.drain(.04)
         evidence("key-release")
         self.assertEqual(window.row_order[0], "s11")
+        # s11 glided under the still pointer: it takes no press until real motion (R3 8c), then a right-click opens its panel.
         point(window.focus_widgets["s11"], 20, 10)
+        xdo("click", 3); self.drain(.05)
+        self.assertIsNone(window.context_menu)
+        evidence("glided-card-takes-no-press")
+        point(window.focus_widgets["s11"], 21, 10)
         xdo("click", 3); self.drain(.05)
         self.assertIsNotNone(window.context_menu)
         board = copy.deepcopy(window.dashboard)
@@ -10176,10 +10151,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(more.asb_source_badge.get_visible())
         self.assert_accessible_label(more, "More sessions. 30 sessions after the first 100. Activate to show all cards.")
         shown = []
-        self.assertTrue(window.query_row_tooltip(more, 0, 0, False, SimpleNamespace(set_custom=shown.append)))
-        self.assertEqual([label.get_label() for label in shown], ["30 more sessions after the first 100. Click to show all cards."])
-        # A custom label, so the order hold sees that the tooltip shows.
-        self.assertIs(window.tooltip_shown, shown[0])
+        self.assertTrue(window.query_row_tooltip(more, 0, 0, False, SimpleNamespace(set_text=shown.append)))
+        self.assertEqual(shown, ["30 more sessions after the first 100. Click to show all cards."])
         adjustment = window.scroll.get_hadjustment()
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size()); self.drain(.3)
         window.update_number_keys()

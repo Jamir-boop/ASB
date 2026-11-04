@@ -6064,7 +6064,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     card_pointer = None
     order_hold_seconds = 1.0
     order_hold_started = order_hold_timer = None
-    order_pointer = order_point = order_press_guard = tooltip_shown = None
+    order_pointer = order_point = order_press_guard = None
     order_pointer_inside = order_pending = False
     order_pointer_at = order_motion_at = order_key_at = 0
     order_inputs = None
@@ -7766,20 +7766,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.order_press_guard = self.card_at(*self.order_point) or ""
             self.render(order_now=True)
 
-    def order_hold_kept(self):
-        """A corner tag (mute or copy) or a card tooltip that shows keeps the hold."""
-        button = getattr(self, "choice_tag_button", None)
-        if button is not None and getattr(button, "asb_tag_shown", False):
-            return True
-        shown = self.tooltip_shown
-        return shown is not None and hasattr(shown, "get_mapped") and shown.get_mapped()
-
     def order_hold_expired(self):
         self.order_hold_timer = None
         remaining = self.order_hold_seconds - (time.monotonic() - max(self.order_motion_at, self.order_hold_started))
-        if remaining <= 0 and self.order_hold_kept():
-            # The hold ends at most 1 s after the tag or the tooltip goes.
-            remaining = self.order_hold_seconds
         if remaining > 0:
             self.order_hold_timer = GLib.timeout_add(max(1, math.ceil(remaining * 1000)), self.order_hold_expired)
         else:
@@ -9226,13 +9215,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         row = widget.asb_thread
         if row.get("id") == MORE_ID:
-            # A custom label, as the card tooltips, so the order hold can see that it shows.
-            text = f"{row['asbMore']} more sessions after the first {row['asbLimit']}. Click to show all cards."
-            if getattr(widget, "asb_more_tooltip", None) is None:
-                widget.asb_more_tooltip = Gtk.Label(wrap=True, max_width_chars=70, xalign=0)
-            widget.asb_more_tooltip.set_label(text)
-            tooltip.set_custom(widget.asb_more_tooltip)
-            self.tooltip_shown = widget.asb_more_tooltip
+            tooltip.set_text(f"{row['asbMore']} more sessions after the first {row['asbLimit']}. Click to show all cards.")
             return True
         model = tooltip_model(widget.asb_thread, time.time() * 1000, Path.home(), self.open_errors.get(widget.asb_thread["id"], ""),
                               self.drawer_view)
@@ -9241,7 +9224,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_tooltip_content = self.tooltip_content(widget.asb_thread, model)
             widget.asb_tooltip_key = key
         tooltip.set_custom(widget.asb_tooltip_content)
-        self.tooltip_shown = widget.asb_tooltip_content
         return True
 
     def tooltip_content(self, row, model):
