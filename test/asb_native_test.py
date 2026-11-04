@@ -2847,7 +2847,8 @@ class WidgetCheck(unittest.TestCase):
                 self.fill_board(window); self.drain()
                 self.assertEqual(len(window.focus_widgets), 106,
                                  (window.search.get_text(), window.states, window.pending))
-                self.assertEqual(self.poll_calls.call_args.args[0], 2)
+                # The clock is a one-shot timer to the next whole minute that changes a caption.
+                self.assertTrue(window.clock_timer)
                 displayed = []
                 for row in self.widget_rows(window):
                     displayed.append(row.asb_thread["id"])
@@ -4959,7 +4960,7 @@ class WidgetCheck(unittest.TestCase):
             self.hover_card(window, cards["plain"], False); self.drain(.2)
             # The pin has the quiet caption color, as the state of a quiet row.
             self.assertEqual(hex_color(cards["pinned"].asb_compact_pin), hex_color(cards["pinned"].asb_state_label))
-            self.assertEqual(cards["working"].asb_state_label.get_text(), "Working · 3m12s")
+            self.assertEqual(cards["working"].asb_state_label.get_text(), "Working · 3m")
             self.assertTrue(cards["waiting-read"].asb_dot.has_css_class("asb-passive"))
             self.assertFalse(cards["pinned-unread"].asb_dot.has_css_class("asb-passive"))
 
@@ -5358,7 +5359,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain()
         limited = window.focus_widgets["limited"]
         self.assertTrue(limited.asb_limit_clock.get_visible())
-        self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
+        self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
         # During the feedback the copy button keeps the done text as its accessible description.
         button = limited.asb_copy_button
         button.emit("clicked"); self.drain(.1)
@@ -5368,7 +5369,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain(1.7)
         self.assertEqual(limited.asb_footer_stack.get_visible_child_name(), "line")
         self.assertTrue(limited.asb_limit_clock.get_visible())
-        self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
+        self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
         # The description is reset: the property holds the done text no more.
         error = self.gtk_check(self.capsule_pointer(button.__gpointer__, None),
                                int(asb.Gtk.AccessibleProperty.DESCRIPTION),
@@ -6812,7 +6813,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(520, 400)
         window.present(); window.set_focus(None); self.drain(.3)
         window.apply_dashboard(window.dashboard, None)
-        self.assertEqual(window.clock_interval, 2)
+        self.assertIsNone(window.clock_interval)
         self.assertTrue(asb.Gtk.IconTheme.get_for_display(window.get_display()).has_icon("preferences-system-time-symbolic"))
         hex_color = lambda label: asb.SwitchboardWindow.hex_color(label.get_color())
         background = window.native_colors()["background"]
@@ -6834,7 +6835,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(limited.get_height(), normal.get_height())
             if view:
                 # One phrase at the left; the age is empty and hidden while the countdown runs.
-                self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
+                self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
                 self.assertEqual(limited.asb_age_label.get_text(), "")
                 self.assertFalse(limited.asb_age_label.get_visible())
                 self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_label)
@@ -6844,9 +6845,9 @@ class WidgetCheck(unittest.TestCase):
                     self.assertGreaterEqual(asb.contrast(grey, background), 4.5)
                     self.assertLess(asb.contrast(grey, background), asb.contrast(quiet, background))
             else:
-                self.assertRegex(limited.asb_state_label.get_text(), r"^Resets \d{1,2}s$")
+                self.assertEqual(limited.asb_state_label.get_text(), "Resets 1m")
                 self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_label)
-            self.assertRegex(limited.asb_accessible_label, r"^Open Plan the alarm export in Codex\. Idle\. Usage limit\. Resets in \d{1,2} seconds?\.$")
+            self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle. Usage limit. Resets in 1 minute.")
             self.assert_accessible_label(limited, limited.asb_accessible_label)
             tooltip = SimpleNamespace(set_custom=lambda _content: None)
             window.query_row_tooltip(limited, 0, 0, False, tooltip)
@@ -6862,14 +6863,14 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(limited.asb_state_label.get_text(), "Idle")
         self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle.")
-        self.assertEqual(window.clock_interval, 60)
+        self.assertIsNone(window.clock_interval)
         window.view_filter.set_selected(1); self.settle(window)
         limited, normal = window.focus_widgets["limited"], window.focus_widgets["normal"]
         self.assertEqual((limited.asb_state_label.get_text(), limited.asb_age_label.get_text()), ("Idle", "10m ago"))
         self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(hex_color(limited.asb_title_label), hex_color(normal.asb_title_label))
 
-    def test_a_board_in_the_background_shows_whole_minutes_and_its_clock_wakes_at_the_minute(self):
+    def test_a_board_shows_whole_minutes_and_its_clock_wakes_at_the_minute(self):
         now = [NOW + 252_000]
         rows = [{"id": "w", "provider": "codex", "providerLabel": "Codex", "title": "Sample working session", "cwd": "/example/w",
                  "projectName": "w", "state": "working", "workingSinceMs": NOW, "canOpen": True, "updatedAtMs": NOW}]
@@ -6900,12 +6901,13 @@ class WidgetCheck(unittest.TestCase):
         assert_time("5m")
         # A tooltip reads the clock when it shows.
         window.query_row_tooltip(card, 0, 0, False, SimpleNamespace(set_custom=lambda _content: None))
-        self.assertEqual(card.asb_tooltip_key[0]["state_text"], "Working · 5m00s")
+        self.assertEqual(card.asb_tooltip_key[0]["state_text"], "Working · 5m")
+        # The board in the foreground (the pointer on it) shows the same whole minutes, with no seconds.
         self.poll_calls.reset_mock()
         self.foreground(window)
-        assert_time("5m00s")
-        self.assertEqual(window.clock_interval, 2)
-        self.poll_calls.assert_called_once_with(2, window.update_clock)
+        assert_time("5m")
+        self.assertIsNone(window.clock_interval)
+        self.poll_calls.assert_not_called()
         self.foreground(window, False)
         assert_time("5m")
 

@@ -118,9 +118,9 @@ test('time labels cover boundaries and future dates', () => {
 
 test('accessible names include singulars and omit empty or solo machine parts', () => {
   assert.equal(model.accessibleName(null), 'ASB is not running');
-  assert.equal(model.accessibleName(state()), 'ASB: 1 needs you, 2 working, 8 sessions');
-  assert.equal(model.accessibleName(state({needs: 0, total: 1})), 'ASB: 0 need you, 2 working, 1 session');
-  assert.equal(model.accessibleName(state({needs: 3})), 'ASB: 3 need you, 2 working, 8 sessions');
+  assert.equal(model.accessibleName(state()), 'ASB: 1 needs you, 2 working');
+  assert.equal(model.accessibleName(state({needs: 0, total: 1})), 'ASB: 0 need you, 2 working');
+  assert.equal(model.accessibleName(state({needs: 3})), 'ASB: 3 need you, 2 working');
   const machines = [machine(), machine({name: 'bravo'})];
   assert.equal(model.rowAccessibleName(row(), machines, 120000, 'question'), 'Sample task, Example, alpha, question, 1m');
   assert.equal(model.rowAccessibleName(row(), machines.slice(0, 1), 60000, 'working'), 'Sample task, Example, working, now');

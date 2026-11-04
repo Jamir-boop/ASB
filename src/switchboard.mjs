@@ -35,7 +35,7 @@ const DISCARD_TASK = Symbol('ASB discard task signals');
 // A member row that shows as Unknown only because the member is offline: its state is not new, so the tracker and the sounds keep their last values.
 export const OFFLINE_MEMBER = Symbol('ASB offline member row');
 const READ_FIELDS = ['questionSeen', 'questionAck', 'actionSeen', 'actionAck', 'nativeAt', 'nativeAck', 'nativeSeen',
-  'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen'];
+  'discard', 'discardedAt', 'discardStart', 'discardEnd', 'discardNative', 'drawerSeen', 'drawerAsk'];
 const RETAINED_SOURCES = ['native-unread', 'observed-completion', 'observed-failure'];
 // A record that ASB did not see for 30 days goes. The time of the last sight is the start of a UTC day. It moves at most once a day, and for all rows
 // at the same scan, so a scan does not rewrite pending.json for it, and the first scan of a day rewrites the file once.
@@ -705,7 +705,7 @@ export class PendingTracker {
         record = this.records[row.id] = { seen: completion, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '',
           questionSeen: 0, questionAck: 0, actionSeen: 0, actionAck: 0, nativeAt: 0, nativeAck: 0, nativeSeen: 0,
           discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0,
-          drawer: 0, drawerSeen: 0, muted: 0, mutedUntil: 0, mutedAt: 0, lastSeen: today };
+          drawer: 0, drawerSeen: 0, drawerAsk: 0, muted: 0, mutedUntil: 0, mutedAt: 0, lastSeen: today };
         this.dirty = true;
       }
       if (record.lastSeen < today) this.set(record, 'lastSeen', today);
@@ -823,11 +823,16 @@ export class PendingTracker {
     }
     row.retainedUnread = Boolean(record?.retained);
     row.retainedUnreadSource = record?.retained || '';
-    // A chat that works or waits for the user leaves the drawer; an unknown read state for a time keeps its place.
-    if (record?.drawer === 1 && (record.seen > record.drawerSeen || row.state === 'working' || row.questionAttention || row.actionAttention
-      || !(record.manual === 1 || record.retained || record.pending > record.ack
-        || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) this.set(record, 'drawer', 0);
+    // A chat that works, or asks a new question or for a new permission, leaves the drawer. A chat that waits for the answer it waited
+    // for when it went in keeps its place, and an unknown read state for a time keeps its place.
+    const newAsk = Boolean(row.questionAttention && record?.questionSeen > record?.drawerAsk
+      || row.actionAttention && record?.actionSeen > record?.drawerAsk);
+    if (record?.drawer === 1 && (record.seen > record.drawerSeen || row.state === 'working' || newAsk
+      || !(record.manual === 1 || record.retained || record.pending > record.ack || row.state === 'waiting' || row.questionAttention
+        || row.actionAttention || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) this.set(record, 'drawer', 0);
     row.drawer = record?.drawer === 1;
+    // A drawer chat looks read here: its open question or permission request is not Pending.
+    if (row.drawer) row.questionAttention = row.actionAttention = false;
     row.muted = muteActive(record, nowMs);
     row.mutedUntilMs = row.muted ? record.mutedUntil : 0;
     row.mutedAtMs = row.muted ? record.mutedAt : 0;
@@ -874,12 +879,17 @@ export class PendingTracker {
     await this.load();
     const record = this.records[row.id];
     if (!record) throw Object.assign(new Error('This session is not known to ASB.'), { statusCode: 400 });
-    if (enabled && (row.unread !== true || row.questionAttention || row.actionRequired)) {
-      throw Object.assign(new Error('The drawer takes only unread sessions.'), { statusCode: 400 });
+    if (enabled && row.unread !== true && row.state !== 'waiting' && !row.questionAttention && !row.actionAttention) {
+      throw Object.assign(new Error('The drawer takes only unread or waiting sessions.'), { statusCode: 400 });
     }
     if (!enabled && record.drawer !== 1) throw Object.assign(new Error('This session is not in the drawer.'), { statusCode: 400 });
     this.set(record, 'drawer', enabled ? 1 : 0);
-    if (enabled) this.set(record, 'drawerSeen', record.seen);
+    if (enabled) {
+      this.set(record, 'drawerSeen', record.seen);
+      // The question or permission request open now stays in the drawer; a later one brings the chat out.
+      this.set(record, 'drawerAsk', row.state === 'waiting' || row.questionAttention || row.actionAttention
+        ? Math.max(record.questionSeen, record.actionSeen) : 0);
+    }
     await this.save();
     this.apply(row);
   }

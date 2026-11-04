@@ -2139,38 +2139,34 @@ class DataChecks(unittest.TestCase):
 
     def test_working_duration_uses_known_current_start_only(self):
         row = {"state": "working", "workingSinceMs": NOW - 133_000}
-        self.assertEqual(asb.working_duration(row, NOW), "2m13s")
-        self.assertEqual(asb.working_duration(row, NOW + 2_000), "2m15s")
+        self.assertEqual(asb.working_duration(row, NOW), "2m")
+        self.assertEqual(asb.working_duration(row, NOW + 47_000), "3m")
         self.assertEqual(asb.working_duration({**row, "pending": True, "questionPending": True,
-                                             "questionAttention": True, "manualUnread": True}, NOW), "2m13s")
-        for seconds, expected in ((0, "0s"), (59, "59s"), (60, "1m00s"), (3723, "1h02m")):
+                                             "questionAttention": True, "manualUnread": True}, NOW), "2m")
+        for seconds, expected in ((0, "<1m"), (59, "<1m"), (60, "1m"), (119, "1m"), (3599, "59m"), (3600, "1h00m"), (3723, "1h02m")):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": NOW - seconds * 1000}, NOW), expected)
         for start in (None, 0, -1, True, "unknown", NOW + 1, float("nan")):
             self.assertEqual(asb.working_duration({**row, "workingSinceMs": start}, NOW), "")
         for state in ("waiting", "idle", "unknown"):
             self.assertEqual(asb.working_duration({**row, "state": state}, NOW), "")
 
-    def test_a_board_in_the_background_shows_whole_minutes_and_wakes_at_the_next_minute(self):
+    def test_no_time_shows_seconds_and_the_clock_wakes_at_the_next_minute(self):
         row = {"state": "working", "workingSinceMs": NOW - 252_000}
-        for seconds, expected in ((59, "59s"), (60, "1m"), (252, "4m"), (3599, "59m"), (3600, "1h00m")):
-            self.assertEqual(asb.working_duration({**row, "workingSinceMs": NOW - seconds * 1000}, NOW, True), expected)
-        self.assertEqual(asb.spoken_duration(252), "4 minutes 12 seconds")
-        self.assertEqual(asb.working_duration(row, NOW), "4m12s")
-        self.assertEqual(asb.tooltip_model(row, NOW, "/home/test")["state_text"], "Working · 4m12s")
-        self.assertEqual(asb.tooltip_model(row, NOW, "/home/test", whole_minutes=True)["state_text"], "Working · 4m")
+        self.assertEqual(asb.spoken_duration(252), "4 minutes")
+        self.assertEqual(asb.spoken_duration(59), "less than a minute")
+        self.assertEqual(asb.working_duration(row, NOW), "4m")
+        self.assertEqual(asb.tooltip_model(row, NOW, "/home/test")["state_text"], "Working · 4m")
+        self.assertNotIn("whole_minutes=", SOURCE.read_text())
         wait = asb.clock_wait
-        countdown = {"state": "idle", "limitResetsAtMs": NOW + 1_800_000}
-        cases = ([row], [{**row, "workingSinceMs": NOW - 30_000}], [countdown], [row, {**row, "workingSinceMs": NOW - 470_000}],
-                 [{**row, "workingSinceMs": NOW - 1_000, "archived": True}], [{**row, "workingSinceMs": 0}], [{"state": "idle"}], [])
-        # The foreground keeps the 2 s and 60 s rule.
-        for threads in cases:
-            self.assertEqual(wait(threads, NOW), asb.clock_interval(threads, NOW))
-        self.assertGreaterEqual(wait([row], NOW, True), 48)
-        self.assertLessEqual(wait([row], NOW, True), 49)
-        for threads, expected in zip(cases[1:], (2, 2, 10, 60, 60, 60, 60)):
-            self.assertEqual(wait(threads, NOW, True), expected)
-        # A Working time near its first minute wakes at the minute, not 2 s later.
-        self.assertEqual(wait([{**row, "workingSinceMs": NOW - 59_500}], NOW, True), .5)
+        countdown = {"state": "idle", "limitResetsAtMs": NOW + 1_800_500}
+        cases = (([row], 48), ([{**row, "workingSinceMs": NOW - 30_000}], 30), ([countdown], .5),
+                 ([row, {**row, "workingSinceMs": NOW - 470_000}], 10), ([{**row, "workingSinceMs": NOW - 1_000, "archived": True}], 60),
+                 ([{**row, "workingSinceMs": 0}], 60), ([{"state": "idle"}], 60), ([], 60),
+                 # A Working time near its first minute wakes at the minute.
+                 ([{**row, "workingSinceMs": NOW - 59_500}], .5))
+        for threads, expected in cases:
+            with self.subTest(threads=threads):
+                self.assertEqual(wait(threads, NOW), expected)
 
     def test_card_state_words(self):
         word = asb.state_word
@@ -2202,13 +2198,14 @@ class DataChecks(unittest.TestCase):
         self.assertTrue(model(limit)["state_text"].startswith("Stopped · "))
 
     def test_times_have_two_digits_in_the_second_unit(self):
-        for value, text in (((65,), "1m05s"), ((720,), "12m00s"), ((2820,), "47m00s"), ((3900,), "1h05m"), ((5,), "5s"), ((720, True), "12m")):
+        for value, text in (((65,), "1m"), ((720,), "12m"), ((2820,), "47m"), ((3900,), "1h05m"), ((5,), "<1m"), ((65, True), "2m"),
+                            ((0, True), "0m"), ((-5,), "<1m")):
             self.assertEqual(asb.duration_text(*value), text)
-        for seconds, text in ((16_320, "4h32m"), (3 * 86_400 + 4 * 3600, "3d04h"), (300, "5m00s")):
+        for seconds, text in ((16_320, "4h32m"), (3 * 86_400 + 4 * 3600, "3d04h"), (300, "5m")):
             self.assertEqual(asb.limit_text(seconds), text)
         for minutes, text in ((65, "1h05m"), (60, "1h"), (52, "52m"), (24 * 60, "1d"), (30 * 60, "1d")):
             self.assertEqual(asb.mute_left_text(NOW + minutes * 60_000, NOW), text)
-        self.assertEqual(asb.spoken_duration(65), "1 minute 5 seconds")
+        self.assertEqual(asb.spoken_duration(65), "1 minute")
         self.assertEqual(asb.spoken_limit(3 * 86_400 + 4 * 3600), "3 days 4 hours")
 
     def test_quiet_tones_have_a_clear_step(self):
@@ -2288,16 +2285,15 @@ class DataChecks(unittest.TestCase):
             self.assertNotIn((discard, "discard-result"), asb.row_menu_actions(row, NOW - 1))
 
     def test_timed_mute_clock_wait_wakes_at_the_end_and_next_text_change(self):
-        for background in (False, True):
-            for left, expected in ((500, .5), (60_500, .5), (120_000, 60),
-                                   (1439 * 60_000 + 500, .5), (30 * 3_600_000, 60)):
-                row = {"state": "idle", "muted": True, "mutedUntilMs": NOW + left}
-                with self.subTest(background=background, left=left):
-                    self.assertEqual(asb.clock_wait([row], NOW, background), expected)
-            rows = [{"muted": True, "mutedUntilMs": NOW + 1000},
-                    {"muted": True, "mutedUntilMs": NOW + 60_250}]
-            self.assertEqual(asb.clock_wait(rows, NOW, background), .25)
-            self.assertEqual(asb.clock_wait([{**rows[0], "mutedUntilMs": NOW}], NOW, background), 60)
+        for left, expected in ((500, .5), (60_500, .5), (120_000, 60),
+                               (1439 * 60_000 + 500, .5), (30 * 3_600_000, 60)):
+            row = {"state": "idle", "muted": True, "mutedUntilMs": NOW + left}
+            with self.subTest(left=left):
+                self.assertEqual(asb.clock_wait([row], NOW), expected)
+        rows = [{"muted": True, "mutedUntilMs": NOW + 1000},
+                {"muted": True, "mutedUntilMs": NOW + 60_250}]
+        self.assertEqual(asb.clock_wait(rows, NOW), .25)
+        self.assertEqual(asb.clock_wait([{**rows[0], "mutedUntilMs": NOW}], NOW), 60)
 
     def test_timed_mute_clock_schedules_local_deadlines_and_stops_when_empty(self):
         window = object.__new__(Window)
@@ -2341,7 +2337,7 @@ class DataChecks(unittest.TestCase):
                                       (604_800, "7d00h", "7 days"), (176_399, "2d00h", "2 days")):
             self.assertEqual((asb.limit_text(seconds), asb.spoken_limit(seconds)), (text, spoken))
         self.assertEqual(asb.working_duration({"state": "working", "workingSinceMs": NOW - 273_600_000}, NOW), "76h00m")
-        self.assertEqual(asb.clock_interval([{**row, "limitResetsAtMs": NOW + 273_600_000}], NOW), 60)
+        self.assertEqual(asb.clock_wait([{**row, "limitResetsAtMs": NOW + 273_600_000}], NOW), 60)
 
         time = SCOPE["time"]
         # NOW is Monday 21 September 2026, 14:13:20 UTC; UTC is the local zone here.
@@ -2380,21 +2376,19 @@ class DataChecks(unittest.TestCase):
         row = {"id": "a", "provider": "codex", "providerLabel": "Codex", "title": "Chat", "state": "idle", "canOpen": True,
                "updatedAtMs": NOW - 600_000, "limitResetsAtMs": NOW + 3_600_000}
         left = lambda seconds: asb.limit_left({**row, "limitResetsAtMs": NOW + seconds * 1000}, NOW)
-        # Rounded up, so a limited row never shows 0s; the format is the Working timer format.
-        for seconds, text, spoken in ((3600, "1h00m", "1 hour"), (3599, "59m59s", "59 minutes 59 seconds"),
-                                      (16_330, "4h32m", "4 hours 32 minutes"), (3661, "1h01m", "1 hour 1 minute"),
-                                      (60, "1m00s", "1 minute"), (59, "59s", "59 seconds"), (1, "1s", "1 second"), (.2, "1s", "1 second")):
-            self.assertEqual((asb.duration_text(left(seconds)), asb.spoken_duration(left(seconds))), (text, spoken))
+        # Rounded up to whole minutes, so a limited row never shows 0m and never shows seconds.
+        for seconds, text, spoken in ((3600, "1h00m", "1 hour"), (3599, "1h00m", "1 hour"),
+                                      (16_330, "4h33m", "4 hours 33 minutes"), (3661, "1h02m", "1 hour 2 minutes"),
+                                      (60, "1m", "1 minute"), (59, "1m", "1 minute"), (1, "1m", "1 minute"), (.2, "1m", "1 minute")):
+            self.assertEqual((asb.limit_text(left(seconds)), asb.spoken_limit(left(seconds))), (text, spoken))
         for reset in (NOW, NOW - 1, 0, None, True, "soon", float("nan"), float("inf")):
             self.assertEqual(asb.limit_left({**row, "limitResetsAtMs": reset}, NOW), 0)
         self.assertEqual(asb.limit_left({"state": "idle"}, NOW), 0)
 
-        interval = asb.clock_interval
-        self.assertEqual(interval([row], NOW - 1), 60)  # Over one hour.
-        self.assertEqual(interval([row], NOW), 2)
-        self.assertEqual(interval([row], NOW + 3_600_000), 60)  # At the reset.
-        self.assertEqual(interval([{**row, "state": "working"}], NOW - 1), 2)
-        self.assertEqual(interval([{**row, "state": "working", "archived": True}], NOW - 1), 60)
+        wait = asb.clock_wait
+        self.assertEqual(wait([row], NOW - 1), .001)  # The countdown changes at each whole minute left.
+        self.assertEqual(wait([row], NOW - 20_000), 20)
+        self.assertEqual(wait([row], NOW + 3_600_000), 60)  # At the reset.
 
         # Dimmer than the quiet Idle-read text, and 4.5:1 on the background, in GNOME dark and light and in a custom theme.
         for palette, highlight in ((dict(background="#222226", text="#ffffff"), "#313135"),
@@ -2424,7 +2418,7 @@ class DataChecks(unittest.TestCase):
         window.opening, window.open_errors = set(), {}
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
-            for view, state in (("comfortable", "Resets in 4h32m"), ("compact", "Resets 4h32m")):
+            for view, state in (("comfortable", "Resets in 4h33m"), ("compact", "Resets 4h33m")):
                 window.view = view
                 widget = SimpleNamespace(asb_thread={**row, "limitResetsAtMs": NOW + 16_330_000}, asb_time_signature=None,
                                          asb_state_label=Mock(), asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
@@ -2437,7 +2431,7 @@ class DataChecks(unittest.TestCase):
                 if view == "comfortable":
                     widget.asb_age_label.set_label.assert_called_with("")
                     widget.asb_age_label.set_visible.assert_called_with(False)
-                self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle. Usage limit. Resets in 4 hours 32 minutes.")
+                self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle. Usage limit. Resets in 4 hours 33 minutes.")
                 window.update_row_text(widget, NOW + 16_330_000)  # At the reset the row is a normal Idle row at once.
                 widget.remove_css_class.assert_any_call("asb-limited")
                 widget.asb_limit_clock.set_visible.assert_called_with(False)
@@ -2446,10 +2440,10 @@ class DataChecks(unittest.TestCase):
                     widget.asb_age_label.set_label.assert_called_with("4h ago")
                     widget.asb_age_label.set_visible.assert_called_with(True)
                 self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle.")
-        # A limited remote row keeps the limit look and says where it runs: "Resets in 4h32m" and "studio", or "Resets 4h32m · studio".
+        # A limited remote row keeps the limit look and says where it runs: "Resets in 4h33m" and "studio", or "Resets 4h33m · studio".
         remote = {**row, "canOpen": False, "remote": True, "machineName": "studio", "limitResetsAtMs": NOW + 16_330_000}
         self.assertEqual(asb.view_only_tone(remote), "")
-        for view, state, where in (("comfortable", "Resets in 4h32m", "studio"), ("compact", "Resets 4h32m", "· studio")):
+        for view, state, where in (("comfortable", "Resets in 4h33m", "studio"), ("compact", "Resets 4h33m", "· studio")):
             window.view = view
             window.clear_read_feedback = window.update_card_actions = window.update_drawer_style = Mock()
             classes = set()
@@ -2470,7 +2464,7 @@ class DataChecks(unittest.TestCase):
                 widget.asb_age_label.set_label.assert_called_with("")
             self.assertEqual(classes & {"asb-limited", "asb-view-only-quiet", "asb-view-only-rest"}, {"asb-limited"})
             self.assertEqual(widget.asb_accessible_label,
-                             "Session Chat in Codex. Idle. Usage limit. Resets in 4 hours 32 minutes. On studio. View only.")
+                             "Session Chat in Codex. Idle. Usage limit. Resets in 4 hours 33 minutes. On studio. View only.")
 
     def test_view_only_rows_where_and_grey_tone(self):
         remote = {"remote": True, "machineName": "homeLP", "surface": "app"}
@@ -2571,7 +2565,7 @@ class DataChecks(unittest.TestCase):
     def test_layout_width_validation_persistence_and_reset(self):
         with TemporaryDirectory(prefix="asb-layout-test-") as directory:
             path = Path(directory) / "layout.json"
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             asb.write_layout(path, 160)
             self.assertEqual(asb.read_layout(path)["columnWidth"], 160)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -2582,20 +2576,20 @@ class DataChecks(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), previous)
             asb.write_layout(path)
             self.assertFalse(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
 
     def test_view_setting_legacy_width_save_and_reset(self):
         with TemporaryDirectory(prefix="asb-view-test-") as directory:
             path = Path(directory) / "layout.json"
             path.write_text(json.dumps({"version": 1, "columnWidth": 180}))
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             asb.write_layout(path, 180, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             asb.write_layout(path, 320)
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             asb.write_layout(path)
             self.assertTrue(path.exists())
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             before = path.read_bytes()
             with self.assertRaises(ValueError):
                 asb.write_layout(path, 240, "unknown")
@@ -2611,14 +2605,14 @@ class DataChecks(unittest.TestCase):
             # ASB does not use the old value, so any value loads.
             for value in (0, 1, "true", None, [], {}):
                 path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": value}))
-                self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+                self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "showAppPills": True}))
             self.assertNotIn("showAppPills", asb.read_layout(path))
             asb.write_layout(path, 180, "compact")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 180, "view": "compact", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
             asb.write_layout(path)
             self.assertTrue(path.exists())
@@ -2633,7 +2627,7 @@ class DataChecks(unittest.TestCase):
             window.card_limit, window.layout_error, window.dragging = 100, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 100, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             window.save_width()
             self.assertNotIn("showAppPills", json.loads(path.read_text()))
 
@@ -2660,13 +2654,13 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320)
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable")
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             window = object.__new__(Window)
             window.column_width, window.view, window.layout_path, window.copy_kind = 320, "comfortable", path, "relative"
             window.card_limit, window.layout_error, window.dragging = 200, Mock(), False
             window.width_control = Mock(set_value=Mock(side_effect=lambda width: setattr(window, "column_width", width)))
             window.reset_width()
-            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
             window.save_width()
             self.assertEqual(asb.read_layout(path)["cardLimit"], 200)
             # The delete branch keeps a file that holds a limit other than the default.
@@ -2723,7 +2717,7 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 320, "comfortable")
             asb.write_layout(path, 320, "comfortable", card_limit=200)
             self.assertEqual(asb.read_layout(path), {"columnWidth": 320, "view": "comfortable",
-                                                     "cardLimit": 200, "copyKind": "absolute", "pet": "off", "muteFor": "30m"})
+                                                     "cardLimit": 200, "copyKind": "absolute", "pet": "off", "muteFor": "30m", "zoom": 100})
             # A default layout is deleted; an Absolute kind keeps the file.
             asb.write_layout(path, copy_kind="absolute")
             self.assertTrue(path.exists())
@@ -2763,7 +2757,7 @@ class DataChecks(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {"version": 1, "columnWidth": 240, "view": "comfortable", "cardLimit": 200,
                                                             "copyKind": "absolute", "pet": "crab"})
             self.assertEqual(asb.read_layout(path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 200,
-                                                     "copyKind": "absolute", "pet": "crab", "muteFor": "30m"})
+                                                     "copyKind": "absolute", "pet": "crab", "muteFor": "30m", "zoom": 100})
             # The other saves keep the pet.
             window = object.__new__(Window)
             window.column_width, window.view, window.layout_path, window.copy_kind, window.pet = 320, "comfortable", path, "absolute", "crab"
@@ -5383,7 +5377,9 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(controls(drawer)["drawer"], ("drawer-out", "Take out of drawer", "asb-drawer-symbolic"))
         # A required action has the read slot: Read until it is read, then Unread.
         waiting = {"state": "waiting", "actionRequired": True, "actionAttention": True}
-        self.assertEqual(list(controls(waiting)), ["read", "mute", "pin"])
+        # A row that waits for an answer can go in the drawer.
+        self.assertEqual(list(controls(waiting)), ["read", "drawer", "mute", "pin"])
+        self.assertEqual(controls(waiting)["drawer"][:2], ("drawer-in", "Put in drawer"))
         self.assertEqual(controls(waiting)["read"][:2], ("mark-read", "Mark read"))
         self.assertEqual(controls({**waiting, "actionAttention": False})["read"][:2], ("mark-unread", "Mark unread"))
         # A muted row offers Unmute and no Discard, Working or not.
@@ -5528,8 +5524,8 @@ class NativeLogicChecks(unittest.TestCase):
                               ({**stop, "state": "working"}, "")):
             self.assertEqual(indicator(row), expected)
         self.assertEqual(actions(stop)[0], ("Unread", "mark-unread"))
-        self.assertEqual(actions(wait), [("Unread", "mark-unread"), ("Mute", "mute"), ("Pin", "pin")])
-        self.assertEqual(actions({**wait, "pinned": True}), [("Unread", "mark-unread"), ("Mute", "mute"), ("Unpin", "unpin"),
+        self.assertEqual(actions(wait), [("Unread", "mark-unread"), ("Put in drawer", "drawer-in"), ("Mute", "mute"), ("Pin", "pin")])
+        self.assertEqual(actions({**wait, "pinned": True}), [("Unread", "mark-unread"), ("Put in drawer", "drawer-in"), ("Mute", "mute"), ("Unpin", "unpin"),
                          ("Move pin earlier", "pin-up"), ("Move pin later", "pin-down")])
         for extra in ({"actionAttention": True}, {"unread": True}):
             self.assertEqual(actions({**wait, **extra})[0], ("Read", "mark-read"))
@@ -5909,7 +5905,7 @@ class NativeLogicChecks(unittest.TestCase):
             value = model({**base, "cwd": path}, 223_000, "/home/test/")
             self.assertEqual((value["path"], value["full_path"]), (expected, path))
             self.assertIn(path, description(value))
-            self.assertEqual(value["state_text"], "Working · 2m02s")
+            self.assertEqual(value["state_text"], "Working · 2m")
             self.assertEqual(value["title"], base["title"])
         self.assertEqual(model({**base, "projectName": "Project"}, 223_000, "/home/test")["path"], "Project")
         self.assertEqual(model(base, 223_000, "/home/test")["path"], "No project folder")
@@ -5963,10 +5959,13 @@ class NativeLogicChecks(unittest.TestCase):
             clock.return_value = 100.9
             window.query_row_tooltip(widget, 0, 0, False, tooltip)
             self.assertEqual(window.tooltip_content.call_count, 1)
-            clock.return_value = 101
+            clock.return_value = 157.9  # Still under one minute: the same text.
+            window.query_row_tooltip(widget, 0, 0, False, tooltip)
+            self.assertEqual(window.tooltip_content.call_count, 1)
+            clock.return_value = 158
             window.query_row_tooltip(widget, 0, 0, False, tooltip)
             self.assertEqual(window.tooltip_content.call_count, 2)
-            self.assertEqual(window.tooltip_content.call_args.args[1]["state_text"], "Working · 3s")
+            self.assertEqual(window.tooltip_content.call_args.args[1]["state_text"], "Working · 1m")
             window.open_errors.clear()
             window.query_row_tooltip(widget, 0, 0, False, tooltip)
             self.assertEqual(window.tooltip_content.call_count, 3)
@@ -5982,7 +5981,7 @@ class NativeLogicChecks(unittest.TestCase):
             widget.asb_thread.update(title="Second", discardResult=True)
             window.query_row_tooltip(widget, 0, 0, True, tooltip)
             second = window.tooltip_content.call_args.args[1]
-            self.assertEqual((first["title"], first["state_text"], first["error"]), ("First", "Working · 2s", "First error"))
+            self.assertEqual((first["title"], first["state_text"], first["error"]), ("First", "Working · <1m", "First error"))
             self.assertEqual((second["title"], second["error"], second["note"]), ("Second", "", "Discard is on for this task."))
             self.assertIsNot(tooltip.set_custom.call_args.args[0], first_custom)
             builds = window.tooltip_content.call_count
@@ -6297,6 +6296,81 @@ class NativeLogicChecks(unittest.TestCase):
             position[1] += 1
             window.hover_motion(controller, 152, 200)
             self.assertEqual(window.list_body.pick.call_count, 1)
+
+    def test_ctrl_wheel_zooms_the_board_and_never_scrolls_it(self):
+        window = object.__new__(Window)
+        window.closed, window.board_zoom, window.zoom_total = False, 100, 0.0
+        window.hide_numbers, window.set_board_zoom = Mock(), Mock()
+        window.scroll = Mock()
+        gdk = SimpleNamespace(ScrollUnit=SimpleNamespace(WHEEL=0, SURFACE=1), ModifierType=SimpleNamespace(CONTROL_MASK=4))
+        ctrl = lambda unit=0: SimpleNamespace(get_unit=lambda: unit, get_current_event_state=lambda: 4)
+        with patch.dict(SCOPE, {"Gdk": gdk}):
+            self.assertTrue(window.scroll_horizontal(ctrl(), 0, -1))  # Wheel up zooms in.
+            window.set_board_zoom.assert_called_once_with(110)
+            self.assertTrue(window.scroll_horizontal(ctrl(), 0, 1))
+            window.set_board_zoom.assert_called_with(90)
+            # A touchpad adds its pixels up to one level.
+            window.set_board_zoom.reset_mock()
+            self.assertTrue(window.scroll_horizontal(ctrl(1), 0, -25))
+            window.set_board_zoom.assert_not_called()
+            self.assertTrue(window.scroll_horizontal(ctrl(1), 0, -25))
+            window.set_board_zoom.assert_called_once_with(110)
+            window.scroll.get_hadjustment.assert_not_called()
+
+    def test_a_zoom_change_reloads_the_css_lays_out_the_board_and_saves(self):
+        window = object.__new__(Window)
+        window.closed, window.board_zoom, window.view, window.column_width, window.hover_colors = False, 100, "comfortable", 240, None
+        window.focused_id = "a"
+        for name in ("cancel_scroll", "set_palette", "render", "queue_geometry", "save_width"):
+            setattr(window, name, Mock())
+        window.focus_key = lambda: None
+        self.assertTrue(window.set_board_zoom(150))
+        self.assertEqual((window.board_zoom, window.row_height, window.zoomed_column_width()), (150, 102, 360))
+        window.set_palette.assert_called_once_with(None)
+        window.render.assert_called_once_with("a", reveal_focus=True)
+        window.queue_geometry.assert_called_once_with()
+        window.save_width.assert_called_once_with()
+        self.assertFalse(window.set_board_zoom(150))
+        self.assertEqual(window.render.call_count, 1)
+        with self.assertRaises(ValueError):
+            window.set_board_zoom(95)
+
+    def test_board_zoom_levels_css_and_layout(self):
+        self.assertEqual([asb.zoom_step(100, step) for step in (-3, -1, 0, 1, 2, 9)], [80, 90, 100, 110, 125, 200])
+        self.assertEqual(asb.zoom_step(80, -1), 80)
+        self.assertEqual(asb.zoom_step(123, 1), 110)  # An unknown level counts from 100.
+        self.assertEqual(asb.zoom_wheel_step(0.0, -1), (1, 0.0))
+        self.assertEqual(asb.zoom_wheel_step(0.0, .5), (0, .5))
+        self.assertEqual(asb.zoom_wheel_step(.5, .5), (-1, 0.0))
+        self.assertEqual(asb.zoom_wheel_step(0.0, 39, True), (0, 39))
+        self.assertEqual(asb.zoom_wheel_step(39.0, 1, True), (-1, 0.0))
+        css = (".asb-column-flow .asb-session { min-height: 22px; font-size: 13px; padding: 2px; }\n"
+               ".asb-column-flow.asb-comfortable .asb-session { min-height: 68px; }\n"
+               ".asb-column-flow.asb-preferences .asb-x { font-size: 13px; }\n"
+               ".asb-tooltip { font-size: 12px; }\n")
+        self.assertEqual(asb.zoom_css(css, 100), css)
+        self.assertEqual(asb.zoom_css(css, 150),
+                         ".asb-column-flow .asb-session { min-height: 33px; font-size: 20px; padding: 2px; }\n"
+                         ".asb-column-flow.asb-comfortable .asb-session { min-height: 102px; }\n"
+                         ".asb-column-flow.asb-preferences .asb-x { font-size: 13px; }\n"
+                         ".asb-tooltip { font-size: 12px; }\n")
+        for value in (100, 80, 200):
+            self.assertEqual(asb.validate_zoom(value), value)
+        for value in (0, 95, 100.0, True, "100", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                asb.validate_zoom(value)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "layout.json"
+            asb.write_layout(path, 240, "compact", zoom=125)
+            self.assertEqual((json.loads(path.read_text())["zoom"], asb.read_layout(path)["zoom"]), (125, 125))
+            # A save that names no zoom keeps the saved one.
+            asb.write_layout(path, 300)
+            self.assertEqual(asb.read_layout(path)["zoom"], 125)
+            asb.write_layout(path, None, "compact", 100, "relative", "off", "30m", 100)
+            self.assertFalse(path.exists())
+            path.write_text(json.dumps({"version": 1, "columnWidth": 240, "zoom": 95}))
+            with self.assertRaises(ValueError):
+                asb.read_layout(path)
 
     def test_wheel_scroll_retargets_clamps_and_yields_to_native_input(self):
         window = object.__new__(Window)
@@ -6618,7 +6692,7 @@ class NativeLogicChecks(unittest.TestCase):
 
     def test_timestamp_update_reuses_rows_and_columns_order_change_reuses_rows(self):
         SCOPE["Gtk"] = SimpleNamespace(ListBox=Box, SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0))
-        SCOPE["GLib"] = SimpleNamespace(idle_add=Mock(), source_remove=Mock())
+        SCOPE["GLib"] = SimpleNamespace(idle_add=Mock(), source_remove=Mock(), timeout_add=Mock(return_value=8))
         board = {"threads": [{"id": "a", "title": "Unique match", "state": "working", "updatedAtMs": 20},
                              {"id": "b", "state": "idle", "updatedAtMs": 10},
                              *({"id": str(index), "state": "idle"} for index in range(111)),
@@ -7938,7 +8012,10 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(ids(state={"idle"}, drawer_only=True), ["claude", "tucked"])
 
         for row, expected in ((tucked, "dot"), ({**tucked, "questionAttention": True}, "question"),
-                              ({**tucked, "actionRequired": True}, "question"), ({**tucked, "state": "working"}, ""),
+                              ({**tucked, "actionRequired": True, "actionAttention": True}, "question"),
+                              # A drawer row that waits for an answer shows its "?" in the drawer, not a dot.
+                              ({**tucked, "state": "waiting"}, "question"), ({**tucked, "actionRequired": True}, "dot"),
+                              ({**tucked, "state": "working"}, ""),
                               ({**tucked, "state": "working", "discardResult": True}, "discard"),
                               ({**tucked, "lastOutcome": "stopped"}, "dot"), (unread, "dot"), (base, "")):
             self.assertEqual(indicator(row, True), expected)
@@ -8775,8 +8852,8 @@ class NativeIOAuditChecks(unittest.TestCase):
         self.assertEqual(window.update_open_state.call_count, 2)
         widget.asb_thread = {**row, "state": "working", "workingSinceMs": now - 61_000}
         window.update_row_text(widget, now)
-        widget.asb_age_label.set_label.assert_called_with("1m01s")
-        self.assertEqual(SCOPE["tooltip_model"](widget.asb_thread, now, "/fixture/home")["state_text"], "Working · 1m01s")
+        widget.asb_age_label.set_label.assert_called_with("1m")
+        self.assertEqual(SCOPE["tooltip_model"](widget.asb_thread, now, "/fixture/home")["state_text"], "Working · 1m")
 
     def test_config_paths_use_home_when_xdg_config_home_is_empty(self):
         assignments = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "config_dir"

@@ -90,7 +90,7 @@ fun clockInterval(rows: List<Thread>, nowMs: Long = System.currentTimeMillis()):
 
 // Port of attention_indicator
 fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = System.currentTimeMillis()): String = when {
-    showsAction(row) || row.questionAttention -> "question"
+    showsAction(row) || row.questionAttention || (drawer && row.drawer && row.state == "waiting") -> "question"
     row.alert -> "alert"
     row.unread || (drawer && row.drawer && row.state != "working" && limitLeft(row, nowMs) == 0L) -> "dot"
     row.state == "working" && row.discardResult -> "discard"
@@ -149,8 +149,14 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
 // A required action keeps its "?" mark after Read; an older engine sends no read mark, so the action stays unread.
 fun actionNeedsAttention(row: Thread): Boolean = row.actionAttention ?: row.actionRequired
 
-// Port of shows_action: on a muted row, a required action shows its "?" mark only for a request that came after the start of the mute.
-fun showsAction(row: Thread): Boolean = row.actionRequired && (!row.muted || actionNeedsAttention(row))
+// Port of shows_action: on a muted or drawer row, a required action shows its "?" mark only for a request that came after the start
+// of the mute or after the row went in the drawer.
+fun showsAction(row: Thread): Boolean = row.actionRequired && (!(row.muted || row.drawer) || actionNeedsAttention(row))
+
+// Port of drawer_offer: an unread dot or "!", or a row that waits for an answer.
+fun drawerOffer(row: Thread): Boolean = !row.drawer && attentionIndicator(row).let {
+    it == "dot" || it == "alert" || (row.state == "waiting" && it == "question")
+}
 
 // Port of row_menu_actions
 fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
@@ -158,7 +164,7 @@ fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
     val unread = if (showsAction(row)) actionNeedsAttention(row) || row.unread else indicator in setOf("question", "alert", "dot")
     add(if (row.drawer || unread) MenuAction("Read", "mark-read") else MenuAction("Unread", "mark-unread"))
     if (row.drawer) add(MenuAction("Take out of drawer", "drawer-out"))
-    else if (indicator == "dot" || indicator == "alert") add(MenuAction("Put in drawer", "drawer-in"))
+    else if (drawerOffer(row)) add(MenuAction("Put in drawer", "drawer-in"))
     add(if (row.pinned) MenuAction("Unpin", "unpin") else MenuAction("Pin", "pin"))
     if (row.pinned) {
         add(MenuAction("Move pin earlier", "pin-up"))

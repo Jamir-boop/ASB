@@ -279,7 +279,7 @@ def row_menu_actions(row, now_ms=None):
     actions = [("Read", "mark-read") if row.get("drawer") or unread else ("Unread", "mark-unread")]
     if row.get("drawer"):
         actions.append(("Take out of drawer", "drawer-out"))
-    elif attention_indicator(row) in ("dot", "alert"):
+    elif drawer_offer(row):
         actions.append(("Put in drawer", "drawer-in"))
     actions.append(("Unmute", "unmute") if mute_active(row, now_ms) else ("Mute", "mute"))
     actions.append(("Unpin", "unpin") if row.get("pinned") else ("Pin", "pin"))
@@ -576,14 +576,22 @@ def attention_signature(row):
 
 
 def shows_action(row):
-    """A required action shows its "?" mark; on a muted row, only a request that came after the start of the mute."""
-    return bool(row.get("actionRequired")) and (not row.get("muted") or bool(row.get("actionAttention")))
+    """A required action shows its "?" mark; on a muted or drawer row, only a request that came after the start of the mute
+    or after the row went in the drawer (the engine then takes the row out of the drawer)."""
+    return bool(row.get("actionRequired")) and (not (row.get("muted") or row.get("drawer")) or bool(row.get("actionAttention")))
+
+
+def drawer_offer(row):
+    """Put in drawer applies to a row with an unread dot or "!", and to a row that waits for an answer ("?")."""
+    return not row.get("drawer") and (attention_indicator(row) in ("dot", "alert")
+                                      or row.get("state") == "waiting" and attention_indicator(row) == "question")
 
 
 def attention_indicator(row, drawer=False):
     """Return the row mark in question, alert, unread, discard, then stopped order. With drawer, a drawer row shows its stored unread mark.
     A usage-limit stop shows the stop square only after the reset, not during the countdown."""
-    return "question" if shows_action(row) or row.get("questionAttention") else "alert" if row.get("alert") else "dot" \
+    return "question" if shows_action(row) or row.get("questionAttention") \
+        or drawer and row.get("drawer") and row.get("state") == "waiting" else "alert" if row.get("alert") else "dot" \
         if row.get("unread") or (drawer and row.get("drawer") and row.get("state") != "working" and not limit_left(row)) \
         else "discard" if row.get("state") in ("working", "idle") and row.get("discardResult") \
         else "stop" if row.get("state") == "idle" and (row.get("lastOutcome") == "stopped" or row.get("lastOutcome") == "limit" and not limit_left(row)) else ""
@@ -1309,6 +1317,46 @@ def validate_column_width(width):
     return width
 
 
+# Board zoom levels in percent (Ctrl+wheel on the board); 100 is the default.
+ZOOM_LEVELS = (80, 90, 100, 110, 125, 150, 175, 200)
+ZOOM_SIZE = re.compile(r"\b(font-size|min-height|min-width|line-height):\s*(\d+(?:\.\d+)?)px")
+ZOOM_SCOPE = re.compile(r"\.asb-column-flow(?:\.[\w-]+)*\s")
+
+
+def validate_zoom(value):
+    if type(value) is not int or value not in ZOOM_LEVELS:
+        raise ValueError("The board zoom must be 80, 90, 100, 110, 125, 150, 175, or 200 percent.")
+    return value
+
+
+def zoom_step(zoom, steps):
+    """The zoom level `steps` levels above (positive) or below `zoom`, within ZOOM_LEVELS."""
+    index = ZOOM_LEVELS.index(zoom) if zoom in ZOOM_LEVELS else ZOOM_LEVELS.index(100)
+    return ZOOM_LEVELS[max(0, min(len(ZOOM_LEVELS) - 1, index + steps))]
+
+
+def zoom_wheel_step(total, dy, surface=False):
+    """(steps, total): Ctrl+wheel up zooms in. A wheel notch is one level; touchpad deltas add up to one level per 40 pixels."""
+    total += dy
+    limit = 40 if surface else 1
+    if abs(total) < limit:
+        return 0, total
+    return (-1 if total > 0 else 1), 0.0
+
+
+def zoom_css(css, zoom):
+    """The board CSS at a zoom level: the text sizes and minimum sizes of the rules inside the board scale. The Preferences window
+    and rules outside the board keep their sizes."""
+    if zoom == 100:
+        return css
+    def rule(match):
+        selector, body = match.group(1), match.group(2)
+        if not ZOOM_SCOPE.search(selector) or "asb-preferences" in selector:
+            return match.group(0)
+        return selector + "{" + ZOOM_SIZE.sub(lambda size: f"{size.group(1)}: {round(float(size.group(2)) * zoom / 100)}px", body) + "}"
+    return re.sub(r"([^{}]+)\{([^{}]*)\}", rule, css)
+
+
 def validate_card_limit(value):
     if type(value) is not int or value not in {limit for limit, _title in CARD_LIMITS}:
         raise ValueError("Cards on the board must be 50, 100, 200, 500, or All.")
@@ -1317,10 +1365,11 @@ def validate_card_limit(value):
 
 def read_layout(path):
     if not path or not Path(path).exists():
-        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "cardLimit": DEFAULT_CARD_LIMIT, "copyKind": "relative", "pet": "off", "muteFor": "30m"}
+        return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "cardLimit": DEFAULT_CARD_LIMIT, "copyKind": "relative", "pet": "off", "muteFor": "30m",
+                "zoom": 100}
     value = json.loads(Path(path).read_text())
     if not isinstance(value, dict) or not {"version", "columnWidth"}.issubset(value) \
-            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind", "pet", "muteFor"} or value["version"] != 1:
+            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind", "pet", "muteFor", "zoom"} or value["version"] != 1:
         raise ValueError("The saved layout is not valid. Reset the width.")
     view = value.get("view", "compact")
     if view not in ("compact", "comfortable"):
@@ -1328,12 +1377,13 @@ def read_layout(path):
     return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view,
             "cardLimit": validate_card_limit(value.get("cardLimit", DEFAULT_CARD_LIMIT)),
             "copyKind": validate_copy_kind(value.get("copyKind", "relative")), "pet": validate_pet(value.get("pet", "off")),
-            "muteFor": validate_mute_for(value.get("muteFor", "30m"))}
+            "muteFor": validate_mute_for(value.get("muteFor", "30m")), "zoom": validate_zoom(value.get("zoom", 100))}
 
 
-def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, pet=None, mute_for=None):
-    if view is None or card_limit is None or copy_kind is None or pet is None or mute_for is None:
+def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, pet=None, mute_for=None, zoom=None):
+    if view is None or card_limit is None or copy_kind is None or pet is None or mute_for is None or zoom is None:
         saved = read_layout(path)
+        zoom = saved["zoom"] if zoom is None else zoom
         view = saved["view"] if view is None else view
         card_limit = saved["cardLimit"] if card_limit is None else card_limit
         copy_kind = saved["copyKind"] if copy_kind is None else copy_kind
@@ -1345,7 +1395,9 @@ def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, p
     validate_copy_kind(copy_kind)
     validate_pet(pet)
     validate_mute_for(mute_for)
-    if width is None and view == "compact" and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative" and pet == "off" and mute_for == "30m":
+    validate_zoom(zoom)
+    if width is None and view == "compact" and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative" and pet == "off" \
+            and mute_for == "30m" and zoom == 100:
         write_config(path, None)
         return
     value = {"version": 1, "columnWidth": validate_column_width(DEFAULT_COLUMN_WIDTH if width is None else width)}
@@ -1359,6 +1411,8 @@ def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, p
         value["pet"] = pet
     if mute_for != "30m":
         value["muteFor"] = mute_for
+    if zoom != 100:
+        value["zoom"] = zoom
     write_config(path, value)
 
 
@@ -1420,40 +1474,51 @@ def filter_chips(pending, states, profiles, profile_model, archived, show_all=Fa
     return tuple(chips)
 
 
-def working_duration(row, now_ms=None, whole_minutes=False):
+def working_duration(row, now_ms=None):
     now_ms = time.time() * 1000 if now_ms is None else now_ms
     start = row.get("workingSinceMs", 0)
     if row.get("state") != "working" or isinstance(start, bool) or not isinstance(start, (int, float)) or not 0 < start <= now_ms:
         return ""
-    return duration_text(int((now_ms - start) / 1000), whole_minutes)
+    return duration_text(int((now_ms - start) / 1000))
 
 
-def duration_text(seconds, whole_minutes=False):
-    """The Working time; with whole_minutes (a board in the background) no seconds from one minute on."""
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m" + ("" if whole_minutes else f"{seconds:02d}s") if minutes else f"{seconds}s"
+def whole_minutes(seconds, round_up=False):
+    """Whole minutes of a time: no time shows seconds. A Working time rounds down, a countdown rounds up."""
+    return max(0, math.ceil(seconds / 60) if round_up else math.floor(seconds / 60))
 
 
-def spoken_duration(seconds):
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
+def duration_text(seconds, round_up=False):
+    """The Working time (round_up False) or a reset countdown (round_up True) in hours and minutes. A Working time shows <1m
+    in its first minute."""
+    minutes = whole_minutes(seconds, round_up)
+    if not minutes:
+        return "0m" if round_up else "<1m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+
+
+def spoken_duration(seconds, round_up=False):
+    minutes = whole_minutes(seconds, round_up)
+    if not minutes:
+        return "0 minutes" if round_up else "less than a minute"
+    hours, minutes = divmod(minutes, 60)
     unit = lambda count, word: f"{count} {word}" + ("" if count == 1 else "s")
     if hours:
         return unit(hours, "hour") + (" " + unit(minutes, "minute") if minutes else "")
-    return unit(minutes, "minute") + (" " + unit(seconds, "second") if seconds else "") if minutes else unit(seconds, "second")
+    return unit(minutes, "minute")
 
 
 def limit_text(seconds):
-    """The reset countdown: days and hours from 24 hours on (weekly limits), else the Working time format."""
+    """The reset countdown: days and hours from 24 hours on (weekly limits), else hours and minutes, rounded up."""
     days, remainder = divmod(seconds, 86400)
-    return f"{days}d{remainder // 3600:02d}h" if days else duration_text(seconds)
+    # Under one day a countdown rounds up to at most 23h59m, so 24h00m never shows before 1d00h.
+    return f"{days}d{remainder // 3600:02d}h" if days else duration_text(min(seconds, 86_340), True)
 
 
 def spoken_limit(seconds):
     days, remainder = divmod(seconds, 86400)
     if not days:
-        return spoken_duration(seconds)
+        return spoken_duration(min(seconds, 86_340), True)
     hours = remainder // 3600
     unit = lambda count, word: f"{count} {word}" + ("" if count == 1 else "s")
     return unit(days, "day") + (" " + unit(hours, "hour") if hours else "")
@@ -1468,23 +1533,18 @@ def limit_left(row, now_ms=None):
     return math.ceil((reset - now_ms) / 1000)
 
 
-def clock_interval(threads, now_ms=None):
-    """Seconds between local clock ticks: 2 for a Working timer or a reset countdown under one hour, else 60."""
-    return 2 if any(row.get("state") == "working" and not row.get("archived") or 0 < limit_left(row, now_ms) <= 3600
-                    for row in threads) else 60
-
-
-def clock_wait(threads, now_ms=None, background=False):
-    """Seconds to the next local clock tick. In the background a Working time past one minute shows whole minutes,
-    so the clock wakes at its next whole minute, else as clock_interval."""
+def clock_wait(threads, now_ms=None):
+    """Seconds to the next local clock tick. Times show whole minutes, so the clock wakes when a Working time or a reset countdown
+    reaches its next whole minute, when a timed mute ends or its caption changes, else after 60 seconds."""
     now_ms = time.time() * 1000 if now_ms is None else now_ms
-    wait = 60 if background else clock_interval(threads, now_ms)
+    wait = 60
     for row in threads:
-        if 0 < limit_left(row, now_ms) <= 3600:
-            wait = min(wait, 2)
-        if background and not row.get("archived") and working_duration(row, now_ms):
+        if limit_left(row, now_ms):
+            left = row["limitResetsAtMs"] - now_ms
+            wait = min(wait, (left % 60_000 or 60_000) / 1000)
+        if not row.get("archived") and working_duration(row, now_ms):
             elapsed = now_ms - row["workingSinceMs"]
-            wait = min(wait, (60_000 - elapsed % 60_000) / 1000, 2 if elapsed < 60_000 else 60)
+            wait = min(wait, (60_000 - elapsed % 60_000) / 1000)
         if mute_active(row, now_ms) and mute_until_ms(row):
             left = mute_until_ms(row) - now_ms
             # At 24 rounded hours the caption stays 1d until it becomes 23h59m.
@@ -1558,12 +1618,12 @@ def short_home_path(path, home_dir):
     return path
 
 
-def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minutes=False):
+def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     full_path = row.get("cwd") or row.get("projectName") or "No project folder"
     path = short_home_path(full_path, home_dir)
     state = row.get("state", "unknown")
     state = state if state in STATES else "unknown"
-    state_text = state_word(row) + " · " + (working_duration(row, now_ms, whole_minutes) or row_meta(row, now_ms).split(" · ")[1])
+    state_text = state_word(row) + " · " + (working_duration(row, now_ms) or row_meta(row, now_ms).split(" · ")[1])
     provider = row.get("providerLabel") or APP_NAMES.get(row.get("provider"), "Unknown app")
     source_label, source_id = row.get("sourceLabel", ""), row.get("sourceId", "")
     app = provider + (" · " + source_label if source_label and source_label != provider else "")
@@ -5810,13 +5870,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.copy_kind = layout["copyKind"]
             self.mute_for = layout["muteFor"]
             self.pet = layout["pet"]
+            self.board_zoom = layout["zoom"]
         except (OSError, ValueError) as error:
             self.column_width, self.view, self.copy_kind, layout_error = DEFAULT_COLUMN_WIDTH, "compact", "relative", str(error)
             self.pet = "off"
+        self.zoom_total = 0.0
         self.pending, self.archived = False, False
         self.states, self.profiles = set(), set()
         self.filter_model = ()
-        self.row_height = COMFORTABLE_ROW_HEIGHT if self.view == "comfortable" else ROW_HEIGHT
+        self.row_height = self.default_row_height()
         self.focused_id = None
         if self.view == "comfortable":
             self.add_css_class("asb-comfortable")
@@ -6531,7 +6593,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-session.asb-hovered .asb-pin-button.asb-pinned, {base} .asb-key-focus .asb-pin-button.asb-pinned {{
     background: alpha({colors['text'] if colors else "@window_fg_color"}, .12); color: {colors['text'] if colors else "@window_fg_color"}; }}
 """
-        self.css.load_from_string(css)
+        self.css.load_from_string(zoom_css(css, getattr(self, "board_zoom", 100)))
         self.hover_colors = colors
         for widget in self.row_cache.values():
             widget.asb_tooltip_content = widget.asb_tooltip_key = None
@@ -6970,7 +7032,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if selected == self.card_limit:
             return
         try:
-            write_layout(self.layout_path, self.column_width, self.view, card_limit=selected, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for)
+            write_layout(self.layout_path, self.column_width, self.view, card_limit=selected, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
         except (OSError, ValueError) as error:
             self.card_limit_setting.set_selected(limits.index(self.card_limit))
             self.card_limit_error.set_label(str(error))
@@ -6984,7 +7046,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if pet == self.pet:
             return True
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.card_limit, self.copy_kind, pet=pet, mute_for=self.mute_for)
+            write_layout(self.layout_path, self.column_width, self.view, self.card_limit, self.copy_kind, pet=pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
             return False
@@ -7010,7 +7072,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         try:
             write_layout(self.layout_path, self.column_width, self.view,
-                         self.card_limit, copy_kind=kind, pet=self.pet, mute_for=self.mute_for)
+                         self.card_limit, copy_kind=kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
             self.set_notice(str(error), temporary=True)
@@ -7027,7 +7089,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         try:
             write_layout(self.layout_path, self.column_width, self.view, self.card_limit,
-                         copy_kind=self.copy_kind, pet=self.pet, mute_for=choice)
+                         copy_kind=self.copy_kind, pet=self.pet, mute_for=choice, zoom=getattr(self, "board_zoom", 100))
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
             self.set_notice(str(error), temporary=True)
@@ -7057,14 +7119,37 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.cancel_scroll()
             self.column_width = width
             available_width, available_height = self.geometry or (self.get_default_size().width, 600)
-            if pack_columns([], available_width, available_height, width)[0] != getattr(self, "columns", 0):
+            if pack_columns([], available_width, available_height, self.zoomed_column_width())[0] != getattr(self, "columns", 0):
                 self.render(reveal_focus=True)
         if not self.dragging:
             self.save_width()
 
+    def default_row_height(self):
+        """The row height before the first cards measure it, at the board zoom."""
+        return round((COMFORTABLE_ROW_HEIGHT if self.view == "comfortable" else ROW_HEIGHT) * getattr(self, "board_zoom", 100) / 100)
+
+    def zoomed_column_width(self):
+        return round(self.column_width * getattr(self, "board_zoom", 100) / 100)
+
+    def set_board_zoom(self, zoom):
+        """Show the board at a zoom level and save it; the cards measure their new height at the next layout."""
+        zoom = validate_zoom(zoom)
+        if zoom == getattr(self, "board_zoom", 100) or self.closed:
+            return False
+        self.cancel_scroll()
+        focused = self.focus_key() or self.focused_id
+        self.board_zoom = zoom
+        self.set_palette(self.hover_colors)
+        self.row_height = self.default_row_height()
+        self.render(focused, reveal_focus=True)
+        self.queue_geometry()
+        self.save_width()
+        return True
+
     def save_width(self):
         try:
-            write_layout(self.layout_path, self.column_width, self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for)
+            write_layout(self.layout_path, self.column_width, self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet,
+                         mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
             self.layout_error.set_label("")
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
@@ -7074,7 +7159,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.set_value(DEFAULT_COLUMN_WIDTH)
         self.dragging = False
         try:
-            write_layout(self.layout_path, view=self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for)
+            write_layout(self.layout_path, view=self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
             self.layout_error.set_label("")
         except (OSError, ValueError):
             self.layout_error.set_label("Cannot reset the width. Check the ASB config folder.")
@@ -7085,7 +7170,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.cancel_scroll()
             focused = self.focus_key() or self.focused_id
             self.view = view
-            self.row_height = COMFORTABLE_ROW_HEIGHT if view == "comfortable" else ROW_HEIGHT
+            self.row_height = self.default_row_height()
             if view == "comfortable":
                 self.add_css_class("asb-comfortable")
             else:
@@ -7101,6 +7186,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.hide_numbers()
         delta = dx if dx else dy
         if self.closed or not delta:
+            return True
+        # Ctrl+wheel zooms the board and never scrolls it.
+        if hasattr(controller, "get_current_event_state") and controller.get_current_event_state() & Gdk.ModifierType.CONTROL_MASK:
+            unit = controller.get_unit() if controller else Gdk.ScrollUnit.WHEEL
+            steps, self.zoom_total = zoom_wheel_step(getattr(self, "zoom_total", 0.0), dy, surface=unit != Gdk.ScrollUnit.WHEEL)
+            if steps:
+                self.set_board_zoom(zoom_step(getattr(self, "board_zoom", 100), steps))
             return True
         # The kind switch takes the wheel only after the pointer rests on the copy button, or while the tag shows.
         copy = getattr(self, "copy_hover", None)
@@ -7309,7 +7401,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def column_drag_update(self, _gesture, offset_x, _offset_y):
         if self.dragging:
-            self.width_control.set_value(max(160, min(600, round(self.drag_start_width + offset_x))))
+            # The pointer moves the zoomed column; the saved width is at 100%.
+            self.width_control.set_value(max(160, min(600, round(self.drag_start_width + offset_x * 100 / getattr(self, "board_zoom", 100)))))
 
     def column_drag_end(self, *_args):
         if self.dragging:
@@ -7431,8 +7524,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not self.is_active():
             self.hide_numbers()
             close_popovers_when_inactive(self, self.close_window_popovers)
-        # Seconds in the foreground, whole minutes in the background, at once.
-        self.update_clock()
 
     def close_window_popovers(self):
         if self.context_menu:
@@ -8137,7 +8228,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         position = self.scroll.get_hadjustment().get_value()
         rows = self.visible_rows()
         width, height = self.geometry or (self.get_default_size().width, 600)
-        self.columns, self.capacity, parts = pack_columns(rows, width, height, self.column_width, self.row_height)
+        self.columns, self.capacity, parts = pack_columns(rows, width, height, self.zoomed_column_width(), self.row_height)
         # The copy and drawer buttons show from 190 px, the mute button from 240 px.
         narrow = (self.column_pixel_width < 190, self.column_pixel_width < 240)
         self.column_pixel_width = max(1, (width - 8 - 12 * (self.columns - 1)) // self.columns)
@@ -9241,7 +9332,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         controls = [(read, read_text, (unread or discard) and not pending), (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)]
         if drawer:
             tucked = bool(row.get("drawer"))
-            shown = self.column_pixel_width >= 190 and (tucked or indicator in ("dot", "alert"))
+            shown = self.column_pixel_width >= 190 and (tucked or drawer_offer(row))
             drawer.set_visible(shown)
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
             drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
@@ -9396,20 +9487,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 GLib.source_remove(self.clock_timer)
             self.clock_timer = self.clock_interval = None
             return False
-        interval = clock_interval(threads, now_ms)
-        wait = clock_wait(threads, now_ms, not self.is_active())
-        if not self.is_active() or wait != interval:
-            # In the background, or before a timed mute changes, the wait changes at each tick: a new timer each time.
-            if self.clock_timer:
-                GLib.source_remove(self.clock_timer)
-            self.clock_interval = None
-            self.clock_timer = GLib.timeout_add(math.ceil(wait * 1000), self.update_clock)
-            return True
-        if interval != self.clock_interval:
-            if self.clock_timer:
-                GLib.source_remove(self.clock_timer)
-            self.clock_interval = interval
-            self.clock_timer = GLib.timeout_add_seconds(interval, self.update_clock)
+        # Times show whole minutes: the clock wakes at the next minute that changes a caption, a new timer each time.
+        if getattr(self, "clock_timer", None):
+            GLib.source_remove(self.clock_timer)
+        self.clock_interval = None
+        self.clock_timer = GLib.timeout_add(math.ceil(clock_wait(threads, now_ms) * 1000), self.update_clock)
         return True
 
     def update_discard_dot(self, widget, now_ms=None):
@@ -9425,8 +9507,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def update_row_text(self, widget, now_ms=None):
         row = widget.asb_thread
         now_ms = time.time() * 1000 if now_ms is None else now_ms
-        # In the background a Working card shows whole minutes, so the clock wakes at most once a minute for it.
-        duration = working_duration(row, now_ms, not self.is_active())
+        duration = working_duration(row, now_ms)
         meta = row_meta(row, now_ms)
         left = limit_left(row, now_ms)
         countdown = limit_text(left) if left else ""
@@ -9998,7 +10079,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         name = "Opening " + widget.asb_accessible_label.removeprefix("Open ") if opening else widget.asb_accessible_label
         if duration:
             name += " Working time " + duration + "."
-        model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error, whole_minutes=not self.is_active())
+        model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error)
         widget.asb_tooltip = tooltip_description(model)
         description = getattr(widget, "asb_mute_done", None) or widget.asb_tooltip
         widget.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [name, description])

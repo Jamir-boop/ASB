@@ -13,43 +13,48 @@ import local.asb.companion.data.UsageScan
 import local.asb.companion.data.Thread
 import local.asb.companion.data.chartLabelShown
 
-// Port of duration_text: the second unit of a two-unit time has two digits (1m05s, 1h05m).
-fun durationText(seconds: Long): String {
+// Port of whole_minutes: no time shows seconds. A Working time rounds down, a countdown rounds up.
+fun wholeMinutes(seconds: Long, roundUp: Boolean = false): Long {
     val total = seconds.coerceAtLeast(0)
-    val hours = total / 3600
-    val minutes = total / 60 % 60
-    val remainder = total % 60
-    return when {
-        hours > 0 -> "${hours}h${minutes.toString().padStart(2, '0')}m"
-        minutes > 0 -> "${minutes}m${remainder.toString().padStart(2, '0')}s"
-        else -> "${remainder}s"
-    }
+    return total / 60 + if (roundUp && total % 60 > 0) 1 else 0
+}
+
+// Port of duration_text: hours and minutes, the minutes of a two-unit time with two digits (1h05m). A Working time shows <1m
+// in its first minute.
+fun durationText(seconds: Long, roundUp: Boolean = false): String {
+    val total = wholeMinutes(seconds, roundUp)
+    if (total == 0L) return if (roundUp) "0m" else "<1m"
+    val hours = total / 60
+    val minutes = total % 60
+    return if (hours > 0) "${hours}h${minutes.toString().padStart(2, '0')}m" else "${minutes}m"
 }
 
 // Port of spoken_duration.
-fun spokenDuration(seconds: Long): String {
-    val total = seconds.coerceAtLeast(0)
-    val hours = total / 3600
-    val minutes = total / 60 % 60
-    val remainder = total % 60
+fun spokenDuration(seconds: Long, roundUp: Boolean = false): String {
+    val total = wholeMinutes(seconds, roundUp)
+    if (total == 0L) return if (roundUp) "0 minutes" else "less than a minute"
+    val hours = total / 60
+    val minutes = total % 60
     fun unit(count: Long, name: String) = "$count $name" + if (count == 1L) "" else "s"
     return when {
-        hours > 0 -> unit(hours, "hour") + if (minutes > 0) " " + unit(minutes, "minute") else ""
-        minutes > 0 -> unit(minutes, "minute") + if (remainder > 0) " " + unit(remainder, "second") else ""
-        else -> unit(remainder, "second")
+        hours == 0L -> unit(minutes, "minute")
+        minutes > 0 -> unit(hours, "hour") + " " + unit(minutes, "minute")
+        else -> unit(hours, "hour")
     }
 }
 
-// Port of limit_text: the reset countdown shows days and hours from 24 hours on (weekly limits).
+// Port of limit_text: the reset countdown shows days and hours from 24 hours on (weekly limits), else hours and minutes rounded up,
+// at most 23h59m.
 fun limitText(seconds: Long): String {
     val days = seconds.coerceAtLeast(0) / 86_400
-    return if (days > 0) "${days}d${(seconds % 86_400 / 3600).toString().padStart(2, '0')}h" else durationText(seconds)
+    if (days > 0) return "${days}d${(seconds % 86_400 / 3600).toString().padStart(2, '0')}h"
+    return durationText(minOf(seconds, 86_340L), roundUp = true)
 }
 
 // Port of spoken_limit.
 fun spokenLimit(seconds: Long): String {
     val days = seconds.coerceAtLeast(0) / 86_400
-    if (days == 0L) return spokenDuration(seconds)
+    if (days == 0L) return spokenDuration(minOf(seconds, 86_340L), roundUp = true)
     val hours = seconds % 86_400 / 3600
     fun unit(count: Long, name: String) = "$count $name" + if (count == 1L) "" else "s"
     return unit(days, "day") + if (hours > 0) " " + unit(hours, "hour") else ""

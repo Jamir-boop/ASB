@@ -295,7 +295,9 @@ class RulesTest {
         assertEquals(emptyList<String>(), ids(rows, drawer.copy(states = setOf("working"))))
         for ((row, expected) in listOf(
             tucked to "dot", tucked.copy(questionAttention = true) to "question",
-            tucked.copy(actionRequired = true) to "question", tucked.copy(state = "working") to "",
+            tucked.copy(actionRequired = true) to "question", tucked.copy(actionRequired = true, actionAttention = false) to "dot",
+            // A drawer row that waits for an answer shows its "?" in the drawer, not a dot.
+            tucked.copy(state = "waiting") to "question", tucked.copy(state = "working") to "",
             tucked.copy(state = "working", discardResult = true) to "discard",
             tucked.copy(lastOutcome = "stopped") to "dot", unread to "dot", base to "",
         )) assertEquals(expected, attentionIndicator(row, drawer = true))
@@ -308,6 +310,10 @@ class RulesTest {
         assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(tucked.copy(actionRequired = true)).map { it.action })
         for (row in listOf(base, base.copy(questionAttention = true), unread.copy(questionAttention = true),
             unread.copy(actionRequired = true))) assertFalse(rowMenuActions(row).any { it.action.startsWith("drawer-") })
+        // A row that waits for an answer can go in the drawer.
+        for (row in listOf(base.copy(state = "waiting", questionAttention = true), base.copy(state = "waiting", actionRequired = true),
+            base.copy(state = "waiting", actionRequired = true, actionAttention = false)))
+            assertEquals(listOf("drawer-in"), rowMenuActions(row).map { it.action }.filter { it.startsWith("drawer-") })
     }
 
     @Test fun pinMoveTargetsTheVisiblePinnedNeighborAndEscapesItsId() {
@@ -491,7 +497,7 @@ class RulesTest {
         val waiting = Thread(state = "waiting", actionRequired = true, questionAttention = true)
         assertEquals(PanelControl(true, "mark-read"), rowPanelControls(waiting)["unread"])
         assertEquals(PanelControl(false, "mark-unread"), rowPanelControls(waiting.copy(actionAttention = false))["unread"])
-        assertEquals(PanelControl(false, null), rowPanelControls(waiting)["drawer"])
+        assertEquals(PanelControl(false, "drawer-in"), rowPanelControls(waiting)["drawer"])
         assertEquals("Waits for your permission.", rowPanelNote(waiting))
         assertEquals("Asks a question.", rowPanelNote(Thread(state = "idle", questionAttention = true)))
         assertEquals("", rowPanelNote(Thread(state = "idle")))

@@ -40,38 +40,37 @@ import org.junit.Test
 class FormatTest {
     private val now = 1_800_000_000_000L
 
-    @Test fun limitCountdownUsesTheNativeCompactFormatAndSpokenUnits() {
+    @Test fun limitCountdownUsesWholeMinutesRoundedUpAndSpokenUnits() {
         val cases = listOf(
-            Triple(0L, "0s", "0 seconds"),
-            Triple(1L, "1s", "1 second"),
-            Triple(45L, "45s", "45 seconds"),
-            Triple(59L, "59s", "59 seconds"),
-            Triple(60L, "1m00s", "1 minute"),
-            Triple(61L, "1m01s", "1 minute 1 second"),
-            Triple(122L, "2m02s", "2 minutes 2 seconds"),
-            Triple(725L, "12m05s", "12 minutes 5 seconds"),
-            Triple(3599L, "59m59s", "59 minutes 59 seconds"),
+            Triple(0L, "0m", "0 minutes"),
+            Triple(1L, "1m", "1 minute"),
+            Triple(45L, "1m", "1 minute"),
+            Triple(59L, "1m", "1 minute"),
+            Triple(60L, "1m", "1 minute"),
+            Triple(61L, "2m", "2 minutes"),
+            Triple(122L, "3m", "3 minutes"),
+            Triple(725L, "13m", "13 minutes"),
+            Triple(3599L, "1h00m", "1 hour"),
             Triple(3600L, "1h00m", "1 hour"),
-            Triple(3601L, "1h00m", "1 hour"),
-            Triple(3661L, "1h01m", "1 hour 1 minute"),
+            Triple(3601L, "1h01m", "1 hour 1 minute"),
+            Triple(3661L, "1h02m", "1 hour 2 minutes"),
             Triple(7200L, "2h00m", "2 hours"),
-            Triple(16_330L, "4h32m", "4 hours 32 minutes"),
-            Triple(86_400L, "24h00m", "24 hours"),
+            Triple(16_330L, "4h33m", "4 hours 33 minutes"),
         )
         for ((seconds, compact, spoken) in cases) {
-            assertEquals("Countdown $seconds s", compact, durationText(seconds))
-            assertEquals("Spoken duration $seconds s", spoken, spokenDuration(seconds))
+            assertEquals("Countdown $seconds s", compact, limitText(seconds))
+            assertEquals("Spoken limit $seconds s", spoken, spokenLimit(seconds))
         }
     }
 
     // Values from limit_text and spoken_limit in scripts/asb-native.py.
     @Test fun limitCountdownShowsDaysAndHoursFrom24Hours() {
         val cases = listOf(
-            Triple(0L, "0s", "0 seconds"),
-            Triple(45L, "45s", "45 seconds"),
-            Triple(725L, "12m05s", "12 minutes 5 seconds"),
+            Triple(0L, "0m", "0 minutes"),
+            Triple(45L, "1m", "1 minute"),
+            Triple(725L, "13m", "13 minutes"),
             Triple(3600L, "1h00m", "1 hour"),
-            Triple(16_330L, "4h32m", "4 hours 32 minutes"),
+            Triple(16_330L, "4h33m", "4 hours 33 minutes"),
             Triple(86_399L, "23h59m", "23 hours 59 minutes"),
             Triple(86_400L, "1d00h", "1 day"),
             Triple(90_000L, "1d01h", "1 day 1 hour"),
@@ -83,35 +82,39 @@ class FormatTest {
             assertEquals("Limit $seconds s", compact, limitText(seconds))
             assertEquals("Spoken limit $seconds s", spoken, spokenLimit(seconds))
         }
-        assertEquals("0s", limitText(-1))
-        // The Working timer keeps its format.
+        assertEquals("0m", limitText(-1))
         assertEquals("76h00m", workingDuration(now - 273_600_000, now))
     }
 
-    @Test fun theSecondUnitOfATwoUnitTimeHasTwoDigits() {
-        assertEquals("1m05s", durationText(65))
-        assertEquals("12m00s", durationText(720))
+    @Test fun noTimeShowsSecondsAndTheMinutesOfATwoUnitTimeHaveTwoDigits() {
+        assertEquals("1m", durationText(65))
+        assertEquals("12m", durationText(720))
         assertEquals("1h05m", durationText(3900))
-        assertEquals("5s", durationText(5))
+        assertEquals("<1m", durationText(5))
+        assertEquals("2m", durationText(65, roundUp = true))
         assertEquals("4h32m", limitText(16320))
         assertEquals("3d04h", limitText(3 * 86400 + 4 * 3600))
-        assertEquals("5m00s", limitText(300))
+        assertEquals("5m", limitText(300))
+        assertEquals("1 minute", spokenDuration(65))
+        assertEquals("less than a minute", spokenDuration(59))
     }
 
     @Test fun countdownFormattingHandlesLongBoundsWithoutOverflow() {
         for (seconds in listOf(-1L, Long.MIN_VALUE)) {
-            assertEquals("0s", durationText(seconds))
-            assertEquals("0 seconds", spokenDuration(seconds))
+            assertEquals("<1m", durationText(seconds))
+            assertEquals("less than a minute", spokenDuration(seconds))
+            assertEquals("0m", durationText(seconds, roundUp = true))
         }
         assertEquals("2562047788015215h30m", durationText(Long.MAX_VALUE))
         assertEquals("2562047788015215 hours 30 minutes", spokenDuration(Long.MAX_VALUE))
+        assertEquals("2562047788015215h31m", durationText(Long.MAX_VALUE, roundUp = true))
     }
 
-    @Test fun workingTimeUsesWholeSecondsAndChangesUnitsAtTheBoundary() {
+    @Test fun workingTimeUsesWholeMinutesAndChangesUnitsAtTheBoundary() {
         val cases = listOf(
-            0L to "0s", 999L to "0s", 1000L to "1s", 45_000L to "45s",
-            59_999L to "59s", 60_000L to "1m00s", 725_000L to "12m05s",
-            3_599_999L to "59m59s", 3_600_000L to "1h00m", 4_320_000L to "1h12m",
+            0L to "<1m", 999L to "<1m", 1000L to "<1m", 45_000L to "<1m",
+            59_999L to "<1m", 60_000L to "1m", 725_000L to "12m",
+            3_599_999L to "59m", 3_600_000L to "1h00m", 4_320_000L to "1h12m",
             86_400_000L to "24h00m",
         )
         for ((elapsed, expected) in cases) {
