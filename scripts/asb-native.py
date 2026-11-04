@@ -624,6 +624,15 @@ def attention_indicator(row, drawer=False):
         else "stop" if row.get("state") == "idle" and (row.get("lastOutcome") == "stopped" or row.get("lastOutcome") == "limit" and not limit_left(row)) else ""
 
 
+def question_wait_note(row):
+    """The second sentence of the card "?" button and of the panel Mark read row, while the row has an unread "?"."""
+    if attention_indicator(row, True) != "question":
+        return ""
+    if not shows_action(row):
+        return "The session still waits for your answer."
+    return "The session still waits for your permission." if row.get("actionAttention") or row.get("unread") else ""
+
+
 def quiet_card(row):
     return not (row.get("unread") or row.get("questionAttention") or row.get("pending")) and (
         row.get("state") in ("idle", "waiting") or row.get("state") == "unknown" and not attention_indicator(row, True))
@@ -1306,7 +1315,7 @@ def row_panel_colors(colors, caption, surface=None):
     custom = surface is None
     surface = surface or mix_color(colors["background"], colors["text"], .10)
     edge = edge_color(colors["background"], colors["text"], .36, (colors["background"],)) if custom else mix_color(surface, colors["text"], .15)
-    return {"surface": surface, "edge": edge, "muted": contrast_floor(colors["muted"], colors["text"], surface),
+    return {"surface": surface, "edge": edge, "muted": contrast_floor(colors["muted"], colors["text"], surface), "separator": mix_color(surface, colors["text"], .15),
             "floor": quiet_color({"background": surface, "text": colors["text"]}, "text", 0, surface),
             "dot": contrast_floor(caption, colors["text"], mix_color(surface, colors["text"], .12), 3)}
 
@@ -6560,10 +6569,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-mute-on {{ color: @accent_color; }}
 {base} .asb-copy-tag {{ min-height: 18px; padding: 2px 7px 2px 8px; border-radius: 9px; background: alpha(@window_fg_color, .12); }}
 {base} .asb-copy-tag-word {{ font-size: {10 * scale:g}px; font-weight: bold; letter-spacing: .04em; }}
-{base} .asb-copy-tag-dot {{ min-width: 4px; min-height: 4px; border-radius: 50%; background: alpha(@window_fg_color, .3); }}
+{base} .asb-copy-tag-dot {{ min-width: 4px; min-height: 4px; border-radius: 50%; }}
 {base} .asb-copy-tag-dot.asb-copy-tag-on {{ background: @accent_color; }}
-{base} .asb-copy-tag-dot.asb-copy-tag-off {{ min-width: 3px; min-height: 3px; background: none; border: 1.5px solid alpha(@window_fg_color, .3); }}
-{base} .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off {{ min-width: 1px; min-height: 1px; }}
+{base} .asb-copy-tag-dot.asb-copy-tag-off {{ opacity: .5; }}
 {base} .asb-copy-feedback {{ color: @success_color; }}
 {base} .asb-corner {{ padding-top: 2px; }}
 {base} .asb-corner-wide {{ padding: 2px 0 {POCKET_BOTTOM}px 16px; border-radius: 0; }}
@@ -6601,9 +6609,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: {11 * scale:g}px; }}
 {base} .asb-row-panel .asb-panel-caption {{ font-size: {11 * scale:g}px; color: alpha(@window_fg_color, .72); opacity: 1; }}
 {base} .asb-row-panel button.asb-panel-captioned {{ padding-top: 5px; padding-bottom: 5px; }}
-{base} .asb-row-panel button.asb-copy-off .asb-panel-label, {base} .asb-row-panel button.asb-copy-off .asb-panel-key, {base} .asb-row-panel button.asb-copy-off image {{ opacity: .5; }}
 {base} .asb-row-panel button.asb-copy-off:hover, {base} .asb-row-panel button.asb-copy-off:active {{ background: none; }}
-{base} .asb-row-panel button.asb-action-pending > * {{ opacity: .5; }}
+{base} .asb-row-panel button.asb-action-pending:not(.asb-panel-off) > * {{ opacity: .5; }}
 {base} .asb-row-panel button.asb-action-pending:hover, {base} .asb-row-panel button.asb-action-pending:active {{ background: none; }}
 {base} .asb-row-panel button.asb-copy-done image {{ color: @accent_color; }}
 """
@@ -6697,10 +6704,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} popover.asb-row-panel > contents {{ background: {panel['surface']}; border-color: {panel['edge']};
     box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
 {scope} .asb-row-panel .asb-panel-caption, {scope} .asb-row-panel .dim-label {{ color: {panel['muted']}; }}
+{scope} .asb-row-panel separator {{ background: {panel['separator']}; }}
 """
         else:
             surface, ink = self.popover_colors()
             panel = row_panel_colors({**palette, "text": ink}, quiet_caption, surface)
+        # An off tag dot has 3:1 on the card tag: the 12% text plate on the highlight.
+        tag_dot = contrast_floor(quiet_caption, palette["text"], mix_color(highlight, palette["text"], .12), 3)
+        panel_caption = panel["muted"] if colors else "alpha(@window_fg_color, .72)"
         # A limited row is dimmer than a quiet row: 4.5:1 on the background, and on the highlight while it is shown.
         limited, limited_fraction = limited_color(palette)
         limited_hover, hover_fraction = quiet_color(palette, "text", 0, highlight)
@@ -6725,10 +6736,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
 /* A view-only first row stays insensitive, in the limited tone (4.5:1) in place of the theme's disabled opacity. */
 {base} .asb-row-panel button.asb-panel-where:disabled, {base} .asb-row-panel button.asb-panel-where:disabled * {{
-    color: {panel['floor'][0]}; opacity: 1; filter: none; }}
+    color: {panel['floor'][0]}; opacity: 1; filter: none; -gtk-icon-filter: none; }}
+/* An unavailable row: the icon, the label, and the hint in the same floor tone at full opacity; its reason keeps the caption color. */
+{base} .asb-row-panel button.asb-panel-off image, {base} .asb-row-panel button.asb-panel-off .asb-panel-label,
+{base} .asb-row-panel button.asb-panel-off .asb-panel-key {{ color: {panel['floor'][0]}; opacity: 1; }}
+{base} .asb-row-panel button.asb-panel-off .asb-panel-caption:not(.asb-panel-key),
+{base} .asb-row-panel button.asb-panel-where:disabled .asb-panel-caption:not(.asb-panel-key) {{ color: {panel_caption}; opacity: 1; }}
 /* The raised row panel surface: its edge, its dim text at 4.5:1, and the Mute tag off dots at 3:1 on their tag. */
 {base} .asb-row-panel .dim-label {{ color: {panel['floor'][0]}; opacity: 1; }}
-{base} .asb-row-panel .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off {{ border-color: {panel['dot']}; }}
+{base} .asb-row-panel .asb-mute-tag .asb-copy-tag-dot:not(.asb-copy-tag-on) {{ background: {panel['dot']}; }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
@@ -6741,9 +6757,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-pin-button.asb-pinned, {base} .asb-compact-pin {{ color: {quiet_caption}; }}
 {base} .asb-session.asb-hovered .asb-pin-button.asb-pinned, {base} .asb-key-focus .asb-pin-button.asb-pinned {{
     background: alpha({colors['text'] if colors else "@window_fg_color"}, .12); color: {colors['text'] if colors else "@window_fg_color"}; }}
-/* An off tag dot has 3:1 on its tag: the quiet caption color. */
-{base} .asb-copy-tag-dot:not(.asb-copy-tag-on):not(.asb-copy-tag-off) {{ background: {quiet_caption}; }}
-{base} .asb-copy-tag-dot.asb-copy-tag-off {{ border-color: {quiet_caption}; }}
+{base} .asb-copy-tag-dot:not(.asb-copy-tag-on) {{ background: {tag_dot}; }}
 /* Escape with nothing to clear: the corner buttons, the pocket, and the Read cue go; the marks keep their rest look. */
 {dismissed} .asb-drawer-button, {dismissed} .asb-mute-button, {dismissed} .asb-copy-button, {dismissed} .asb-pin-button:not(.asb-pinned),
 {dismissed} .asb-discard-offer {{ opacity: 0; }}
@@ -9127,7 +9141,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for name, text in choices.items():
             words.add_named(label(text, "asb-copy-tag-word"), name)
         dots = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL if mute else Gtk.Orientation.VERTICAL,
-                       spacing=2 if mute else 3, valign=Gtk.Align.CENTER)
+                       spacing=2, valign=Gtk.Align.CENTER)
         children = []
         for _choice in MUTE_CHOICES if mute else COPY_KINDS:
             dot = Gtk.Box()
@@ -9184,14 +9198,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         dots[0].get_parent().set_visible(not muted)
         for name, dot in zip(MUTE_CHOICES, dots):
             (dot.add_css_class if name == choice else dot.remove_css_class)("asb-copy-tag-on")
-            (dot.remove_css_class if name == choice else dot.add_css_class)("asb-copy-tag-off")
 
     def ensure_card_controls(self, widget):
         """Build the hover controls once; the read and pin slots already have their final places."""
         if widget.asb_view != "comfortable" or widget.asb_thread["id"] == MORE_ID or getattr(widget, "asb_copy_button", None):
             return
         row, actions = widget.asb_thread, widget.asb_actions
-        drawer = Gtk.Button(child=self.drawer_glyph())
+        drawer = Gtk.Button(child=Gtk.Image(pixel_size=12))
+        set_icon(drawer.get_child(), "asb-drawer-symbolic")
         copy = Gtk.Button(child=Gtk.Image(icon_name="edit-copy-symbolic", pixel_size=12))
         mute = Gtk.Button(child=Gtk.Image(pixel_size=12))
         tag, tag_words, dots = self.choice_tag(COPY_KIND_WORDS)
@@ -9777,8 +9791,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             read_text = ("Keep result: show the dot when the next task ends" if idle else "Keep result: show the dot when this task ends") \
                 if row.get("discardResult") else ("Discard next result: go to read Idle when the next task ends" if idle
                                                   else "Discard result: go to read Idle when this task ends")
-        question_note = ("The session still waits for your permission." if shows_action(row)
-                         else "The session still waits for your answer.") if indicator == "question" and unread else ""
+        question_note = question_wait_note(row)
         if question_note:
             read_text = "Mark read. " + question_note
         controls = [(read, read_text, (unread or discard) and not pending), (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)]
@@ -9787,6 +9800,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             shown = self.column_pixel_width >= 190 and (tucked or indicator in ("dot", "alert"))
             drawer.set_visible(shown)
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
+            set_icon(drawer.get_child(), "asb-drawer-filled-symbolic" if tucked else "asb-drawer-symbolic")
             drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
             controls.append((drawer, "Take out of drawer: show as unread again" if tucked
                              else "Put in drawer: look read here, keep it under Drawer", not pending))
@@ -10167,7 +10181,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return button
         panel.asb_open = action_row(None, self.panel_open)
         # Every row has messages to show: local, remote, and view-only, so the row is always sensitive.
-        panel.asb_messages = action_row("asb-chat-symbolic", self.panel_show_messages)
+        panel.asb_messages = action_row("asb-messages-symbolic", self.panel_show_messages)
         set_panel_label(panel.asb_messages, "Show messages")
         root.append(Gtk.Separator())
         panel.asb_actions = {}
@@ -10206,7 +10220,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS[slot]])
         mute_button = panel.asb_actions["mute"]
         panel.asb_mute_tag, panel.asb_mute_words, panel.asb_mute_dots = self.choice_tag(MUTE_WORDS, mute=True, reveal=False)
-        mute_button.get_child().append(panel.asb_mute_tag)
+        # Mute, its time tag 8 px after the label, a free gap, then the hint at the row end as on the other rows.
+        # A centered line centers the label and hint baselines on the taller tag.
+        line = mute_button.asb_label.get_parent()
+        line.set_spacing(8)
+        mute_button.asb_label.set_hexpand(False)
+        line.insert_child_after(panel.asb_mute_tag, mute_button.asb_label)
+        line.insert_child_after(Gtk.Box(hexpand=True), panel.asb_mute_tag)
         wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL, propagation_phase=Gtk.PropagationPhase.CAPTURE)
         wheel.connect("scroll", self.panel_mute_scroll)
         mute_button.add_controller(wheel)
@@ -10312,7 +10332,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         mute_caption = ""
         if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
             mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
-        signature = (self.mute_for, self.copy_kind, mute_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
+        read_note = question_wait_note(row) if controls.get("read", (None,))[0] == "mark-read" else ""
+        signature = (self.mute_for, self.copy_kind, mute_caption, read_note, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
         if signature == panel.asb_signature:
@@ -10370,13 +10391,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         ends = {slot for slot, open_side in zip(("pin-up", "pin-down"), moves or (True, True)) if not open_side}
         for slot in ("pin-up", "pin-down"):
             panel.asb_actions[slot].set_tooltip_text(PIN_MOVE_ENDS[slot] if slot in ends else None)
+        # Mark read on an unread "?" says that the session still waits; the row keeps one line.
+        panel.asb_actions["read"].set_tooltip_text(read_note or None)
         # A control that turned insensitive under the pointer made GTK pick a new pointer target in the board: the panel got a leave and closed.
         for slot, button in (("open", panel.asb_open), *panel.asb_actions.items()):
             off = pending or slot in ends or slot in gone
             (button.add_css_class if off else button.remove_css_class)("asb-action-pending")
+            # An unavailable row has the floor tone; a busy row keeps its half opacity.
+            (button.add_css_class if off and not pending else button.remove_css_class)("asb-panel-off")
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, off or not button.get_sensitive()])
             if slot in gone:
                 button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [PANEL_GONE_TEXT])
+            elif slot == "read" and read_note:
+                button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [read_note])
             elif slot not in ("open", "mute"):
                 button.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         # Alt+C follows the card choice (always Absolute for a remote card), not the last panel copy.
@@ -10467,6 +10494,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (button.add_css_class if note or not value else button.remove_css_class)("asb-panel-captioned")
             (button.add_css_class if copied else button.remove_css_class)("asb-copy-done")
             (button.add_css_class if pending or remote_relative else button.remove_css_class)("asb-action-pending")
+            (button.add_css_class if not value and not pending else button.remove_css_class)("asb-panel-off")
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, not value or pending])
             set_icon(button.asb_icon, "object-select-symbolic" if copied else "edit-copy-symbolic")
             # The caption shows the copied text, so the tooltip keeps the reference.

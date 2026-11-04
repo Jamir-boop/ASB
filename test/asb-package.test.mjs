@@ -27,6 +27,11 @@ test('release runtime includes every ASB symbolic icon that the native board loa
   assert.deepEqual(icons.filter((name) => !RUNTIME_FILES.includes(`assets/icons/${name}`)), []);
 });
 
+test('release runtime includes the filled drawer glyph and the messages glyph of the card and the row panel', () => {
+  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-drawer-filled-symbolic.svg'));
+  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-messages-symbolic.svg'));
+});
+
 test('release runtime includes the filter glyph of the native toolbar', () => {
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-filter-symbolic.svg'));
 });

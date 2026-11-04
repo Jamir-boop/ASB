@@ -6158,7 +6158,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
         window.set_palette({"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"})
         self.assertRegex(window.css.load_from_string.call_args.args[0],
-                         r"button\.asb-panel-where:disabled, [^{]*button\.asb-panel-where:disabled \* \{\s*color: #838383; opacity: 1; filter: none; \}")
+                         r"button\.asb-panel-where:disabled, [^{]*button\.asb-panel-where:disabled \* \{\s*color: #838383; opacity: 1; filter: none; -gtk-icon-filter: none; \}")
 
     def test_board_text_follows_the_gnome_text_scale(self):
         self.assertEqual([asb.read_text_scale(SimpleNamespace(get_property=lambda _name, value=value: value))
@@ -6226,13 +6226,81 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertIn("popover.asb-row-panel > contents { padding: 8px; border: 1px solid mix(@popover_bg_color, @popover_fg_color, .15); "
                       "border-radius: 12px;\n    background: @popover_bg_color; box-shadow: 0 1px 5px 1px alpha(black, .09), 0 2px 14px 3px alpha(black, .05); }", css)
         self.assertIn(".asb-column-flow .asb-row-panel .dim-label { color: #9f9fa0; opacity: 1; }", css)
-        self.assertIn(".asb-row-panel .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off { border-color: #9c9c9e; }", css)
+        self.assertIn(".asb-row-panel .asb-mute-tag .asb-copy-tag-dot:not(.asb-copy-tag-on) { background: #9c9c9e; }", css)
         window.set_palette(navy)
         css = window.css.load_from_string.call_args.args[0]
         self.assertIn(".asb-column-flow.asb-custom popover.asb-row-panel > contents { background: #262931; border-color: #60636a;\n"
                       "    box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }", css)
         self.assertIn(".asb-column-flow.asb-custom .asb-row-panel .asb-panel-caption, .asb-column-flow.asb-custom .asb-row-panel .dim-label "
                       "{ color: #9aa4b2; }", css)
+
+    def test_row_panel_unavailable_rows_separators_and_tag_dots(self):
+        yours = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
+        navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}
+        gnome = {"background": "#222226", "text": "#ffffff", "accent": "#3584e4", "muted": "#b8b8b9", "divider": "#3a3a3e"}
+        # look: (surface, floor, reason caption, separator, card tag, card off dot, panel tag, panel off dot)
+        expected = {"yours": ("#1a1a1a", "#838383", "#bcbcbc", "#3c3c3c", "#40371f", "#8f8f8f", "#353535", "#8f8f8f"),
+                    "navy": ("#262931", "#8f9197", "#9aa4b2", "#43464d", "#384553", "#8b94a2", "#3d4048", "#8b94a2"),
+                    "gnome": ("#36363a", "#9f9fa0", "alpha(@window_fg_color, .72)", None, "#4a4a4d", "#99999b", "#4e4e52", "#9c9c9e")}
+        for name, colors in (("yours", yours), ("navy", navy), ("gnome", gnome)):
+            with self.subTest(look=name):
+                surface, floor, caption, separator, tag, dot, panel_tag, panel_dot = expected[name]
+                window = object.__new__(Window)
+                window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+                window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
+                window.native_colors = lambda: gnome
+                window.popover_colors = lambda: ("#36363a", "#ffffff")
+                window.set_palette(None if name == "gnome" else colors)
+                css = window.css.load_from_string.call_args.args[0]
+                # One style: the icon, the label, and the hint in the floor tone at opacity 1, the reason in the caption color; no stacked opacity.
+                self.assertIn(".asb-row-panel button.asb-panel-off image, .asb-column-flow .asb-row-panel button.asb-panel-off .asb-panel-label,\n"
+                              f".asb-column-flow .asb-row-panel button.asb-panel-off .asb-panel-key {{ color: {floor}; opacity: 1; }}", css)
+                self.assertIn(".asb-row-panel button.asb-panel-off .asb-panel-caption:not(.asb-panel-key),\n.asb-column-flow .asb-row-panel "
+                              f"button.asb-panel-where:disabled .asb-panel-caption:not(.asb-panel-key) {{ color: {caption}; opacity: 1; }}", css)
+                self.assertIn("button.asb-panel-where:disabled * {\n    color: " + floor + "; opacity: 1; filter: none; -gtk-icon-filter: none; }", css)
+                self.assertIn(".asb-row-panel button.asb-action-pending:not(.asb-panel-off) > * { opacity: .5; }", css)
+                self.assertGreaterEqual(asb.contrast(floor, surface), 4.5)
+                if caption.startswith("#"):
+                    self.assertGreaterEqual(asb.contrast(caption, surface), 4.5)
+                    self.assertGreater(asb.contrast(caption, surface), asb.contrast(floor, surface))
+                # The separator: 15% text into the panel surface in custom colors; GNOME colors keep the theme separator.
+                if separator:
+                    self.assertEqual(asb.mix_color(surface, colors["text"], .15), separator)
+                    self.assertIn(f".asb-custom .asb-row-panel separator {{ background: {separator}; }}", css)
+                else:
+                    self.assertNotIn("asb-row-panel separator { background", css)
+                # Filled 4 px dots, no rings; the off dots have 3:1 on the card tag and on the panel tag.
+                self.assertIn(".asb-copy-tag-dot { min-width: 4px; min-height: 4px; border-radius: 50%; }", css)
+                self.assertNotRegex(css, r"asb-copy-tag-dot[^{]*\{[^}]*border(-color)?:")
+                self.assertIn(f".asb-copy-tag-dot:not(.asb-copy-tag-on) {{ background: {dot}; }}", css)
+                # The Relative dot of a remote card is filled too, at half opacity: that kind does not apply there.
+                self.assertIn(".asb-column-flow .asb-copy-tag-dot.asb-copy-tag-off { opacity: .5; }", css)
+                self.assertIn(f".asb-mute-tag .asb-copy-tag-dot:not(.asb-copy-tag-on) {{ background: {panel_dot}; }}", css)
+                highlight = asb.highlight_color(colors) if name != "gnome" else asb.mix_color(colors["background"], colors["text"], .07)
+                self.assertEqual(asb.mix_color(highlight, colors["text"], .12), tag)
+                self.assertEqual(asb.mix_color(surface, colors["text"], .12), panel_tag)
+                self.assertGreaterEqual(asb.contrast(dot, tag), 3)
+                self.assertGreaterEqual(asb.contrast(panel_dot, panel_tag), 3)
+        self.assertEqual(round(asb.contrast("#8f8f8f", "#40371f"), 2), 3.64)
+
+    def test_row_panel_mark_read_on_a_question_says_that_the_session_still_waits(self):
+        base = {"title": "Chat", "provider": "codex", "state": "waiting", "canOpen": True, "pending": True}
+        for row, note in (({**base, "id": "q", "questionPending": True, "questionAttention": True}, "The session still waits for your answer."),
+                          ({**base, "id": "p", "actionRequired": True, "actionAttention": True}, "The session still waits for your permission."),
+                          ({**base, "id": "d", "state": "idle", "unread": True}, "")):
+            with self.subTest(row=row["id"]):
+                self.assertEqual(asb.question_wait_note(row), note)
+                window, panel, gtk = self.row_panel_window([row])
+                with patch.dict(SCOPE, {"Gtk": gtk}):
+                    window.update_row_panel(panel, row)
+                read = panel.asb_actions["read"]
+                read.set_tooltip_text.assert_called_with(note or None)
+                if note:
+                    read.update_property.assert_any_call([1], [note])
+                else:
+                    self.assertNotIn(call([1], [note]), read.update_property.call_args_list)
+                # The row keeps one line: no caption.
+                read.asb_caption.set_visible.assert_not_called()
 
     def test_row_panel_pin_moves_show_only_with_two_visible_pins_and_say_when_at_an_end(self):
         moves = asb.pin_moves
@@ -6251,7 +6319,8 @@ class NativeLogicChecks(unittest.TestCase):
                     button = panel.asb_actions[slot]
                     button.set_visible.assert_called_with(shown)
                     button.set_tooltip_text.assert_called_with(ends.get(slot))
-                    (button.add_css_class if slot in ends else button.remove_css_class).assert_called_with("asb-action-pending")
+                    for name in ("asb-action-pending", "asb-panel-off"):
+                        (button.add_css_class if slot in ends else button.remove_css_class).assert_any_call(name)
                     button.update_state.assert_called_with([0, 2], [False, slot in ends])
         # A move at an end has no target, so the focusable row sends nothing.
         self.assertIsNone(asb.pin_move_body(pins, "a", "up"))

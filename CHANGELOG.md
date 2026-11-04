@@ -5,6 +5,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 ## Unreleased
 
 - The board again plays the message light and the pets while it is shown but another window has the focus. Before, only the focused board played them. A minimized, hidden, or suspended board still plays nothing.
+- Refined the row panel. Every unavailable row now has its icon, label, and key hint in one dim tone with 4.5:1 contrast, and its reason in the caption color; before, the reason had 3.3:1. The Mute row puts its time tag after the label and **Alt+M** at the right end with the other hints. **Mark read** on a `?` card says in its tooltip that the session still waits for your answer or permission. Custom colors give the separators 15% text on the panel. **Show messages** has a new bubble glyph on whole pixels.
+- The mute and copy tags now have filled 4 px dots on a 6 px pitch, with 3:1 contrast for the dots that are not chosen; no ring dots. The card drawer button now draws the same drawer glyph as the row panel, filled for a row in the drawer.
 - Pending cards now sort by their mark: a Working `?`, other `?` cards, `!`, the dot, then the rest. Each mark group keeps newest first.
 - The board now holds card places while you use the pointer, until 1 second without motion, a board leave, or a key press. Content still updates. An open row panel holds places until it closes. Search, filters, view and size changes, Show all, and pin moves apply at once.
 - A touch-screen long press now opens the card row panel at the press point. A mouse hold stays unchanged.

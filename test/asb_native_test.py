@@ -4693,6 +4693,10 @@ class WidgetCheck(unittest.TestCase):
         self.drain()
         card = lambda identity: window.focus_widgets[identity].asb_copy_button
         remote, nofull = "m:0123456789abcdef:remote", "m:0123456789abcdef:nofull"
+        # The Relative dot of a remote card is off (half opacity); a local card has no off dot.
+        cards = window.focus_widgets
+        self.assertEqual([(cards[key].asb_copy_dot_relative.has_css_class("asb-copy-tag-off"), cards[key].asb_copy_dot_absolute.has_css_class("asb-copy-tag-off"))
+                          for key in ("local", remote)], [(False, False), (True, False)])
         # A local row, also a view-only CLI row, keeps the relative reference.
         for identity in ("local", "cli"):
             self.assertEqual((card(identity).get_visible(), card(identity).get_tooltip_text(), card(identity).asb_action),
@@ -5261,8 +5265,26 @@ class WidgetCheck(unittest.TestCase):
                 self.assert_accessible_label(button, key, asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
                 self.assertEqual(button.asb_label.get_ellipsize(), asb.Pango.EllipsizeMode.END)
             mute = panel.asb_actions["mute"]
-            # The hint is on line 1 of the words, which come right before the time tag.
-            self.assertIs(mute.asb_hint.get_parent().get_parent().get_next_sibling(), panel.asb_mute_tag)
+            # Line 1 of Mute: the label, the time tag 8 px after it, a free gap, then the hint at the right end of every hint.
+            self.assertIs(mute.asb_label.get_next_sibling(), panel.asb_mute_tag)
+            self.assertIs(panel.asb_mute_tag.get_next_sibling().get_next_sibling(), mute.asb_hint)
+            baselines = [part.compute_point(panel, asb.Graphene.Point().init(0, part.get_baseline()))[1].y for part in (mute.asb_label, mute.asb_hint)]
+            self.assertEqual(baselines[0], baselines[1])
+            self.drain()
+            label, tag = (part.compute_bounds(panel)[1] for part in (mute.asb_label, panel.asb_mute_tag))
+            self.assertEqual(tag.origin.x - (label.origin.x + label.size.width), 8)
+            ends = {slot: round(button.asb_hint.compute_bounds(panel)[1].origin.x + button.asb_hint.compute_bounds(panel)[1].size.width)
+                    for slot, button in (*panel.asb_actions.items(), ("short", panel.asb_copy), ("full", panel.asb_copy_full))
+                    if button.get_visible() and button.asb_hint.get_visible()}
+            self.assertIn("mute", ends)
+            self.assertGreaterEqual(len(ends), 4)
+            self.assertEqual(set(ends.values()), {ends["mute"]})
+            self.assertGreater(mute.asb_hint.compute_bounds(panel)[1].origin.x, tag.origin.x + tag.size.width)
+            # Filled 4 px dots on whole pixels, on a 6 px pitch.
+            dots = [dot.compute_bounds(panel)[1] for dot in panel.asb_mute_dots]
+            self.assertEqual({(box.size.width, box.size.height) for box in dots}, {(4, 4)})
+            self.assertTrue(all(box.origin.x.is_integer() and box.origin.y.is_integer() for box in dots))
+            self.assertEqual({round(b.origin.x - a.origin.x) for a, b in zip(dots, dots[1:])}, {6})
             for slot, button in (("short", panel.asb_copy), ("full", panel.asb_copy_full)):
                 self.assertEqual(button.asb_hint.get_visible(), slot == chosen)
                 if slot == chosen:
@@ -5447,6 +5469,11 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(read.asb_mute_words.get_visible_child_name(), "30m")
         self.assertEqual(read.asb_mute_words.get_visible_child().get_label(), "30 min")
         self.assertEqual([dot.has_css_class("asb-copy-tag-on") for dot in read.asb_mute_dots], [True, False, False, False, False])
+        # Filled 4 px dots on whole pixels, on a 6 px pitch.
+        boxes = [dot.compute_bounds(read)[1] for dot in read.asb_mute_dots]
+        self.assertEqual({(box.size.width, box.size.height) for box in boxes}, {(4, 4)})
+        self.assertTrue(all(box.origin.x.is_integer() and box.origin.y.is_integer() for box in boxes))
+        self.assertEqual({round(b.origin.x - a.origin.x) for a, b in zip(boxes, boxes[1:])}, {6})
         window.scroll_horizontal(None, 0, 1); self.drain(.3)
         self.assertEqual(window.mute_for, "1h")
         self.assertEqual(read.asb_mute_words.get_visible_child().get_label(), "1 hour")
@@ -5634,6 +5661,15 @@ class WidgetCheck(unittest.TestCase):
             window.view_filter.set_selected(1 if view == "comfortable" else 0); self.drain(.4)
             card = window.focus_widgets["read"]
             self.assertEqual(bool(getattr(card, "asb_mute_button", None)), view == "comfortable")
+            window.change_mute_for("30m")
+            for button, dots, axis in (() if view == "compact" else ((card.asb_copy_button, (card.asb_copy_dot_relative, card.asb_copy_dot_absolute), "y"),)):
+                # The card tags: filled 4 px dots on whole pixels, on a 6 px pitch.
+                self.hover_card(window, card, True); window.show_copy_tag(button, True); self.drain(.5)
+                boxes = [dot.compute_bounds(card)[1] for dot in dots]
+                self.assertEqual({(box.size.width, box.size.height) for box in boxes}, {(4, 4)})
+                self.assertTrue(all(box.origin.x.is_integer() and box.origin.y.is_integer() for box in boxes))
+                self.assertEqual({round(getattr(b.origin, axis) - getattr(a.origin, axis)) for a, b in zip(boxes, boxes[1:])}, {6})
+                window.show_copy_tag(button, False); self.hover_card(window, card, False); self.drain(.4)
             window.change_mute_for("30m")
             window.show_context(card); self.drain(.3)
             panel = window.context_menu
@@ -7967,6 +8003,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(one.has_css_class("asb-key-focus"))
 
         # A click sends drawer-in. After the reply the row looks read, sorts with the read rows, and lights the dot.
+        self.assertEqual((drawer.get_child().get_pixel_size(), drawer.get_child().get_gicon().get_file().get_basename()), (12, "asb-drawer-symbolic.svg"))
         drawer.emit("clicked")
         self.assertEqual((requests[-1][1], requests[-1][4], requests[-1][5]), ("/api/threads/s1/drawer-in", "POST", None))
         self.assertIsNone(drawer.asb_action)
@@ -7983,6 +8020,9 @@ class WidgetCheck(unittest.TestCase):
         self.assert_accessible_label(pill, "Drawer only. The drawer has sessions.")
         self.assertEqual((drawer.get_visible(), drawer.asb_action, drawer.has_css_class("asb-drawer-filled")),
                          (True, "win.drawer-out", True))
+        # The card draws the panel drawer symbol at 12 px; a row in the drawer has its filled variant.
+        icon = lambda: (drawer.get_child().get_pixel_size(), drawer.get_child().get_gicon().get_file().get_basename())
+        self.assertEqual(icon(), (12, "asb-drawer-filled-symbolic.svg"))
         self.assertFalse(drawer.has_css_class("asb-action-pending"))
         self.assertEqual(drawer.get_tooltip_text(), out)
         self.assert_accessible_label(drawer, out + ": " + one.asb_thread["title"])
@@ -13097,7 +13137,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
                 messages = panel.asb_messages
                 self.assertEqual(messages.asb_label.get_label(), "Show messages")
                 self.assert_accessible_label(messages, "Show messages")
-                self.assertEqual(messages.asb_icon.get_gicon().get_file().get_basename(), "asb-chat-symbolic.svg")
+                self.assertEqual(messages.asb_icon.get_gicon().get_file().get_basename(), "asb-messages-symbolic.svg")
                 self.assertTrue(messages.has_css_class("flat") and messages.has_css_class("asb-panel-action"))
                 # Sensitive for every row, also the view-only remote row whose Open row is not.
                 self.assertTrue(messages.get_sensitive())
