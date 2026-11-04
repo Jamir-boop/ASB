@@ -5676,6 +5676,96 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(width, plain_width)
         panel.popdown(); self.drain()
 
+    def caption_lines(self, label):
+        layout = label.get_layout()
+        text = label.get_label().encode()
+        return [text[line.start_index:line.start_index + line.length].decode().strip() for line in layout.get_lines_readonly()]
+
+    def test_row_panel_captions_move_a_word_to_a_one_word_last_line(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
+        description = asb.Gtk.AccessibleProperty.DESCRIPTION
+        unknown = {"state": "unknown", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code",
+                   "reason": "No current task signal is available."}
+        remote = {"remote": True, "surface": "remote", "machineName": "Example", "canOpen": False}
+        twin = {key: value for key, value in unknown.items() if key != "reason"}
+        rows = self.card_rows(("unknown", unknown), ("twin", twin), ("remote", remote),
+                              ("working", {"state": "working", "workingSinceMs": NOW - 1000}))
+        # Monospace and the user font give the one-word last lines of the greedy breaks; Cantarell fits each caption on one line.
+        fonts = [("Cantarell 11", False), ("Monospace 11", True)] + \
+            ([("Cascadia Code NF 11", True)] if "Cascadia Code NF" in self.font_families() else [])
+        for font, wraps in fonts:
+            settings.set_property("gtk-font-name", font)
+            window = self.mute_wheel_board(520, rows)
+            window.show_context(window.focus_widgets["twin"]); self.drain(.3)
+            self.assertFalse(window.context_menu.asb_open.asb_caption.get_visible())
+            twin_width = window.context_menu.get_child().get_width()
+            window.context_menu.popdown(); self.drain(.1)
+            for key, slot, text in (("unknown", "open", "No current task signal is available."),
+                                    ("remote", "copy", "Only for a session on this machine."),
+                                    ("working", "read", "The dot shows when this task ends.")):
+                with self.subTest(font=font, key=key):
+                    window.show_context(window.focus_widgets[key]); self.drain(.3)
+                    panel = window.context_menu
+                    button = panel.asb_open if slot == "open" else panel.asb_copy if slot == "copy" else panel.asb_actions[slot]
+                    label, width = button.asb_caption, panel.get_child().get_width()
+                    self.assertEqual(label.get_label(), text)
+                    self.assert_accessible_label(button, text, description)
+                    lines = self.caption_lines(label)
+                    self.assertEqual(" ".join(lines), text)
+                    self.assertFalse(label.get_layout().is_ellipsized())
+                    # The greedy breaks of the same text at the same width, for the line count and the panel width.
+                    greedy = label.create_pango_layout(text)
+                    greedy.set_width(label.get_width() * asb.Pango.SCALE)
+                    greedy.set_wrap(asb.Pango.WrapMode.WORD_CHAR)
+                    self.assertEqual(len(lines), greedy.get_line_count())
+                    if wraps and key != "working":
+                        self.assertEqual(len(lines), 2, lines)
+                        self.assertEqual(len(lines[-1].split()), 2, lines)
+                        last = greedy.get_line_readonly(1)
+                        self.assertEqual(len(text.encode()[last.start_index:].decode().split()), 1)
+                    if key == "unknown":
+                        # The caption does not widen the panel: it has the width of the same panel with no caption.
+                        self.assertEqual(width, twin_width)
+                    elif len(lines) == 1:
+                        self.assertIsNone(label.get_attributes())
+                    panel.popdown(); self.drain(.1)
+                    # The same row opens at the same width with the same lines.
+                    window.show_context(window.focus_widgets[key]); self.drain(.3)
+                    self.assertEqual(window.context_menu.get_child().get_width(), width)
+                    self.assertEqual(self.caption_lines(button.asb_caption), lines)
+                    window.context_menu.popdown(); self.drain(.1)
+            window.close(); self.drain(.1)
+
+    def test_row_panel_caption_balance_follows_the_width_and_the_text(self):
+        caption = asb.PanelCaption()
+        caption.set_wrap(True)
+        caption.set_wrap_mode(asb.Pango.WrapMode.WORD_CHAR)
+        text = "No current task signal is available."
+        caption.set_label(text)
+        layout = caption.create_pango_layout(text)
+        full = layout.get_pixel_size()[0]
+        # A width where the greedy breaks leave the last word alone.
+        width = next(w for w in range(full - 1, 40, -1) if self.greedy_last_words(caption, text, w) == 1)
+        self.assertEqual(caption.glue_at(width)[1], len(text.encode()))
+        self.assertIsNone(caption.glue_at(full + 10))
+        caption.glued = caption.glue_at(width)
+        caption.set_label("Two words.")
+        self.assertIsNone(caption.glued)
+        self.assertIsNone(caption.get_attributes())
+        self.assertIsNone(caption.glue_at(width))
+        caption.set_label(text); caption.set_lines(1)
+        self.assertIsNone(caption.glue_at(width))
+
+    @staticmethod
+    def greedy_last_words(label, text, width):
+        layout = label.create_pango_layout(text)
+        layout.set_width(width * asb.Pango.SCALE)
+        layout.set_wrap(asb.Pango.WrapMode.WORD_CHAR)
+        if layout.get_line_count() < 2:
+            return 0
+        return len(text.encode()[layout.get_line_readonly(layout.get_line_count() - 1).start_index:].decode().split())
+
     def test_row_panel_open_caption_provider_mark_and_new_glyphs(self):
         rows = self.card_rows(("plain", {"pinned": True}),
                               ("permission", {"state": "waiting", "actionRequired": True, "actionAttention": True, "pending": True,
@@ -8217,7 +8307,7 @@ class WidgetCheck(unittest.TestCase):
     def test_gnome_card_keyboard_focus_has_the_solid_accent_ring(self):
         window = self.card_board([self.card_row("a"), self.card_row("b")])
         css = self.board_css(window)
-        self.assertIn(".asb-session:focus-visible { outline: 2px solid @accent_color; outline-offset: -2px; }", css)
+        self.assertIn(".asb-session:focus:focus-visible { outline: 2px solid @accent_color; outline-offset: -2px; }", css)
         card = window.focus_widgets["b"]
         window.set_focus_visible(True)
         card.grab_focus(); self.settle(window)
@@ -8231,7 +8321,38 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(near(rows[y][x]), (x, y, rows[y][x], expected))
         self.assertFalse(near(rows[2][40]))
         window.set_palette(CUSTOM)
-        self.assertNotIn(".asb-session:focus-visible { outline: 2px solid @accent_color; outline-offset: -2px; }", self.board_css(window))
+        self.assertNotIn(".asb-session:focus:focus-visible { outline: 2px solid @accent_color; outline-offset: -2px; }", self.board_css(window))
+
+    def test_gnome_focused_card_button_has_the_only_ring(self):
+        window = self.card_board([self.card_row("a", unread=True, pending=True), self.card_row("b")])
+        found, accent = window.get_style_context().lookup_color("accent_color")
+        self.assertTrue(found)
+        expected = tuple(max(0, min(255, round(value * 255))) for value in (accent.red, accent.green, accent.blue))
+        near = lambda pixel: all(abs(a - b) <= 1 for a, b in zip(pixel[:3], expected))
+        card = window.focus_widgets["a"]
+        points = ((40, 0), (40, 1), (0, 30), (1, 30), (card.get_width() - 1, 30), (40, card.get_height() - 1))
+        window.set_focus_visible(True)
+        for button in (card.asb_read_button, card.asb_pin_button):
+            with self.subTest(button=button.asb_card_action):
+                window.set_focus(button); window.set_focus_visible(True); window.key_focus_changed(); self.settle(window)
+                self.drain(1)  # The corner fades in.
+                self.assertTrue(button.has_focus() and card.has_css_class("asb-key-focus"))
+                rows = self.rgba(card)
+                found, box = button.compute_bounds(card)
+                self.assertTrue(found)
+                inside = lambda x, y: box.origin.x <= x < box.origin.x + box.size.width and box.origin.y <= y < box.origin.y + box.size.height
+                for x, y in points:
+                    if not inside(x, y):
+                        self.assertFalse(near(rows[y][x]), (x, y, rows[y][x]))
+                # The button ring: accent pixels on the 2 px circle inside the button (a 24 px circle has about 130).
+                ring = sum(near(rows[y][x]) for y in range(round(box.origin.y), round(box.origin.y + box.size.height))
+                           for x in range(round(box.origin.x), round(box.origin.x + box.size.width)))
+                self.assertGreater(ring, 40)
+        card.grab_focus(); window.set_focus_visible(True); self.settle(window)
+        rows = self.rgba(card)
+        for x, y in points:
+            self.assertTrue(near(rows[y][x]), (x, y, rows[y][x], expected))
+        self.assertFalse(near(rows[2][40]))
 
     def glyph_offsets(self, card, center):
         """The ink center of the card's ? or ! minus the center of the box, in px."""

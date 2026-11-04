@@ -3183,6 +3183,64 @@ def label(text, css=None):
     return widget
 
 
+class PanelCaption(Gtk.Label):
+    """A row panel caption. A one-word last line takes the word above when it fits there, as in CardTitle.title_layouts."""
+    def __init__(self):
+        super().__init__(label="", xalign=0)
+        self.add_css_class("asb-panel-caption")
+        self.glued, self.balance_idle = None, None
+
+    def set_label(self, text):
+        if text != self.get_label():
+            # An old break must not stay on new text; the next allocation balances again.
+            self.glued = None
+            self.set_attributes(None)
+        Gtk.Label.set_label(self, text)
+
+    def glue_at(self, width):
+        """The byte range kept on the last line, or None when the greedy breaks stay."""
+        text = self.get_label()
+        if not self.get_wrap() or " " not in text:
+            return None
+        layout = self.create_pango_layout(text)
+        layout.set_width(max(1, width) * Pango.SCALE)
+        layout.set_wrap(self.get_wrap_mode())
+        count = layout.get_line_count()
+        if count < 2 or 0 < self.get_lines() < count:
+            return None
+        encoded = text.encode("utf-8")
+        above, last = layout.get_line_readonly(count - 2), layout.get_line_readonly(count - 1)
+        words = encoded[above.start_index:above.start_index + above.length].decode("utf-8").rstrip().split(" ")
+        if " " in encoded[last.start_index:].decode("utf-8").strip() or len(words) < 3:
+            return None
+        start = above.start_index + len(" ".join(words[:-1]).encode("utf-8")) + 1
+        layout.set_attributes(self.kept(start, len(encoded)))
+        last = layout.get_line_readonly(count - 1)
+        # The same number of lines, and the moved word is not cut.
+        if layout.get_line_count() != count or last.start_index != start or last.get_extents()[1].width > width * Pango.SCALE:
+            return None
+        return start, len(encoded)
+
+    def do_size_allocate(self, width, height, baseline):
+        Gtk.Label.do_size_allocate(self, width, height, baseline)
+        if self.glue_at(width) != self.glued and not self.balance_idle:
+            self.balance_idle = GLib.idle_add(self.balance)
+
+    def balance(self):
+        self.balance_idle = None
+        self.glued = self.glue_at(self.get_width())
+        self.set_attributes(self.kept(*self.glued) if self.glued else None)
+        return False
+
+    @staticmethod
+    def kept(start, end):
+        """Attributes with no line break from start to end."""
+        attrs, keep = Pango.AttrList(), Pango.attr_allow_breaks_new(False)
+        keep.start_index, keep.end_index = start, end
+        attrs.insert(keep)
+        return attrs
+
+
 def layout_cut(layout, text, width):
     """ellipsis_cut() of a Pango layout at a width in pixels; the layout keeps the shown text, which fits."""
     layout.set_ellipsize(Pango.EllipsizeMode.NONE)
@@ -7008,9 +7066,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.remove_css_class("asb-custom")
             css += f"""
 /* GNOME colors: a bright card mark has the folder tone (dim-label .55), so it is never lighter than its folder; the quiet and
-   limited marks keep their rules. A key-focused card has the solid ring of the row panel. */
+   limited marks keep their rules. A key-focused card has the solid ring of the row panel; a focused button in it has its own
+   ring only (GTK sets :focus-visible on each ancestor of the focus widget, :focus only on the focus widget). */
 {base} .asb-session:not(.asb-limited):not(.asb-message-lit) .asb-provider {{ color: alpha(@window_fg_color, .55); opacity: 1; }}
-{base} .asb-session:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
+{base} .asb-session:focus:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
 """
         palette = colors or self.native_colors()
         highlight = highlight_color(palette) if colors else mix_color(palette["background"], palette["text"], .07)
@@ -10762,7 +10821,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True, valign=Gtk.Align.CENTER)
             button.get_child().remove(button.asb_label)
             words.append(button.asb_label)
-            button.asb_caption = label("", "asb-panel-caption")
+            button.asb_caption = PanelCaption()
             button.asb_caption.set_wrap(button is not panel.asb_actions["mute"])
             button.asb_caption.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             # Pango shows one line of a wrapped, ellipsized label with no line limit. The Open, Read, and drawer captions show
