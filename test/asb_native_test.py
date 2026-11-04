@@ -9287,6 +9287,17 @@ class WidgetCheck(unittest.TestCase):
             self.assertIn("pet", strip.flights[0])
             strip.clear_flights()
 
+    def test_a_visible_board_that_is_not_active_walks_the_pet(self):
+        window, board, _layout_path = self.pet_board({"view": "comfortable", "pet": "crab"})
+        strip = window.list_body
+        source, target = self.walk_pair(window)
+        self.foreground(window, False)
+        window.apply_dashboard(board((source, target)), None)
+        self.wait_for(lambda: strip.flights)
+        self.assertIn("pet", strip.flights[0])
+        self.assertEqual(strip.flights[0]["rows"], (window.focus_widgets[source], window.focus_widgets[target]))
+        strip.clear_flights()
+
     def test_pet_in_compact_and_the_light_for_a_card_out_of_view(self):
         window, board, _layout_path = self.pet_board({"pet": "crab"}, count=30, size=(900, 200))
         strip, rows = window.list_body, window.focus_widgets
@@ -9311,7 +9322,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIn("flight", strip.flights[0])
         strip.clear_flights()
 
-    def test_a_board_in_the_background_plays_no_glide_and_no_message_light(self):
+    def test_a_board_in_the_background_plays_no_glide_and_a_visible_board_plays_the_message_light(self):
         threads = [{"id": f"m{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Sample session {n}",
                     "cwd": "/example/notes", "projectName": "notes", "state": "idle", "canOpen": True,
                     "updatedAtMs": NOW - n * 60_000} for n in (1, 2, 3)]
@@ -9347,20 +9358,32 @@ class WidgetCheck(unittest.TestCase):
             window.apply_dashboard(board, None)
         lit = lambda: [identity for identity, row in rows.items() if row.has_css_class("asb-message-lit")]
         with patch.object(strip, "start_flight", observed_flight):
+            # A visible board that is not active moves the cards with no glide, but plays the message light.
             self.foreground(window, False)
             change("m3", ("m1", "m2"))
-            self.settle(window); self.drain(.5)
+            wait(lambda: flights)
             self.assertEqual(window.row_order[0], "m3")
             self.assertTrue(frames)
             self.assertFalse(any(frames))
             self.assertNotEqual(window.motion_animation.get_state(), playing)
-            self.assertEqual((flights, strip.flights, lit()), ([], [], []))
-            # The message counts as seen: it does not play in the foreground.
-            self.foreground(window)
-            window.apply_dashboard(copy.deepcopy(window.dashboard), None)
-            self.drain(.5)
-            self.assertEqual((flights, lit()), ([], []))
+            self.assertEqual(flights, [(rows["m1"], rows["m2"])])
+            strip.clear_flights(); flights.clear()
+            # A minimized or hidden board plays nothing, and the message counts as seen: it does not play later.
+            minimized = patch.object(window.get_surface(), "get_state", return_value=asb.Gdk.ToplevelState.MINIMIZED)
+            for name, hide, show in (("minimized", minimized.start, minimized.stop), ("hidden", lambda: window.set_visible(False), window.present)):
+                hide()
+                self.assertFalse(window.board_shown(), name)
+                change("m1", ("m2", "m3") if name == "minimized" else ("m3", "m2"))
+                self.drain(.5)
+                self.assertEqual((flights, strip.flights, lit()), ([], [], []), name)
+                show()
+                self.settle(window)
+                self.assertTrue(window.board_shown(), name)
+                window.apply_dashboard(copy.deepcopy(window.dashboard), None)
+                self.drain(.5)
+                self.assertEqual((flights, lit()), ([], []), name)
             # In the foreground both play.
+            self.foreground(window)
             change("m2", ("m3", "m1"))
             wait(lambda: any(frames))
             wait(lambda: flights)

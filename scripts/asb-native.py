@@ -7080,8 +7080,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return False
 
     def play_messages(self, messages):
-        # A board in the background plays no message and counts it as seen.
-        if self.message_seen is None or not messages or not self.is_active():
+        # A minimized, hidden, or suspended board plays no message and counts it as seen; a visible board plays it also when not active.
+        if self.message_seen is None or not messages or not self.board_shown():
             self.message_seen = new_messages(messages, None, {}, 0, 0)[1]
             return
         room = MESSAGE_FLIGHT_LIMIT - len(self.list_body.flights)
@@ -7098,8 +7098,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         GLib.idle_add(self.start_messages, play)
         return False
 
+    def board_shown(self):
+        surface = self.get_surface()
+        if not self.get_mapped() or surface is None:
+            return False
+        # SUSPENDED needs GTK 4.12; a backend that does not report it shows the board.
+        return not surface.get_state() & (Gdk.ToplevelState.MINIMIZED | getattr(Gdk.ToplevelState, "SUSPENDED", 0))
+
     def start_messages(self, play):
-        if self.closed or not self.is_active():
+        if self.closed or not self.board_shown():
             self.pending_messages = []
             return False
         if getattr(self.list_body, "motion", None):

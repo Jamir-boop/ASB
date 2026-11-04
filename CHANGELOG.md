@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- The board again plays the message light and the pets while it is shown but another window has the focus. Before, only the focused board played them. A minimized, hidden, or suspended board still plays nothing.
 - Pending cards now sort by their mark: a Working `?`, other `?` cards, `!`, the dot, then the rest. Each mark group keeps newest first.
 - The board now holds card places while you use the pointer, until 1 second without motion, a board leave, or a key press. Content still updates. An open row panel holds places until it closes. Search, filters, view and size changes, Show all, and pin moves apply at once.
 - A touch-screen long press now opens the card row panel at the press point. A mouse hold stays unchanged.

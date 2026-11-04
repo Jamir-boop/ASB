@@ -58,6 +58,8 @@ SCOPE.update(CARD_KEY_MASK=4 | 8 | 1 | (1 << 26) | (1 << 28), CARD_KEY_ALT=8,
              CARD_KEY_SLOTS={ord(letter): slot for letter, slot in (("r", "read"), ("d", "drawer"), ("m", "mute"), ("p", "pin"), ("c", "copy"))})
 # The Gtk.Window base is not in this scope: a window here is in the foreground, as a board that is active.
 Window.is_active = lambda _self: True
+# It is also shown: the GTK suite checks board_shown() with a real surface.
+Window.board_shown = lambda _self: True
 # Layout-only windows have no GTK search entry. Tests that edit the search set their own.
 Window.search = SimpleNamespace(get_text=lambda: "")
 Strip = SCOPE["SessionStrip"]
