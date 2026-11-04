@@ -26,15 +26,16 @@ const shown = (start, end, svg) => `<g visibility="hidden">${tl.visibility([[sta
 const hover = svg => shown(1100, 5400, svg);
 const feedback = [[0, 0], [3600, 0], [3700, 1], [5200, 1], [5300, 0]];
 const muteAlpha = [[0, 0], [3600, 0], [3600, 1], [8600, 1], [9000, 0]];
-const footer = color => text(29, 56, 'Idle', 11, color) + text(221, 56, '4m ago', 11, color, ' text-anchor="end"');
+const footer = color => text(29, 53, 'Idle', 11, color) + text(221, 53, '4m ago', 11, color, ' text-anchor="end"');
 const caption = footer(C.caption) + hover(footer(C.muted));
 const mutedMark = color => use('mute', 82.2, 3, 12, color) + text(98.2, 9, '1h', 11, color);
 
+const rawPin = await readFile(new URL('../assets/icons/asb-pin-outline-symbolic.svg', import.meta.url), 'utf8');
 const rawMute = await readFile(new URL('../assets/icons/asb-muted-symbolic.svg', import.meta.url), 'utf8');
 const icons = `<symbol id="mute" viewBox="0 0 16 16">${rawMute.match(/<path\b[^>]*\/>/g).join('')}</symbol>`
   + '<symbol id="bell" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M3 5a5 5 0 0 1 10 0c0 1.7.4 3.3 1 4.7a1 1 0 0 1-1 1.3H3a1 1 0 0 1-1-1.3C2.6 8.3 3 6.7 3 5zm2 0c0 1.4-.2 2.7-.6 4h7.2c-.4-1.3-.6-2.6-.6-4a3 3 0 0 0-6 0z"/><path d="M5.2 13a1 1 0 0 1 1.6-1.2 1.5 1.5 0 0 0 2.4 0 1 1 0 0 1 1.6 1.2 3.5 3.5 0 0 1-5.6 0z"/></symbol>'
   + '<symbol id="copy" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M3 0h5a3 3 0 0 1 3 3 1 1 0 0 1-2 0 1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1 1 1 0 0 1 0 2 3 3 0 0 1-3-3V3a3 3 0 0 1 3-3zm5 5h5a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3zm0 2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1z"/></symbol>'
-  + '<symbol id="pin" viewBox="0 0 16 16"><path d="M5 0a1 1 0 0 0 0 2h.14l.52 3.59A5 5 0 0 0 3 10h10a5 5 0 0 0-2.66-4.41L10.85 2H11a1 1 0 0 0 0-2zM7 11v4l1 1 1-1v-4z"/></symbol>'
+  + `<symbol id="pin" viewBox="0 0 16 16">${rawPin.match(/<path\b[^>]*\/>/g).join('')}</symbol>`
   + '<symbol id="check" viewBox="0 0 16 16"><path d="m3 9 3 3 7-8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>';
 
 // Pocket: the hovered card surface from the card top to y 34, square, with a fade on the left side only:
@@ -43,12 +44,12 @@ function pocket(left) {
   return `<rect x="${left}" y="0" width="${229 - left}" height="34" fill="url(#pocket-${left})"/>`;
 }
 const pockets = [[111, 16], [22, 7]];
-let defs = appDefs() + icons + '<clipPath id="tag-word"><rect x="0" y="0" width="46" height="18"/></clipPath>';
+let defs = appDefs() + icons + '<clipPath id="tag-word"><rect x="0" y="0" width="44" height="18"/></clipPath>';
 for (const [left, fade] of pockets) defs += `<linearGradient id="pocket-${left}" gradientUnits="userSpaceOnUse" x1="${left}" x2="${left + fade}"><stop stop-color="${C.hover}" stop-opacity="0"/><stop offset="1" stop-color="${C.hover}"/></linearGradient>`;
 
-// The widest duration has a 46 px word slot; the five dots use 28 px.
-const tagWidth = 8 + 46 + 6 + 28 + 7;
-assert.equal(tagWidth, 95);
+// The widest duration has a 44 px word slot; the five dots use 28 px.
+const tagWidth = 8 + 44 + 6 + 28 + 7;
+assert.equal(tagWidth, 93);
 const expo = p => p === 1 ? 1 : 1 - 2 ** (-10 * p);
 const tagSlide = tl.sampled(1850, 200, p => `${number((1 - expo(p)) * 12)} 0`);
 const tagFade = tl.sampled(1850, 200, p => number(expo(p)));
@@ -56,13 +57,12 @@ const wordRoll = tl.sampled(2600, 200, p => `0 ${number((1 - expo(p)) * 12)}`);
 const wordFade = tl.sampled(2600, 200, p => number(expo(p)));
 let dots = '';
 for (let i = 0; i < 5; i++) {
-  const first = i === 0 ? C.accent : 'none', next = i === 1 ? C.accent : 'none';
-  dots += `<circle cx="${8 + 46 + 6 + 2 + i * 6}" cy="9" r="1.5" fill="${first}" stroke="${i === 0 ? C.accent : '#4d4d4d'}" stroke-width="1">`
-    + tl.animate('fill', [[0, first], [2600, next]], { discrete: true })
-    + tl.animate('stroke', [[0, i === 0 ? C.accent : '#4d4d4d'], [2600, i === 1 ? C.accent : '#4d4d4d']], { discrete: true }) + '</circle>';
+  const first = i === 0 ? C.accent : C.caption, next = i === 1 ? C.accent : C.caption;
+  dots += `<circle cx="${8 + 44 + 6 + 2 + i * 6}" cy="9" r="2" fill="${first}">`
+    + tl.animate('fill', [[0, first], [2600, next]], { discrete: true }) + '</circle>';
 }
 const tagWord = label => text(0, 9, label, 10, C.text, ' font-weight="700" letter-spacing=".04em"');
-const durationTag = `<g transform="translate(30 5)"><g>${tl.transform('translate', tagSlide)}${tl.animate('opacity', tagFade)}`
+const durationTag = `<g transform="translate(32 5)"><g>${tl.transform('translate', tagSlide)}${tl.animate('opacity', tagFade)}`
   + `<rect width="${tagWidth}" height="18" rx="9" fill="${plate.on}"/>${dots}<g transform="translate(8 0)" clip-path="url(#tag-word)">`
   + shown(1850, 2600, tagWord('30 min'))
   + shown(2600, 3600, `<g>${tl.transform('translate', wordRoll)}${tl.animate('opacity', wordFade)}${tagWord('1 hour')}</g>`)
@@ -77,7 +77,7 @@ corner += shown(1100, 1600, disc(139, plate.rest)) + shown(1600, 4500, disc(139,
 corner += disc(165, plate.rest) + shown(1100, 3600, disc(191, plate.rest)) + disc(217, plate.rest);
 corner += shown(1100, 3600, use('mute', 133, 8, 12, C.text)) + shown(3600, 4500, use('bell', 133, 8, 12, C.accent)) + shown(4500, 5400, use('bell', 133, 8, 12, C.text));
 corner += use('copy', 159, 8, 12, C.text) + use('pin', 211, 8, 12, C.text);
-corner += shown(1100, 3600, `<circle cx="191" cy="14" r="3.25" fill="none" stroke="${C.muted}" stroke-width="1.5" stroke-dasharray="2 2"/>`);
+corner += shown(1100, 3600, `<circle cx="191" cy="14" r="3.75" fill="none" stroke="${C.text}" stroke-width="1.5" stroke-dasharray="1.47262 1.47262" stroke-dashoffset=".73631"/>`);
 corner += shown(1850, 3600, durationTag) + shown(3600, 4700, unmuteTag);
 
 function board(still = false) {
@@ -100,11 +100,11 @@ function board(still = false) {
     });
     if (i === 0 && !still) {
       svg += `<g>${tl.animate('opacity', feedback.map(([t, a]) => [t, 1 - a]))}${caption}</g>`;
-      svg += `<g opacity="0" color="${C.accent}">${tl.animate('opacity', feedback)}${use('check', 29, 50, 12, C.accent)}${text(46, 56, 'Muted for 1 hour', 11, C.accent)}</g>`;
+      svg += `<g opacity="0" color="${C.accent}">${tl.animate('opacity', feedback)}${use('check', 29, 47, 12, C.accent)}${text(46, 53, 'Muted for 1 hour', 11, C.accent)}</g>`;
       svg += hover(corner);
     } else {
       // A one-line title: the state line sits under it with the gap under line 2 of a two-line title.
-      const y = lines.length === 1 ? 40 : 56, color = unread ? C.muted : C.caption;
+      const y = lines.length === 1 ? 37 : 53, color = unread ? C.muted : C.caption;
       svg += text(29, y, 'Idle', 11, color) + text(221, y, age, 11, color, ' text-anchor="end"');
     }
     if (unread) svg += `<circle cx="191" cy="14" r="12" fill="#141414"/><circle cx="191" cy="14" r="3.5" fill="${C.accent}"/>`;
@@ -126,6 +126,7 @@ const ratio = (fg, bg) => (luminance(fg) + .05) / (luminance(bg) + .05);
 for (const fg of [C.text, C.accent, C.muted, C.title, C.caption]) for (const bg of [C.bg, C.hover]) {
   assert.ok(ratio(fg, bg) >= 4.5, `${fg} has 4.5:1 text contrast on ${bg}`);
 }
+assert.ok(ratio(C.caption, plate.on) >= 3, 'the filled tag dots have 3:1 on the tag');
 assert.ok(ratio(C.text, plate.on) >= 4.5, 'the tag words have 4.5:1 on the tag');
 assert.equal(samples.length, 8);
 assert.deepEqual(origin(7), [727, 71]);

@@ -65,12 +65,13 @@ function titleLines(title) {
   let line = words.shift();
   while (words.length && line.length + 1 + words[0].length <= 18) line += ' ' + words.shift();
   const rest = words.join(' ');
-  return rest ? [line, rest.length > 25 ? rest.slice(0, 24) + '…' : rest] : [line];
+  return rest ? [line, rest.length > 25 ? rest.slice(0, 24).trimEnd() + '…' : rest] : [line];
 }
 // The lines that the board draws for these titles (measured on the board, 2026-11-04).
 assert.deepEqual(titleLines('Summarize the open issues into one short note'), ['Summarize the open', 'issues into one short no…']);
 assert.deepEqual(titleLines('Compare two parsers for the import step'), ['Compare two', 'parsers for the import s…']);
 assert.deepEqual(titleLines('Rename the config keys'), ['Rename the config', 'keys']);
+assert.deepEqual(titleLines('Check the index and tune the ranking of results'), ['Check the index', 'and tune the ranking of…']);
 
 // Toolbar: content x 7 to 957, items 4 px apart, text sized at 0.6 em for each character.
 let toolbar = '<circle cx="15" cy="21" r="8" fill="url(#disc)"/>';
@@ -106,10 +107,10 @@ samples.forEach(([folder, title, , state, unread, question, age], i) => {
   cards += (quiet ? icon(i, '#8f8f8f') : icon(i, '#ffffff', .65)) + `<g transform="translate(${x} ${y})">`;
   cards += text(29, 9, folder, 11, muted);
   titleLines(title).forEach((line, row) => { cards += text(29, 24.5 + 15 * row, line, 13, quiet ? '#ababab' : '#fff'); });
-  cards += text(29, 56, state === 'working' ? 'Working' : 'Idle', 11, unread ? '#fff' : state === 'working' ? accent : muted);
-  cards += text(221, 56, age, 11, muted, ' text-anchor="end"');
+  cards += text(29, 53, state === 'working' ? 'Working' : 'Idle', 11, unread ? '#fff' : state === 'working' ? accent : muted);
+  cards += text(221, 53, age, 11, muted, ' text-anchor="end"');
   // A question is an accent disc with no plate at rest; the dot rests on its 8% plate.
-  if (question) cards += `<circle cx="191" cy="14" r="8" fill="${accent}"/>` + text(191, 14, '?', 11, '#000000', ' text-anchor="middle" font-weight="800"');
+  if (question) cards += `<circle cx="191" cy="14" r="8" fill="${accent}"/><text x="191" y="18" font-size="11" fill="#000000" text-anchor="middle" font-weight="800">?</text>`;
   else if (unread) cards += `<circle cx="191" cy="14" r="12" fill="rgb(255 255 255 / .08)"/><circle cx="191" cy="14" r="3.5" fill="${accent}"/>`;
   cards += '</g>';
 });
