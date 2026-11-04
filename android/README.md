@@ -193,7 +193,7 @@ instead.
 
 Touch and hold a card to open the session inspector at that point. It shows
 the provider, folder, title, and state, and an **Open in <app>** button. Below
-it are the **Unread**, **In the drawer**, and **Pinned** switches, **Pin order**
+it are the **Unread**, **Pinned**, and **In the drawer** switches, **Pin order**
 (**Earlier** and **Later**) for a pinned row, and **Discard result** for a
 Working row. A control that the row does not allow is dimmed. The inspector
 stays open after a change and shows the new row data. It covers the message

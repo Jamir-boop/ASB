@@ -38,9 +38,9 @@ class CardRulesTest {
         assertEquals(custom.muted, state(idle.copy(state = "waiting"), custom))
         assertEquals(gnome.muted, state(idle))
         assertEquals(gnome.muted, state(idle.copy(state = "unknown")))
-        // GNOME Pending drops dim-label; Custom keeps the muted state color.
+        // Pending drops dim-label in both GNOME and Custom.
         assertEquals(gnome.text, state(idle.copy(pending = true, unread = true)))
-        assertEquals(custom.muted, state(idle.copy(pending = true, unread = true), custom))
+        assertEquals(custom.text, state(idle.copy(pending = true, unread = true), custom))
         assertEquals(custom.accent, state(idle.copy(state = "working"), custom))
     }
 
@@ -101,7 +101,7 @@ class CardRulesTest {
         assertEquals(listOf("alert" to "mark-read"), kinds(alert))
         assertEquals(CornerControl("alert", "mark-read", "Mark read in ASB"), cornerControls(alert, false, false, now).single())
         assertEquals(listOf("alert" to "mark-read"), kinds(alert.copy(state = "working", discardResult = true)))
-        assertEquals(listOf("mark-read", "drawer-in", "pin"), rowMenuActions(alert).map { it.action })
+        assertEquals(listOf("mark-read", "pin", "drawer-in"), rowMenuActions(alert).map { it.action })
         assertEquals(listOf("pin" to "unpin"), kinds(idle.copy(pinned = true)))
         assertEquals(listOf("dot" to "mark-read", "pin" to "unpin"), kinds(idle.copy(unread = true, pinned = true)))
         // The armed Discard ring shows; the unarmed offer stays in the menu.

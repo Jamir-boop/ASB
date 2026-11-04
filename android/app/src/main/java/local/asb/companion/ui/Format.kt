@@ -13,15 +13,15 @@ import local.asb.companion.data.UsageScan
 import local.asb.companion.data.Thread
 import local.asb.companion.data.chartLabelShown
 
-// Port of duration_text: the second unit of a two-unit time has two digits (1m05s, 1h05m).
-fun durationText(seconds: Long): String {
+// Port of duration_text: the second unit of a two-unit time has two digits (1m05s, 1h05m); whole minutes drop seconds from 1m.
+fun durationText(seconds: Long, wholeMinutes: Boolean = false): String {
     val total = seconds.coerceAtLeast(0)
     val hours = total / 3600
     val minutes = total / 60 % 60
     val remainder = total % 60
     return when {
         hours > 0 -> "${hours}h${minutes.toString().padStart(2, '0')}m"
-        minutes > 0 -> "${minutes}m${remainder.toString().padStart(2, '0')}s"
+        minutes > 0 -> "${minutes}m" + if (wholeMinutes) "" else "${remainder.toString().padStart(2, '0')}s"
         else -> "${remainder}s"
     }
 }
@@ -56,9 +56,9 @@ fun spokenLimit(seconds: Long): String {
 }
 
 // Port of working_duration (without the state check; the caller passes a Working start).
-fun workingDuration(workingSinceMs: Long, nowMs: Long): String {
+fun workingDuration(workingSinceMs: Long, nowMs: Long, wholeMinutes: Boolean = false): String {
     if (workingSinceMs <= 0 || workingSinceMs > nowMs) return ""
-    return durationText((nowMs - workingSinceMs) / 1000)
+    return durationText((nowMs - workingSinceMs) / 1000, wholeMinutes)
 }
 
 // Port of the date part of row_meta.
@@ -212,4 +212,11 @@ fun scanText(scan: UsageScan): String = when {
 /** The Usage machine row line: Local, Connected, Offline, or Offline · last report Oct 25, 14:30. */
 fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine).let { report ->
     if (report.isEmpty()) machineStateText(machine) else "Offline · last report" + report.removePrefix("Last report")
+}
+
+/** The Compact state text: the reset countdown, or the state word and the Working time in whole minutes. */
+fun compactStateText(row: Thread, nowMs: Long): String {
+    val left = limitLeft(row, nowMs)
+    val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs, wholeMinutes = true) else ""
+    return if (left > 0) "Resets in ${limitText(left)}" else cardStateLabel(row) + if (working.isNotEmpty()) " · $working" else ""
 }

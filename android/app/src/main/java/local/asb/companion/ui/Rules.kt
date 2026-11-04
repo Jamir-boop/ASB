@@ -1,5 +1,6 @@
 package local.asb.companion.ui
 
+import androidx.compose.ui.graphics.Color
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.math.abs
@@ -126,6 +127,14 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
         "idle", "waiting" -> 2
         else -> 3
     }
+    // Pending sorts by the mark of this view: Working ?, other ?, !, dot, then the rest; Working rows lead other buckets.
+    fun rank(row: Thread) = if (!row.pending) (if (row.state == "working") 0 else 1) else
+        when (attentionIndicator(row, f.drawerOnly)) {
+            "question" -> if (row.state == "working") 0 else 1
+            "alert" -> 2
+            "dot" -> 3
+            else -> 4
+        }
     fun moment(row: Thread) = if (row.state == "working") row.workingSinceMs.coerceAtLeast(0) else maxOf(row.updatedAtMs, row.mutedAtMs)
     return threads.filter { row ->
         (f.archived || !row.archived) &&
@@ -140,7 +149,7 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
         compareBy<Thread> { !it.pinned }
             .thenBy { if (it.pinned) it.pinIndex else 0 }
             .thenBy { if (it.pinned) 0 else bucket(it) }
-            .thenBy { !it.pinned && it.state != "working" }
+            .thenBy { if (it.pinned) 0 else rank(it) }
             .thenByDescending { if (it.pinned) 0L else moment(it) }
             .thenComparator { left, right -> compareIds(left.id, right.id) },
     )
@@ -157,9 +166,9 @@ fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
     val indicator = attentionIndicator(row)
     val unread = if (showsAction(row)) actionNeedsAttention(row) || row.unread else indicator in setOf("question", "alert", "dot")
     add(if (row.drawer || unread) MenuAction("Read", "mark-read") else MenuAction("Unread", "mark-unread"))
+    add(if (row.pinned) MenuAction("Unpin", "unpin") else MenuAction("Pin", "pin"))
     if (row.drawer) add(MenuAction("Take out of drawer", "drawer-out"))
     else if (indicator == "dot" || indicator == "alert") add(MenuAction("Put in drawer", "drawer-in"))
-    add(if (row.pinned) MenuAction("Unpin", "unpin") else MenuAction("Pin", "pin"))
     if (row.pinned) {
         add(MenuAction("Move pin earlier", "pin-up"))
         add(MenuAction("Move pin later", "pin-down"))
@@ -196,8 +205,8 @@ fun rowPanelControls(row: Thread): Map<String, PanelControl> {
     fun pick(vararg names: String) = names.firstOrNull { it in offered }
     return buildMap {
         put("unread", PanelControl("mark-unread" !in offered, pick("mark-read", "mark-unread")))
-        put("drawer", PanelControl("drawer-out" in offered, pick("drawer-out", "drawer-in")))
         put("pinned", PanelControl("unpin" in offered, pick("unpin", "pin")))
+        put("drawer", PanelControl("drawer-out" in offered, pick("drawer-out", "drawer-in")))
         if ("pin-up" in offered) put("order", PanelControl(true, "pin-up"))
         if ("discard-result" in offered || "keep-result" in offered) {
             put("discard", PanelControl("keep-result" in offered, pick("keep-result", "discard-result")))
@@ -353,9 +362,11 @@ fun startIndex(anchorIndex: Int, flow: Boolean, capacity: Int, lead: Int): Int =
     else -> lead + anchorIndex
 }
 
-/** The quiet Idle-read rule of the Comfortable view (the `.asb-idle-read` CSS); pressed rows keep normal text. */
+/** The quiet read rule of the Comfortable view (the `.asb-idle-read` CSS); Unknown is quiet only with no mark. */
 fun quietRow(row: Thread, comfortable: Boolean, drawerView: Boolean, nowMs: Long = System.currentTimeMillis()): Boolean =
-    comfortable && (row.state == "idle" || row.state == "waiting") && !(row.unread || row.questionAttention || row.pending) &&
+    comfortable && (row.state == "idle" || row.state == "waiting" ||
+        row.state == "unknown" && attentionIndicator(row, drawerView, nowMs).isEmpty()) &&
+        !(row.unread || row.questionAttention || row.pending) &&
         limitLeft(row, nowMs) == 0L && !(drawerView && row.drawer)
 
 data class CardTones(val title: String, val caption: String, val state: String)
@@ -374,8 +385,7 @@ fun cardTones(
     }
     val state = when {
         row.state == "working" -> palette.success
-        // GNOME drops dim-label for Pending; Custom keeps the muted state color.
-        row.pending && !palette.custom -> palette.text
+        row.pending -> palette.text
         else -> palette.muted
     }
     // The Grey tone of a view-only card with no attention; Working keeps its state color.
@@ -412,4 +422,21 @@ fun cornerControls(
         indicator == "stop" -> add(CornerControl("stop", null, "Task stopped"))
     }
     if (row.pinned) add(CornerControl("pin", "unpin", "Unpin in ASB"))
+}
+
+/** The Compact question or alert glyph: disc diameter in dp, type size in sp, and glyph color. */
+data class CompactMarkStyle(val discSize: Int, val fontSize: Int, val color: String)
+
+// The Comfortable corner rule: an active ? or ! is an accent disc; a read permission wait is a bare quiet glyph.
+fun compactMarkStyle(row: Thread, palette: Palette, drawerView: Boolean, nowMs: Long): CompactMarkStyle {
+    val active = cornerControls(row, drawerView, false, nowMs).any { it.kind in setOf("question", "alert") && it.action != null }
+    return if (active) CompactMarkStyle(12, 9, palette.background) else CompactMarkStyle(0, 11, palette.quietCaption)
+}
+
+/** The provider mark tint: the message light, then the limit, then the quiet caption of a quiet card. */
+fun providerMarkTint(palette: Palette, limited: Boolean, messageLit: Boolean, quiet: Boolean = false): Color = when {
+    messageLit -> hexColor(palette.accent)
+    limited -> hexColor(palette.text).copy(alpha = .4f)
+    quiet -> hexColor(palette.quietCaption)
+    else -> hexColor(palette.text).copy(alpha = .65f)
 }

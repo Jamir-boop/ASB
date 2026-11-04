@@ -4,11 +4,12 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Pending cards now sort by their mark: a Working `?`, other `?` cards, `!`, the dot, then the rest. Each mark group keeps newest first.
 - The board now holds card places while you use the pointer, until 1 second without motion, a board leave, or a key press. Content still updates. An open row panel holds places until it closes. Search, filters, view and size changes, Show all, and pin moves apply at once.
 - A touch-screen long press now opens the card row panel at the press point. A mouse hold stays unchanged.
-
-- Pending cards now sort by their mark: a Working `?`, other `?` cards, `!`, the dot, then the rest. Each mark group keeps newest first.
-
+- Android Pending cards now sort by their visible mark: Working `?`, other `?`, `!`, dot, then the rest. Pins keep their order. The session inspector puts **Pinned** before **In the drawer**.
+- Android Compact now uses 12 dp accent discs for active `?` and `!`, and a bare quiet `?` for a read permission wait. Its Working time uses whole minutes from one minute (`Working · 3m`), in the caption color. A usage limit says **Resets in 4h31m**.
+- Android quiet cards now use opaque quiet provider marks. Pending state words use the text color in custom palettes too; Working keeps its state color. An Unknown card with no mark uses the read Idle tones in Comfortable, with normal tones while pressed.
 - Made the card marks clearer. In Comfortable and in the tooltip, `?` and `!` are 16 px filled discs in the accent color with the glyph in the background color, and their Read button has no plate until the pointer or keyboard focus is on the card. A read permission wait shows a quiet `?` with no disc. The pinned pin at rest has no plate, and the pin, the stop square, and the armed Discard ring use the quiet caption color. Compact keeps the `?` and `!` glyphs.
 - The card now says **Failed** after a failed task and **Stopped** after you stop a task or a usage limit stops it (before, **Stopped** for a failed task and **Idle** for a stopped task). A usage-limit card shows **Resets in 4h32m** as one phrase at the left, and its stop square shows after the reset. The board, the browser view, and the Android app use the same words.
 - Compact rows now have a 14 px mark cell at the row end, so the marks of a column line up. A pinned row with no mark shows a small quiet pin there. Read Idle and read Waiting rows use the quiet tones, as in Comfortable, and a Working row says `Working · 3m12s`.
