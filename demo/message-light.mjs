@@ -7,13 +7,13 @@ const samples = [
   ['tools-api', 'Plan the release of the import job', 'codex', 'idle', 1, 0, '4m ago'],
   ['field-notes', 'Summarize the open issues into one short note', 'claude', 'idle', 1, 0, '12m ago'],
   ['docs-site', 'Write the release notes for 2.4', 'codex', 'idle', 1, 0, '31m ago'],
-  ['importer', 'Compare two parsers for the import step', 'claude', 'working', 0, 0, '6m 02s'],
-  ['billing', 'Coordinate the retry work across the services', 'codex', 'working', 0, 0, '2m 14s'],
+  ['importer', 'Compare two parsers for the import step', 'claude', 'working', 0, 0, '6m02s'],
+  ['billing', 'Coordinate the retry work across the services', 'codex', 'working', 0, 0, '2m14s'],
   ['infra', 'Draft the migration plan for the queue', 'claude', 'working', 0, 1, '48s'],
   ['web-app', 'Review the flaky test in CI', 'codex', 'idle', 0, 0, '1h ago'],
   ['tools-api', 'Rename the config keys', 'claude', 'idle', 0, 0, '2h ago'],
   ['docs-site', 'Explain the cache warmup', 'codex', 'idle', 0, 0, '3h ago'],
-  ['billing', 'Check the retry limits in the billing worker', 'claude', 'working', 0, 0, '1m 30s'],
+  ['billing', 'Check the retry limits in the billing worker', 'claude', 'working', 0, 0, '1m30s'],
   ['importer', 'Sketch the CSV error report', 'codex', 'idle', 0, 0, '5h ago'],
   ['field-notes', 'List the unused feature flags', 'claude', 'idle', 0, 0, '6h ago'],
 ];
@@ -98,16 +98,15 @@ assert.ok(Math.abs(x - 4 - 957) < .001, 'the toolbar fills its content width');
 let cards = [239, 480, 721].map(x => `<path d="M${x + .5} 0V212" stroke="#2b2b2b"/>`).join('');
 samples.forEach(([folder, title, , state, unread, question, age], i) => {
   const [x, y] = origin(i), quiet = state === 'idle' && !unread;
-  const muted = quiet ? '#a0a0a0' : '#bcbcbc';
+  const muted = quiet ? '#8f8f8f' : '#bcbcbc';
   cards += icon(i, '#a5a5a5', .9) + `<g transform="translate(${x} ${y})">`;
   cards += text(29, 9, folder, 11, muted);
   titleLines(title).forEach((line, row) => { cards += text(29, 24.5 + 15 * row, line, 13, quiet ? '#ababab' : '#fff'); });
   cards += text(29, 56, state === 'working' ? 'Working' : 'Idle', 11, unread ? '#fff' : state === 'working' ? accent : muted);
   cards += text(221, 56, age, 11, muted, ' text-anchor="end"');
-  if (unread || question) {
-    cards += '<circle cx="212" cy="14" r="12" fill="rgb(255 255 255 / .08)"/>';
-    cards += question ? text(212, 14, '?', 11, accent, ' text-anchor="middle" font-weight="800"') : `<circle cx="212" cy="14" r="3.5" fill="${accent}"/>`;
-  }
+  // A question is an accent disc with no plate at rest; the dot rests on its 8% plate.
+  if (question) cards += `<circle cx="191" cy="14" r="8" fill="${accent}"/>` + text(191, 14, '?', 11, '#000000', ' text-anchor="middle" font-weight="800"');
+  else if (unread) cards += `<circle cx="191" cy="14" r="12" fill="rgb(255 255 255 / .08)"/><circle cx="191" cy="14" r="3.5" fill="${accent}"/>`;
   cards += '</g>';
 });
 

@@ -6,7 +6,7 @@ import { timeline, css, checkSvg, FONT_MONO, escape, number } from './hero-smil.
 import { appDefs, cursor } from './hero-apps.mjs';
 
 const tl = timeline(9000);
-const C = { bg: '#000000', text: '#ffffff', accent: '#ffb900', muted: '#bcbcbc', title: '#ababab', caption: '#a0a0a0', hover: '#261c00' };
+const C = { bg: '#000000', text: '#ffffff', accent: '#ffb900', muted: '#bcbcbc', title: '#ababab', caption: '#8f8f8f', hover: '#261c00' };
 const origin = i => [4 + 241 * Math.floor(i / 2), 3 + 68 * (i % 2)];
 const samples = [
   ['billing', ['Check the retry', 'limits'], 'claude', '4m ago'],
@@ -35,13 +35,13 @@ const icons = `<symbol id="mute" viewBox="0 0 16 16">${rawMute.match(/<path\b[^>
   + '<symbol id="pin" viewBox="0 0 16 16"><path d="M5 0a1 1 0 0 0 0 2h.14l.52 3.59A5 5 0 0 0 3 10h10a5 5 0 0 0-2.66-4.41L10.85 2H11a1 1 0 0 0 0-2zM7 11v4l1 1 1-1v-4z"/></symbol>'
   + '<symbol id="check" viewBox="0 0 16 16"><path d="m3 9 3 3 7-8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>';
 
-// Pocket: 16 px transparent-to-window fade, and only the bottom-left corner rounded.
+// Pocket: the hovered card surface from the card top to y 34, square, with a 16 px fade on the left side only.
 function pocket(left) {
-  return `<path d="M${left} 2H229V28H${left + 12}Q${left} 28 ${left} 16Z" fill="url(#pocket-${left})"/>`;
+  return `<rect x="${left}" y="0" width="${229 - left}" height="34" fill="url(#pocket-${left})"/>`;
 }
 const pocketLefts = [111, 14, 48];
 let defs = appDefs() + icons + '<clipPath id="tag-word"><rect x="0" y="0" width="46" height="18"/></clipPath>';
-for (const left of pocketLefts) defs += `<linearGradient id="pocket-${left}" gradientUnits="userSpaceOnUse" x1="${left}" x2="${left + 16}"><stop stop-color="${C.bg}" stop-opacity="0"/><stop offset="1" stop-color="${C.bg}"/></linearGradient>`;
+for (const left of pocketLefts) defs += `<linearGradient id="pocket-${left}" gradientUnits="userSpaceOnUse" x1="${left}" x2="${left + 16}"><stop stop-color="${C.hover}" stop-opacity="0"/><stop offset="1" stop-color="${C.hover}"/></linearGradient>`;
 
 // The widest duration has a 46 px word slot; the five dots use 28 px.
 const tagWidth = 8 + 46 + 6 + 28 + 7;
@@ -92,7 +92,7 @@ function board(still = false) {
       svg += `<g opacity="0" color="${C.accent}">${tl.animate('opacity', feedback)}${use('check', 29, 50, 12, C.accent)}${text(46, 56, 'Muted for 1 hour', 11, C.accent)}</g>`;
       svg += hover(corner);
     } else svg += text(29, 56, 'Idle', 11, C.caption) + text(221, 56, age, 11, C.caption, ' text-anchor="end"');
-    if (unread) svg += `<circle cx="191" cy="14" r="3.5" fill="${C.accent}"/>`;
+    if (unread) svg += `<circle cx="191" cy="14" r="12" fill="#141414"/><circle cx="191" cy="14" r="3.5" fill="${C.accent}"/>`;
     svg += '</g>';
   });
   return svg;
