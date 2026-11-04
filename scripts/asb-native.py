@@ -776,6 +776,12 @@ def limit_rows(rows, limit, show_all=False):
                             "asbMore": len(rest), "asbLimit": limit, "asbFirst": rest[0]["id"]}]
 
 
+def read_text_scale(settings):
+    """The GNOME text scale: gtk-xft-dpi is 1024 times the dots per inch, and 96 dpi is 1.0; unset is 1.0."""
+    dpi = settings.get_property("gtk-xft-dpi")
+    return dpi / (96 * 1024) if dpi > 0 else 1.0
+
+
 def pack_columns(rows, width, height, column_width=DEFAULT_COLUMN_WIDTH, row_height=ROW_HEIGHT):
     columns = max(1, (width + 12) // (column_width + 12))
     capacity = max(1, (height - 4) // row_height)
@@ -5923,6 +5929,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
     wide_controls, tiny_controls, search_expanded = False, False, False
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
+    text_scale, card_heights, text_scale_signal = 1.0, (ROW_HEIGHT, COMFORTABLE_ROW_HEIGHT), None
     copy_kind = "relative"
     mute_for = "30m"
     pet = "off"
@@ -5974,7 +5981,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.pending, self.archived = False, False
         self.states, self.profiles = set(), set()
         self.filter_model = ()
-        self.row_height = COMFORTABLE_ROW_HEIGHT if self.view == "comfortable" else ROW_HEIGHT
+        self.text_scale = read_text_scale(self.get_settings())
+        self.card_heights = self.measure_card_heights()
+        self.row_height = self.card_heights[self.view == "comfortable"]
         self.focused_id = None
         if self.view == "comfortable":
             self.add_css_class("asb-comfortable")
@@ -6031,6 +6040,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if os.name == "nt":
             self.connect("realize", set_windows_icon)
         self.set_palette(None)
+        self.text_scale_signal = self.get_settings().connect("notify::gtk-xft-dpi", self.text_scale_changed)
         self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh sessions")
         self.refresh_button.connect("clicked", lambda *_: self.refresh(True))
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -6449,36 +6459,37 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def set_palette(self, colors):
         base = ".asb-column-flow"
+        scale = self.text_scale  # The GNOME text scale; mark glyphs, the number keycap, icons, and buttons keep their sizes.
         css = f"""
 {base}.asb-preferences button.asb-pet-tile {{ min-width: 0; min-height: 0; padding: 0; border-radius: 8px;
     background: alpha(@window_fg_color, .10); border: 1px solid alpha(@window_fg_color, .15); box-shadow: none; }}
 {base}.asb-preferences button.asb-pet-tile:hover {{ background: alpha(@window_fg_color, .15); }}
 {base}.asb-preferences button.asb-pet-tile:checked {{ background: alpha(@window_fg_color, .10); color: @window_fg_color;
     border-color: transparent; box-shadow: inset 0 0 0 2px @accent_color; }}
-{base} .asb-pet-name {{ font-size: 13px; font-weight: normal; }}
+{base} .asb-pet-name {{ font-size: {13 * scale:g}px; font-weight: normal; }}
 {base} .asb-pet-check {{ background: @accent_color; color: #ffffff; border-radius: 50%; }}
 {base} .asb-pet-stage {{ min-height: 114px; padding: 0 11px; border: 1px solid alpha(@window_fg_color, .15);
     border-radius: 8px; background: @window_bg_color; }}
-{base} .asb-session {{ min-height: {ROW_HEIGHT}px; transition-property: background-color, color; padding: 0; border-radius: 3px; font-size: 13px; }}
-{base}.asb-comfortable .asb-session {{ min-height: {COMFORTABLE_ROW_HEIGHT}px; }}
+{base} .asb-session {{ min-height: {self.card_heights[0]}px; transition-property: background-color, color; padding: 0; border-radius: 3px; font-size: {13 * scale:g}px; }}
+{base}.asb-comfortable .asb-session {{ min-height: {self.card_heights[1]}px; }}
 {base}.asb-comfortable .asb-session.asb-hover-paint:not(:focus-within) {{ background: transparent; }}
-{base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: 11px; }}
+{base} .asb-filter-pill {{ min-height: 24px; border-radius: 99px; padding: 2px 8px; font-size: {11 * scale:g}px; }}
 {base} .asb-filter-pill:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
 {base} .asb-chip-dot {{ min-width: 8px; min-height: 8px; border-radius: 99px; }}
 {base} .asb-chip-scroll {{ background: transparent; }}
 {base} .asb-chip-scroll undershoot.left {{ background: linear-gradient(to right, @window_bg_color, alpha(@window_bg_color, 0)); min-width: 16px; }}
 {base} .asb-chip-scroll undershoot.right {{ background: linear-gradient(to left, @window_bg_color, alpha(@window_bg_color, 0)); min-width: 16px; }}
-{base} .asb-filter-row {{ min-height: 30px; padding: 0; border-radius: 5px; font-size: 13px; font-weight: normal; }}
+{base} .asb-filter-row {{ min-height: 30px; padding: 0; border-radius: 5px; font-size: {13 * scale:g}px; font-weight: normal; }}
 {base} .asb-filter-indent {{ margin-left: 16px; }}
-{base} .asb-filter-head {{ font-size: 11px; color: alpha(@window_fg_color, .72); }}
+{base} .asb-filter-head {{ font-size: {11 * scale:g}px; color: alpha(@window_fg_color, .72); }}
 {base} .asb-filter-head-top {{ margin-top: 8px; }}
-{base} .asb-filter-footer {{ min-height: 30px; border-radius: 0 0 5px 5px; font-size: 13px; }}
+{base} .asb-filter-footer {{ min-height: 30px; border-radius: 0 0 5px 5px; font-size: {13 * scale:g}px; }}
 {base} .asb-toolbar-button,
 {base} menubutton.asb-toolbar-button > button,
 {base} .asb-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
 {base} menubutton.asb-toolbar-button {{ min-height: 0; min-width: 0; padding: 0; }}
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
-{base} .asb-state {{ font-size: 11px; }}
+{base} .asb-state {{ font-size: {11 * scale:g}px; }}
 {base} .asb-provider {{ opacity: .65; }}
 {base} .asb-message-lit .asb-provider {{ color: @accent_color; opacity: 1; }}
 {base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
@@ -6548,7 +6559,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-copy-button.asb-copy-off, {base} .asb-copy-button.asb-copy-off:hover, {base} .asb-copy-button.asb-copy-off:focus-visible {{ background: none; }}
 {base} .asb-mute-on {{ color: @accent_color; }}
 {base} .asb-copy-tag {{ min-height: 18px; padding: 2px 7px 2px 8px; border-radius: 9px; background: alpha(@window_fg_color, .12); }}
-{base} .asb-copy-tag-word {{ font-size: 10px; font-weight: bold; letter-spacing: .04em; }}
+{base} .asb-copy-tag-word {{ font-size: {10 * scale:g}px; font-weight: bold; letter-spacing: .04em; }}
 {base} .asb-copy-tag-dot {{ min-width: 4px; min-height: 4px; border-radius: 50%; background: alpha(@window_fg_color, .3); }}
 {base} .asb-copy-tag-dot.asb-copy-tag-on {{ background: @accent_color; }}
 {base} .asb-copy-tag-dot.asb-copy-tag-off {{ min-width: 3px; min-height: 3px; background: none; border: 1.5px solid alpha(@window_fg_color, .3); }}
@@ -6572,23 +6583,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-drawer.asb-unhovered:not(.asb-drawer-lit):not(.asb-key-focus) .asb-read-button {{ opacity: 0; }}
 {base}:not(.asb-custom) .asb-unread.asb-hovered .asb-state:not(.success) {{ opacity: .55; }}
 {base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}
-.asb-tooltip {{ font-size: 12px; }}
-.asb-tooltip .asb-tooltip-title {{ font-size: 13px; }}
-.asb-tooltip .asb-tooltip-path, .asb-tooltip .asb-tooltip-footer, .asb-tooltip .asb-tooltip-flags {{ font-size: 11px; }}
+.asb-tooltip {{ font-size: {12 * scale:g}px; }}
+.asb-tooltip .asb-tooltip-title {{ font-size: {13 * scale:g}px; }}
+.asb-tooltip .asb-tooltip-path, .asb-tooltip .asb-tooltip-footer, .asb-tooltip .asb-tooltip-flags {{ font-size: {11 * scale:g}px; }}
 .asb-tooltip .asb-tooltip-muted {{ color: alpha(@window_fg_color, .72); opacity: 1; }}
 .asb-tooltip .asb-working {{ color: @success_color; }}
 .asb-tooltip .asb-provider {{ opacity: .65; }}
 .asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
 {base} popover.asb-row-panel > contents {{ padding: 8px; border: 1px solid mix(@popover_bg_color, @popover_fg_color, .15); border-radius: 12px;
     background: @popover_bg_color; box-shadow: 0 1px 5px 1px alpha(black, .09), 0 2px 14px 3px alpha(black, .05); }}
-{base} .asb-row-panel .asb-panel-title {{ font-size: 12px; font-weight: bold; margin: 4px 8px 8px; }}
-{base} .asb-row-panel .asb-panel-action {{ min-height: 30px; padding: 0 8px; border-radius: 5px; font-size: 13px; font-weight: normal; }}
+{base} .asb-row-panel .asb-panel-title {{ font-size: {12 * scale:g}px; font-weight: bold; margin: 4px 8px 8px; }}
+{base} .asb-row-panel .asb-panel-action {{ min-height: 30px; padding: 0 8px; border-radius: 5px; font-size: {13 * scale:g}px; font-weight: normal; }}
 {base} .asb-row-panel separator {{ margin: 4px 0; }}
 /* Themes such as Colloid ring a focused flat button; only a keyboard focus has a ring here. */
 {base} .asb-row-panel .asb-panel-action:focus:not(:focus-visible) {{ outline: none; }}
 {base} .asb-row-panel .asb-panel-action:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
-{base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: 11px; }}
-{base} .asb-row-panel .asb-panel-caption {{ font-size: 11px; color: alpha(@window_fg_color, .72); opacity: 1; }}
+{base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: {11 * scale:g}px; }}
+{base} .asb-row-panel .asb-panel-caption {{ font-size: {11 * scale:g}px; color: alpha(@window_fg_color, .72); opacity: 1; }}
 {base} .asb-row-panel button.asb-panel-captioned {{ padding-top: 5px; padding-bottom: 5px; }}
 {base} .asb-row-panel button.asb-copy-off .asb-panel-label, {base} .asb-row-panel button.asb-copy-off .asb-panel-key, {base} .asb-row-panel button.asb-copy-off image {{ opacity: .5; }}
 {base} .asb-row-panel button.asb-copy-off:hover, {base} .asb-row-panel button.asb-copy-off:active {{ background: none; }}
@@ -7154,6 +7165,31 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.surface_signal = self.layout_surface.connect("layout", self.queue_geometry)
         self.queue_geometry()
 
+    def measure_card_heights(self):
+        """The Compact and Comfortable card heights: 22 and 68 px at text scale 1.0, plus the growth of their measured lines
+        (Compact one 13 px line; Comfortable two 13 px title lines, the folder line, and the 11 px state line)."""
+        if self.text_scale == 1:
+            return ROW_HEIGHT, COMFORTABLE_ROW_HEIGHT  # No growth, and no Pango work at the usual scale.
+        layout = self.create_pango_layout("Ag")
+        font = self.get_pango_context().get_font_description().copy()
+        def growth(size):
+            heights = []
+            for px in (size, size * self.text_scale):
+                font.set_absolute_size(px * Pango.SCALE)
+                layout.set_font_description(font)
+                heights.append(layout.get_pixel_size()[1])
+            return heights[1] - heights[0]
+        return ROW_HEIGHT + growth(13), COMFORTABLE_ROW_HEIGHT + 2 * growth(13) + 2 * growth(11)
+
+    def text_scale_changed(self, *_args):
+        # The board CSS and the card heights follow the GNOME text scale; check_geometry repacks with the measured cards.
+        if self.closed:
+            return
+        self.text_scale = read_text_scale(self.get_settings())
+        self.card_heights = self.measure_card_heights()
+        self.set_palette(self.hover_colors)
+        self.queue_geometry()
+
     def queue_geometry(self, *_args):
         if not self.closed and not self.geometry_idle:
             self.geometry_idle = GLib.idle_add(self.check_geometry)
@@ -7170,6 +7206,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         viewport = self.scroll.get_child()
         geometry = (viewport.get_width(), viewport.get_height())
         row_height = max((widget.get_height() for widget in self.focus_widgets.values()), default=0) or self.row_height
+        index = self.view == "comfortable"
+        if self.text_scale != 1 and row_height > self.card_heights[index]:
+            # Lines of two fonts on one baseline can be taller than their estimate: every card takes the tallest card height.
+            self.card_heights = tuple(row_height if part == index else height for part, height in enumerate(self.card_heights))
+            self.set_palette(self.hover_colors)
         if geometry[0] > 0 and geometry[1] > 0 and (geometry, row_height) != (self.geometry, self.row_height):
             if self.search_row.get_child_revealed() != self.search_row.get_reveal_child():
                 # The 150 ms slide changes the viewport height on each frame; one render follows when the slide ends.
@@ -7322,7 +7363,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.cancel_scroll()
             focused = self.focus_key() or self.focused_id
             self.view = view
-            self.row_height = COMFORTABLE_ROW_HEIGHT if view == "comfortable" else ROW_HEIGHT
+            self.row_height = self.card_heights[view == "comfortable"]
             if view == "comfortable":
                 self.add_css_class("asb-comfortable")
             else:
@@ -10679,6 +10720,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.surface_signal:
             self.layout_surface.disconnect(self.surface_signal)
             self.surface_signal = self.layout_surface = None
+        if self.text_scale_signal:
+            self.get_settings().disconnect(self.text_scale_signal)
+            self.text_scale_signal = None
         if self.context_menu:
             self.context_menu.popdown()
         for widget in self.row_cache.values():

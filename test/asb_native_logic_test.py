@@ -6158,6 +6158,42 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertRegex(window.css.load_from_string.call_args.args[0],
                          r"button\.asb-panel-where:disabled, [^{]*button\.asb-panel-where:disabled \* \{\s*color: #838383; opacity: 1; filter: none; \}")
 
+    def test_board_text_follows_the_gnome_text_scale(self):
+        self.assertEqual([asb.read_text_scale(SimpleNamespace(get_property=lambda _name, value=value: value))
+                          for value in (-1, 0, 98304, 122880, 147456)], [1.0, 1.0, 1.0, 1.25, 1.5])
+        window = object.__new__(Window)
+        window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+        window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
+        window.native_colors = lambda: {"background": "#222226", "text": "#ffffff", "muted": "#b8b8b9", "accent": "#3584e4", "divider": "#3a3a3e"}
+        window.popover_colors = lambda: ("#36363a", "#ffffff")
+        self.assertEqual(window.measure_card_heights(), (22, 68))  # Exactly the old heights at scale 1.0.
+        css = {}
+        for scale in (1.0, 1.25, 1.5):
+            window.text_scale = scale
+            window.set_palette(None)
+            css[scale] = window.css.load_from_string.call_args.args[0]
+        sizes = {scale: [float(size) for size in re.findall(r"font-size: ([\d.]+)px", text)] for scale, text in css.items()}
+        self.assertTrue(all(size.is_integer() for size in sizes[1.0]))
+        for scale in (1.25, 1.5):
+            scaled = [new for old, new in zip(sizes[1.0], sizes[scale]) if new != old]
+            self.assertEqual(len(scaled), 15)
+            self.assertTrue(all(new == old * scale or new == old for old, new in zip(sizes[1.0], sizes[scale])))
+        for scale, card, state in ((1.0, "13px", "11px"), (1.25, "16.25px", "13.75px"), (1.5, "19.5px", "16.5px")):
+            self.assertIn(f"border-radius: 3px; font-size: {card}; }}", css[scale])
+            self.assertIn(f".asb-column-flow .asb-state {{ font-size: {state}; }}", css[scale])
+            self.assertIn(f".asb-row-panel .asb-panel-caption {{ font-size: {state};", css[scale])
+            self.assertIn(f".asb-tooltip .asb-tooltip-title {{ font-size: {card}; }}", css[scale])
+            # The mark glyphs, the passive ?, and the number keycap keep their sizes.
+            for fixed in ("color: @window_bg_color; font-size: 9px; font-weight: 800;", "color: @window_bg_color; font-size: 11px; font-weight: 800;",
+                          "font-size: 11px; font-weight: bold; line-height: 15px;", "color: mix(@window_bg_color, @window_fg_color, 0.54); font-size: 11px; font-weight: 800;"):
+                self.assertIn(fixed, css[scale])
+            self.assertIn(".asb-column-flow .asb-session { min-height: 22px;", css[scale])
+        window.card_heights = (27, 83)
+        window.set_palette(None)
+        text = window.css.load_from_string.call_args.args[0]
+        self.assertIn(".asb-column-flow .asb-session { min-height: 27px;", text)
+        self.assertIn(".asb-column-flow.asb-comfortable .asb-session { min-height: 83px; }", text)
+
     def test_row_panel_surface_edge_and_text_ratios(self):
         yours = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
         navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}

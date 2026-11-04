@@ -4413,6 +4413,36 @@ class WidgetCheck(unittest.TestCase):
                     self.drain(1)
                 render.assert_not_called()
 
+    def test_text_scale_rebuilds_the_board_css_and_the_card_heights(self):
+        patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(), theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(1080, 400)
+        window.present(); self.drain(.5)
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        self.assertEqual(window.text_scale, 1.0)
+        heights = lambda: {card.get_height() for card in window.focus_widgets.values() if card.get_mapped()}
+        for dpi, scale in ((147456, 1.5), (122880, 1.25), (98304, 1.0)):
+            with self.subTest(scale=scale), patch.object(window.css, "load_from_string", wraps=window.css.load_from_string) as load:
+                settings.set_property("gtk-xft-dpi", dpi); self.drain(.5)
+                self.assertEqual(window.text_scale, scale)
+                load.assert_called()
+                self.assertIn(f"border-radius: 3px; font-size: {13 * scale:g}px; }}", load.call_args_list[0].args[0])
+                for selected, nominal in ((1, asb.COMFORTABLE_ROW_HEIGHT), (0, asb.ROW_HEIGHT)):
+                    window.view_filter.set_selected(selected); self.drain(1)
+                    # Every card has the measured height of its view; pack_columns uses it.
+                    height = window.card_heights[selected]
+                    self.assertEqual((heights(), window.row_height), ({height}, height))
+                    self.assertEqual(height == nominal, scale == 1, (scale, height))
+                    self.assertIn(f"min-height: {height}px", window.css.load_from_string.call_args.args[0])
+                    self.assert_packing_fits(window)
+                    with patch.object(window, "render", wraps=window.render) as render:
+                        self.drain(.5)
+                    render.assert_not_called()
+
     def test_row_panel_copies_the_app_and_session_id_and_has_the_raised_surface(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
         patcher.start()
