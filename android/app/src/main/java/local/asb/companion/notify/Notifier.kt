@@ -30,6 +30,12 @@ private const val STATUS_TAG = "asb-status"
 internal fun notificationId(id: String, kind: Int): Int = "$id:$kind".hashCode()
 internal fun notificationTag(id: String, kind: Int): String = "$id:$kind"
 
+internal fun notificationTitle(row: Thread, kind: Int): String = when (kind) {
+    BIT_DONE -> "Done"
+    BIT_FAILED -> if (row.lastOutcome == "limit") "Usage limit" else if (row.processEnded) "Process ended" else "Failed"
+    else -> if (row.actionRequired) "Waiting for approval" else "Needs your answer"
+}
+
 /** The extras of a notification action: [key] names the session on every engine, [engine] gets the action. */
 internal fun actionExtras(row: Thread, kind: Int, action: String, engine: String, deviceId: String): Map<String, Any> = mapOf(
     "id" to row.id, "key" to row.key, "engine" to engine, "action" to action, "kind" to kind,
@@ -77,11 +83,7 @@ class Notifier(private val app: AsbApp) {
                 BIT_INPUT -> if (app.store.notifyInput) "asb_input" else continue
                 else -> continue
             }
-            val title = when (event.kind) {
-                BIT_DONE -> "Done"
-                BIT_FAILED -> if (row.lastOutcome == "limit") "Usage limit" else "Failed"
-                else -> if (row.actionRequired) "Waiting for approval" else "Needs your answer"
-            }
+            val title = notificationTitle(row, event.kind)
             // The key, so the same session from another engine of the group replaces its notification.
             val tag = notificationTag(row.key, event.kind)
             val id = notificationId(row.key, event.kind)

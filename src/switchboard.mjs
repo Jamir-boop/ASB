@@ -124,7 +124,7 @@ export function switchboardStatus(thread, nowMs = Date.now()) {
   if (thread.cliNoTranscript) return { state: 'idle', reason: 'The CLI session has no task yet.' };
   if (thread.lifecycleRunning === false) return { state: 'idle', reason: 'The last task ended.' };
   if (thread.lifecycleRunning === true) {
-    if (thread.cliProcessEnded) return { state: 'unknown', reason: 'The Claude Code process ended during a task.' };
+    if (thread.cliProcessEnded) return { state: 'unknown', reason: 'The Claude Code process ended during a task.', processEnded: true };
     const activityAtMs = Number(thread.agentActivityAtMs ?? thread.latestLifecycleAtMs);
     return activityAtMs > 0 && nowMs - activityAtMs <= ACTIVITY_WINDOW_MS
       ? { state: 'working', reason: 'The local log has an open task.' }
@@ -305,7 +305,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
           || (thread.pendingTools || []).some((tool) => tool.tool !== 'AskUserQuestion')
           || (thread.awaitingPermission && !thread.awaitingUserInput)),
         lastOutcome,
-        failedAtMs: ['failed', 'limit'].includes(lastOutcome) ? Number(thread.latestLifecycleAtMs || 0) : 0,
+        // A process end counts from the last transcript activity, as the process check does.
+        failedAtMs: status.processEnded ? Number(thread.transcriptActivityAtMs || 0)
+          : ['failed', 'limit'].includes(lastOutcome) ? Number(thread.latestLifecycleAtMs || 0) : 0,
         completionAtMs: lastOutcome === 'limit' ? 0 : thread.groupCompletionAtMs ?? (['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
             Number(thread.latestAgentFinalAtMs || 0))),
@@ -317,7 +319,8 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       row.limitResetsAtMs = limit > nowMs && status.state !== 'working' && !(status.state === 'waiting' && row.actionRequired) ? limit : 0;
       Object.defineProperty(row, QUESTION_AT, { value: Number(thread.latestUserQuestionAtMs || 0) });
       Object.defineProperty(row, ACTION_AT, { value: Number(thread.pendingToolAtMs || 0) });
-      Object.defineProperty(row, DISCARD_TASK, { value: {
+      Object.defineProperty(row, DISCARD_TASK, { value: status.processEnded ? { atMs: row.failedAtMs, kind: 'failed',
+        rootStart: Number(thread.latestTaskStartedAtMs || thread.agentStartedAtMs || 0), rootEnd: row.failedAtMs } : {
         atMs: thread.groupTaskEndedAtMs ?? Number(thread.latestTaskEndedAtMs || (thread.lifecycleRunning === false ? thread.latestLifecycleAtMs : 0)
           || row.completionAtMs || row.failedAtMs || 0),
         kind: lastOutcome === 'limit' ? 'failed' : thread.groupTaskEndKind ?? (thread.latestTaskEndKind || (thread.lifecycleRunning === false ? thread.latestLifecycleKind : '')
@@ -709,17 +712,19 @@ export class PendingTracker {
         this.dirty = true;
       }
       if (record.lastSeen < today) this.set(record, 'lastSeen', today);
-      const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' ? 'failed' : completion ? 'task_complete' : '' };
+      const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' || row.processEnded ? 'failed' : completion ? 'task_complete' : '' };
+      // A Claude Code process that ended during a task is an Idle row with a failed result for the attention.
+      const idle = row.state === 'idle' || row.processEnded === true;
       // A next-task arm is set on an Idle row. Only a task end after the arm ends it, also when a whole task ran between two scans.
       // When the row is Working, it becomes a current-task arm.
       const next = record.discard === 1 && record.discardNext === 1;
       const taskEnded = task.atMs > record.discardEnd;
       const newRoot = row.state === 'working' && task.rootStart > record.discardStart
         && task.rootEnd > record.discardStart && task.rootStart > task.rootEnd;
-      const discardEnded = record.discard === 1 && (next ? (row.state === 'idle' || row.state === 'working') && taskEnded
-        : row.state === 'idle' || row.state === 'working' && (taskEnded || newRoot));
+      const discardEnded = record.discard === 1 && (next ? (idle || row.state === 'working') && taskEnded
+        : idle || row.state === 'working' && (taskEnded || newRoot));
       // A muted success takes the discarded-success path, so it leaves no new attention. A timed mute counts at the task end, not at the scan.
-      const mutedSuccess = muteActive(record, task.atMs || completion) && row.state === 'idle' && !row.archived && completion > record.seen
+      const mutedSuccess = muteActive(record, task.atMs || completion) && idle && !row.archived && completion > record.seen
         && task.kind !== 'failed' && !(Number(row.failedAtMs || 0) > Number(row.completionAtMs || 0));
       const discardedSuccess = discardEnded && taskEnded && task.kind === 'task_complete' || mutedSuccess;
       if (discardEnded) { this.set(record, 'discard', 0); this.set(record, 'discardNext', 0); }
@@ -753,10 +758,10 @@ export class PendingTracker {
       }
       if (row.archived) this.set(record, 'working', 0);
       else if (row.state === 'working') this.set(record, 'working', 1);
-      else if (row.state === 'idle') {
+      else if (idle) {
         if ((record.working || discardEnded) && !discardedSuccess && completion > record.seen) {
           this.set(record, 'pending', completion);
-          this.set(record, 'pendingKind', row.failedAtMs > (row.completionAtMs || 0) ? 'failed' : '');
+          this.set(record, 'pendingKind', row.processEnded || row.failedAtMs > (row.completionAtMs || 0) ? 'failed' : '');
           if (record.retained === 'observed-failure' && record.pendingKind !== 'failed') this.set(record, 'retained', 'observed-completion');
         }
         this.set(record, 'working', 0);
@@ -813,11 +818,12 @@ export class PendingTracker {
     row.questionAttention = Boolean(row.questionPending && record?.questionSeen > record?.questionAck);
     row.actionAttention = Boolean(row.actionRequired && (!record || record.actionSeen > record.actionAck));
     row.nativeAttention = Boolean(row.nativeUnread === true && record?.nativeAt > record?.nativeAck);
-    const observedAttention = Boolean(!row.archived && row.state === 'idle' && row.nativeUnread === null && record?.pending > record?.ack);
+    const idle = row.state === 'idle' || row.processEnded === true;
+    const observedAttention = Boolean(!row.archived && idle && row.nativeUnread === null && record?.pending > record?.ack);
     row.failedAttention = observedAttention && record?.pendingKind === 'failed';
     row.completionAttention = observedAttention && !row.failedAttention;
     if (this.persistentUnread && record) {
-      this.retain(record, !row.archived && row.state === 'idle' && record.pending > record.ack
+      this.retain(record, !row.archived && idle && record.pending > record.ack
         ? record.pendingKind === 'failed' ? 'observed-failure' : 'observed-completion'
         : row.nativeAttention ? 'native-unread' : '');
     }

@@ -111,6 +111,8 @@ data class Thread(
     // An older engine sends none.
     val actionAttention: Boolean? = null,
     val lastOutcome: String = "",
+    // A Claude Code process ended during a task (an Unknown row); an older engine sends none.
+    val processEnded: Boolean = false,
     @Serializable(with = MillisSerializer::class)
     val failedAtMs: Long = 0,
     @Serializable(with = MillisSerializer::class)

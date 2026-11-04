@@ -1673,6 +1673,11 @@ def short_home_path(path, home_dir):
     return path
 
 
+def failed_unread_note(row):
+    """The note of an unread failed result: a Claude Code process that ended during a task says so."""
+    return "The Claude Code process ended during a task. Not read yet." if row.get("processEnded") else "Failed. Not read yet."
+
+
 def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minutes=False):
     full_path = row.get("cwd") or row.get("projectName") or "No project folder"
     path = short_home_path(full_path, home_dir)
@@ -1689,11 +1694,11 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
     if indicator == "question":
         note = "Waits for your permission." if shows_action(row) else "Asks a question. Open the chat to answer."
     elif indicator == "alert":
-        note = "Usage limit stopped the task. Not read yet." if row.get("lastOutcome") == "limit" else "Failed. Not read yet."
+        note = "Usage limit stopped the task. Not read yet." if row.get("lastOutcome") == "limit" else failed_unread_note(row)
     elif indicator == "dot":
         source = row.get("pendingSource", "")
         dot_notes = {"manual-unread": "Marked unread in ASB.", "native-unread": "Unread in the original app.",
-                     "observed-completion": "Finished. Not read yet.", "observed-failure": "Failed. Not read yet."}
+                     "observed-completion": "Finished. Not read yet.", "observed-failure": failed_unread_note(row)}
         if source in dot_notes:
             note = dot_notes[source]
             if row.get("retainedUnread") and ((source == "native-unread" and not row.get("nativeAttention"))
@@ -1704,7 +1709,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
         elif row.get("manualUnread"):
             note = "Marked unread in ASB."
         elif row.get("failedAttention"):
-            note = "Failed. Not read yet."
+            note = failed_unread_note(row)
         elif row.get("nativeAttention"):
             note = "Unread in the original app."
         elif row.get("completionAttention"):
@@ -1717,6 +1722,9 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
         note = "Mark next result read: no dot when the next task ends." if row.get("state") == "idle" else "Mark read when done: no dot when this task ends."
     elif row.get("questionPending"):
         note = "A question is still open in the chat."
+    elif state == "unknown":
+        # An Unknown card says why, in the engine's words.
+        note = row.get("reason", "")
     flags = " · ".join(text for key, text in (("pinned", "Pinned"), ("archived", "Archived"), ("drawer", "In the drawer")) if row.get(key))
     muted = mute_flag_text(row, now_ms)
     flags += (" · " if flags and muted else "") + muted
@@ -1753,7 +1761,8 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, whole_minu
 
 def tooltip_description(model):
     return "\n".join(filter(None, (model["title"], model["full_path"], model["state_text"], model["app"],
-                                  model["reason"], model["source"], model["limit"], model["note"], model["flags"], model["error"])))
+                                  model["reason"], model["source"], model["limit"], model["note"] if model["note"] != model["reason"] else "",
+                                  model["flags"], model["error"])))
 
 
 def local_base_url(value):
@@ -10401,6 +10410,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         retained = " Unread retained in ASB. Use Read to clear it." if shown and row.get("retainedUnread") else ""
         outcome = " Task stopped." if row.get("lastOutcome") == "stopped" \
             else " Usage limit stopped the task." if row.get("lastOutcome") == "limit" \
+            else " " + failed_unread_note(row) if row.get("processEnded") and row.get("failedAttention") \
             else " Task failed." if row.get("lastOutcome") == "failed" or row.get("failedAttention") \
             else " Task completed." if row.get("completionAttention") else ""
         discard = (" No dot when the next task ends." if row.get("state") == "idle" else " No dot when this task ends.") if row.get("discardResult") else ""
@@ -10750,7 +10760,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         read_note = question_wait_note(row) if controls.get("read", (None,))[0] == "mark-read" else ""
         unread_caption = "The dot shows when this task ends." if row.get("state") == "working" and controls.get("read", (None,))[0] == "mark-unread" else ""
         drawer_caption = {"drawer-in": "Stays unread in the drawer.", "drawer-out": "Unread on the board again."}.get(controls.get("drawer", (None,))[0], "")
-        signature = (self.mute_for, self.copy_kind, mute_caption, read_note, unread_caption, drawer_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
+        # An Unknown row says why; a process end that is not read yet says so with its "!" words.
+        open_caption = "Waits for your permission." if row.get("actionRequired") else "Waits for your answer." if row.get("questionPending") \
+            else model["note"] if row.get("processEnded") and attention_indicator(row, True) == "alert" \
+            else row.get("reason", "") if row.get("state") == "unknown" else ""
+        signature = (self.mute_for, self.copy_kind, mute_caption, read_note, unread_caption, drawer_caption, open_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
         if signature == panel.asb_signature:
@@ -10779,7 +10793,6 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             set_panel_label(panel.asb_open, "Open in " + model["app"])
             panel.asb_open.set_sensitive(bool(row.get("canOpen")) and row["id"] not in self.opening)
         set_icon(panel.asb_open.asb_icon, provider_icon(row.get("provider")))
-        open_caption = "Waits for your permission." if row.get("actionRequired") else "Waits for your answer." if row.get("questionPending") else ""
         panel.asb_open.asb_caption.set_label(open_caption)
         panel.asb_open.asb_caption.set_visible(bool(open_caption))
         (panel.asb_open.add_css_class if open_caption else panel.asb_open.remove_css_class)("asb-panel-captioned")

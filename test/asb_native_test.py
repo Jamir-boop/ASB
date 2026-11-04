@@ -5385,6 +5385,61 @@ class WidgetCheck(unittest.TestCase):
         panel = window.context_menu
         self.assertEqual(visible(), ["read", "mute", "pin", "discard"])
 
+    def test_unknown_cards_say_why_and_a_process_end_has_its_own_alert_words(self):
+        ended = "The Claude Code process ended during a task."
+        words = ended + " Not read yet."
+        reasons = {"ended": ended, "stale": "The last task has no recent signal.", "child": "A linked child has no current task signal.",
+                   "none": "No current task signal is available."}
+        claude = {"state": "unknown", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code"}
+        alert = {"processEnded": True, "unread": True, "pending": True, "alert": True, "failedAttention": True, "pendingSource": "observed-failure"}
+        rows = self.card_rows(*[(key, {**claude, "reason": reason, **({"processEnded": True} if key == "ended" else {})})
+                                for key, reason in reasons.items()], ("alert", {**claude, "reason": ended, **alert}))
+        window = self.mute_wheel_board(520, rows)
+        def labels(widget):
+            found, stack = [], [widget]
+            while stack:
+                node = stack.pop()
+                if isinstance(node, asb.Gtk.Label):
+                    found.append(node.get_label())
+                child = node.get_first_child()
+                while child:
+                    stack.append(child)
+                    child = child.get_next_sibling()
+            return found
+        def check(key, caption, has_alert):
+            card = window.focus_widgets[key]
+            shown = []
+            self.assertTrue(window.query_row_tooltip(card, 0, 0, False, SimpleNamespace(set_custom=shown.append)))
+            self.assertIn(caption, labels(shown[-1]), key)
+            self.assertEqual(card.asb_tooltip_key[0]["indicator"], "alert" if has_alert else "", key)
+            self.assertEqual(card.asb_tooltip_key[0]["state_text"].split(" · ")[0], "Unknown", key)
+            self.assertIn(caption, card.asb_tooltip, key)
+            self.assertEqual(card.asb_tooltip.count(reasons.get(key, ended)), 2 if has_alert else 1, key)
+            self.assertNotIn("Failed", card.asb_tooltip + card.asb_accessible_label, key)
+            window.show_context(card); self.drain(.3)
+            panel = window.context_menu
+            self.assertEqual(panel.asb_open.asb_caption.get_label(), caption, key)
+            self.assertTrue(panel.asb_open.asb_caption.get_visible(), key)
+            self.assertTrue(panel.asb_open.has_css_class("asb-panel-captioned"), key)
+            self.assert_accessible_label(panel.asb_open, caption, asb.Gtk.AccessibleProperty.DESCRIPTION)
+            panel.popdown(); self.drain()
+            return card
+        for key, reason in reasons.items():
+            check(key, reason, False)
+        card = check("alert", words, True)
+        self.assertEqual(card.asb_dot.get_first_child().get_label(), "!")
+        self.assertTrue(card.asb_dot.get_first_child().get_visible())
+        self.assertIn(" " + words, card.asb_accessible_label)
+        self.assertIn("Unknown", card.asb_accessible_label)
+        self.assertEqual(window.row_order[0], "alert")
+        # Mark read: a quiet Unknown card that still says why.
+        read = {key: value for key, value in rows[-1].items() if key not in alert}
+        window.apply_dashboard({"generatedAtMs": NOW, "providers": [], "threads": rows[:-1] + [{**read, "processEnded": True}]}, None)
+        self.drain(.3)
+        card = check("alert", ended, False)
+        self.assertFalse(card.asb_dot.get_first_child().get_visible())
+        self.assertNotIn("Not read yet", card.asb_accessible_label + card.asb_tooltip)
+
     def test_row_panel_open_caption_provider_mark_and_new_glyphs(self):
         rows = self.card_rows(("plain", {"pinned": True}),
                               ("permission", {"state": "waiting", "actionRequired": True, "actionAttention": True, "pending": True,

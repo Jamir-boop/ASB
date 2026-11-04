@@ -882,6 +882,21 @@ private fun ProviderWarning(provider: Provider, onDismiss: () -> Unit) {
     }
 }
 
+/** The accessible words of the card mark [indicator]. */
+internal fun indicatorMeaning(row: Thread, indicator: String): String = when (indicator) {
+    "question" -> if (showsAction(row)) "Action required on the PC" else "Question needs attention"
+    "alert" -> if (row.processEnded) "Process ended during a task, unread"
+        else if (row.lastOutcome == "failed") "Failed task, unread" else "Usage limit stopped the task, unread"
+    "dot" -> when {
+        row.failedAttention -> if (row.processEnded) "Process ended during a task, unread" else "Failed task, unread"
+        row.completionAttention -> "Completed task, unread"
+        else -> "Unread"
+    }
+    "discard" -> "No dot when this task ends"
+    "stop" -> "Task stopped"
+    else -> ""
+}
+
 @Composable
 private fun SessionCard(
     row: Thread, comfortable: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
@@ -904,24 +919,12 @@ private fun SessionCard(
     val indicator = attentionIndicator(row, drawerView, nowMs)
     val state = cardStateLabel(row)
     val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
-    val indicatorMeaning = when (indicator) {
-        "question" -> if (showsAction(row)) "Action required on the PC" else "Question needs attention"
-        "alert" -> if (row.lastOutcome == "failed") "Failed task, unread" else "Usage limit stopped the task, unread"
-        "dot" -> when {
-            row.failedAttention -> "Failed task, unread"
-            row.completionAttention -> "Completed task, unread"
-            else -> "Unread"
-        }
-        "discard" -> "No dot when this task ends"
-        "stop" -> "Task stopped"
-        else -> ""
-    }
     val viewOnly = isViewOnly(row)
     val (whereGlyph, where) = rowWhere(row)
     val description = listOf(
         row.title, row.projectName, state,
         if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
-        indicatorMeaning,
+        indicatorMeaning(row, indicator),
         if (row.pinned) "Pinned" else "",
         if (row.drawer) "In the drawer" else "",
         row.sourceLabel.ifEmpty { row.providerLabel },

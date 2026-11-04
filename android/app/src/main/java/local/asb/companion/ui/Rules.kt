@@ -228,7 +228,8 @@ fun panelFocusReturn(key: String?, controls: Map<String, PanelControl>): String?
 fun rowPanelNote(row: Thread): String = when {
     row.actionRequired -> "Waits for your permission."
     row.questionAttention -> "Asks a question."
-    row.alert -> if (row.lastOutcome == "failed") "Failed. Not read yet." else "Usage limit stopped the task. Not read yet."
+    row.alert -> if (row.processEnded) "The Claude Code process ended during a task. Not read yet."
+        else if (row.lastOutcome == "failed") "Failed. Not read yet." else "Usage limit stopped the task. Not read yet."
     (row.unread || row.drawer) && row.state != "working" -> if (row.manualUnread) "Marked unread." else "Finished. Not read yet."
     else -> ""
 }

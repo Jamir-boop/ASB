@@ -43,8 +43,8 @@ async function readRecord(file, windows = false, linkInfo = null) {
   } catch { return null; } finally { await handle.close(); }
 }
 
-// The parsed records of each registry folder by file name, with the lstat of the file before its read. A file with the same lstat
-// is not opened again; the process check of its record runs at each read, because a process can end with no file change.
+// The last parsed record of each registry file by folder and file name, with the lstat of the file before its read. A settled file with the
+// same lstat is not opened again; the process check of its record runs at each read, because a process can end with no file change.
 const parsedRecords = new Map();
 const RECORD_SETTLE_MS = 2_000;
 const sameRecordFile = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
@@ -118,10 +118,12 @@ export async function readLiveClaudeRegistry(roots, { windows = false, isAlive =
       const info = await fs.lstat(filePath).catch(() => null);
       if (!info) continue;
       const cached = previous?.get(file);
-      const record = cached && sameRecordFile(cached.info, info) ? cached.record : await readRecord(filePath, windows, info);
+      let record = cached?.settled && sameRecordFile(cached.info, info) ? cached.record : await readRecord(filePath, windows, info);
       // File times are coarse, so a second write of the same size soon after the first can keep the stat: a file changed in the last
-      // 2 s is read again. A failed read (for example, no free file handle) is also tried again at the next read.
-      if (record && Math.max(info.mtimeMs, info.ctimeMs) < readAtMs - RECORD_SETTLE_MS) parsed.set(file, { info, record });
+      // 2 s is read again. A failed read (for example, no free file handle or a half-written file) is also tried again at the next read,
+      // and until then the last record that parsed from the file stands in, so a live process does not seem to end.
+      if (record) parsed.set(file, { info, record, settled: Math.max(info.mtimeMs, info.ctimeMs) < readAtMs - RECORD_SETTLE_MS });
+      else if (cached) { record = cached.record; parsed.set(file, { ...cached, settled: false }); }
       if (!record || typeof record !== 'object' || Array.isArray(record) || record.pid !== Number(file.slice(0, -5))
         || typeof record.name !== 'string' || typeof record.sessionId !== 'string'
         || record.procStart === undefined || record.procStart === null) continue;

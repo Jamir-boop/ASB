@@ -37,7 +37,7 @@ export const EXPORT_FIELDS = {
   title: STRING, cwd: STRING, projectName: STRING, archived: BOOLEAN, updatedAtMs: NUMBER, subagentCount: NUMBER,
   state: (value) => ['working', 'waiting', 'idle', 'unknown'].includes(value), reason: STRING, workingSinceMs: NUMBER,
   nativeUnread: (value) => value === null || BOOLEAN(value), readStatus: STRING, questionPending: BOOLEAN, questionAtMs: NUMBER, actionRequired: BOOLEAN, actionAtMs: NUMBER,
-  lastOutcome: STRING, failedAtMs: NUMBER, completionAtMs: NUMBER, limitResetsAtMs: NUMBER,
+  lastOutcome: STRING, processEnded: BOOLEAN, failedAtMs: NUMBER, completionAtMs: NUMBER, limitResetsAtMs: NUMBER,
   sourceId: STRING, sourceLabel: STRING, sourceColor: (value) => value === null || STRING(value), sourceShowMarker: BOOLEAN, sourceCount: NUMBER,
   referenceScope: validScopeTag, referenceUnavailable: STRING,
 };

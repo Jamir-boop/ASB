@@ -5960,6 +5960,29 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(model({**base, "state": "working", "questionAttention": True, "discardResult": True},
                                100_000, "/home/test")["note"], "Asks a question. Open the chat to answer.")
 
+    def test_unknown_cards_say_why_and_a_process_end_has_its_own_alert_words(self):
+        model, description = SCOPE["tooltip_model"], SCOPE["tooltip_description"]
+        base = {"id": "a", "state": "unknown", "title": "Chat", "providerLabel": "Claude Desktop Code", "canOpen": True}
+        for reason in ("The Claude Code process ended during a task.", "The last task has no recent signal.",
+                       "A linked child has no current task signal.", "No current task signal is available."):
+            value = model({**base, "reason": reason}, 100_000, "/home/test")
+            self.assertEqual((value["indicator"], value["note"], value["state_text"].split(" · ")[0]), ("", reason, "Unknown"))
+            self.assertEqual(description(value).count(reason), 1)
+        ended = {**base, "reason": "The Claude Code process ended during a task.", "processEnded": True}
+        unread = {**ended, "unread": True, "pending": True, "alert": True, "failedAttention": True, "pendingSource": "observed-failure"}
+        words = "The Claude Code process ended during a task. Not read yet."
+        value = model(unread, 100_000, "/home/test")
+        self.assertEqual((value["indicator"], value["note"], value["state_text"].split(" · ")[0]), ("alert", words, "Unknown"))
+        self.assertIn(words, description(value))
+        self.assertNotIn("Failed", description(value))
+        self.assertEqual(SCOPE["attention_indicator"](unread), "alert")
+        # In the drawer the stored mark is a dot with the same words.
+        drawer = {**unread, "unread": False, "alert": False, "drawer": True}
+        self.assertEqual((model(drawer, 100_000, "/home/test", drawer_view=True)["note"]), words)
+        self.assertEqual(model(ended, 100_000, "/home/test")["note"], "The Claude Code process ended during a task.")
+        self.assertEqual(model({**base, "reason": "x", "unread": True, "alert": True, "lastOutcome": "failed"}, 100_000, "/home/test")["note"],
+                         "Failed. Not read yet.")
+
     def test_tooltip_paths_apps_times_flags_and_description_keep_full_data(self):
         model, description = SCOPE["tooltip_model"], SCOPE["tooltip_description"]
         base = {"id": "a", "state": "working", "provider": "codex", "providerLabel": "Codex", "canOpen": True,
