@@ -5854,9 +5854,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                                      "oc: or opencode: selects OpenCode.")
         self.search.connect("search-changed", self.filter_changed)
         self.search.connect("stop-search", self.clear_search)
-        self.search_row = Gtk.Revealer(child=self.search, transition_duration=150,
-                                      transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN
-                                      if self.get_settings().get_property("gtk-enable-animations") else Gtk.RevealerTransitionType.NONE)
+        # Always SLIDE_DOWN: GTK skips the slide with animations off, but a hidden NONE revealer keeps its child's height.
+        self.search_row = Gtk.Revealer(child=self.search, transition_duration=150, transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN)
         self.search_row.connect("notify::reveal-child", lambda row, _param: setattr(self, "search_expanded", row.get_reveal_child()))
         # The board lays out once when the search row has slid in or out (see check_geometry).
         self.search_row.connect("notify::child-revealed", self.queue_geometry)

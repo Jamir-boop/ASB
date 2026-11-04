@@ -11625,7 +11625,8 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(clear.get_mapped())
         with patch.object(window, "render", wraps=window.render) as rendered:
             self.held_click(clear, window)
-            self.assertEqual(rendered.call_count, 1)
+            # One render for the filters, and one layout when the hidden search row gives its height back to the board.
+            self.assertEqual(rendered.call_args_list, [call(), call(reveal_focus=True)])
         self.assertEqual(window.search.get_text(), "")
         self.assertFalse(window.search_expanded or window.search_row.get_reveal_child())
         self.assertFalse(window.filters_active() or window.show_all_cards or window.drawer_view or window.drawer_only.get_active())
@@ -11676,7 +11677,8 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         window.open_search(); self.drain(.1)
         with patch.object(window, "render", wraps=window.render) as rendered:
             self.keys("key", "Escape")
-            rendered.assert_called_once_with()
+            # One render for the filters, and one layout when the hidden search row gives its height back to the board.
+            self.assertEqual(rendered.call_args_list, [call(), call(reveal_focus=True)])
         self.assertEqual(window.search.get_text(), "")
         self.assertFalse(window.search_expanded or window.filters_active() or window.show_all_cards)
         self.assertFalse(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
@@ -11686,7 +11688,7 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         self.assertIsNone(window.get_focus())
         self.assertFalse(window.search_expanded or window.search_row.get_reveal_child())
         self.assertEqual(window.search_row.get_transition_duration(), 150)
-        self.assertEqual(window.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.NONE)
+        self.assertEqual(window.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.SLIDE_DOWN)
         self.assertIs(window.window_handle.get_next_sibling(), window.search_row)
         self.assertIs(window.search_row.get_next_sibling(), window.notice)
         self.assertEqual((window.search.get_margin_start(), window.search.get_margin_end(),
@@ -11711,6 +11713,24 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
         settings.set_property("gtk-enable-animations", True)
         animated = self.board()
         self.assertEqual(animated.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.SLIDE_DOWN)
+
+    def test_hidden_search_row_has_no_height_with_animations_off(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        tops = []
+        for animations in (False, True):
+            settings.set_property("gtk-enable-animations", animations)
+            window = self.board(mock_dashboard())
+            window.check_geometry(); self.drain(.2)
+            self.assertEqual(window.search_row.get_transition_type(), asb.Gtk.RevealerTransitionType.SLIDE_DOWN)
+            self.assertFalse(window.search_row.get_reveal_child())
+            self.assertEqual(window.search_row.get_height(), 0)
+            card = window.focus_widgets[window.row_order[0]]
+            found, point = card.compute_point(window, asb.Graphene.Point().init(0, 0))
+            self.assertTrue(found)
+            tops.append(point.y)
+            window.close(); self.drain(.1)
+        self.assertEqual(tops[0], tops[1])
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
