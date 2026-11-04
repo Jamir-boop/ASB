@@ -115,7 +115,7 @@ export function timeText(atMs, nowMs) {
 
 export function accessibleName(state) {
     return state === null ? 'ASB is not running'
-        : `ASB: ${state.needs} ${state.needs === 1 ? 'needs' : 'need'} you, ${state.working} working, ${state.total} ${state.total === 1 ? 'session' : 'sessions'}`;
+        : `ASB: ${state.needs} ${state.needs === 1 ? 'needs' : 'need'} you, ${state.working} working`;
 }
 
 export function kindMark(kind) {

@@ -88,12 +88,14 @@ fun limitLeft(row: Thread, nowMs: Long = System.currentTimeMillis()): Long {
 }
 
 // Port of clock_interval
+// shortcut: times show whole minutes, but the clock still ticks every 2 s for a Working row or a countdown under one hour, and a
+// longer countdown can lag up to 60 s; port clock_wait (wake at the next whole minute) if battery or lag matters.
 fun clockInterval(rows: List<Thread>, nowMs: Long = System.currentTimeMillis()): Long =
     if (rows.any { it.state == "working" && !it.archived || limitLeft(it, nowMs) in 1L..3600L }) 2 else 60
 
 // Port of attention_indicator
 fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = System.currentTimeMillis()): String = when {
-    showsAction(row) || row.questionAttention -> "question"
+    showsAction(row) || row.questionAttention || (drawer && row.drawer && row.state == "waiting") -> "question"
     row.alert -> "alert"
     row.unread || (drawer && row.drawer && row.state != "working" && limitLeft(row, nowMs) == 0L) -> "dot"
     row.state == "working" && row.discardResult -> "discard"
@@ -160,8 +162,16 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
 // A required action keeps its "?" mark after Read; an older engine sends no read mark, so the action stays unread.
 fun actionNeedsAttention(row: Thread): Boolean = row.actionAttention ?: row.actionRequired
 
-// Port of shows_action: on a muted row, a required action shows its "?" mark only for a request that came after the start of the mute.
-fun showsAction(row: Thread): Boolean = row.actionRequired && (!row.muted || actionNeedsAttention(row))
+// Port of shows_action: on a muted or drawer row, a required action shows its "?" mark only for a request that came after the start
+// of the mute or after the row went in the drawer.
+fun showsAction(row: Thread): Boolean = row.actionRequired && (!(row.muted || row.drawer) || actionNeedsAttention(row))
+
+// Port of drawer_offer: an unread dot or "!", or a row that waits for an answer.
+// shortcut: an engine older than this app refuses a Waiting row with "The drawer takes only unread sessions."; the phone then
+// shows that error. Check the engine version first if old engines stay common.
+fun drawerOffer(row: Thread): Boolean = !row.drawer && attentionIndicator(row).let {
+    it == "dot" || it == "alert" || (row.state == "waiting" && it == "question")
+}
 
 // Port of row_menu_actions
 fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
@@ -170,7 +180,7 @@ fun rowMenuActions(row: Thread): List<MenuAction> = buildList {
     add(if (row.drawer || unread) MenuAction("Read", "mark-read") else MenuAction("Unread", "mark-unread"))
     add(if (row.pinned) MenuAction("Unpin", "unpin") else MenuAction("Pin", "pin"))
     if (row.drawer) add(MenuAction("Take out of drawer", "drawer-out"))
-    else if (indicator == "dot" || indicator == "alert") add(MenuAction("Put in drawer", "drawer-in"))
+    else if (drawerOffer(row)) add(MenuAction("Put in drawer", "drawer-in"))
     if (row.pinned) {
         add(MenuAction("Move pin earlier", "pin-up"))
         add(MenuAction("Move pin later", "pin-down"))

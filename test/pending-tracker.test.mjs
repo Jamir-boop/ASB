@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker, QUESTION_AT } from '../src/switchboard.mjs';
 
 const id = '123e4567-e89b-12d3-a456-426614174000';
 const now = Date.parse('2026-10-07T14:00:00Z');
@@ -887,9 +887,9 @@ function loadAsV110(record) {
     drawer: record.drawer === 1 ? 1 : 0, muted: record.muted === 1 ? 1 : 0, lastSeen: number(record.lastSeen) ? record.lastSeen : null });
 }
 const asV110 = (records) => Object.fromEntries(Object.entries(records).map(([key, record]) => [key, loadAsV110(record)]));
-// `discardNext`, `actionSeen`, `actionAck`, `mutedUntil`, and `mutedAt` are newer than ASB 1.10.0, which ignores them.
+// `discardNext`, `actionSeen`, `actionAck`, `mutedUntil`, `mutedAt`, and `drawerAsk` are newer than ASB 1.10.0, which ignores them.
 const withoutNext = (records) => Object.fromEntries(Object.entries(records)
-  .map(([key, { discardNext, actionSeen, actionAck, mutedUntil, mutedAt, ...record }]) => [key, record]));
+  .map(([key, { discardNext, actionSeen, actionAck, mutedUntil, mutedAt, drawerAsk, ...record }]) => [key, record]));
 
 // Watches the change marks of a tracker. `touched` has the record fields that changed through set(), and `marks` counts the times that other code set the
 // flag (a new or dropped record, the pin order, Persistent unread).
@@ -1050,10 +1050,10 @@ test('the Discard, drawer, and native paths that the random run reaches rarely m
 test('pending.json has no field that holds its default, and it keeps the fields that ASB 1.10.0 needs', async (t) => {
   const statePath = path.join(await temp(t), 'pending.json');
   const zero = { seen: 0, working: 0, pending: 0, ack: 0, manual: 0, retained: '', pendingKind: '', questionSeen: 0, questionAck: 0, actionSeen: 0, actionAck: 0,
-    nativeAt: 0, nativeAck: 0, nativeSeen: 0, discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0, drawer: 0, drawerSeen: 0, muted: 0, lastSeen: 0 };
+    nativeAt: 0, nativeAck: 0, nativeSeen: 0, discard: 0, discardNext: 0, discardedAt: 0, discardStart: 0, discardEnd: 0, discardNative: 0, drawer: 0, drawerSeen: 0, drawerAsk: 0, muted: 0, lastSeen: 0 };
   const rich = { seen: 500, working: 1, pending: 400, ack: 300, manual: 1, retained: 'observed-failure', pendingKind: 'failed', questionSeen: 7, questionAck: 5,
     actionSeen: 16, actionAck: 15, nativeAt: 9, nativeAck: 8, nativeSeen: 1, discard: 1, discardNext: 1, discardedAt: 11, discardStart: 12, discardEnd: 13, discardNative: 1,
-    drawer: 1, drawerSeen: 14, muted: 1, lastSeen: now };
+    drawer: 1, drawerSeen: 14, drawerAsk: 6, muted: 1, lastSeen: now };
   const some = { ...zero, seen: 20, retained: 'native-unread', nativeAt: 3, lastSeen: now };
   // A file in the full form, as an older ASB wrote it.
   const older = { version: 1, persistentUnread: false, pinnedOrder: ['some', 'rich'], records: { rich, zero, some } };
@@ -1081,4 +1081,24 @@ test('pending.json has no field that holds its default, and it keeps the fields 
   await many.observe(live(now, Array.from({ length: 1300 }, (_, index) => `0a1b2c3d-4e5f-4a6b-8c7d-${String(index).padStart(12, '0')}`)));
   const full = JSON.stringify({ version: 1, records: many.records, pinnedOrder: many.pinnedOrder, persistentUnread: many.persistentUnread });
   assert.ok((await stat(many.statePath)).size < full.length / 2, `${(await stat(many.statePath)).size} of ${full.length}`);
+});
+
+test('a Waiting drawer card keeps drawerAsk, its mute, and its Discard fields apart through a save and a load', async (t) => {
+  const statePath = path.join(await temp(t), 'pending.json');
+  const tracker = new PendingTracker(statePath);
+  const waiting = () => ({ providers: [], threads: [{ id, state: 'waiting', nativeUnread: null, completionAtMs: 0, questionPending: true, [QUESTION_AT]: 100 }] });
+  await tracker.observe(plain('working'));
+  await tracker.setDiscard((await tracker.observe(plain('working'))).threads[0], true);
+  const [row] = (await tracker.observe(waiting())).threads;
+  await tracker.setDrawer(row, true);
+  const at = Date.now();
+  await tracker.setMuted(row, true, at + HOUR, at);
+  const fields = (record) => [record.drawer, record.drawerAsk, record.muted, record.mutedUntil, record.mutedAt, record.discard, record.questionSeen];
+  const saved = fields(tracker.records[id]);
+  assert.deepEqual(saved, [1, 100, 1, at + HOUR, at, 1, 100]);
+  const loaded = new PendingTracker(statePath);
+  const [again] = (await loaded.observe(waiting())).threads;
+  assert.deepEqual(fields(loaded.records[id]), saved);
+  // In the drawer and muted: no question attention, not Pending; Discard does not apply to a Waiting row.
+  assert.deepEqual([again.drawer, again.muted, again.questionAttention, again.pending, again.discardResult], [true, true, false, false, false]);
 });

@@ -79,10 +79,10 @@ class RoundTwoCardRulesTest {
         assertEquals(CompactMarkStyle(0, 11, palette.quietCaption), compactMarkStyle(row, palette, false, now))
     }
 
-    @Test fun compactWorkingUsesWholeMinutesButOtherViewsKeepSeconds() {
+    @Test fun workingTimesShowWholeMinutesInEveryView() {
         for ((seconds, compact, full) in listOf(
-            Triple(45L, "45s", "45s"), Triple(60L, "1m", "1m00s"), Triple(191L, "3m", "3m11s"),
-            Triple(2820L, "47m", "47m00s"), Triple(3900L, "1h05m", "1h05m"),
+            Triple(45L, "<1m", "<1m"), Triple(60L, "1m", "1m"), Triple(191L, "3m", "3m"),
+            Triple(2820L, "47m", "47m"), Triple(3900L, "1h05m", "1h05m"),
         )) {
             val start = now - seconds * 1000
             assertEquals("Working · $compact", compactStateText(idle.copy(state = "working", workingSinceMs = start), now))

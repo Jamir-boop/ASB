@@ -94,13 +94,13 @@ function sessionRow(thread) {
   entry.thread = thread;
   const where = rowWhere(thread);
   const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, where, thread.surface,
-    thread.pinned, thread.archived, thread.actionRequired, thread.actionAttention, thread.muted, thread.questionAttention, thread.alert, thread.unread,
+    thread.pinned, thread.archived, thread.actionRequired, thread.actionAttention, thread.muted, thread.drawer, thread.questionAttention, thread.alert, thread.unread,
     thread.lastOutcome, thread.failedAttention, thread.completionAttention, thread.limitResetsAtMs]);
   setText(entry.age, relativeTime(thread.updatedAtMs));
   if (entry.signature === signature) return entry.row;
   entry.signature = signature;
-  // On a muted row, a required action shows its mark only for a request that came after the start of the mute.
-  const action = thread.actionRequired && (!thread.muted || thread.actionAttention);
+  // On a muted or drawer row, a required action shows its mark only for a request that came after the start of the mute.
+  const action = thread.actionRequired && (!(thread.muted || thread.drawer) || thread.actionAttention);
   const indicator = action || thread.questionAttention ? 'question' : thread.alert ? 'alert' : thread.unread ? 'dot'
     : thread.state === 'idle' && (thread.lastOutcome === 'stopped' || thread.lastOutcome === 'limit' && !(thread.limitResetsAtMs > Date.now())) ? 'stop' : '';
   const attention = action ? 'A user action is required in the original app.'

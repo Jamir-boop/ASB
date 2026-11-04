@@ -321,9 +321,7 @@ class AsbButton extends PanelMenu.Button {
         this._sep1 = new St.Widget({style_class: 'asb-sep', y_expand: true});
         this._capsule.add_child(this._sep1);
         this._working = this._segment('asb-seg-working', new AsbMark('circle', 11));
-        this._sep2 = new St.Widget({style_class: 'asb-sep', y_expand: true});
-        this._capsule.add_child(this._sep2);
-        this._total = this._segment('asb-seg-total asb-seg-last', this._icon('asb-chat-symbolic.svg', 13));
+        this._total = this._segment('asb-seg-total asb-seg-first asb-seg-last asb-off', this._icon('asb-chat-symbolic.svg', 13));
         this.menu.actor.add_style_class_name('asb-menu');
         this._lightPanel = false;
         this._lightMenu = false;
@@ -364,9 +362,12 @@ class AsbButton extends PanelMenu.Button {
         const animate = !this._first && previous !== null && state !== null;
         this._state = state;
         this.accessible_name = accessibleName(state);
-        this._needs.box.visible = this._working.box.visible = this._sep1.visible = this._sep2.visible = state !== null;
-        this._total.box.set_style_class_name(`asb-seg asb-seg-total asb-seg-last${state ? '' : ' asb-seg-first asb-off'}`);
-        this._total.number.setText(state ? String(state.total) : 'Off', animate);
+        // The capsule counts only the sessions that need you and the sessions that work; the last segment says Off while ASB does not run.
+        this._needs.box.visible = this._working.box.visible = this._sep1.visible = state !== null;
+        this._total.box.visible = state === null;
+        if (state)
+            this._working.box.add_style_class_name('asb-seg-last');
+        this._total.number.setText('Off', false);
         if (state) {
             for (const [segment, count, on, off] of [[this._needs, state.needs, 'dot', 'ring'],
                 [this._working, state.working, 'arc', 'circle']]) {
@@ -460,10 +461,14 @@ class AsbButton extends PanelMenu.Button {
         return this._lightMenu ? inkOn(hue, this._menuSurface, 3) : hue;
     }
 
-    _heading(name, count, attention = false) {
+    _heading(name, count = null, attention = false) {
         const item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'asb-heading'});
         item.add_child(new St.Label({text: name, style_class: 'asb-heading-name', y_align: Clutter.ActorAlign.CENTER}));
         item.add_child(new St.Widget({x_expand: true}));
+        if (count === null) {
+            this.menu.addMenuItem(item);
+            return;
+        }
         const countLabel = new St.Label({text: String(count), style_class: `asb-heading-count${attention && !count ? ' asb-quiet' : ''}`,
             y_align: Clutter.ActorAlign.CENTER});
         if (attention && count > 0)
@@ -548,15 +553,13 @@ class AsbButton extends PanelMenu.Button {
             }
             if (state.machines.length > 1) {
                 this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-                this._heading('Machines', state.total);
+                this._heading('Machines');
                 state.machines.forEach((machine, index) => {
                     const item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
                     item.add_child(new AsbMark(machine.online ? 'dot' : 'ring', 7, `color: ${this._hue(index)};`));
                     item.add_child(new St.Label({text: machine.name, y_align: Clutter.ActorAlign.CENTER}));
                     if (!machine.online)
                         item.add_child(new St.Label({text: 'Offline', style_class: 'asb-secondary', y_align: Clutter.ActorAlign.CENTER}));
-                    item.add_child(new St.Widget({x_expand: true}));
-                    item.add_child(new St.Label({text: String(machine.total), y_align: Clutter.ActorAlign.CENTER}));
                     this.menu.addMenuItem(item);
                 });
             }

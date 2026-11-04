@@ -1523,7 +1523,11 @@ test('Read moves a required action down: it stays Waiting with its mark until a 
   // An unread required action keeps its record.
   tracker.prune(now + 40 * 86_400_000, null, []);
   assert.ok(tracker.records[base.id]);
-  await assert.rejects(tracker.setDrawer(await scan(), true), /drawer takes only unread/);
+  // In the drawer the wait looks read here and plays nothing; out of the drawer its mark is back.
+  await tracker.setDrawer(await scan(), true);
+  assert.deepEqual([...view(await scan()), tracker.records[base.id].drawer], ['waiting', true, false, false, '', 0, 1]);
+  await tracker.setDrawer(await scan(), false);
+  assert.deepEqual(view(await scan()), ['waiting', true, true, true, 'user-action', BIT_INPUT]);
   await tracker.acknowledge(base.id);
   const read = await scan();
   assert.deepEqual(view(read), ['waiting', true, false, false, '', 0]);

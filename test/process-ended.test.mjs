@@ -75,6 +75,28 @@ test('a Discard armed on the Working row does not hide a process end, and the dr
   assert.deepEqual([row.drawer, row.unread, row.alert], [true, false, false]);
 });
 
+test('a process-end card in the drawer stays there through scans, asks for nothing, and comes out with its !', async () => {
+  const tracker = new PendingTracker(false);
+  await tracker.observe(running());
+  const [row] = (await tracker.observe(ended())).threads;
+  await tracker.setDrawer(row, true);
+  // It does not wait for an answer, so the drawer keeps no ask.
+  assert.deepEqual([tracker.records[id].drawer, tracker.records[id].drawerAsk], [1, 0]);
+  let baseline = soundBaseline(null, [row], now);
+  for (let scan = 0; scan < 2; scan += 1) {
+    const [kept] = (await tracker.observe(ended())).threads;
+    assert.deepEqual([kept.drawer, kept.processEnded, kept.unread, kept.pending, kept.alert], [true, true, false, false, false]);
+    // No new sound: the failed sound played once, at the process end.
+    assert.deepEqual(soundEvents(baseline, [kept], now), []);
+    baseline = soundBaseline(baseline, [kept], now);
+  }
+  await tracker.setDrawer(row, false);
+  assert.deepEqual([row.drawer, ...attention(row)], [false, true, false, true, true, 'observed-failure', true]);
+  // A mute and Mark read when done change no drawer or process-end field.
+  await tracker.setMuted(row, true, 0, now);
+  assert.deepEqual([row.processEnded, row.muted, row.alert, tracker.records[id].drawer, tracker.records[id].pendingKind], [true, true, false, 0, 'failed']);
+});
+
 test('the member export carries processEnded, and the member row gets the same attention; an older member row gets none', async () => {
   const A = { machineId: 'a'.repeat(16), name: 'engine-a' };
   const B = { machineId: 'b'.repeat(16), name: 'engine-b' };

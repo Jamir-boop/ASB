@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
+import { ACTION_AT, createSwitchboardServer, PendingTracker, QUESTION_AT } from '../src/switchboard.mjs';
 
 const id = '123e4567-e89b-12d3-a456-426614174000';
 async function temp(t) {
@@ -50,7 +50,7 @@ test('a drawer card is read in the list, keeps its mark fields, and survives a s
   const older = new PendingTracker(statePath);
   const kept = await older.observe(plain('idle', { completionAtMs: 10 }));
   assert.deepEqual([view(kept.threads[0]), stateWarning(kept)], [[true, false, false], undefined]);
-  assert.deepEqual(Object.keys(older.records[id]).filter((key) => /^drawer/.test(key)).sort(), ['drawer', 'drawerSeen']);
+  assert.deepEqual(Object.keys(older.records[id]).filter((key) => /^drawer/.test(key)).sort(), ['drawer', 'drawerAsk', 'drawerSeen']);
 
   for (const [drawer, drawerSeen] of [['1', 10], [7, 10], [-1, 10], [true, 10], [1, '10'], [1, -1], [1, null]]) {
     await writeFile(statePath, JSON.stringify({ ...saved, records: { [id]: { ...saved.records[id], drawer, drawerSeen } } }));
@@ -267,7 +267,7 @@ test('Read and Unread take a card out of the drawer', async (t) => {
   assert.equal(manual.tracker.records[id].drawer, 0);
 });
 
-test('the drawer takes only a card with an unread dot', async () => {
+test('the drawer takes a card with an unread dot or a card that waits for an answer', async () => {
   const tracker = new PendingTracker(false);
   await refused(tracker, { id: 'absent', unread: true }, true);
   const read = await scan(tracker, 'idle');
@@ -278,17 +278,86 @@ test('the drawer takes only a card with an unread dot', async () => {
   const working = await scan(tracker, 'working');
   assert.deepEqual([working.manualUnread, working.unread], [true, false]);
   await refused(tracker, working, true);
+  // A Working question (for example while a linked child works) is not a Waiting card and cannot go in the drawer.
+  const workingQuestion = await scan(tracker, 'working', { questionPending: true, [QUESTION_AT]: 1 });
+  assert.equal(workingQuestion.questionAttention, true);
+  await refused(tracker, workingQuestion, true);
   const question = await scan(tracker, 'waiting', { questionPending: true });
   assert.deepEqual([question.unread, question.questionAttention], [true, true]);
-  await refused(tracker, question, true);
-  await tracker.acknowledge(id); await tracker.markUnread(id);
-  const action = await scan(tracker, 'waiting', { questionPending: false });
-  assert.deepEqual([action.unread, action.actionRequired], [true, true]);
-  await refused(tracker, action, true);
+  await tracker.setDrawer(question, true);
+  assert.deepEqual([tracker.records[id].drawer, view(question), question.questionAttention], [1, [true, false, false], false]);
+  await tracker.setDrawer(question, false);
+  await tracker.acknowledge(id);
+  const action = await scan(tracker, 'waiting', { questionPending: false, actionRequired: true });
+  assert.deepEqual([action.unread, action.actionRequired, action.actionAttention], [false, true, true]);
+  await tracker.setDrawer(action, true);
+  assert.deepEqual([tracker.records[id].drawer, view(action), action.actionAttention], [1, [true, false, false], false]);
+  await tracker.setDrawer(action, false);
+  await tracker.markUnread(id);
   const unread = await scan(tracker, 'idle');
   await tracker.setDrawer(unread, true);
   await refused(tracker, unread, true);
   assert.deepEqual([tracker.records[id].drawer, view(unread)], [1, [true, false, false]]);
+});
+
+test('a waiting card stays in the drawer until it works or asks again', async () => {
+  const tracker = new PendingTracker(false);
+  await scan(tracker, 'idle');
+  const waiting = await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 100 });
+  assert.deepEqual([view(waiting), waiting.questionAttention], [[false, false, true], true]);
+  await tracker.setDrawer(waiting, true);
+  assert.equal(tracker.records[id].drawerAsk, 100);
+  // The same question: the card looks read and keeps its place, also after a restart of the scan.
+  const same = await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 100 });
+  assert.deepEqual([view(same), same.questionAttention, same.pendingSource], [[true, false, false], false, '']);
+  // A new question brings it out with its mark.
+  const asked = await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 200 });
+  assert.deepEqual([view(asked), asked.questionAttention], [[false, false, true], true]);
+  // In again, then the answer starts a task: the card leaves the drawer.
+  await tracker.setDrawer(asked, true);
+  assert.equal((await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 200 })).drawer, true);
+  assert.deepEqual(view(await scan(tracker, 'working')), [false, false, false]);
+  assert.equal(tracker.records[id].drawer, 0);
+  // A permission request: the same wait stays, a new wait after the end of the first one brings the card out.
+  const request = await scan(tracker, 'waiting', { actionRequired: true, [ACTION_AT]: 300 });
+  await tracker.setDrawer(request, true);
+  assert.deepEqual([view(await scan(tracker, 'waiting', { actionRequired: true, [ACTION_AT]: 300 }))], [[true, false, false]]);
+  const again = await scan(tracker, 'waiting', { actionRequired: true, [ACTION_AT]: 400 });
+  assert.deepEqual([view(again), again.actionAttention], [[false, false, true], true]);
+});
+
+test('a muted Waiting card in the drawer: a new question takes it out, and only a question after the mute start shows', async () => {
+  const tracker = new PendingTracker(false);
+  await scan(tracker, 'idle');
+  const waiting = await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 100 });
+  await tracker.setDrawer(waiting, true);
+  await tracker.setMuted(waiting, true, 0, 150);
+  assert.deepEqual([tracker.records[id].drawer, tracker.records[id].drawerAsk, tracker.records[id].mutedAt], [1, 100, 150]);
+  // A question between the drawer-in and the mute start: out of the drawer, but the mute keeps it quiet.
+  const early = await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 120 });
+  assert.deepEqual([view(early), early.muted, early.questionAttention], [[false, false, false], true, false]);
+  // A question after the mute start gets through.
+  const late = await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 200 });
+  assert.deepEqual([view(late), late.muted, late.questionAttention], [[false, false, true], true, true]);
+  // Unmute changes no drawer field; drawer-in changes no mute field.
+  await tracker.setMuted(late, false);
+  assert.deepEqual([tracker.records[id].drawer, tracker.records[id].drawerAsk], [0, 100]);
+  await tracker.setMuted(late, true, 0, 250);
+  await tracker.setDrawer(late, true);
+  assert.deepEqual([tracker.records[id].drawerAsk, tracker.records[id].muted, tracker.records[id].mutedAt], [200, 1, 250]);
+});
+
+test('a Waiting card in the drawer that starts to work with Mark read when done leaves the drawer and gets no dot', async () => {
+  const tracker = new PendingTracker(false);
+  await scan(tracker, 'idle');
+  const waiting = await scan(tracker, 'waiting', { questionPending: true, [QUESTION_AT]: 100 });
+  await tracker.setDrawer(waiting, true);
+  const working = await scan(tracker, 'working');
+  assert.deepEqual([view(working), tracker.records[id].drawer], [[false, false, false], 0]);
+  await tracker.setDiscard(working, true);
+  assert.equal(tracker.records[id].drawerAsk, 100);
+  const done = await scan(tracker, 'idle', { completionAtMs: 300 });
+  assert.deepEqual([view(done), done.discardResult, tracker.records[id].drawer], [[false, false, false], false, 0]);
 });
 
 async function serve(t, tracker) {

@@ -2850,7 +2850,8 @@ class WidgetCheck(unittest.TestCase):
                 self.fill_board(window); self.drain()
                 self.assertEqual(len(window.focus_widgets), 106,
                                  (window.search.get_text(), window.states, window.pending))
-                self.assertEqual(self.poll_calls.call_args.args[0], 2)
+                # The clock is a one-shot timer to the next whole minute that changes a caption.
+                self.assertTrue(window.clock_timer)
                 displayed = []
                 for row in self.widget_rows(window):
                     displayed.append(row.asb_thread["id"])
@@ -3209,8 +3210,9 @@ class WidgetCheck(unittest.TestCase):
             window.show_context(window.focus_widgets["claude:local_mock"])
             self.drain()
             panel = window.context_menu
-            # An unread required action offers Read, and its Open row has the caption.
-            self.assertEqual(actions(panel), {"read": ("Mark read", True), "mute": ("Mute", True), "pin": ("Pin", True)})
+            # An unread required action offers Read, and its Open row has the caption. A Waiting row can go in the drawer.
+            self.assertEqual(actions(panel), {"read": ("Mark read", True), "mute": ("Mute", True), "pin": ("Pin", True),
+                                              "drawer": ("Put in drawer", True)})
             self.assertTrue(panel.asb_open.asb_caption.get_visible())
             self.assertEqual(panel.asb_open.asb_caption.get_label(), "Waits for your permission.")
             self.assertTrue(panel.asb_open.has_css_class("asb-panel-captioned"))
@@ -3894,7 +3896,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertEqual(window.columns, 4)
             self.assertEqual(window.column_width, 240)
-            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
 
             row = window.focus_widgets["sample-15"]
             window.refresh_button.grab_focus()
@@ -4329,7 +4331,7 @@ class WidgetCheck(unittest.TestCase):
                         window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
-                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m"})
+                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
                 window.search.set_text("cl:"); window.render()
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
                 window.states = {"working", "idle"}
@@ -6046,7 +6048,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain()
         limited = window.focus_widgets["limited"]
         self.assertTrue(limited.asb_limit_clock.get_visible())
-        self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
+        self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
         # During the feedback the copy button keeps the done text as its accessible description.
         button = limited.asb_copy_button
         button.emit("clicked"); self.drain(.1)
@@ -6056,7 +6058,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain(1.7)
         self.assertEqual(limited.asb_footer_stack.get_visible_child_name(), "line")
         self.assertTrue(limited.asb_limit_clock.get_visible())
-        self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
+        self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
         # The description is reset: the property holds the done text no more.
         error = self.gtk_check(self.capsule_pointer(button.__gpointer__, None),
                                int(asb.Gtk.AccessibleProperty.DESCRIPTION),
@@ -7905,7 +7907,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(520, 400)
         window.present(); window.set_focus(None); self.drain(.3)
         window.apply_dashboard(window.dashboard, None)
-        self.assertEqual(window.clock_interval, 2)
+        self.assertFalse(hasattr(window, "clock_interval"))
         self.assertTrue(asb.Gtk.IconTheme.get_for_display(window.get_display()).has_icon("preferences-system-time-symbolic"))
         hex_color = lambda label: asb.SwitchboardWindow.hex_color(label.get_color())
         background = window.native_colors()["background"]
@@ -7927,7 +7929,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(limited.get_height(), normal.get_height())
             if view:
                 # One phrase at the left; the age is empty and hidden while the countdown runs.
-                self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
+                self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
                 self.assertEqual(limited.asb_age_label.get_text(), "")
                 self.assertFalse(limited.asb_age_label.get_visible())
                 self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_label)
@@ -7937,9 +7939,9 @@ class WidgetCheck(unittest.TestCase):
                     self.assertGreaterEqual(asb.contrast(grey, background), 4.5)
                     self.assertLess(asb.contrast(grey, background), asb.contrast(quiet, background))
             else:
-                self.assertRegex(limited.asb_state_label.get_text(), r"^Resets in \d{1,2}s$")
+                self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
                 self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_box)
-            self.assertRegex(limited.asb_accessible_label, r"^Open Plan the alarm export in Codex\. Idle\. Usage limit\. Resets in \d{1,2} seconds?\.$")
+            self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle. Usage limit. Resets in 1 minute.")
             self.assert_accessible_label(limited, limited.asb_accessible_label)
             tooltip = SimpleNamespace(set_custom=lambda _content: None)
             window.query_row_tooltip(limited, 0, 0, False, tooltip)
@@ -7955,14 +7957,14 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(limited.asb_state_label.get_text(), "Idle")
         self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle.")
-        self.assertEqual(window.clock_interval, 60)
+        self.assertFalse(hasattr(window, "clock_interval"))
         window.view_filter.set_selected(1); self.settle(window)
         limited, normal = window.focus_widgets["limited"], window.focus_widgets["normal"]
         self.assertEqual((limited.asb_state_label.get_text(), limited.asb_age_label.get_text()), ("Idle", "10m ago"))
         self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(hex_color(limited.asb_title_label), hex_color(normal.asb_title_label))
 
-    def test_a_board_in_the_background_shows_whole_minutes_and_its_clock_wakes_at_the_minute(self):
+    def test_a_board_shows_whole_minutes_and_its_clock_wakes_at_the_minute(self):
         now = [NOW + 252_000]
         rows = [{"id": "w", "provider": "codex", "providerLabel": "Codex", "title": "Sample working session", "cwd": "/example/w",
                  "projectName": "w", "state": "working", "workingSinceMs": NOW, "canOpen": True, "updatedAtMs": NOW}]
@@ -7980,13 +7982,13 @@ class WidgetCheck(unittest.TestCase):
         card = window.focus_widgets["w"]
         def assert_time(text):
             self.assertEqual(card.asb_state_label.get_text(), "Working")
-            self.assertEqual(card.asb_working_time.get_text(), " · " + asb.working_duration(card.asb_thread, now[0], True))
+            self.assertEqual(card.asb_working_time.get_text(), " · " + text)
             self.assertEqual(card.asb_tooltip.split("\n")[2], "Working · " + text)
             self.assert_accessible_label(card, card.asb_accessible_label + " Working time " + text + ".")
             self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
         self.foreground(window, False)
         assert_time("4m")
-        self.assertIsNone(window.clock_interval)
+        self.assertFalse(hasattr(window, "clock_interval"))
         source = asb.GLib.MainContext.default().find_source_by_id(window.clock_timer)
         self.assertAlmostEqual((source.get_ready_time() - asb.GLib.get_monotonic_time()) / 1e6, 48, delta=1)
         now[0] += 48_000
@@ -7994,12 +7996,13 @@ class WidgetCheck(unittest.TestCase):
         assert_time("5m")
         # A tooltip reads the clock when it shows.
         window.query_row_tooltip(card, 0, 0, False, SimpleNamespace(set_custom=lambda _content: None))
-        self.assertEqual(card.asb_tooltip_key[0]["state_text"], "Working · 5m00s")
+        self.assertEqual(card.asb_tooltip_key[0]["state_text"], "Working · 5m")
+        # The board in the foreground (the pointer on it) shows the same whole minutes, with no seconds.
         self.poll_calls.reset_mock()
         self.foreground(window)
-        assert_time("5m00s")
-        self.assertEqual(window.clock_interval, 2)
-        self.poll_calls.assert_called_once_with(2, window.update_clock)
+        assert_time("5m")
+        self.assertFalse(hasattr(window, "clock_interval"))
+        self.poll_calls.assert_not_called()
         self.foreground(window, False)
         assert_time("5m")
 
@@ -8324,6 +8327,276 @@ class WidgetCheck(unittest.TestCase):
                 with patch.object(window, "render", wraps=window.render) as render:
                     self.drain(.4)
                 render.assert_not_called()
+
+    def test_board_zoom_scales_the_card_corner_title_and_pocket_at_each_text_scale(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        rows = [self.card_row("a", title="Which tax region should invoices use for the export"), self.card_row("b", unread=True, pending=True)]
+        rows += [self.card_row(str(n), updatedAtMs=NOW - 600_000 - n) for n in range(8)]
+        window = self.card_board(rows)
+        window.set_default_size(1004, 600); self.settle(window)
+        heights = {}
+        for dpi, scale in ((98304, 1.0), (147456, 1.5)):
+            settings.set_property("gtk-xft-dpi", dpi); self.drain(.5)
+            for zoom in (100, 80, 90, 125, 150, 200):
+                with self.subTest(scale=scale, zoom=zoom):
+                    window.set_board_zoom(zoom); self.drain(.3)
+                    for _ in range(2):
+                        window.check_geometry(); self.settle(window)
+                    self.assertEqual((window.text_scale, window.board_zoom), (scale, zoom))
+                    css = self.board_css(window)
+                    # GNOME Large Text and the zoom multiply on the card text.
+                    size = f"{13 * scale:g}" if zoom == 100 else str(asb.zoomed(13 * scale, zoom))
+                    self.assertIn(f"border-radius: 3px; font-size: {size}px; }}", css)
+                    # Every card has the row height, and a column packs only the cards that fit.
+                    self.assertEqual({card.get_height() for card in window.focus_widgets.values() if card.get_mapped()}, {window.row_height})
+                    self.assert_packing_fits(window)
+                    heights[scale, zoom] = window.row_height
+                    card = window.focus_widgets["a"]
+                    # The card buttons scale with the zoom (their CSS min sizes), and the Read slot with them.
+                    side = asb.zoomed(24, zoom)
+                    for button in (card.asb_read_button, card.asb_pin_button, card.asb_read_slot):
+                        self.assertEqual((button.get_width(), button.get_height()), (side, side))
+                    # At rest, line 1 of the title and the folder line end before the Read button.
+                    title = card.asb_title_label
+                    first = title.title_layouts(title.get_width())[0]
+                    self.assertEqual(first.get_width() / asb.Pango.SCALE, title.get_width() - asb.corner_reserve(zoom))
+                    read_x = card.asb_read_button.compute_bounds(card)[1].origin.x
+                    self.assertLessEqual(title.compute_bounds(card)[1].origin.x + first.get_pixel_size()[0], read_x)
+                    folder = card.asb_workspace.compute_bounds(card)[1]
+                    self.assertLessEqual(folder.origin.x + folder.size.width, read_x)
+                    # The unread dot scales; its rest plate keeps its 4.5 px spread.
+                    dot = window.focus_widgets["b"].asb_dot
+                    self.assertEqual((dot.get_width(), dot.get_height()), (asb.zoomed(7, zoom), asb.zoomed(7, zoom)))
+                    self.assertIn("{ box-shadow: 0 0 0 4.5px", css)
+                    # On hover the pocket ends at the top of title line 2.
+                    self.hover_card(window, card, True); self.settle(window)
+                    box = card.asb_actions.compute_bounds(card)[1]
+                    _first, _second, offset, two = title.title_layouts(title.get_width())
+                    self.assertTrue(two)
+                    line_two = title.compute_point(card, asb.Graphene.Point().init(0, 0))[1].y + offset
+                    self.assertEqual(box.origin.y + box.size.height, 34 if (scale, zoom) == (1.0, 100) else math.ceil(line_two))
+                    # pocket_line_end measures whole words at the zoomed font, not a scaled pixel estimate.
+                    end = title.pocket_line_end(_first)
+                    if end is not None:
+                        measure = _first.copy(); measure.set_width(-1)
+                        fits = []
+                        words = _first.get_text().split(" ")
+                        pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
+                        for count in range(1, len(words) + 1):
+                            measure.set_text(" ".join(words[:count]), -1)
+                            length = measure.get_size()[0] / asb.Pango.SCALE
+                            if length <= pocket_x:
+                                fits.append(length)
+                        self.assertEqual(end, max(fits))
+                    # The balanced break uses the zoomed font too: avoid a one-word second line when its preceding word fits.
+                    original = title.get_label()
+                    title.set_label("Approve the schema change")
+                    probe = title.create_pango_layout("Approve the schema")
+                    width = asb.corner_reserve(zoom) + math.ceil(probe.get_size()[0] / asb.Pango.SCALE) + 1
+                    a, b, _offset, _two = title.title_layouts(width)
+                    self.assertEqual((a.get_text(), b.get_text()), ("Approve the", "schema change"))
+                    title.set_label(original)
+                    self.hover_card(window, card, False); self.settle(window)
+                    # The dividers stay in the middle of the 12 px gap, which does not scale.
+                    for index, column in enumerate(window.list_columns[1:], 1):
+                        found, bounds = column.compute_bounds(window.list_body)
+                        if found and column.get_parent() is window.list_body:
+                            x = round(bounds.origin.x)
+                            self.assertEqual(x, index * (window.column_pixel_width + 12))
+                            self.assertTrue(window.divider_at(x - 6))
+        for scale in (1.0, 1.5):
+            # A smaller zoom gives shorter cards, a larger one taller cards.
+            order = [heights[scale, zoom] for zoom in (80, 90, 100, 125, 150, 200)]
+            self.assertEqual(sorted(order), order)
+            self.assertEqual(len(set(order)), 6)
+        self.assertEqual(heights[1.0, 100], asb.COMFORTABLE_ROW_HEIGHT)
+        # Compact: the mark cell holds the zoomed marks, and the rows still pack.
+        settings.set_property("gtk-xft-dpi", 98304); self.drain(.5)
+        window.view_filter.set_selected(0); self.drain(.5)
+        for zoom in (80, 100, 200):
+            with self.subTest(view="compact", zoom=zoom):
+                window.set_board_zoom(zoom); self.drain(.3)
+                for _ in range(2):
+                    window.check_geometry(); self.settle(window)
+                card = window.focus_widgets["b"]
+                self.assertEqual(card.asb_mark_cell.get_width(), asb.zoomed(14, zoom))
+                self.assertEqual(card.asb_dot.get_width(), asb.zoomed(7, zoom))
+                self.assertEqual({card.get_height() for card in window.focus_widgets.values() if card.get_mapped()}, {window.row_height})
+                self.assert_packing_fits(window)
+                if zoom == 100:
+                    self.assertEqual(window.row_height, asb.ROW_HEIGHT)
+        window.set_board_zoom(100)
+
+    def test_board_zoom_fits_the_row_panel_and_ctrl_wheel_on_its_mute_row_zooms(self):
+        rows = [self.card_row("idle", pinned=True, unread=True, pending=True, sessionReference="codex/example-idle", reference="asb:1/example/idle"),
+                self.card_row("working", state="working", workingSinceMs=NOW - 60_000)]
+        window = self.card_board(rows)
+        window.set_default_size(1004, 640); self.settle(window)
+        def main_labels(panel):
+            return [button.asb_label for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full)
+                    if button.get_visible()]
+        def assert_uncut(labels):
+            for part in labels:
+                self.assertFalse(part.get_layout().is_ellipsized(), part.get_label())
+        widths = {}
+        for zoom in (80, 100, 200):
+            with self.subTest(zoom=zoom):
+                window.set_board_zoom(zoom); self.drain(.3); window.check_geometry(); self.settle(window)
+                window.show_context(window.focus_widgets["idle"]); self.drain(.3)
+                panel = window.context_menu
+                assert_uncut(main_labels(panel))
+                widths[zoom] = panel.get_child().get_width()
+                self.assertGreaterEqual(widths[zoom], asb.zoomed(260, zoom))
+                # The time list fits its rows at the zoom, and its point keeps the title in place.
+                main_height = panel.asb_pages.get_height()
+                window.show_mute_times(panel, True); self.drain(.5)
+                pages = panel.asb_pages
+                times = pages.get_child_by_name("times")
+                self.assertGreaterEqual(pages.get_height(), times.measure(asb.Gtk.Orientation.VERTICAL, pages.get_width())[1])
+                assert_uncut([button.asb_label for button in panel.asb_times.values()] + [button.asb_end for button in panel.asb_times.values()])
+                if panel.asb_side == "top":
+                    pointing = panel.get_pointing_to()[1]
+                    self.assertEqual(pointing.y, panel.asb_point.y + pages.get_height() - main_height)
+                panel.popdown(); self.drain(.3)
+        self.assertLess(widths[80], widths[200])
+        # A zoom change with the panel open fits it again; no label is cut.
+        window.set_board_zoom(100); self.drain(.3); window.check_geometry(); self.settle(window)
+        window.show_context(window.focus_widgets["idle"]); self.drain(.3)
+        panel = window.context_menu
+        window.set_board_zoom(200); self.drain(.5); self.settle(window)
+        self.assertIs(window.context_menu, panel)
+        assert_uncut(main_labels(panel))
+        self.assertGreater(panel.get_child().get_width(), widths[100])
+        if shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"):
+            # A real Ctrl+wheel notch on the Mute row zooms the board and keeps the time; a plain notch changes the time.
+            xid = str(window.get_surface().get_xid())
+            subprocess.run(["xdotool", "windowfocus", xid], check=True)
+            mute = panel.asb_actions["mute"]
+            found, point = mute.compute_point(window, asb.Graphene.Point().init(mute.get_width() / 3, mute.get_height() / 2))
+            self.assertTrue(found)
+            left, top = window.get_surface_transform()
+            subprocess.run(["xdotool", "mousemove", "--window", xid, str(round(point.x + left)), str(round(point.y + top))], check=True)
+            self.drain(.2)
+            choice = window.mute_for
+            with patch.object(window, "change_mute_for") as change:
+                subprocess.run(["xdotool", "click", "5"], check=True); self.drain(.3)
+                self.assertEqual(window.board_zoom, 200)
+                change.assert_called_once()
+                change.reset_mock()
+                self.drain(.3)
+                subprocess.run(["xdotool", "keydown", "ctrl", "click", "5", "keyup", "ctrl"], check=True); self.drain(.3)
+                self.assertEqual((window.board_zoom, window.mute_for), (175, choice))
+                change.assert_not_called()
+        window.set_board_zoom(100)
+
+    def test_card_times_and_time_list_end_texts_change_in_the_same_second(self):
+        # A minute start that is a whole wall-clock minute: the Working time, the mute countdown, and the end texts all change then.
+        minute = (int(time.time() * 1000) // 60_000) * 60_000
+        now = [minute + 3 * 60_000 + 50_000]
+        threads = [{"id": "w", "provider": "codex", "providerLabel": "Codex", "title": "Plan the garden w", "cwd": "/example/garden",
+                    "projectName": "garden", "state": "working", "workingSinceMs": minute, "canOpen": True, "updatedAtMs": minute},
+                   {"id": "m", "provider": "codex", "providerLabel": "Codex", "title": "Plan the garden m", "cwd": "/example/garden",
+                    "projectName": "garden", "state": "idle", "canOpen": True, "updatedAtMs": minute - 60_000,
+                    "muted": True, "mutedUntilMs": minute + 40 * 60_000, "mutedAtMs": minute}]
+        delays = {}
+        add = asb.GLib.timeout_add
+        def timeout_add(delay, callback, *args):
+            delays[getattr(callback, "__name__", "")] = delay
+            return add(delay, callback, *args)
+        for target, name, value in ((asb.time, "time", lambda: now[0] / 1000), (asb.GLib, "timeout_add", timeout_add)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = self.mute_wheel_board(720, threads)
+        working, muted = window.focus_widgets["w"], window.focus_widgets["m"]
+        window.show_context(working); self.drain(.3)
+        panel = window.context_menu
+        window.show_mute_times(panel, True); self.drain(.3)
+        window.update_clock()
+        # The board clock and the end-text timer both wake at the next whole minute (the end texts 20 ms after it).
+        self.assertEqual((delays["update_clock"], delays["mute_ends_tick"]), (10_000, 10_020))
+        before = {choice: button.asb_end.get_label() for choice, button in panel.asb_times.items()}
+        self.assertEqual((working.asb_age_label.get_text(), muted.asb_mute_time.get_text()), ("3m", "37m"))
+        self.assertEqual(asb.tooltip_model(working.asb_thread, now[0], "/home/test")["state_text"], "Working · 3m")
+        now[0] = minute + 4 * 60_000 + 20
+        window.update_clock(); window.mute_ends_tick(panel); self.drain(.1)
+        self.assertEqual((working.asb_age_label.get_text(), muted.asb_mute_time.get_text()), ("4m", "36m"))
+        for choice, button in panel.asb_times.items():
+            text = asb.mute_end_text(choice, now[0])
+            self.assertEqual(button.asb_end.get_label(), text)
+            if choice != "always":
+                self.assertNotEqual(text, before[choice])
+        # No time shows seconds: the mute flag, the Unmute caption, and the end texts are clock times.
+        clock = r"^(\w+day )?\d{1,2}:\d{2}( [AP]M)?$"
+        self.assertRegex(asb.mute_flag_text(muted.asb_thread, now[0]).removeprefix("Muted until "), clock)
+        for choice in ("30m", "1h", "8h", "1d"):
+            self.assertRegex(panel.asb_times[choice].asb_end.get_label(), clock)
+        panel.popdown(); self.drain(.2)
+        window.show_context(muted); self.drain(.3)
+        self.assertRegex(window.context_menu.asb_actions["mute"].asb_caption.get_label(), r"^Until " + clock[1:])
+        window.context_menu.popdown(); self.drain(.2)
+
+    def test_waiting_and_process_ended_cards_in_and_out_of_the_drawer(self):
+        reason = "The Claude Code process ended during a task."
+        rows = self.card_rows(
+            ("wait", {"state": "waiting", "questionPending": True, "questionAttention": True, "pending": True, "pendingSource": "user-question"}),
+            ("ended", {"state": "unknown", "reason": reason, "processEnded": True, "unread": True, "pending": True, "alert": True,
+                       "failedAttention": True, "pendingSource": "observed-failure"}),
+            # As the engine sends them in the drawer: the question and the failure ask for nothing.
+            ("wait-drawer", {"state": "waiting", "questionPending": True, "drawer": True}),
+            ("ended-drawer", {"state": "unknown", "reason": reason, "processEnded": True, "drawer": True, "failedAttention": True}),
+            ("p1", {"unread": True, "pending": True, "completionAttention": True, "pendingSource": "observed-completion"}))
+        window = self.mute_wheel_board(720, rows)
+        cards = window.focus_widgets
+        put, out = "Put in drawer: stays unread in the drawer", "Take out of drawer: unread on the board again"
+        for identity, tucked in (("wait", False), ("ended", False), ("wait-drawer", True), ("ended-drawer", True)):
+            with self.subTest(identity=identity):
+                card = cards[identity]
+                drawer = card.asb_drawer_button
+                self.assertTrue(drawer.get_visible())
+                self.assertEqual((drawer.get_tooltip_text(), drawer.asb_action), (out, "win.drawer-out") if tucked else (put, "win.drawer-in"))
+                window.show_context(card); self.drain(.3)
+                row = window.context_menu.asb_actions["drawer"]
+                self.assertEqual((row.asb_label.get_label(), row.asb_caption.get_label()),
+                                 ("Take out of drawer", "Unread on the board again.") if tucked else ("Put in drawer", "Stays unread in the drawer."))
+                window.context_menu.popdown(); self.drain(.2)
+                # Alt+D runs the drawer action of the focused card.
+                with patch.object(window, "session_action") as action:
+                    card.grab_focus()
+                    self.assertTrue(window.card_key(asb.Gdk.KEY_d, asb.Gdk.ModifierType.ALT_MASK, identity))
+                    self.drain(.1)
+                    self.assertEqual(action.call_args.args[:2], (identity, "drawer-out" if tucked else "drawer-in"))
+        # A failed/processEnded mark keeps the main rule: dot in the drawer, the same "!" after Take out of drawer.
+        ended = cards["ended-drawer"]
+        self.assertEqual(asb.attention_indicator(ended.asb_thread, True), "dot")
+        stored = dict(ended.asb_thread)
+        window.update_session_row(ended, {**stored, "drawer": False, "unread": True, "pending": True, "alert": True,
+                                          "pendingSource": "observed-failure"})
+        self.assertTrue(ended.asb_dot.has_css_class("asb-alert"))
+        self.assertEqual(asb.attention_indicator(ended.asb_thread), "alert")
+        window.update_session_row(ended, stored)
+        # Outside the drawer view a Waiting drawer card shows no "?" and is not Pending; the drawer view shows its "?".
+        waiting = cards["wait-drawer"]
+        self.settle(window)
+        self.assertTrue(waiting.asb_dot.has_css_class("asb-question"))  # The drawer view's mark, kept for the peek.
+        self.assertEqual(self.ink(waiting.asb_read_button), 0)
+        self.assertEqual([asb.tooltip_model(waiting.asb_thread, NOW, "/home/test", drawer_view=view)["indicator"] for view in (False, True)],
+                         ["", "question"])
+        self.assertTrue(cards["wait"].asb_dot.has_css_class("asb-question"))
+        self.assertGreater(self.ink(cards["wait"].asb_read_button), 0)
+        # Alt+N goes to the Pending cards only, not to a drawer card.
+        window.set_focus(None)
+        seen = []
+        for _ in range(4):
+            self.assertTrue(window.window_key(None, asb.Gdk.KEY_n, 0, asb.Gdk.ModifierType.ALT_MASK)); self.drain(.1)
+            seen.append(window.focus_key())
+        self.assertEqual(set(seen), {"wait", "ended", "p1"})
+        window.drawer_only.set_active(True); self.settle(window)
+        waiting = window.focus_widgets["wait-drawer"]
+        self.assertTrue(waiting.asb_dot.get_visible() and waiting.asb_dot.has_css_class("asb-question"))
+        self.assertGreater(self.ink(waiting.asb_read_button), 0)
+        window.drawer_only.set_active(False); self.settle(window)
 
     def test_escape_with_nothing_to_clear_hides_the_card_controls_until_a_new_hover_or_focus(self):
         unread = dict(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
