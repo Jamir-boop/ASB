@@ -95,19 +95,20 @@ function sessionRow(thread) {
   const where = rowWhere(thread);
   const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, where, thread.surface,
     thread.pinned, thread.archived, thread.actionRequired, thread.actionAttention, thread.muted, thread.questionAttention, thread.alert, thread.unread,
-    thread.lastOutcome, thread.failedAttention, thread.completionAttention]);
+    thread.lastOutcome, thread.failedAttention, thread.completionAttention, thread.limitResetsAtMs]);
   setText(entry.age, relativeTime(thread.updatedAtMs));
   if (entry.signature === signature) return entry.row;
   entry.signature = signature;
   // On a muted row, a required action shows its mark only for a request that came after the start of the mute.
   const action = thread.actionRequired && (!thread.muted || thread.actionAttention);
   const indicator = action || thread.questionAttention ? 'question' : thread.alert ? 'alert' : thread.unread ? 'dot'
-    : thread.state === 'idle' && thread.lastOutcome === 'stopped' ? 'stop' : '';
+    : thread.state === 'idle' && (thread.lastOutcome === 'stopped' || thread.lastOutcome === 'limit' && !(thread.limitResetsAtMs > Date.now())) ? 'stop' : '';
   const attention = action ? 'A user action is required in the original app.'
     : indicator === 'question' ? 'A question needs your answer.' : indicator === 'dot' || indicator === 'alert' ? 'Unread in ASB.' : '';
   const outcome = thread.lastOutcome === 'stopped' ? 'Task stopped.' : thread.lastOutcome === 'limit' ? 'Usage limit stopped the task.'
     : thread.lastOutcome === 'failed' || thread.failedAttention ? 'Task failed.' : thread.completionAttention ? 'Task completed.' : '';
-  const stateText = thread.state === 'idle' && ['failed', 'limit'].includes(thread.lastOutcome) ? 'Stopped' : labels[thread.state] || 'Unknown';
+  const stateText = thread.state !== 'idle' ? labels[thread.state] || 'Unknown' : thread.lastOutcome === 'failed' ? 'Failed'
+    : ['stopped', 'limit'].includes(thread.lastOutcome) ? 'Stopped' : labels.idle;
   const { row, title, meta, state, age } = entry;
   const viewOnly = (thread.remote ? ` On ${where}.` : '') + (thread.surface === 'cli' ? ' CLI session.' : '') + (where ? ' View only.' : '');
   row.disabled = entry.opening || !thread.canOpen;

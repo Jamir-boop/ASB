@@ -164,6 +164,22 @@ test('a muted browser row shows the mark of a required action only for a request
   }
 });
 
+test('the browser row says Failed or Stopped and shows the stop square after a usage-limit reset', async () => {
+  const initial = board(1);
+  const h = harness(initial);
+  await settle();
+  for (const [state, lastOutcome, limitResetsAtMs, word, stop] of [['idle', 'failed', 0, 'Failed', false],
+    ['idle', 'stopped', 0, 'Stopped', true], ['idle', 'limit', epoch + 3_600_000, 'Stopped', false],
+    ['idle', 'limit', 0, 'Stopped', true], ['working', 'failed', 0, 'Working', false]]) {
+    Object.assign(initial.threads[0], { state, lastOutcome, limitResetsAtMs });
+    await h.refresh(response(initial));
+    const row = h.row();
+    assert.equal(row.children[0].children[1].children[0].textContent, word, `${state} ${lastOutcome}`);
+    assert.equal(row.children.some((child) => child.className === 'attention stop'), stop, `${lastOutcome} ${limitResetsAtMs}`);
+    assert.ok(row.attributes['aria-label'].includes(`. ${word}.`));
+  }
+});
+
 test('keyed browser rows keep nodes, listeners, focus, collapse, and scroll after one title change', async () => {
   for (const size of [120, 5_000]) {
     const initial = board(size);

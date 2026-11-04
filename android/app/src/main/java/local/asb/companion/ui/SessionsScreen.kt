@@ -986,17 +986,18 @@ private fun SessionCard(
             Row(Modifier.padding(start = 21.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 if (limited) LimitClock(tones.state)
-                Text(if (limited) "Resets in" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                Text(if (limited) "Resets in $countdown" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.state), maxLines = 1)
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically) {
                     if (whereGlyph != null) Icon(painterResource(whereGlyph), contentDescription = null, tint = hexColor(tones.caption),
                         modifier = Modifier.size(11.dp))
                     // About 12 characters of the 11 sp caption; the machine name ellipsizes before the age.
-                    if (viewOnly) Text("$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
+                    if (viewOnly) Text(if (limited) where else "$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false).widthIn(max = with(density) { 80.sp.toDp() }))
-                    Text(countdown.ifEmpty { working.ifEmpty { idleAge(row.updatedAtMs, nowMs) } }, fontSize = 11.sp,
+                    // While the countdown runs, the bottom line has one phrase at the left and no age at the right.
+                    if (!limited) Text(working.ifEmpty { idleAge(row.updatedAtMs, nowMs) }, fontSize = 11.sp,
                         lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.End)
                 }
@@ -1053,8 +1054,8 @@ private fun IndicatorMark(indicator: String, palette: Palette) {
         "alert" -> Text("!", color = hexColor(palette.accent), fontSize = 11.sp, lineHeight = 14.sp,
             fontWeight = FontWeight.ExtraBold)
         "dot" -> Box(Modifier.size(7.dp).background(hexColor(palette.accent), CircleShape))
-        "discard" -> Box(Modifier.size(9.dp).border(1.5.dp, hexColor(palette.text), CircleShape))
-        "stop" -> Box(Modifier.size(7.dp).background(hexColor(palette.muted), RoundedCornerShape(1.dp)))
+        "discard" -> Box(Modifier.size(9.dp).border(1.5.dp, hexColor(palette.quietCaption), CircleShape))
+        "stop" -> Box(Modifier.size(7.dp).background(hexColor(palette.quietCaption), RoundedCornerShape(1.dp)))
     }
 }
 
@@ -1062,9 +1063,7 @@ private fun IndicatorMark(indicator: String, palette: Palette) {
 private fun CornerButton(control: CornerControl, title: String, busy: Boolean, palette: Palette, onCorner: (String) -> Unit) {
     val text = hexColor(palette.text)
     val background = when (control.kind) {
-        "dot", "alert", "drawer" -> text.copy(alpha = .08f)
-        "question" -> if (control.action != null) text.copy(alpha = .08f) else Color.Transparent
-        "pin" -> text.copy(alpha = .12f)
+        "dot", "drawer" -> text.copy(alpha = .08f)
         "confirmed" -> hexColor(palette.success).copy(alpha = .12f)
         else -> Color.Transparent
     }
@@ -1088,7 +1087,15 @@ private fun CornerButton(control: CornerControl, title: String, busy: Boolean, p
             when (control.kind) {
                 "confirmed" -> Icon(Icons.Default.Check, contentDescription = null, tint = hexColor(palette.success),
                     modifier = Modifier.size(12.dp))
-                "pin" -> Icon(PinIcon, contentDescription = null, tint = text, modifier = Modifier.size(12.dp))
+                "pin" -> Icon(PinIcon, contentDescription = null, tint = hexColor(palette.quietCaption), modifier = Modifier.size(12.dp))
+                // An unread ? or ! is a 16 dp accent disc with the glyph in the background color; a read permission wait is a bare quiet glyph.
+                "question", "alert" -> if (control.action != null) Box(
+                    Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape), contentAlignment = Alignment.Center,
+                ) {
+                    Text(if (control.kind == "alert") "!" else "?", color = hexColor(palette.background), fontSize = 11.sp,
+                        lineHeight = 11.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+                } else Text("?", color = hexColor(palette.quietCaption), fontSize = 11.sp, lineHeight = 14.sp,
+                    fontWeight = FontWeight.ExtraBold)
                 "drawer" -> DrawerGlyph(hexColor(palette.accent), hexColor(palette.background))
                 else -> IndicatorMark(control.kind, palette)
             }

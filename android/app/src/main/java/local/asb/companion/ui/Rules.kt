@@ -94,7 +94,7 @@ fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = Syste
     row.alert -> "alert"
     row.unread || (drawer && row.drawer && row.state != "working" && limitLeft(row, nowMs) == 0L) -> "dot"
     row.state == "working" && row.discardResult -> "discard"
-    row.state == "idle" && row.lastOutcome == "stopped" -> "stop"
+    row.state == "idle" && (row.lastOutcome == "stopped" || row.lastOutcome == "limit" && limitLeft(row, nowMs) == 0L) -> "stop"
     else -> ""
 }
 

@@ -10,10 +10,12 @@ import local.asb.companion.data.contrast
 import local.asb.companion.data.displaySourceColor
 import local.asb.companion.data.edgeColor
 import local.asb.companion.data.highlightColor
+import local.asb.companion.data.lightness
 import local.asb.companion.data.limitedColor
 import local.asb.companion.data.luminance
 import local.asb.companion.data.mixColor
 import local.asb.companion.data.quietColor
+import local.asb.companion.data.quietTones
 import local.asb.companion.data.readableColor
 import local.asb.companion.ui.asbColorScheme
 import org.junit.Assert.assertEquals
@@ -56,6 +58,24 @@ class PaletteTest {
         assertEquals("#7e7e7c" to .51, limitedColor("#101418", "#e8e4dc"))
     }
 
+    @Test fun quietTonesKeepATenLightnessStep() {
+        assertEquals(53.585, lightness("#808080"), 1e-3)
+        assertEquals(0.0, lightness("#000000"), 1e-12)
+        assertEquals(100.0, lightness("#ffffff"), 1e-9)
+        for ((palette, expected) in listOf(
+            Palette("custom", "#000000", "#ffffff", "#ffb900", "#bcbcbc") to ("#ababab" to "#8f8f8f"),
+            Palette("custom", "#10141c", "#e8eaee", "#7cc4ff", "#9aa4b2") to ("#acaeb3" to "#8b94a2"),
+            Palette("gnome", "#222226", "#ffffff") to ("#b6b6b7" to "#99999b"),
+        )) {
+            assertEquals(expected, palette.quietTitle to palette.quietCaption)
+            assertTrue(lightness(palette.quietTitle) - lightness(palette.quietCaption) >= 10)
+            for (color in listOf(palette.quietTitle, palette.quietCaption)) for (surface in listOf(palette.background, palette.highlight)) {
+                assertTrue("$color on $surface", contrast(color, surface) >= 4.5)
+            }
+        }
+        assertEquals("#b2b0ab" to "#99948d", quietTones("#101418", "#e8e4dc", "#a8a29a", .85, "#322c22"))
+    }
+
     @Test fun sourceDotColorsMatchPython() {
         val fallback = listOf("#222226", "#2f3744")
         assertEquals("#8296b4", displaySourceColor("#8296b4", fallback))
@@ -73,7 +93,8 @@ class PaletteTest {
         assertEquals(listOf("#c1c1c2", "#646467", "#313135", "#b6b6b7", "#99999b", "#8a8a8c", "#99999b"),
             listOf(gnome.muted, gnome.divider, gnome.highlight, gnome.quietTitle, gnome.quietCaption, gnome.limited,
                 gnome.limitedPressed))
-        assertEquals(listOf("#322c22", "#a19f9b", "#99948d", "#7e7e7c", "#969592"),
+        // The caption is at its 4.5:1 floor, so the title goes up for the 10 L* step.
+        assertEquals(listOf("#322c22", "#b2b0ab", "#99948d", "#7e7e7c", "#969592"),
             listOf(custom.highlight, custom.quietTitle, custom.quietCaption, custom.limited, custom.limitedPressed))
     }
 

@@ -210,6 +210,12 @@ fun contrast(first: String, second: String): Double {
     return (maxOf(a, b) + .05) / (minOf(a, b) + .05)
 }
 
+// CIE L* (D65) from the relative luminance that contrast uses.
+fun lightness(color: String): Double {
+    val y = luminance(color)
+    return if (y > 216.0 / 24389) 116 * Math.cbrt(y) - 16 else 24389.0 / 27 * y
+}
+
 // Port of mix_color. Math.rint rounds half to even, as Python round does.
 fun mixColor(background: String, foreground: String, fraction: Double): String = "#" + listOf(1, 3, 5).joinToString("") { start ->
     val value = background.substring(start, start + 2).toInt(16) * (1 - fraction) +
@@ -256,6 +262,29 @@ fun quietColor(background: String, color: String, fraction: Double, highlight: S
     return color to 1.0
 }
 
+/**
+ * The quiet title and caption: when the title is less than 10 L* above the caption, the caption fraction goes down
+ * one percent at a time to its 4.5:1 floor, then the title fraction goes up, until the step is 10 or more.
+ */
+fun quietTones(background: String, text: String, caption: String, captionFraction: Double, highlight: String): Pair<String, String> {
+    val (title, titleFraction) = quietColor(background, text, .67, highlight)
+    val (quiet, fraction) = quietColor(background, caption, captionFraction, highlight)
+    fun step(first: String, second: String) = lightness(first) - lightness(second) >= 10
+    if (step(title, quiet)) return title to quiet
+    val floor = quietColor(background, caption, 0.0, highlight).second
+    var lowered = quiet
+    for (percent in Math.rint(fraction * 100).toInt() downTo Math.rint(floor * 100).toInt()) {
+        lowered = mixColor(background, caption, percent / 100.0)
+        if (step(title, lowered)) return title to lowered
+    }
+    var raised = title
+    for (percent in Math.rint(titleFraction * 100).toInt()..100) {
+        raised = mixColor(background, text, percent / 100.0)
+        if (step(raised, lowered)) break
+    }
+    return raised to lowered
+}
+
 // Port of limited_color.
 fun limitedColor(background: String, text: String): Pair<String, Double> = quietColor(background, text, 0.0, background)
 
@@ -273,9 +302,10 @@ data class Palette(
     val custom: Boolean get() = mode == "custom"
     // As set_palette: Custom mixes the accent in, GNOME uses the foreground at 7%.
     val highlight: String = if (mode == "custom") highlightColor(background, accent) else mixColor(background, text, .07)
-    val quietTitle: String = quietColor(background, text, .67, highlight).first
-    val quietCaption: String = (if (mode == "custom") quietColor(background, muted, .85, highlight)
-        else quietColor(background, text, .5, highlight)).first
+    private val quiet: Pair<String, String> =
+        if (mode == "custom") quietTones(background, text, muted, .85, highlight) else quietTones(background, text, text, .5, highlight)
+    val quietTitle: String = quiet.first
+    val quietCaption: String = quiet.second
     val limited: String = limitedColor(background, text).first
     val limitedPressed: String = quietColor(background, text, 0.0, highlight).first
 

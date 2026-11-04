@@ -46,17 +46,17 @@ class FormatTest {
             Triple(1L, "1s", "1 second"),
             Triple(45L, "45s", "45 seconds"),
             Triple(59L, "59s", "59 seconds"),
-            Triple(60L, "1m0s", "1 minute"),
-            Triple(61L, "1m1s", "1 minute 1 second"),
-            Triple(122L, "2m2s", "2 minutes 2 seconds"),
-            Triple(725L, "12m5s", "12 minutes 5 seconds"),
+            Triple(60L, "1m00s", "1 minute"),
+            Triple(61L, "1m01s", "1 minute 1 second"),
+            Triple(122L, "2m02s", "2 minutes 2 seconds"),
+            Triple(725L, "12m05s", "12 minutes 5 seconds"),
             Triple(3599L, "59m59s", "59 minutes 59 seconds"),
-            Triple(3600L, "1h0m", "1 hour"),
-            Triple(3601L, "1h0m", "1 hour"),
-            Triple(3661L, "1h1m", "1 hour 1 minute"),
-            Triple(7200L, "2h0m", "2 hours"),
+            Triple(3600L, "1h00m", "1 hour"),
+            Triple(3601L, "1h00m", "1 hour"),
+            Triple(3661L, "1h01m", "1 hour 1 minute"),
+            Triple(7200L, "2h00m", "2 hours"),
             Triple(16_330L, "4h32m", "4 hours 32 minutes"),
-            Triple(86_400L, "24h0m", "24 hours"),
+            Triple(86_400L, "24h00m", "24 hours"),
         )
         for ((seconds, compact, spoken) in cases) {
             assertEquals("Countdown $seconds s", compact, durationText(seconds))
@@ -69,15 +69,15 @@ class FormatTest {
         val cases = listOf(
             Triple(0L, "0s", "0 seconds"),
             Triple(45L, "45s", "45 seconds"),
-            Triple(725L, "12m5s", "12 minutes 5 seconds"),
-            Triple(3600L, "1h0m", "1 hour"),
+            Triple(725L, "12m05s", "12 minutes 5 seconds"),
+            Triple(3600L, "1h00m", "1 hour"),
             Triple(16_330L, "4h32m", "4 hours 32 minutes"),
             Triple(86_399L, "23h59m", "23 hours 59 minutes"),
-            Triple(86_400L, "1d0h", "1 day"),
-            Triple(90_000L, "1d1h", "1 day 1 hour"),
-            Triple(176_399L, "2d0h", "2 days"),
-            Triple(273_600L, "3d4h", "3 days 4 hours"),
-            Triple(604_800L, "7d0h", "7 days"),
+            Triple(86_400L, "1d00h", "1 day"),
+            Triple(90_000L, "1d01h", "1 day 1 hour"),
+            Triple(176_399L, "2d00h", "2 days"),
+            Triple(273_600L, "3d04h", "3 days 4 hours"),
+            Triple(604_800L, "7d00h", "7 days"),
         )
         for ((seconds, compact, spoken) in cases) {
             assertEquals("Limit $seconds s", compact, limitText(seconds))
@@ -85,7 +85,17 @@ class FormatTest {
         }
         assertEquals("0s", limitText(-1))
         // The Working timer keeps its format.
-        assertEquals("76h0m", workingDuration(now - 273_600_000, now))
+        assertEquals("76h00m", workingDuration(now - 273_600_000, now))
+    }
+
+    @Test fun theSecondUnitOfATwoUnitTimeHasTwoDigits() {
+        assertEquals("1m05s", durationText(65))
+        assertEquals("12m00s", durationText(720))
+        assertEquals("1h05m", durationText(3900))
+        assertEquals("5s", durationText(5))
+        assertEquals("4h32m", limitText(16320))
+        assertEquals("3d04h", limitText(3 * 86400 + 4 * 3600))
+        assertEquals("5m00s", limitText(300))
     }
 
     @Test fun countdownFormattingHandlesLongBoundsWithoutOverflow() {
@@ -100,9 +110,9 @@ class FormatTest {
     @Test fun workingTimeUsesWholeSecondsAndChangesUnitsAtTheBoundary() {
         val cases = listOf(
             0L to "0s", 999L to "0s", 1000L to "1s", 45_000L to "45s",
-            59_999L to "59s", 60_000L to "1m0s", 725_000L to "12m5s",
-            3_599_999L to "59m59s", 3_600_000L to "1h0m", 4_320_000L to "1h12m",
-            86_400_000L to "24h0m",
+            59_999L to "59s", 60_000L to "1m00s", 725_000L to "12m05s",
+            3_599_999L to "59m59s", 3_600_000L to "1h00m", 4_320_000L to "1h12m",
+            86_400_000L to "24h00m",
         )
         for ((elapsed, expected) in cases) {
             assertEquals("Elapsed $elapsed ms", expected, workingDuration(now - elapsed, now))
@@ -144,10 +154,11 @@ class FormatTest {
         }
     }
 
-    @Test fun cardStateSaysStoppedOnlyForAnIdleFailedOrLimitStop() {
-        assertEquals("Stopped", cardStateLabel(Thread(state = "idle", lastOutcome = "failed")))
+    @Test fun cardStateSaysFailedOrStoppedForAnIdleOutcome() {
+        assertEquals("Failed", cardStateLabel(Thread(state = "idle", lastOutcome = "failed")))
+        assertEquals("Stopped", cardStateLabel(Thread(state = "idle", lastOutcome = "limit", limitResetsAtMs = now + 3_600_000)))
         assertEquals("Stopped", cardStateLabel(Thread(state = "idle", lastOutcome = "limit")))
-        assertEquals("Idle", cardStateLabel(Thread(state = "idle", lastOutcome = "stopped")))
+        assertEquals("Stopped", cardStateLabel(Thread(state = "idle", lastOutcome = "stopped")))
         assertEquals("Idle", cardStateLabel(Thread(state = "idle", lastOutcome = "")))
         assertEquals("Working", cardStateLabel(Thread(state = "working", lastOutcome = "failed")))
         assertEquals("Idle", stateLabel("idle"))

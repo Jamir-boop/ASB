@@ -386,6 +386,16 @@ class RulesTest {
         assertEquals(2L, clockInterval(listOf(Thread(state = "idle"), Thread(state = "working")), now))
     }
 
+    @Test fun aUsageLimitStopShowsTheStopSquareOnlyAfterTheReset() {
+        val after = Thread(id = "a", state = "idle", lastOutcome = "limit", limitResetsAtMs = now - 1_000)
+        val during = after.copy(limitResetsAtMs = now + 3_600_000)
+        assertEquals("stop", attentionIndicator(after, nowMs = now))
+        assertEquals("", attentionIndicator(during, nowMs = now))
+        assertEquals("stop", attentionIndicator(during, nowMs = during.limitResetsAtMs))
+        assertEquals("alert", attentionIndicator(after.copy(alert = true), nowMs = now))
+        assertEquals("alert", attentionIndicator(during.copy(alert = true), nowMs = now))
+    }
+
     @Test fun limitedDrawerDotReturnsAtResetWithoutChangingOtherAttentionRules() {
         val row = Thread(id = "a", state = "idle", drawer = true, limitResetsAtMs = now + 3_600_000)
         assertEquals("", attentionIndicator(row, drawer = true, nowMs = now))

@@ -1588,7 +1588,7 @@ test('browser rows show question, unread, then stop and name the actual end outc
     assert.ok(row.title.includes(text));
     if (indicator === 'alert') {
       assert.equal(row.children[1].textContent, '!');
-      assert.ok(row.attributes['aria-label'].includes('Stopped.'));
+      assert.ok(row.attributes['aria-label'].includes(extra.lastOutcome === 'failed' ? 'Failed.' : 'Stopped.'));
       assert.ok(row.attributes['aria-label'].includes('Unread in ASB.'));
     }
   }

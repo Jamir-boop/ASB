@@ -13,15 +13,15 @@ import local.asb.companion.data.UsageScan
 import local.asb.companion.data.Thread
 import local.asb.companion.data.chartLabelShown
 
-// Port of duration_text.
+// Port of duration_text: the second unit of a two-unit time has two digits (1m05s, 1h05m).
 fun durationText(seconds: Long): String {
     val total = seconds.coerceAtLeast(0)
     val hours = total / 3600
     val minutes = total / 60 % 60
     val remainder = total % 60
     return when {
-        hours > 0 -> "${hours}h${minutes}m"
-        minutes > 0 -> "${minutes}m${remainder}s"
+        hours > 0 -> "${hours}h${minutes.toString().padStart(2, '0')}m"
+        minutes > 0 -> "${minutes}m${remainder.toString().padStart(2, '0')}s"
         else -> "${remainder}s"
     }
 }
@@ -43,7 +43,7 @@ fun spokenDuration(seconds: Long): String {
 // Port of limit_text: the reset countdown shows days and hours from 24 hours on (weekly limits).
 fun limitText(seconds: Long): String {
     val days = seconds.coerceAtLeast(0) / 86_400
-    return if (days > 0) "${days}d${seconds % 86_400 / 3600}h" else durationText(seconds)
+    return if (days > 0) "${days}d${(seconds % 86_400 / 3600).toString().padStart(2, '0')}h" else durationText(seconds)
 }
 
 // Port of spoken_limit.
@@ -81,9 +81,14 @@ fun stateLabel(state: String): String = when (state) {
     else -> "Unknown"
 }
 
-// The card state word: an Idle row after a failed or usage-limit stop says Stopped; the filters keep stateLabel.
-fun cardStateLabel(row: Thread): String =
-    if (row.state == "idle" && row.lastOutcome in setOf("failed", "limit")) "Stopped" else stateLabel(row.state)
+// The card state word: an Idle row says Failed after a failed task and Stopped after a stop or a usage-limit stop,
+// until the next task starts (also after Read); the filters and sorting keep stateLabel.
+fun cardStateLabel(row: Thread): String = when {
+    row.state != "idle" -> stateLabel(row.state)
+    row.lastOutcome == "failed" -> "Failed"
+    row.lastOutcome in setOf("stopped", "limit") -> "Stopped"
+    else -> stateLabel(row.state)
+}
 
 // The top bar connection text, for example "PC · Live · ZeroTier". An offline phone has no current path.
 fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): String =

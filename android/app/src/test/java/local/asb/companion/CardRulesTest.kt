@@ -94,6 +94,9 @@ class CardRulesTest {
         assertEquals("A user action is required in the original app",
             cornerControls(action.copy(actionAttention = false), false, false, now).single().label)
         assertEquals(listOf("stop" to null), kinds(idle.copy(lastOutcome = "stopped")))
+        // A usage-limit stop shows the stop square after the reset, and nothing during the countdown.
+        assertEquals(listOf("stop" to null), kinds(idle.copy(lastOutcome = "limit", limitResetsAtMs = now - 1_000)))
+        assertEquals(emptyList<Pair<String, String?>>(), kinds(idle.copy(lastOutcome = "limit", limitResetsAtMs = now + 3_600_000)))
         val alert = idle.copy(unread = true, alert = true, lastOutcome = "limit")
         assertEquals(listOf("alert" to "mark-read"), kinds(alert))
         assertEquals(CornerControl("alert", "mark-read", "Mark read in ASB"), cornerControls(alert, false, false, now).single())
