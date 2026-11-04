@@ -58,16 +58,19 @@ function stepped(attribute, times, values, transform = false) {
 }
 const visible = (start, end) => animation('visibility', [0, start, end, loop], ['hidden', 'visible', 'hidden', 'hidden'], true);
 
+// The card title at the measured 7.67 px advance: line 1 keeps the 54 px corner reserve (138 px, 18 characters) and breaks at a word;
+// line 2 runs to the right edge of the text column (192 px, 25 characters) and ends with "…" there.
 function titleLines(title) {
-  const words = title.split(' '), lines = [];
-  while (words.length && lines.length < 2) {
-    let line = words.shift();
-    while (words.length && line.length + 1 + words[0].length <= 17) line += ' ' + words.shift();
-    lines.push(line);
-  }
-  if (words.length) lines[1] = lines[1].slice(0, 16).trimEnd() + '…';
-  return lines;
+  const words = title.split(' ');
+  let line = words.shift();
+  while (words.length && line.length + 1 + words[0].length <= 18) line += ' ' + words.shift();
+  const rest = words.join(' ');
+  return rest ? [line, rest.length > 25 ? rest.slice(0, 24) + '…' : rest] : [line];
 }
+// The lines that the board draws for these titles (measured on the board, 2026-11-04).
+assert.deepEqual(titleLines('Summarize the open issues into one short note'), ['Summarize the open', 'issues into one short no…']);
+assert.deepEqual(titleLines('Compare two parsers for the import step'), ['Compare two', 'parsers for the import s…']);
+assert.deepEqual(titleLines('Rename the config keys'), ['Rename the config', 'keys']);
 
 // Toolbar: content x 7 to 957, items 4 px apart, text sized at 0.6 em for each character.
 let toolbar = '<circle cx="15" cy="21" r="8" fill="url(#disc)"/>';
@@ -99,7 +102,8 @@ let cards = [239, 480, 721].map(x => `<path d="M${x + .5} 0V212" stroke="#2b2b2b
 samples.forEach(([folder, title, , state, unread, question, age], i) => {
   const [x, y] = origin(i), quiet = state === 'idle' && !unread;
   const muted = quiet ? '#8f8f8f' : '#bcbcbc';
-  cards += icon(i, '#a5a5a5', .9) + `<g transform="translate(${x} ${y})">`;
+  // A quiet card has the quiet caption color on its provider mark; a bright card has 65% of the text color.
+  cards += (quiet ? icon(i, '#8f8f8f') : icon(i, '#ffffff', .65)) + `<g transform="translate(${x} ${y})">`;
   cards += text(29, 9, folder, 11, muted);
   titleLines(title).forEach((line, row) => { cards += text(29, 24.5 + 15 * row, line, 13, quiet ? '#ababab' : '#fff'); });
   cards += text(29, 56, state === 'working' ? 'Working' : 'Idle', 11, unread ? '#fff' : state === 'working' ? accent : muted);
