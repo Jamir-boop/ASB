@@ -6,6 +6,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 - The row panel now drops a double-click press after a Mute page change, and a later click with a still pointer acts on the panel row under it, not on a card behind the panel. The time list fits its rows above and below its point without moving the title. Its checked radios use the Libadwaita accent disc and foreground dot, and the time tag has a larger click target.
 - The row panel waits 400 ms after a pointer exit, with the wait canceled on return. Unavailable captions use the same accessible floor tone as their labels. Working **Mark unread**, the drawer rows, and the remote relative-reference row have plainer captions; the back row and the time group have accessible names.
+- Refined card marks: 10 px Discard rings with 2 px ink and eight 27° dashes, a whole-pixel 12 px outline pin, quieter Claude marks and quiet-card pins, stop squares, and muted bells with 3:1 floors, and a 16 px unread-dot plate at rest. The panel ring icons now have 2 px ink too.
+- Card titles now stop at a whole word before an untagged hover pocket and balance a one-word second line when the preceding word fits. Column dividers now sit in the middle of the gap and all reach the tallest column, without moving cards.
+- The Read cue now has the text color and keeps its confirmation color after Read. Filled drawer buttons use the on-toggle look. Corner keyboard focus has a solid accent ring, and card Alt keys show visible focus even when the action cannot run.
 
 - The card Pin button now shows an outline pin on an unpinned card and a filled pin on a pinned card. The Compact pin mark and the row panel **Pin** row use the same filled pin. The Discard ring that shows on card hover now has the text color, and a passive `?` or stop square has no plate on card hover.
 - The Comfortable state line now sits 3 px higher. The card height does not change.

@@ -5026,7 +5026,9 @@ class WidgetCheck(unittest.TestCase):
             if node is None:
                 return 0
             renderer = asb.Gsk.CairoRenderer(); renderer.realize(None)
-            data, stride = asb.Gdk.TextureDownloader.new(renderer.render_texture(node, None)).download_bytes()
+            # The button rectangle keeps (12, 3) in button pixels when the drawn ink is smaller than the button.
+            bounds = asb.Graphene.Rect().init(0, 0, button.get_width(), button.get_height())
+            data, stride = asb.Gdk.TextureDownloader.new(renderer.render_texture(node, bounds)).download_bytes()
             renderer.unrealize()
             return data.get_data()[3 * stride + 12 * 4 + 3]
         for key, parts in (("short", (("asb_pin_button", 20), ("asb_read_button", 20), ("asb_copy_button", 20), ("asb_mute_button", 20))),
@@ -5104,8 +5106,11 @@ class WidgetCheck(unittest.TestCase):
             self.hover_card(window, cards["plain"], True); self.drain(.2)
             self.assertEqual(hex_color(cards["plain"].asb_title_label), hex_color(cards["pinned-unread"].asb_title_label))
             self.hover_card(window, cards["plain"], False); self.drain(.2)
-            # The pin has the quiet caption color, as the state of a quiet row.
-            self.assertEqual(hex_color(cards["pinned"].asb_compact_pin), hex_color(cards["pinned"].asb_state_label))
+            # The pin has 75% of the quiet caption alpha, with 3:1 on the background.
+            colors = window.native_colors()
+            caption = asb.quiet_tones(colors, asb.mix_color(colors["background"], colors["text"], .07), False)[1][1]
+            pin = asb.contrast_floor(asb.mix_color(colors["background"], colors["text"], caption * .75), colors["text"], colors["background"], 3)
+            self.assertEqual(hex_color(cards["pinned"].asb_compact_pin), pin)
             self.assertEqual(cards["working"].asb_state_label.get_text(), "Working")
             self.assertEqual(cards["working"].asb_working_time.get_text(), " · 3m")
             self.assertTrue(cards["waiting-read"].asb_dot.has_css_class("asb-passive"))
@@ -7934,7 +7939,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(near(rows[y][x]), (x, y, rows[y][x], expected))
         self.assertFalse(near(rows[2][40]))
         window.set_palette(CUSTOM)
-        self.assertNotIn("outline: 2px solid @accent_color; outline-offset: -2px; }", self.board_css(window).split(".asb-row-panel .asb-panel-action:focus-visible")[0])
+        self.assertNotIn(".asb-session:focus-visible { outline: 2px solid @accent_color; outline-offset: -2px; }", self.board_css(window))
 
     def glyph_offsets(self, card, center):
         """The ink center of the card's ? or ! minus the center of the box, in px."""
@@ -8013,6 +8018,7 @@ class WidgetCheck(unittest.TestCase):
                 found, box = card.asb_actions.compute_bounds(card)
                 self.assertTrue(found)
                 bottom = box.origin.y + box.size.height
+                window.width_control.set_value(240); window.set_default_size(1004, 410); self.settle(window)
                 title = card.asb_title_label
                 first, second, offset, two = title.title_layouts(title.get_width())
                 self.assertTrue(two)
@@ -8514,7 +8520,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertLessEqual(text_bounds.origin.x + text_bounds.size.width, card.get_width())
             self.assertEqual(text.get_pango_context().get_font_description().get_size(),
                              (size_source or before).get_pango_context().get_font_description().get_size())
-            self.assertEqual(asb.SwitchboardWindow.hex_color(text.get_color()), asb.SwitchboardWindow.hex_color(glyph.get_color()))
+            # A quiet bell is a mark at 75% of the caption alpha; its time keeps the caption color.
+            self.assertEqual(asb.SwitchboardWindow.hex_color(text.get_color()), asb.SwitchboardWindow.hex_color(before.get_color()))
         check_pair(card.asb_folder)
         window.width_control.set_value(160); self.settle(window)
         self.assertLess(window.column_pixel_width, 190)
@@ -8726,10 +8733,18 @@ class WidgetCheck(unittest.TestCase):
                 with self.subTest(custom=bool(custom), card=identity):
                     glyph, folder = cards[identity].asb_mute_glyph, cards[identity].asb_folder
                     self.assertTrue(glyph.get_visible() and glyph.get_mapped())
-                    self.assertEqual(hex_color(glyph), hex_color(folder))
-                    self.assertEqual(hex_color(cards[identity].asb_mute_time), hex_color(glyph))
-                    # The thin lines of the icon get nearly the ink of the folder text: no extra dimming.
-                    self.assertGreaterEqual(self.ink(glyph), .8 * self.ink(folder))
+                    if cards[identity].has_css_class("asb-idle-read") and not cards[identity].has_css_class("asb-limited"):
+                        colors = custom or window.native_colors()
+                        highlight = asb.highlight_color(colors) if custom else asb.mix_color(colors["background"], colors["text"], .07)
+                        caption = asb.quiet_tones(colors, highlight, bool(custom))[1][1]
+                        expected = asb.mix_color(colors["background"], colors["muted" if custom else "text"], caption * .75)
+                        self.assertEqual(hex_color(glyph), asb.contrast_floor(expected, colors["text"], colors["background"], 3))
+                        self.assertEqual(hex_color(cards[identity].asb_mute_time), hex_color(folder))
+                    else:
+                        self.assertEqual(hex_color(glyph), hex_color(folder))
+                        self.assertEqual(hex_color(cards[identity].asb_mute_time), hex_color(glyph))
+                        # The thin lines of the icon get nearly the ink of the folder text: no extra dimming.
+                        self.assertGreaterEqual(self.ink(glyph), .8 * self.ink(folder))
 
     def test_read_required_action_keeps_its_mark_and_offers_unread(self):
         def row(identity, order, **extra):
@@ -8935,6 +8950,210 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(read.has_css_class("asb-read-confirmed"))
         self.assertEqual(read.asb_action, "win.discard-result")
         self.assertTrue(read.has_css_class("asb-discard-offer"))
+
+    def test_round_four_discard_ring_and_pixel_pin(self):
+        area, context = Mock(), Mock()
+        area.get_color.return_value = asb.Gdk.RGBA()
+        asb.SwitchboardWindow.draw_discard_offer(area, context, 12, 12)
+        context.set_line_width.assert_called_once_with(2)
+        self.assertEqual(len(context.arc.call_args_list), 8)
+        for index, arc in enumerate(context.arc.call_args_list):
+            x, y, radius, start, end = arc.args
+            self.assertEqual((x, y, radius), (6, 6, 4))
+            self.assertAlmostEqual(math.degrees(end - start), 27)
+            self.assertAlmostEqual(math.degrees((start + end) / 2), -90 + index * 45)
+        icons = Path(asb.__file__).parents[1] / "assets" / "icons"
+        self.assertIn("a4.571 4.571", (icons / "asb-keep-symbolic.svg").read_text())
+        import re
+        sectors = re.findall(r'M([\d.]+) ([\d.]+)A6.857 6.857 0 0 1 ([\d.]+) ([\d.]+)L([\d.]+) ([\d.]+)A4.571',
+                             (icons / "asb-discard-symbolic.svg").read_text())
+        self.assertEqual(len(sectors), 8)
+        for i, sector in enumerate(sectors):
+            x, y, ex, ey, ix, iy = map(float, sector)
+            self.assertAlmostEqual(math.hypot(x - 8, y - 8), 6.857, places=3)
+            self.assertAlmostEqual(math.hypot(ix - 8, iy - 8), 4.571, places=3)
+            start, end = math.atan2(y - 8, x - 8), math.atan2(ey - 8, ex - 8)
+            self.assertAlmostEqual(math.degrees((end - start) % (2 * math.pi)), 27, places=2)
+            self.assertAlmostEqual((math.degrees(start) + 103.5 - i * 45 + 180) % 360 - 180, 0, delta=.01)
+        self.assertIn('viewBox="0 0 12 12"', (icons / "asb-pin-outline-symbolic.svg").read_text())
+        window = self.card_board([self.card_row("a")])
+        card = window.focus_widgets["a"]
+        self.hover_card(window, card, True); self.settle(window)
+        pixels = self.rgba(card.asb_pin_button.get_child())
+        pixels = [row[6:18] for row in pixels[6:18]]
+        self.assertEqual((len(pixels), len(pixels[0])), (12, 12))
+        # Head is two solid rows; the hollow core is two by three clear pixels; needle is one by three.
+        for y in (0, 1):
+            self.assertTrue(all(pixels[y][x][3] == 255 for x in range(3, 9)))
+        for y in range(2, 5):
+            self.assertEqual([pixels[y][x][3] for x in (5, 6)], [0, 0])
+        for y in range(8, 11):
+            self.assertEqual([pixels[y][x][3] for x in (5, 6, 7)], [0, 255, 0])
+
+    def test_round_four_dividers_span_short_column_without_moving_cards(self):
+        window = self.card_board([self.card_row(str(i), updatedAtMs=NOW - i * 1000) for i in range(16)], CUSTOM)
+        columns = window.list_columns
+        self.assertGreater(len(columns), 1)
+        self.assertLess(columns[-1].get_height(), max(c.get_height() for c in columns))
+        pixels = self.rgba(window.list_body)
+        tallest = max(c.get_height() for c in columns)
+        divider = tuple(int(CUSTOM["divider"][i:i + 2], 16) for i in (1, 3, 5)) + (255,)
+        for index, column in enumerate(columns[1:], 1):
+            x = round(column.compute_bounds(window.list_body)[1].origin.x)
+            self.assertEqual(x, index * (window.column_pixel_width + 12))
+            for y in (0, tallest // 2, tallest - 1):
+                self.assertEqual(pixels[y][x - 6], divider)
+                self.assertNotEqual(pixels[y][x - 7], divider)
+                self.assertNotEqual(pixels[y][x - 5], divider)
+            left = columns[index - 1].get_last_child().compute_bounds(window.list_body)[1]
+            right = column.get_first_child().compute_bounds(window.list_body)[1]
+            self.assertAlmostEqual(x - 5.5 - left.origin.x - left.size.width, 6, delta=.5)
+            self.assertAlmostEqual(right.origin.x - (x - 5.5), 6, delta=.5)
+            self.assertTrue(window.divider_at(x - 6))
+
+    def test_round_four_whole_words_and_balanced_title_lines(self):
+        for font in ("Cantarell 11", "Cascadia Code NF 11"):
+            with self.subTest(font=font):
+                window = self.card_board([self.card_row("a", title="Approve the schema change")]
+                                         + [self.card_row(str(i)) for i in range(15)], CUSTOM, font)
+                card = window.focus_widgets["a"]
+                title = card.asb_title_label
+                first, second, offset, two = title.title_layouts(title.get_width())
+                self.assertEqual((first.get_text(), second.get_text(), two), ("Approve the", "schema change", True))
+                self.assertIsNone(title.pocket_line_end(first))
+                self.hover_card(window, card, True); self.settle(window)
+                first = title.title_layouts(title.get_width())[0]
+                end = title.pocket_line_end(first)
+                self.assertIsNotNone(end)
+                pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
+                measure = first.copy(); measure.set_width(-1)
+                fits = []
+                words = first.get_text().split(" ")
+                for n in range(1, len(words) + 1):
+                    measure.set_text(" ".join(words[:n]), -1)
+                    width = measure.get_size()[0] / asb.Pango.SCALE
+                    if width <= pocket_x:
+                        fits.append(width)
+                self.assertEqual(end, max(fits))
+                snapshot = Mock()
+                title.do_snapshot(snapshot)
+                self.assertAlmostEqual(snapshot.push_clip.call_args.args[0].size.width, end)
+                self.assertEqual(snapshot.append_layout.call_count, 2)
+                self.assertEqual(title.title_layouts(title.get_width())[1].get_text(), "schema change")
+                card.asb_actions.add_css_class("asb-corner-tagged")
+                self.assertIsNone(title.pocket_line_end(first))
+                card.asb_actions.remove_css_class("asb-corner-tagged")
+                self.hover_card(window, card, False); self.settle(window)
+                self.assertIsNone(title.pocket_line_end(first))
+                window.set_focus_visible(True); card.grab_focus(); self.settle(window)
+                self.assertEqual(title.pocket_line_end(first), end)
+                # No whole word fits: keep the original paint rather than suppressing all text.
+                title.set_label("Supercalifragilisticexpialidocious and a word")
+                self.settle(window)
+                self.assertIsNone(title.pocket_line_end(title.title_layouts(title.get_width())[0]))
+                # One line, two words on line 1, and a cut second line must not rebalance.
+                for text, expected in (("Short title", ("Short title", "")),
+                                       ("Approve the certificate rotation", ("Approve the", "certificate rotation")),
+                                       ("Rebuild the search index and tune the ranking for the summer catalog", None)):
+                    title.set_label(text); self.settle(window)
+                    a, b, _off, _two = title.title_layouts(203)
+                    if expected:
+                        self.assertEqual((a.get_text(), b.get_text()), expected)
+                    else:
+                        self.assertTrue(b.get_text().endswith("…"))
+                        if font.startswith("Cascadia"):
+                            self.assertEqual(a.get_text(), "Rebuild the search")
+                window.close()
+
+    def test_round_four_corner_colors_focus_and_dot_plate(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)
+        window = self.card_board([self.card_row("dot", unread=True, pending=True), self.card_row("drawer", drawer=True)])
+        card = window.focus_widgets["dot"]
+        for palette in (None, CUSTOM):
+            window.set_palette(palette); window.set_focus(None); self.hover_card(window, card, False); self.settle(window)
+            css = self.board_css(window)
+            text, accent = (palette["text"], palette["accent"]) if palette else ("@window_fg_color", "@accent_color")
+            self.assertIn(f".asb-card-action:focus-visible {{ outline: 2px solid {accent}; outline-offset: -2px; }}", css)
+            self.assertIn("min-width: 6px; min-height: 6px; border: 2px solid;", css)
+            self.assertIn(" .asb-dot:not(.asb-question):not(.asb-alert):not(.asb-stop):not(.asb-discard) {{ box-shadow: 0 0 0 4.5px".replace("{{", "{"), css)
+            dot = card.asb_dot.compute_bounds(card.asb_read_button)[1]
+            self.assertEqual((dot.origin.x, dot.origin.y, dot.size.width, dot.size.height), (8, 8, 7, 7))
+            pixels = self.rgba(card.asb_read_button)
+            self.assertEqual(pixels[12][2][3], 0)
+            self.assertGreater(pixels[12][5][3], 0)
+            self.assertEqual(pixels[12][21][3], 0)
+            self.hover_card(window, card, True); self.settle(window)
+            cue = next(w for w in descendants(card.asb_read_button) if w.has_css_class("asb-read-cue"))
+            self.assertTrue(cue.get_color().equal(card.get_color()))
+            self.assertGreater(self.rgba(card.asb_read_button)[12][2][3], 0)
+            card.asb_read_button.add_css_class("asb-read-confirmed"); self.settle(window)
+            confirmation = asb.Gdk.RGBA()
+            if palette:
+                confirmation.parse(palette["accent"])
+            else:
+                confirmation = window.get_style_context().lookup_color("success_color")[1]
+            self.assertTrue(cue.get_color().equal(confirmation))
+            card.asb_read_button.remove_css_class("asb-read-confirmed")
+            drawer = window.focus_widgets["drawer"]
+            self.hover_card(window, card, False); self.hover_card(window, drawer, True); self.settle(window)
+            self.assertTrue(drawer.asb_drawer_button.get_color().equal(drawer.get_color()))
+            self.assertIn(".asb-drawer-button.asb-drawer-filled:not(:hover):not(:focus-visible)", css)
+            self.hover_card(window, drawer, False)
+        with patch.object(window, "activate_action") as action, patch.object(window, "copy_reference"):
+            for key in asb.CARD_KEY_SLOTS:
+                window.set_focus_visible(False)
+                card.grab_focus()
+                self.assertTrue(window.card_key(key, asb.CARD_KEY_ALT, "dot"))
+                self.assertTrue(window.get_focus_visible())
+            window.session_actions.add("dot")
+            window.set_focus_visible(False)
+            self.assertTrue(window.card_key(asb.Gdk.KEY_r, asb.CARD_KEY_ALT, "dot"))
+            self.assertTrue(window.get_focus_visible())
+            window.session_actions.clear()
+
+    def test_round_four_mark_tones_and_passive_centers(self):
+        for font in ("Cantarell 11", "Cascadia Code NF 11"):
+            window = self.card_board([self.card_row("bright", provider="claude", state="working"),
+                                      self.card_row("quiet", provider="claude", pinned=True, muted=True),
+                                      self.card_row("stop", lastOutcome="stopped"),
+                                      self.card_row("question", state="waiting", actionRequired=True, actionAttention=False)], font=font)
+            for palette in (None, CUSTOM, {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}):
+                window.set_palette(palette); window.set_focus(None); self.settle(window)
+                colors = palette or window.native_colors()
+                highlight = asb.highlight_color(colors) if palette else asb.mix_color(colors["background"], colors["text"], .07)
+                caption = asb.quiet_tones(colors, highlight, bool(palette))[1][1]
+                for identity, key, fraction in (("bright", "text", .65 if palette else .55),
+                                                 ("quiet", "muted" if palette else "text", caption)):
+                    mark = window.focus_widgets[identity].asb_mark
+                    expected = asb.mix_color(colors["background"], colors[key], fraction * .75)
+                    for surface in (colors["background"], highlight):
+                        expected = asb.contrast_floor(expected, colors[key], surface, 3)
+                    rgba = asb.Gdk.RGBA(); rgba.parse(expected)
+                    self.assertTrue(mark.get_color().equal(rgba), (font, palette, identity, mark.get_color().to_string(), expected))
+                    self.assertEqual(mark.get_opacity(), 1)
+                    self.assertGreaterEqual(min(asb.contrast(expected, surface) for surface in (colors["background"], highlight)), 3)
+                quiet = window.focus_widgets["quiet"]
+                expected = asb.mix_color(colors["background"], colors["muted" if palette else "text"], caption * .75)
+                expected = asb.contrast_floor(expected, colors["text"], colors["background"], 3)
+                rgba = asb.Gdk.RGBA(); rgba.parse(expected)
+                for mark in (quiet.asb_pin_button, quiet.asb_mute_glyph):
+                    self.assertTrue(mark.get_color().equal(rgba), (font, palette, mark.get_color().to_string(), expected))
+                self.assertGreaterEqual(asb.contrast(expected, colors["background"]), 3)
+                question = window.focus_widgets["question"]
+                glyph = question.asb_dot.get_first_child()
+                ink, _logical = glyph.get_layout().get_extents()
+                x, y = glyph.get_layout_offsets()
+                point = glyph.compute_point(question.asb_read_button, asb.Graphene.Point().init(0, 0))[1]
+                for actual, target in ((point.x + x + (ink.x + ink.width / 2) / asb.Pango.SCALE, 12),
+                                       (point.y + y + (ink.y + ink.height / 2) / asb.Pango.SCALE, 12)):
+                    self.assertAlmostEqual(actual, target, delta=.5)
+                stopped = window.focus_widgets["stop"]
+                rect = stopped.asb_dot.compute_bounds(stopped.asb_read_button)[1]
+                self.assertAlmostEqual(rect.origin.x + rect.size.width / 2, 12, delta=.5)
+                self.assertAlmostEqual(rect.origin.y + rect.size.height / 2, 12, delta=.5)
+            window.close()
 
     def test_corner_pin_glyphs_discard_offer_text_color_and_no_passive_plate(self):
         rows = [self.card_row("pinned", pinned=True), self.card_row("plain"), self.card_row("stopped", lastOutcome="stopped"),
@@ -10029,8 +10248,8 @@ class WidgetCheck(unittest.TestCase):
             wrong = [(x, y, tinted(x, y)) for x, y in empty
                      if abs(tinted(x, y)[3] - 38) > 2 or any(abs(a - b) > 8 for a, b in zip(tinted(x, y), accent))]
             self.assertEqual(wrong[:5], [], index)
-            # The column gap next to the card has no tint.
-            self.assertEqual(tinted(right + 6, (top + bottom) // 2)[3], 0, index)
+            # The column gap next to the card has no tint; the divider is at 6 px, so this samples the clear gap.
+            self.assertEqual(tinted(right + 3, (top + bottom) // 2)[3], 0, index)
         # The walk: the crab color in the middle of a crab run.
         flight["pet_time"] = sum(phases["walk"]) / 2
         paint = self.strip_paint(window)

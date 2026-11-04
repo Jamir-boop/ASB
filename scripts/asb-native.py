@@ -3185,6 +3185,15 @@ class CardTitle(Gtk.Widget):
         second = self.create_pango_layout(rest)
         # Line 2 ends with "…" right after its last visible character, not after a space.
         layout_cut(second, rest, width)
+        # Avoid a one-word last line when the preceding word fits there without a cut.
+        words = first.get_text().split(" ")
+        if rest and " " not in rest and "…" not in second.get_text() and len(words) >= 3:
+            balanced = words[-1] + " " + rest
+            second.set_text(balanced, -1)
+            if second.get_size()[0] <= width * Pango.SCALE:
+                first.set_text(" ".join(words[:-1]), -1)
+            else:
+                second.set_text(rest, -1)
         second.set_width(width * Pango.SCALE)
         second.set_ellipsize(Pango.EllipsizeMode.END)
         second.set_height(-1)
@@ -3217,9 +3226,36 @@ class CardTitle(Gtk.Widget):
         self.queue_resize()
         return False
 
+    def pocket_line_end(self, first):
+        """The last whole word before an untagged, visible pocket; line breaks stay unchanged."""
+        card = self.get_ancestor(Gtk.ListBoxRow)
+        pocket = getattr(card, "asb_actions", None)
+        if pocket is None or not pocket.has_css_class("asb-corner-wide") or pocket.has_css_class("asb-corner-tagged") \
+                or card.has_css_class("asb-dismissed") or not (card.has_css_class("asb-hovered") or card.has_css_class("asb-key-focus")):
+            return None
+        found, pocket_bounds = pocket.compute_bounds(self)
+        if not found:
+            return None
+        measure = first.copy()
+        measure.set_width(-1)
+        end = None
+        words = first.get_text().split(" ")
+        for count in range(1, len(words) + 1):
+            measure.set_text(" ".join(words[:count]), -1)
+            width = measure.get_size()[0] / Pango.SCALE
+            if width > pocket_bounds.origin.x:
+                break
+            end = width
+        return end
+
     def do_snapshot(self, snapshot):
         first, second, offset, two = self.title_layouts(self.get_width())
+        end = self.pocket_line_end(first)
+        if end is not None:
+            snapshot.push_clip(Graphene.Rect().init(0, 0, end, self.get_height()))
         snapshot.append_layout(first, self.get_color())
+        if end is not None:
+            snapshot.pop()
         if two:
             snapshot.translate(Graphene.Point().init(0, offset))
             snapshot.append_layout(second, self.get_color())
@@ -3375,6 +3411,21 @@ class SessionStrip(Gtk.Box):
             snapshot.pop()
         if self.flights:
             self.snapshot_tints(snapshot)
+        # Keep the border allocation, but draw its ink in the gap for the full card-area height.
+        columns = [column for column in getattr(self.get_root(), "list_columns", ()) if column.get_parent() is self]
+        height = max((column.get_height() for column in columns), default=0)
+        palette = getattr(self.get_root(), "hover_colors", None)
+        color = Gdk.RGBA()
+        if palette:
+            color.parse(palette["divider"])
+        else:
+            found, color = self.get_style_context().lookup_color("borders")
+            if not found:
+                color = self.get_color()
+        for column in columns[1:]:
+            found, bounds = column.compute_bounds(self)
+            if found:
+                snapshot.append_color(color, Graphene.Rect().init(bounds.origin.x - 6, 0, 1, height))
         Gtk.Box.do_snapshot(self, snapshot)
         if self.flights:
             self.snapshot_flights(snapshot)
@@ -6628,7 +6679,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base}:not(.asb-comfortable) .asb-number {{ min-width: 14px; min-height: 13px; line-height: 13px; }}
 {base} .asb-number.asb-number-shown {{ opacity: 1; transition: opacity 140ms ease-out; }}
 {base} .asb-number.asb-number-pressed {{ background: @accent_bg_color; color: @accent_fg_color; }}
-{base} .asb-column + .asb-column {{ border-left: 1px solid @borders; }}
+{base} .asb-column + .asb-column {{ border-left: 1px solid transparent; }}
 {base} .asb-dot, .asb-tooltip .asb-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; background: @accent_color; }}
 {base} .asb-dot.asb-question, {base} .asb-dot.asb-alert {{ min-width: 0; min-height: 0; border-radius: 0; background: none; color: @accent_color;
     font-size: 11px; font-weight: 800; }}
@@ -6645,21 +6696,26 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 /* The Comfortable state line sits 3 px up; the 3 px under it keeps the card height. */
 {base} .asb-footer {{ margin-top: -3px; margin-bottom: 3px; }}
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; }}
-{base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid;
+{base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 2px solid;
     border-radius: 50%; background: none; }}
 {base} .asb-discard-cue {{ opacity: 0; }}
 {base} .asb-discard-offer .asb-discard-cue {{ opacity: 1; }}
 {base} .asb-card-action {{ min-width: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; }}
+{base} .asb-card-action:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
 {base} .asb-card-action.asb-action-pending > * {{ opacity: .5; }}
 {base} .asb-pin-button {{ opacity: 0; }}
 {base} .asb-session.asb-hovered .asb-pin-button, {base} .asb-session:focus-within .asb-pin-button,
 {base} .asb-pin-button.asb-pinned {{ opacity: 1; }}
-{base} .asb-read-button {{ color: @accent_color; background: alpha(@window_fg_color, .08); }}
+{base} .asb-read-button {{ color: @accent_color; background: transparent; }}
+/* A 16 px rest plate: a 4.5 px spread around the 7 px dot, with no layout change. */
+{base} .asb-session:not(.asb-hovered):not(.asb-key-focus) .asb-read-button .asb-dot:not(.asb-question):not(.asb-alert):not(.asb-stop):not(.asb-discard) {{ box-shadow: 0 0 0 4.5px alpha(@window_fg_color, .08); }}
+{base} .asb-session.asb-hovered .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc), {base} .asb-key-focus .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc) {{ background: alpha(@window_fg_color, .08); }}
 {base} .asb-read-button.asb-read-disc {{ background: transparent; }}
 {base} .asb-session.asb-hovered .asb-read-button.asb-read-disc, {base} .asb-key-focus .asb-read-button.asb-read-disc {{ background: alpha(@window_fg_color, .08); }}
 {base} .asb-read-button:hover, {base} .asb-read-button:focus-visible,
 {base} .asb-session .asb-read-button.asb-read-disc:hover, {base} .asb-session .asb-read-button.asb-read-disc:focus-visible {{ background: alpha(@accent_color, .15); }}
-{base} .asb-read-cue {{ opacity: 0; }}
+{base} .asb-read-cue {{ opacity: 0; color: @window_fg_color; }}
+{base} .asb-read-confirmed .asb-read-cue {{ color: @success_color; }}
 {base} .asb-read-button:hover:not(.asb-passive-indicator):not(.asb-discard-button) .asb-dot,
 {base} .asb-read-button:focus-visible:not(.asb-passive-indicator):not(.asb-discard-button) .asb-dot,
 {base} .asb-read-confirmed .asb-dot {{ opacity: 0; }}
@@ -6680,7 +6736,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-filter-pill:checked .asb-drawer-dot {{ background: @accent_fg_color; }}
 {base} .asb-drawer-button {{ opacity: 0; background: alpha(@window_fg_color, .08); }}
 {base} .asb-session.asb-hovered .asb-drawer-button, {base} .asb-key-focus .asb-drawer-button {{ opacity: 1; }}
-{base} .asb-drawer-button.asb-drawer-filled {{ color: @accent_color; }}
+{base} .asb-drawer-button.asb-drawer-filled {{ color: @window_fg_color; }}
 {base} .asb-drawer-button:hover, {base} .asb-drawer-button:focus-visible {{ background: alpha(@accent_color, .15); }}
 {base} .asb-mute-button, {base} .asb-copy-button {{ opacity: 0; background: alpha(@window_fg_color, .08); }}
 {base} .asb-session.asb-hovered .asb-mute-button, {base} .asb-key-focus .asb-mute-button, {base} .asb-mute-button:focus-visible, {base} .asb-session.asb-hovered .asb-copy-button, {base} .asb-key-focus .asb-copy-button {{ opacity: 1; }}
@@ -6756,7 +6812,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope}:not(.asb-comfortable) .asb-dot.asb-question:not(.asb-passive),
 {scope}:not(.asb-comfortable) .asb-dot.asb-alert {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} .asb-dot.asb-discard, .asb-tooltip.asb-custom .asb-dot.asb-discard {{ background: none; }}
-{scope} .asb-column + .asb-column {{ border-color: {colors['divider']}; }}
+{scope} .asb-column + .asb-column {{ border-color: transparent; }}
 {scope} .asb-number {{ background: {number_fill}; border-color: {number_edge}; color: {colors['text']}; }}
 {scope} .asb-number.asb-number-pressed {{ background: {colors['accent']}; color: {number_pressed}; }}
 {scope} .asb-session.asb-hovered, {scope} .asb-session:focus-within {{ background: {highlight_color(colors)}; }}
@@ -6772,15 +6828,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-pet-check {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} .asb-pet-stage {{ background: {colors['background']}; border-color: alpha({colors['text']}, .15); }}
 {scope}.asb-preferences separator {{ background: {colors['divider']}; }}
-{scope} .asb-read-button {{ color: {colors['accent']}; background: alpha({colors['text']}, .08); }}
+{scope} .asb-read-button {{ color: {colors['accent']}; background: transparent; }}
+{scope} .asb-session:not(.asb-hovered):not(.asb-key-focus) .asb-read-button .asb-dot:not(.asb-question):not(.asb-alert):not(.asb-stop):not(.asb-discard) {{ box-shadow: 0 0 0 4.5px alpha({colors['text']}, .08); }}
+{scope} .asb-session.asb-hovered .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc), {scope} .asb-key-focus .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc) {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-read-button.asb-read-disc {{ background: transparent; }}
 {scope} .asb-session.asb-hovered .asb-read-button.asb-read-disc, {scope} .asb-key-focus .asb-read-button.asb-read-disc {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-read-button:hover, {scope} .asb-read-button:focus-visible,
 {scope} .asb-session .asb-read-button.asb-read-disc:hover, {scope} .asb-session .asb-read-button.asb-read-disc:focus-visible,
 {scope} .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
+{scope} .asb-read-cue {{ color: {colors['text']}; }}
+{scope} .asb-read-confirmed .asb-read-cue {{ color: {colors['accent']}; }}
 {scope} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
 {scope} .asb-read-button.asb-discard-button {{ background: transparent; }}
 /* The row panel ring sets @accent_color in a more specific rule, so it is named here too. */
+{scope} .asb-card-action:focus-visible {{ outline: 2px solid {colors['accent']}; outline-offset: -2px; }}
 {scope} :focus-visible, {scope} .asb-row-panel .asb-panel-action:focus-visible {{ outline-color: {colors['accent']}; }}
 {scope} entry:focus-within {{ box-shadow: inset 0 0 0 1px {colors['accent']}; }}
 {scope} entry selection {{ background: {colors['accent']}; color: {colors['background']}; }}
@@ -6794,7 +6855,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-drawer-dot {{ background: {colors['accent']}; }}
 {scope} .asb-filter-pill:checked .asb-drawer-dot {{ background: {colors['background']}; }}
 {scope} .asb-drawer-button {{ background: alpha({colors['text']}, .08); }}
-{scope} .asb-drawer-button.asb-drawer-filled {{ color: {colors['accent']}; }}
+{scope} .asb-drawer-button.asb-drawer-filled {{ color: {colors['text']}; }}
 {scope} .asb-drawer-button:hover, {scope} .asb-drawer-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
 {scope} .asb-mute-button, {scope} .asb-copy-button {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-mute-button:hover, {scope} .asb-mute-button:focus-visible, {scope} .asb-copy-button:hover, {scope} .asb-copy-button:focus-visible {{ background: alpha({colors['accent']}, .15); }}
@@ -6848,6 +6909,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             quiet_caption = f"mix(@window_bg_color, @window_fg_color, {caption_fraction})"
             limited = f"mix(@window_bg_color, @window_fg_color, {limited_fraction})"
             limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
+        quiet_mark = mix_color(palette["background"], palette["muted" if colors else "text"], caption_fraction * .75)
+        quiet_mark = contrast_floor(quiet_mark, palette["text"], palette["background"], 3)
+        def claude_tone(key, fraction):
+            tone = mix_color(palette["background"], palette[key], fraction * .75)
+            for surface in (palette["background"], highlight):
+                tone = contrast_floor(tone, palette[key], surface, 3)
+            return tone
+        claude_bright = claude_tone("text", .65 if colors else .55)
+        claude_quiet = claude_tone("muted" if colors else "text", caption_fraction)
+        claude_limited = claude_tone("text", .4)
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
         quiet = [base + " .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
         parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-mute-time", " .asb-where",
@@ -6904,6 +6975,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for quiet_row in (*quiet, view_only, view_only_rest):
             css += f"{quiet_row}:not(.asb-message-lit) .asb-provider {{ color: {quiet_caption}; opacity: 1; }}\n"
         css += f"""
+{base} .asb-session:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_bright}; opacity: 1; }}
+{base} .asb-limited:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_limited}; opacity: 1; }}
+{", ".join(row + " .asb-pin-button.asb-pinned" for row in quiet)},
+{", ".join(row + " .asb-compact-pin" for row in quiet)},
+{", ".join(row + " .asb-mute-glyph" for row in quiet)} {{ color: {quiet_mark}; opacity: 1; }}
+{", ".join(row + " .asb-dot.asb-stop" for row in quiet)} {{ background: {quiet_mark}; }}
 {base} .asb-session:not(.asb-idle-read):not(.asb-limited) .asb-state:not(.success):not(.dim-label),
 {base} .asb-session.asb-drawer-lit:not(.asb-limited) .asb-state:not(.success) {{ color: {text}; }}
 {base} .asb-session.asb-unread.asb-hovered:not(.asb-limited) .asb-state:not(.success) {{ color: {muted}; }}
@@ -6919,11 +6996,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-key-focus:not(.asb-dismissed) .asb-pin-button.asb-pinned:not(:hover):not(:focus-visible),
 {base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-read-button.asb-discard-button:not(.asb-discard-offer):not(:hover):not(:focus-visible),
 {base} .asb-key-focus:not(.asb-dismissed) .asb-read-button.asb-discard-button:not(.asb-discard-offer):not(:hover):not(:focus-visible),
+{base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-drawer-button.asb-drawer-filled:not(:hover):not(:focus-visible),
+{base} .asb-key-focus:not(.asb-dismissed) .asb-drawer-button.asb-drawer-filled:not(:hover):not(:focus-visible),
 {base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-mute-on:not(:hover):not(:focus-visible),
 {base} .asb-key-focus:not(.asb-dismissed) .asb-mute-on:not(:hover):not(:focus-visible) {{ background: alpha({text}, .12); color: {text}; }}
 {base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-discard-button:not(.asb-discard-offer) .asb-discard,
 {base} .asb-key-focus:not(.asb-dismissed) .asb-discard-button:not(.asb-discard-offer) .asb-discard {{ border-color: {text}; }}
 """
+        for quiet_row in (*quiet, view_only, view_only_rest):
+            css += f"{quiet_row}:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_quiet}; opacity: 1; }}\n"
         self.css.load_from_string(css)
         self.hover_colors = colors
         for widget in self.row_cache.values():
@@ -7900,8 +7981,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.restore_card_controls()
             if self.key_focus_row:
                 self.key_focus_row.remove_css_class("asb-key-focus")
+                self.key_focus_row.asb_title_label.queue_draw()
             if row:
                 row.add_css_class("asb-key-focus")
+                row.asb_title_label.queue_draw()
             self.key_focus_row = row
         # The tag of the copy button under the pointer stays until the pointer leaves.
         old = getattr(self, "copy_focus_button", None)
@@ -7943,6 +8026,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                  if card is not None and getattr(card, "asb_view", None) == "comfortable" and not card.has_css_class("asb-dismissed")}
         for card in cards:
             card.add_css_class("asb-dismissed")
+            card.asb_title_label.queue_draw()
             for button in (getattr(card, "asb_drawer_button", None), getattr(card, "asb_mute_button", None),
                            getattr(card, "asb_copy_button", None), card.asb_pin_button):
                 if button is not None:
@@ -7966,6 +8050,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         for widget in list(cards) if card is None else [card] if card in cards else []:
             widget.remove_css_class("asb-dismissed")
+            widget.asb_title_label.queue_draw()
             for button in (getattr(widget, "asb_drawer_button", None), getattr(widget, "asb_mute_button", None),
                            getattr(widget, "asb_copy_button", None), widget.asb_pin_button):
                 if button is not None:
@@ -9177,6 +9262,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.hovered_card = None
         widget.add_css_class("asb-hovered" if hovered else "asb-unhovered")
         widget.remove_css_class("asb-unhovered" if hovered else "asb-hovered")
+        widget.asb_title_label.queue_draw()
         if not hovered:
             self.hide_copy_tag(getattr(widget, "asb_copy_button", None), keep_focused=True)
             self.hide_copy_tag(getattr(widget, "asb_mute_button", None), keep_focused=True)
@@ -9369,6 +9455,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         corner.set_halign(Gtk.Align.FILL if tagged else Gtk.Align.END)
         corner.set_margin_start(POCKET_TAG_START if tagged else 0)
         (corner.add_css_class if tagged else corner.remove_css_class)("asb-corner-tagged")
+        card.asb_title_label.queue_draw()
 
     def update_mute_tag(self, words, dots, muted=False):
         choice = "unmute" if muted else self.mute_for
@@ -9691,7 +9778,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.set_child(content)
             if widget.has_css_class("asb-hovered") or widget.has_focus() or widget.is_focus():
                 self.ensure_card_controls(widget)
-        set_icon(widget.asb_mark, provider_icon(row.get("provider")))
+        name = provider_icon(row.get("provider"))
+        set_icon(widget.asb_mark, name)
+        (widget.asb_mark.add_css_class if name == "asb-claude-symbolic" else widget.asb_mark.remove_css_class)("asb-claude")
         widget.asb_source_badge.set_color(source_marker_color(row))
         where_icon, where = row_where(row)
         comfortable = self.view == "comfortable"
@@ -9782,14 +9871,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def draw_discard_offer(area, context, width, height):
-        """The card ring: 9 px outer, 1.5 px stroke, 8 equal dashes with the first at the top."""
+        """The card ring: 10 px outer, 2 px stroke, eight 27° dashes with the first centered at the top."""
         color = area.get_color()
         context.set_source_rgba(color.red, color.green, color.blue, color.alpha)
-        context.set_line_width(1.5)
+        context.set_line_width(2)
         for index in range(8):
             middle = -math.pi / 2 + index * math.pi / 4
             context.new_sub_path()
-            context.arc(width / 2, height / 2, 3.75, middle - math.pi / 16, middle + math.pi / 16)
+            context.arc(round(width / 2), round(height / 2), 4, middle - math.radians(13.5), middle + math.radians(13.5))
             context.stroke()
 
     @staticmethod
@@ -10331,6 +10420,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget = self.focus_widgets.get(identity)
         if not slot or widget is None or identity == MORE_ID:
             return False
+        self.set_focus_visible(True)
         if self.closed or identity in self.session_actions:
             return True
         panel = self.context_menu if self.context_menu and self.context_menu.get_visible() else None

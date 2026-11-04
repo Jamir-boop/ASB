@@ -5715,7 +5715,7 @@ class NativeLogicChecks(unittest.TestCase):
             widget.asb_read_button.set_visible.assert_called_with(True)
             self.assertEqual(widget.asb_read_button.asb_action, "win.discard-result")
         source = SOURCE.read_text()
-        self.assertIn("min-width: 6px; min-height: 6px; border: 1.5px solid;", source)
+        self.assertIn("min-width: 6px; min-height: 6px; border: 2px solid;", source)
         self.assertIn(".asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ border-color: {quiet_caption}; }}", source)
         self.assertIn(".asb-discard-button.asb-discard-offer {{ opacity: 0;", source)
         self.assertIn(".asb-session:focus-within .asb-discard-offer {{ opacity: 1;", source)
@@ -6627,7 +6627,7 @@ class NativeLogicChecks(unittest.TestCase):
     def test_row_hover_sets_exactly_one_hover_class(self):
         window = object.__new__(Window)
         classes = {"asb-session", "asb-unhovered"}
-        card = SimpleNamespace(asb_view="compact", add_css_class=classes.add, remove_css_class=classes.discard)
+        card = SimpleNamespace(asb_view="compact", add_css_class=classes.add, remove_css_class=classes.discard, asb_title_label=Mock())
         for inside, expected in ((True, "asb-hovered"), (True, "asb-hovered"), (False, "asb-unhovered"), (True, "asb-hovered")):
             window.row_hover(SimpleNamespace(contains_pointer=lambda: inside, get_widget=lambda: card), None, "s1")
             self.assertEqual(classes, {"asb-session", expected})
