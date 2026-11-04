@@ -63,14 +63,14 @@ class RulesTest {
         filteredRows(rows, filter).map { it.id }
 
     @Test fun filtersStateOrderPendingAndArchive() {
-        assertEquals(listOf("second", "claude:local_mock", "first", "unknown"), ids())
+        assertEquals(listOf("claude:local_mock", "second", "first", "unknown"), ids())
         assertEquals(5, ids(filter = Filter(archived = true)).size)
         for ((query, expected) in listOf(
             "SWITCHING" to listOf("first"), "/example/Notes" to listOf("claude:local_mock"),
             "Claude Desktop" to listOf("claude:local_mock"), "missing" to emptyList(),
         )) assertEquals(expected, ids(filter = Filter(query = query)))
         assertEquals(listOf("unknown"), ids(filter = Filter(app = "codex", states = setOf("unknown"))))
-        assertEquals(listOf("second", "claude:local_mock"), ids(filter = Filter(pendingOnly = true)))
+        assertEquals(listOf("claude:local_mock", "second"), ids(filter = Filter(pendingOnly = true)))
         assertEquals(listOf("second", "first"), ids(filter = Filter(states = setOf("working", "idle"))))
         assertEquals(emptyList<String>(), ids(filter = Filter(states = emptySet())))
         assertEquals(listOf("second"), ids(filter = Filter(states = setOf("working", "idle"), pendingOnly = true)))
@@ -79,7 +79,7 @@ class RulesTest {
             "unknown" -> it.copy(pinned = true, pinIndex = 0)
             else -> it
         } }
-        assertEquals(listOf("unknown", "first", "second", "claude:local_mock"), ids(pinned))
+        assertEquals(listOf("unknown", "first", "claude:local_mock", "second"), ids(pinned))
         assertEquals(listOf("first", "second"), ids(pinned, Filter(query = "cx:", states = setOf("working", "idle"))))
         assertEquals(listOf("working", "waiting", "idle", "unknown"), STATES)
     }
@@ -212,7 +212,7 @@ class RulesTest {
             Thread(id = "read", state = "waiting", pending = false, updatedAtMs = 800),
             Thread(id = "old", state = "idle", pending = false, updatedAtMs = 200),
         )
-        assertEquals(listOf("done", "asks", "approve", "work", "read", "old"), ids(rows))
+        assertEquals(listOf("asks", "approve", "done", "work", "read", "old"), ids(rows))
     }
 
     @Test fun mutedRowSortsWithTheIdleRowsAtItsMuteTime() {
@@ -303,11 +303,11 @@ class RulesTest {
         )) assertEquals(expected, attentionIndicator(row, drawer = true))
         assertEquals("", attentionIndicator(tucked))
         assertEquals("stop", attentionIndicator(tucked.copy(lastOutcome = "stopped")))
-        assertEquals(listOf("mark-read", "drawer-in", "pin"), rowMenuActions(unread).map { it.action })
-        assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(tucked).map { it.action })
-        assertEquals(listOf("mark-read", "drawer-out", "pin", "discard-result"),
+        assertEquals(listOf("mark-read", "pin", "drawer-in"), rowMenuActions(unread).map { it.action })
+        assertEquals(listOf("mark-read", "pin", "drawer-out"), rowMenuActions(tucked).map { it.action })
+        assertEquals(listOf("mark-read", "pin", "drawer-out", "discard-result"),
             rowMenuActions(tucked.copy(state = "working")).map { it.action })
-        assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(tucked.copy(actionRequired = true)).map { it.action })
+        assertEquals(listOf("mark-read", "pin", "drawer-out"), rowMenuActions(tucked.copy(actionRequired = true)).map { it.action })
         for (row in listOf(base, base.copy(questionAttention = true), unread.copy(questionAttention = true),
             unread.copy(actionRequired = true))) assertFalse(rowMenuActions(row).any { it.action.startsWith("drawer-") })
         // A row that waits for an answer can go in the drawer.
@@ -411,7 +411,7 @@ class RulesTest {
         assertEquals("question", attentionIndicator(row.copy(actionRequired = true), true, now))
         assertEquals("dot", attentionIndicator(row.copy(unread = true), true, now))
         assertEquals("discard", attentionIndicator(row.copy(state = "working", discardResult = true), true, now))
-        assertEquals(listOf("mark-read", "drawer-out", "pin"), rowMenuActions(row).map { it.action })
+        assertEquals(listOf("mark-read", "pin", "drawer-out"), rowMenuActions(row).map { it.action })
     }
 
     @Test fun newMessagesFirstSnapshotSeenReplacementAgeVisibilityPairsAndCap() {
@@ -480,7 +480,7 @@ class RulesTest {
         val idle = Thread(state = "idle", unread = true, pinned = true)
         assertEquals(mapOf("unread" to PanelControl(true, "mark-read"), "drawer" to PanelControl(false, "drawer-in"),
             "pinned" to PanelControl(true, "unpin"), "order" to PanelControl(true, "pin-up")), rowPanelControls(idle))
-        assertEquals(listOf("unread", "drawer", "pinned", "order"), rowPanelControls(idle).keys.toList())
+        assertEquals(listOf("unread", "pinned", "drawer", "order"), rowPanelControls(idle).keys.toList())
         assertEquals("Finished. Not read yet.", rowPanelNote(idle))
         assertEquals("Marked unread.", rowPanelNote(idle.copy(manualUnread = true)))
         assertEquals("Failed. Not read yet.", rowPanelNote(idle.copy(alert = true, lastOutcome = "failed")))

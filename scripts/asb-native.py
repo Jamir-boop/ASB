@@ -27,6 +27,10 @@ ROW_HEIGHT = 22
 COMFORTABLE_ROW_HEIGHT = 68
 # The hover pocket ends between title lines 1 and 2 (measured in Cascadia Code NF 11 and Cantarell 11).
 POCKET_BOTTOM = 8
+# With a tag out the pocket starts at the end of the provider mark (8 px inset and the 14 px mark) and fades over
+# the 7 px gap to the text edge at 29 px.
+POCKET_TAG_START = 22
+POCKET_TAG_FADE = 7
 DEFAULT_COLUMN_WIDTH = 240
 # Cards on the board (Preferences > Sessions); 0 shows all cards.
 CARD_LIMITS = ((50, "50"), (100, "100"), (200, "200"), (500, "500"), (0, "All"))
@@ -380,6 +384,9 @@ COPY_KIND_WORDS = {"relative": "Relative", "absolute": "Absolute"}
 COPY_DONE_TEXT = {"relative": "Relative session copied", "absolute": "Absolute session copied"}
 COPY_KIND_ICONS = {"relative": "asb-link-symbolic", "absolute": "asb-globe-symbolic"}
 COPY_REST_S = .25
+# The keys of row_key on a focused card button.
+COPY_KIND_KEYS = "Alt+Up or Alt+Down changes the kind."
+MUTE_TIME_KEYS = "Alt+Up or Alt+Down changes the time."
 # Each window copies this as its own wheel accumulator.
 COPY_WHEEL_STATE = {"ts": 0.0, "acc": 0.0, "armed": True}
 
@@ -408,9 +415,12 @@ def card_copy(row, kind="relative"):
     return (short, short_reason, "relative")
 
 
+RELATIVE_ONLY_HERE = "Relative works only on this machine."
+
+
 def copy_relative_reason(row):
     """Why a remote row cannot copy a relative reference; same phrasing as the referenceUnavailable reasons."""
-    return f"Relative works only on this machine. This session runs on {row.get('machineName') or 'another machine'}."
+    return f"{RELATIVE_ONLY_HERE} This session runs on {row.get('machineName') or 'another machine'}."
 
 
 def copy_rest_ready(rested_at, now):
@@ -569,6 +579,28 @@ def pin_move_body(rows, identity, direction):
     return {"targetId": pins[target], "placement": "before" if direction == "up" else "after"} if 0 <= target < len(pins) else None
 
 
+def pin_moves(rows, identity):
+    """(earlier, later): whether each pin move has a visible neighbor; None when the row is the only visible pin."""
+    pins = [row["id"] for row in rows if row.get("pinned")]
+    if identity not in pins or len(pins) < 2:
+        return None
+    index = pins.index(identity)
+    return index > 0, index < len(pins) - 1
+
+
+def panel_copy_values(row):
+    """copy_values for the row panel: a remote row cannot copy a relative reference, so row 1 shows why."""
+    values = copy_values(row)
+    return (None, copy_relative_reason(row), *values[2:]) if row.get("remote") is True else values
+
+
+# The panel caption of the remote relative row; its tooltip and description have the full copy_relative_reason.
+REMOTE_RELATIVE_CAPTION = "Works only on this machine."
+PIN_MOVE_ENDS = {"pin-up": "Already the first pin", "pin-down": "Already the last pin"}
+PANEL_MUTE_TIP = "Scroll or press Left and Right to change the time."
+PANEL_MUTE_KEYS = "Left or Right changes the time."
+
+
 def attention_signature(row):
     return tuple(row.get(key) for key in ("unread", "alert", "questionAttention", "nativeUnread", "manualUnread",
                  "nativeAttention", "completionAttention", "failedAttention", "retainedUnread", "retainedUnreadSource",
@@ -722,8 +754,15 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
             return max(row.get("updatedAtMs", 0), row.get("mutedAtMs") or 0)
         start = row.get("workingSinceMs")
         return start if type(start) in (int, float) and start > 0 else 0
+    def mark(row):
+        # Pending rows sort by the mark that the card shows: a Working ?, any other ?, !, the dot, then the rest.
+        if not row.get("pending"):
+            return row.get("state") != "working"
+        indicator = attention_indicator(row, True)
+        return 0 if indicator == "question" and row.get("state") == "working" else \
+            {"question": 1, "alert": 2, "dot": 3}.get(indicator, 4)
     rows.sort(key=lambda row: (0, row.get("pinIndex", 0), row["id"]) if row.get("pinned") else
-              (1, bucket(row), row.get("state") != "working", -moment(row), row["id"]))
+              (1, bucket(row), mark(row), -moment(row), row["id"]))
     return rows
 
 
@@ -5853,6 +5892,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     numbers_shown = False
     number_keys = open_popovers = ()
     card_pointer = None
+    order_hold_seconds = 1.0
+    order_hold_started = order_hold_timer = None
+    order_pointer = None
+    order_pointer_inside = order_pending = False
+    order_pointer_at = order_motion_at = order_key_at = 0
+    order_inputs = None
 
     def __init__(self, application, base, initial_dashboard=None, theme_path=THEME_PATH, layout_path=LAYOUT_PATH, first_load=None):
         super().__init__(application=application, title="ASB · Agent Switch Board",
@@ -6198,6 +6243,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         card_press.connect("pressed", self.card_pointer_event)
         card_press.connect("released", self.card_pointer_event)
         self.list_body.add_controller(card_press)
+        order_press = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        order_press.connect("pressed", self.board_pointer_event)
+        self.list_body.add_controller(order_press)
         self.scroll_target = None
         self.scroll_direction, self.scroll_updating = 0, False
         target = Adw.CallbackAnimationTarget.new(self.advance_scroll)
@@ -6227,7 +6275,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.add_controller(drag)
         motion = Gtk.EventControllerMotion(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         motion.connect("motion", lambda _event, x, _y: self.list_body.set_cursor_from_name("col-resize" if self.dragging or self.divider_at(x) else None))
+        motion.connect("enter", self.board_pointer_motion)
+        motion.connect("motion", self.board_pointer_motion)
         motion.connect("motion", self.hover_motion)
+        motion.connect("leave", self.board_pointer_leave)
         motion.connect("leave", lambda *_args: self.list_body.set_cursor_from_name(None))
         motion.connect("leave", lambda *_args: self.list_body.show_hover(None))
         self.list_body.add_controller(motion)
@@ -6394,7 +6445,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; }}
 {base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ min-width: 6px; min-height: 6px; border: 1.5px solid;
     border-radius: 50%; background: none; }}
-{base} .asb-discard-offer .asb-discard {{ border-style: dashed; }}
+{base} .asb-discard-cue {{ opacity: 0; }}
+{base} .asb-discard-offer .asb-discard-cue {{ opacity: 1; }}
 {base} .asb-card-action {{ min-width: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; }}
 {base} .asb-card-action.asb-action-pending > * {{ opacity: .5; }}
 {base} .asb-pin-button {{ opacity: 0; }}
@@ -6439,8 +6491,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-copy-tag-word {{ font-size: 10px; font-weight: bold; letter-spacing: .04em; }}
 {base} .asb-copy-tag-dot {{ min-width: 4px; min-height: 4px; border-radius: 50%; background: alpha(@window_fg_color, .3); }}
 {base} .asb-copy-tag-dot.asb-copy-tag-on {{ background: @accent_color; }}
-{base} .asb-copy-tag-dot.asb-copy-tag-off {{ background: none; border: 1px solid alpha(@window_fg_color, .3); }}
-{base} .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off {{ min-width: 2px; min-height: 2px; }}
+{base} .asb-copy-tag-dot.asb-copy-tag-off {{ min-width: 3px; min-height: 3px; background: none; border: 1.5px solid alpha(@window_fg_color, .3); }}
+{base} .asb-mute-tag .asb-copy-tag-dot.asb-copy-tag-off {{ min-width: 1px; min-height: 1px; }}
 {base} .asb-copy-feedback {{ color: @success_color; }}
 {base} .asb-corner {{ padding-top: 2px; }}
 {base} .asb-corner-wide {{ padding: 2px 0 {POCKET_BOTTOM}px 16px; border-radius: 0; }}
@@ -6449,6 +6501,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     background: linear-gradient(to right, alpha(mix(@window_bg_color, @window_fg_color, .07), 0), mix(@window_bg_color, @window_fg_color, .07) 16px); }}
 {base} .asb-key-focus:not(.asb-hovered) .asb-corner-wide {{
     background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color 16px); }}
+{base} .asb-corner-wide.asb-corner-tagged {{ padding-left: {POCKET_TAG_FADE}px; }}
+{base} .asb-session.asb-hovered .asb-corner-wide.asb-corner-tagged {{
+    background: linear-gradient(to right, alpha(mix(@window_bg_color, @window_fg_color, .07), 0), mix(@window_bg_color, @window_fg_color, .07) {POCKET_TAG_FADE}px); }}
+{base} .asb-key-focus:not(.asb-hovered) .asb-corner-wide.asb-corner-tagged {{
+    background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color {POCKET_TAG_FADE}px); }}
 {base} .asb-unread.asb-hovered .asb-dot, {base} .asb-unread.asb-key-focus .asb-read-button .asb-dot,
 {base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}
 {base} .asb-unread.asb-hovered .asb-read-cue, {base} .asb-unread.asb-key-focus .asb-read-cue {{ opacity: 1; }}
@@ -6523,7 +6580,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
 {scope} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
 {scope} .asb-read-button.asb-discard-button {{ background: transparent; }}
-{scope} :focus-visible {{ outline-color: {colors['accent']}; }}
+/* The row panel ring sets @accent_color in a more specific rule, so it is named here too. */
+{scope} :focus-visible, {scope} .asb-row-panel .asb-panel-action:focus-visible {{ outline-color: {colors['accent']}; }}
 {scope} entry:focus-within {{ box-shadow: inset 0 0 0 1px {colors['accent']}; }}
 {scope} entry selection {{ background: {colors['accent']}; color: {colors['background']}; }}
 {scope} switch:checked, {scope} checkbutton check:checked {{ background: {colors['accent']}; border-color: {colors['accent']}; }}
@@ -6547,6 +6605,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope} .asb-copy-tag-dot.asb-copy-tag-on {{ background: {colors['accent']}; }}
 {scope} .asb-session.asb-hovered .asb-corner-wide, {scope} .asb-key-focus .asb-corner-wide {{
     background: linear-gradient(to right, alpha({highlight_color(colors)}, 0), {highlight_color(colors)} 16px); }}
+{scope} .asb-session.asb-hovered .asb-corner-wide.asb-corner-tagged, {scope} .asb-key-focus .asb-corner-wide.asb-corner-tagged {{
+    background: linear-gradient(to right, alpha({highlight_color(colors)}, 0), {highlight_color(colors)} {POCKET_TAG_FADE}px); }}
 .asb-tooltip.asb-custom {{ color: {colors['text']}; }}
 .asb-tooltip.asb-custom .asb-tooltip-muted, .asb-tooltip.asb-custom .asb-state {{ color: {colors['muted']}; }}
 .asb-tooltip.asb-custom .dim-label {{ opacity: 1; }}
@@ -6575,12 +6635,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # The Grey tone of a view-only row with no attention, in both views; hover and focus bring the normal colors back.
         calm = ".asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"
         view_only, view_only_rest = f"{base} .asb-view-only-quiet{calm}", f"{base} .asb-view-only-rest{calm}"
+        dismissed = base + " .asb-session.asb-dismissed"
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-where", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + state + part for state in (".asb-hovered", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
+/* A view-only first row stays insensitive, in the limited tone (4.5:1) in place of the theme's disabled opacity. */
+{base} .asb-row-panel button.asb-panel-where:disabled, {base} .asb-row-panel button.asb-panel-where:disabled * {{
+    color: {limited}; opacity: 1; filter: none; }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
 {", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
@@ -6588,10 +6652,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     color: {quiet_caption}; font-size: 11px; font-weight: 800; }}
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ background: {quiet_caption}; }}
 {base} .asb-dot.asb-discard, .asb-tooltip .asb-dot.asb-discard {{ border-color: {quiet_caption}; }}
-{base} .asb-discard-offer .asb-dot.asb-discard {{ border-color: {colors['muted'] if colors else "alpha(@window_fg_color, .55)"}; }}
+{base} .asb-discard-offer .asb-dot.asb-discard {{ border-color: transparent; }}
+{base} .asb-discard-offer .asb-discard-cue {{ color: {colors['muted'] if colors else "alpha(@window_fg_color, .55)"}; }}
 {base} .asb-pin-button.asb-pinned, {base} .asb-compact-pin {{ color: {quiet_caption}; }}
 {base} .asb-session.asb-hovered .asb-pin-button.asb-pinned, {base} .asb-key-focus .asb-pin-button.asb-pinned {{
     background: alpha({colors['text'] if colors else "@window_fg_color"}, .12); color: {colors['text'] if colors else "@window_fg_color"}; }}
+/* An off tag dot has 3:1 on its tag: the quiet caption color. */
+{base} .asb-copy-tag-dot:not(.asb-copy-tag-on):not(.asb-copy-tag-off) {{ background: {quiet_caption}; }}
+{base} .asb-copy-tag-dot.asb-copy-tag-off {{ border-color: {quiet_caption}; }}
+/* Escape with nothing to clear: the corner buttons, the pocket, and the Read cue go; the marks keep their rest look. */
+{dismissed} .asb-drawer-button, {dismissed} .asb-mute-button, {dismissed} .asb-copy-button, {dismissed} .asb-pin-button:not(.asb-pinned),
+{dismissed} .asb-discard-offer {{ opacity: 0; }}
+{dismissed} .asb-corner-wide, {base}.asb-custom .asb-session.asb-dismissed .asb-corner-wide {{ background: none; }}
+{dismissed} .asb-read-button.asb-read-disc, {base}.asb-custom .asb-session.asb-dismissed .asb-read-button.asb-read-disc {{ background: transparent; }}
+{dismissed} .asb-pin-button.asb-pinned {{ background: none; color: {quiet_caption}; }}
+{base} .asb-unread.asb-dismissed:not(.asb-drawer) .asb-read-button .asb-dot {{ opacity: 1; }}
+{base} .asb-unread.asb-dismissed:not(.asb-drawer) .asb-read-button .asb-read-cue {{ opacity: 0; }}
 """
         self.css.load_from_string(zoom_css(css, getattr(self, "board_zoom", 100)))
         self.hover_colors = colors
@@ -7185,6 +7261,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return any(abs(x - (index * step - 6)) <= 6 for index in range(1, getattr(self, "actual_columns", 0)))
 
     def scroll_horizontal(self, controller, dx, dy):
+        if self.order_pointer_inside:
+            self.board_pointer_event()
         self.hide_numbers()
         delta = dx if dx else dy
         if self.closed or not delta:
@@ -7367,6 +7445,85 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if animation:
             animation.skip()
 
+    def board_pointer_event(self, *_args):
+        self.order_pointer_inside = True
+        self.order_pointer_at = time.monotonic()
+
+    def board_pointer_motion(self, controller, x, y):
+        event = controller.get_current_event() if controller else None
+        found, px, py = event.get_position() if event else (False, x, y)
+        pointer = (px, py) if found else (x, y)
+        self.order_pointer_inside = True
+        # GTK sends motion when the cards move under a still pointer. Only a new position extends a hold.
+        if pointer != self.order_pointer:
+            self.order_pointer = pointer
+            self.order_motion_at = self.order_pointer_at = time.monotonic()
+
+    def board_pointer_leave(self, *_args):
+        self.order_pointer_inside, self.order_pointer = False, None
+        self.release_order_hold()
+
+    def cancel_order_hold(self):
+        if self.order_hold_timer is not None:
+            GLib.source_remove(self.order_hold_timer)
+            self.order_hold_timer = None
+        self.order_hold_started = None
+        self.order_pending = False
+
+    def release_order_hold(self):
+        pending = self.order_pending
+        self.cancel_order_hold()
+        if pending and not self.closed:
+            self.render(order_now=True)
+
+    def order_hold_expired(self):
+        self.order_hold_timer = None
+        remaining = self.order_hold_seconds - (time.monotonic() - max(self.order_motion_at, self.order_hold_started))
+        if remaining > 0:
+            self.order_hold_timer = GLib.timeout_add(max(1, math.ceil(remaining * 1000)), self.order_hold_expired)
+        else:
+            self.release_order_hold()
+        return GLib.SOURCE_REMOVE
+
+    def hold_board_parts(self, rows, parts, inputs, pins, order_now):
+        """The columns to show: the target columns, or the shown columns with current data while the order holds."""
+        old_inputs, old_pins = self.order_inputs or (None, pins)
+        # A search, filter, view, size, Show all, or pin move applies at once; a pin or an unpin is a normal change.
+        bypass = old_inputs != inputs or set(old_pins) == set(pins) and old_pins != pins
+        self.order_inputs = inputs, pins
+        changed = tuple(tuple(row["id"] for row in part) for part in parts) != \
+            tuple(tuple(row["id"] for row in part) for part in self.column_parts) or \
+            any(row.get("asbOrderGap") for part in self.column_parts for row in part)
+        panel = self.context_menu and self.context_menu.get_visible()
+        pointer = self.order_pointer_inside and self.order_pointer_at > self.order_key_at
+        if bypass or not changed or not (panel or pointer and not order_now):
+            self.cancel_order_hold()
+            return parts
+        self.order_pending = True
+        if panel:
+            if self.order_hold_timer is not None:
+                GLib.source_remove(self.order_hold_timer)
+                self.order_hold_timer = None
+            self.order_hold_started = None
+        elif self.order_hold_started is None:
+            self.order_hold_started = time.monotonic()
+            self.order_hold_timer = GLib.timeout_add(max(1, math.ceil(self.order_hold_seconds * 1000)), self.order_hold_expired)
+        latest = {row["id"]: row for row in reversed(self.dashboard.get("threads", []))}
+        latest.update({row["id"]: row for row in rows if row["id"] == MORE_ID})
+        # A deleted session leaves empty space, not a shift of the cards below it or across columns.
+        held = []
+        for part in self.column_parts:
+            column, gap = [], 0
+            for row in part:
+                gap += row.get("asbOrderGap", 0)
+                if row["id"] in latest:
+                    column.append({**latest[row["id"]], "asbOrderGap": gap})
+                    gap = 0
+                else:
+                    gap += 1
+            held.append(column)
+        return held
+
     def hover_motion(self, _controller, x, y):
         event = _controller.get_current_event() if _controller else None
         found, px, py = event.get_position() if event else (False, 0, 0)
@@ -7434,6 +7591,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         focus = self.get_focus() if self.get_focus_visible() else None
         row = focus.get_ancestor(Gtk.ListBoxRow) if focus else None
         if row is not self.key_focus_row:
+            if row is not None and not self.card_dismissed(row):
+                self.restore_card_controls()
             if self.key_focus_row:
                 self.key_focus_row.remove_css_class("asb-key-focus")
             if row:
@@ -7441,6 +7600,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.key_focus_row = row
         # The tag of the copy button under the pointer stays until the pointer leaves.
         old = getattr(self, "copy_focus_button", None)
+        if focus is not None and getattr(focus, "asb_card_action", None):
+            self.restore_card_controls(row)
         if self.get_focus_visible() and focus is not None and getattr(focus, "asb_card_action", None) in ("copy", "mute"):
             if old is not None and old is not focus and old is not self.copy_hover:
                 self.show_copy_tag(old, False)
@@ -7470,6 +7631,41 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.reset_view()
             return True
         return False
+
+    def dismiss_card_controls(self):
+        """Escape with nothing to clear hides the corner buttons, the pocket, and the tags of the hovered or focused card (WCAG 1.4.13)."""
+        cards = {card for card in (getattr(self, "hovered_card", None), getattr(self, "key_focus_row", None))
+                 if card is not None and getattr(card, "asb_view", None) == "comfortable" and not card.has_css_class("asb-dismissed")}
+        for card in cards:
+            card.add_css_class("asb-dismissed")
+            for button in (getattr(card, "asb_drawer_button", None), getattr(card, "asb_mute_button", None),
+                           getattr(card, "asb_copy_button", None), card.asb_pin_button):
+                if button is not None:
+                    button.set_can_target(False)
+            for button in (getattr(card, "asb_copy_button", None), getattr(card, "asb_mute_button", None)):
+                self.hide_copy_tag(button)
+            focus = self.get_focus()
+            if focus is not None and focus is not card and focus.is_ancestor(card):
+                card.grab_focus()
+        self.dismissed_cards = getattr(self, "dismissed_cards", set()) | cards
+        return bool(cards)
+
+    def card_dismissed(self, card):
+        # Returning to the card that Escape dismissed keeps its controls hidden; another card shows them again.
+        return any(card is widget for widget in getattr(self, "dismissed_cards", ()))
+
+    def restore_card_controls(self, card=None):
+        """A new hover, a new key focus row, or Tab into a corner button shows the controls again."""
+        cards = getattr(self, "dismissed_cards", None)
+        if not cards:
+            return
+        for widget in list(cards) if card is None else [card] if card in cards else []:
+            widget.remove_css_class("asb-dismissed")
+            for button in (getattr(widget, "asb_drawer_button", None), getattr(widget, "asb_mute_button", None),
+                           getattr(widget, "asb_copy_button", None), widget.asb_pin_button):
+                if button is not None:
+                    button.set_can_target(True)
+            cards.discard(widget)
 
     def sync_search_visibility(self, *_args):
         self.search_row.set_reveal_child(bool(self.search.get_text()) or self.search_focus.contains_focus())
@@ -7625,6 +7821,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.reset_property(Gtk.AccessibleProperty.KEY_SHORTCUTS)
 
     def window_key(self, _controller, key, _code, modifiers):
+        self.order_key_at = time.monotonic()
+        self.release_order_hold()
         handled = self.number_key_pressed(key, modifiers)
         if handled is not None:
             return handled
@@ -7636,7 +7834,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if key == Gdk.KEY_Escape:
             if any(popover.get_mapped() for popover in self.open_popovers):
                 return False
-            return self.clear_search()
+            return self.clear_search() or self.dismiss_card_controls()
         if isinstance(focus, (Gtk.Editable, Gtk.TextView)) \
                 or key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             return False
@@ -8223,7 +8421,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     listings[number].append(card)
         return detached
 
-    def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None):
+    def render_board(self, preserve_focus=None, reveal_focus=False, preserve_action=None, order_now=False):
         if self.dashboard is None or self.closed:
             return
         self.cancel_side_fill()
@@ -8237,6 +8435,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         rows = self.visible_rows()
         width, height = self.geometry or (self.get_default_size().width, 600)
         self.columns, self.capacity, parts = pack_columns(rows, width, height, self.zoomed_column_width(), self.row_height)
+        # The zoomed width is an input: a zoom change lays the board out again, as a width change does.
+        inputs = (self.search.get_text(), frozenset(self.states), frozenset(self.profiles), self.pending, self.archived,
+                  self.drawer_view, self.view, self.card_limit, self.show_all_cards, width, height, self.zoomed_column_width(), self.row_height)
+        pins = tuple(row["id"] for row in sorted((row for row in self.dashboard.get("threads", []) if row.get("pinned")),
+                                                  key=lambda row: (row.get("pinIndex", 0), row["id"])))
+        parts = self.hold_board_parts(rows, parts, inputs, pins, order_now)
+        rows = [row for part in parts for row in part]
         # The copy and drawer buttons show from 190 px, the mute button from 240 px.
         narrow = (self.column_pixel_width < 190, self.column_pixel_width < 240)
         self.column_pixel_width = max(1, (width - 8 - 12 * (self.columns - 1)) // self.columns)
@@ -8249,9 +8454,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         empty_text = "The drawer is empty. Put an unread session in it to get it out of the way." if self.drawer_view and not drawer \
             else "No matching sessions. Change the search or filters." if self.dashboard.get("threads") \
             else "No desktop sessions found. Create a session, then refresh."
-        layout_signature = (tuple(self.row_order), self.columns, self.capacity, self.column_pixel_width, self.view, empty_text)
+        layout_signature = (tuple(self.row_order), self.columns, self.capacity, self.column_pixel_width, self.view, empty_text,
+                            tuple(tuple((row["id"], row.get("asbOrderGap", 0)) for row in part) for part in parts))
         repack = layout_signature != self.layout_signature
-        reorder = repack and self.layout_signature is not None and layout_signature[1:] == self.layout_signature[1:] \
+        reorder = repack and self.layout_signature is not None and layout_signature[1:6] == self.layout_signature[1:6] \
             and set(layout_signature[0]) == set(self.layout_signature[0])
         repack = repack and not reorder
         if repack or reorder:
@@ -8398,6 +8604,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.update_card_actions(widget)
             elif narrow_changed:
                 self.update_card_actions(widget)
+        widget.set_margin_top(row.get("asbOrderGap", 0) * self.row_height)
         return widget
 
     def attach_column(self, number):
@@ -8636,6 +8843,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             handlers = [controller.connect(name, callback, row["id"]) for name, callback in signals]
             widget.asb_handlers.append((controller, handlers))
             widget.add_controller(controller)
+        if row["id"] != MORE_ID:
+            long_press = Gtk.GestureLongPress(touch_only=True, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+            handler = long_press.connect("pressed", self.row_long_press, row["id"])
+            widget.asb_handlers.append((long_press, [handler]))
+            widget.add_controller(long_press)
         self.update_session_row(widget, row)
         return widget
 
@@ -8647,6 +8859,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         previous = getattr(self, "hovered_card", None)
         if hovered:
             self.ensure_card_controls(widget)
+            if previous is not widget and not self.card_dismissed(widget):
+                self.restore_card_controls()
             if previous is not None and previous is not widget:
                 self.set_row_hover(previous, False)
             self.hovered_card = widget
@@ -8672,6 +8886,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.set_row_hover(self.hovered_card, False)
 
     def release_row(self, widget):
+        self.restore_card_controls(widget)
         self.clear_read_feedback(widget)
         self.cancel_card_copy(widget)
         self.clear_message_light(widget)
@@ -8819,6 +9034,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             box.connect("notify::child-revealed", lambda tag, _param: tag.get_child_revealed() or tag.get_reveal_child() or tag.set_visible(False))
         return box, words, children
 
+    def tag_visible_changed(self, tag, _param):
+        card = tag.get_ancestor(Gtk.ListBoxRow)
+        if card is not None:
+            self.sync_pocket(card)
+
+    def sync_pocket(self, card):
+        """While a copy or mute tag shows, the pocket covers the text column from its edge; else it fades over 16 px."""
+        spacer = getattr(card, "asb_corner_spacer", None)
+        if spacer is None:
+            return
+        corner = card.asb_actions
+        tagged = any(tag is not None and tag.get_visible() for tag in (getattr(card, "asb_copy_tag", None), getattr(card, "asb_mute_tag", None)))
+        if tagged and not spacer.get_visible():
+            # A tag that reaches into the mark-to-text gap keeps the old 16 px pocket, so GTK never allocates the corner below its size.
+            width = corner.measure(Gtk.Orientation.HORIZONTAL, -1)[1] - 16 + POCKET_TAG_FADE
+            # A revealer starts at width 0; use the full tag width before its slide so the corner cannot overflow at the end.
+            for tag in (getattr(card, "asb_copy_tag", None), getattr(card, "asb_mute_tag", None)):
+                if tag is not None and tag.get_visible():
+                    width += tag.get_child().measure(Gtk.Orientation.HORIZONTAL, -1)[1] - tag.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+            tagged = width <= card.get_width() - 5 - POCKET_TAG_START
+        if tagged == spacer.get_visible():
+            return
+        spacer.set_visible(tagged)
+        corner.set_halign(Gtk.Align.FILL if tagged else Gtk.Align.END)
+        corner.set_margin_start(POCKET_TAG_START if tagged else 0)
+        (corner.add_css_class if tagged else corner.remove_css_class)("asb-corner-tagged")
+
     def update_mute_tag(self, words, dots, muted=False):
         choice = "unmute" if muted else self.mute_for
         old = words.get_visible_child_name()
@@ -8862,8 +9104,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_mute_button, widget.asb_mute_tag = mute, mute_tag
         widget.asb_mute_words, widget.asb_mute_dots = mute_words, mute_dots
         # The drawer is at the left end, so the other controls keep their x when it shows; the Tab order follows.
-        for child in (copy, mute, mute_tag, tag, drawer):
+        # The spacer shows only with a tag out: it fills the pocket to the text edge, so no title ink shows left of the tag.
+        spacer = Gtk.Box(hexpand=True, visible=False)
+        for child in (copy, mute, mute_tag, tag, drawer, spacer):
             actions.prepend(child)
+        widget.asb_corner_spacer = spacer
+        for reveal in (tag, mute_tag):
+            reveal.connect("notify::visible", self.tag_visible_changed)
         widget.asb_action_signature = None
         self.update_card_actions(widget)
 
@@ -8895,7 +9142,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_mute_box = pair
             widget.asb_mute_time = mute_time
         elif name == "where" and widget.asb_where_label is None:
-            where_icon = Gtk.Image(pixel_size=11, visible=False)
+            where_icon = Gtk.Image(pixel_size=11, visible=False, valign=Gtk.Align.CENTER)
             where_icon.add_css_class("asb-where-icon")
             where_icon.add_css_class("dim-label")
             where = label("", "caption")
@@ -8904,8 +9151,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             where.set_ellipsize(Pango.EllipsizeMode.END)
             where.set_max_width_chars(12)
             where.set_visible(False)
+            where.set_valign(Gtk.Align.BASELINE_CENTER)
             widget.asb_where_box.prepend(where)
-            widget.asb_where_box.prepend(where_icon)
+            # Gtk.Image exposes a baseline with an extra descent pixel; a centered box keeps it out of the text baseline.
+            icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+            icon_box.append(where_icon)
+            widget.asb_where_box.prepend(icon_box)
             widget.asb_where_icon, widget.asb_where_label = where_icon, where
         elif name == "feedback" and widget.asb_feedback is None:
             feedback = Gtk.Box(spacing=6)
@@ -8926,6 +9177,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def row_context(self, gesture, _count, x, y, identity):
         widget = self.focus_widgets.get(identity)
         if widget:
+            self.show_context(widget, x, y, gesture)
+
+    def row_long_press(self, gesture, x, y, identity):
+        widget = self.focus_widgets.get(identity)
+        if widget:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             self.show_context(widget, x, y, gesture)
 
     def pin_drag_end(self, *_args):
@@ -9000,6 +9257,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             dot.add_css_class("asb-dot")
             glyph = label("?")
             glyph.set_xalign(.5)
+            glyph.connect("map", self.passive_glyph_mapped)
             dot.append(glyph)
             widget.asb_dot = dot
             state = label("", "asb-state")
@@ -9033,6 +9291,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 title.set_yalign(0)
                 content.append(title)
                 line = Gtk.Box(spacing=6)
+                # One baseline for the state and the age: fonts such as Cascadia Code give the two labels different heights.
+                state.set_valign(Gtk.Align.BASELINE_CENTER)
                 line.append(state)
                 widget.asb_footer_line = line
                 age = label("", "caption")
@@ -9040,9 +9300,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 age.add_css_class("dim-label")
                 age.set_ellipsize(Pango.EllipsizeMode.END)
                 age.set_halign(Gtk.Align.END)
+                age.set_valign(Gtk.Align.BASELINE_CENTER)
                 widget.asb_age_label = age
                 # Where a view-only session runs, before the age; the machine name ellipsizes first.
-                right = Gtk.Box(spacing=4, hexpand=True, halign=Gtk.Align.END)
+                right = Gtk.Box(spacing=4, hexpand=True, halign=Gtk.Align.END, valign=Gtk.Align.BASELINE_CENTER)
                 right.append(age)
                 widget.asb_where_box = right
                 line.append(right)
@@ -9063,6 +9324,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                                   halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
                 check.add_css_class("asb-read-cue")
                 read_icon.add_overlay(check)
+                # The Discard offer: 8 equal dashes, as the row panel glyph; a CSS dashed border has uneven dashes.
+                offer = Gtk.DrawingArea(width_request=12, height_request=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, can_target=False)
+                offer.set_draw_func(self.draw_discard_offer)
+                offer.add_css_class("asb-discard-cue")
+                read_icon.add_overlay(offer)
                 read = Gtk.Button(child=read_icon)
                 pin = Gtk.Button(child=Gtk.Image(icon_name="view-pin-symbolic", pixel_size=12))
                 for button, name in ((read, "read"), (pin, "pin")):
@@ -9167,11 +9433,61 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
         # A read permission wait keeps a quiet "?" with no Read action, in both views.
         unread = bool(row.get("actionAttention") or row.get("unread")) if shows_action(row) else indicator in ("question", "alert", "dot")
-        (widget.asb_dot.add_css_class if indicator == "question" and not unread else widget.asb_dot.remove_css_class)("asb-passive")
+        passive = indicator == "question" and not unread
+        (widget.asb_dot.add_css_class if passive else widget.asb_dot.remove_css_class)("asb-passive")
+        if getattr(widget, "asb_view", None) == "comfortable":
+            glyph = widget.asb_dot.get_first_child()
+            if not passive:
+                for setter in (glyph.set_margin_start, glyph.set_margin_end, glyph.set_margin_top, glyph.set_margin_bottom):
+                    setter(0)
+            elif glyph.get_mapped():
+                self.passive_glyph_mapped(glyph)
         self.update_discard_dot(widget)
         pin = getattr(widget, "asb_compact_pin", None)
         if pin is not None:
             pin.set_visible(bool(row.get("pinned")) and not indicator)
+
+    @staticmethod
+    def draw_discard_offer(area, context, width, height):
+        """The card ring: 9 px outer, 1.5 px stroke, 8 equal dashes with the first at the top."""
+        color = area.get_color()
+        context.set_source_rgba(color.red, color.green, color.blue, color.alpha)
+        context.set_line_width(1.5)
+        for index in range(8):
+            middle = -math.pi / 2 + index * math.pi / 4
+            context.new_sub_path()
+            context.arc(width / 2, height / 2, 3.75, middle - math.pi / 16, middle + math.pi / 16)
+            context.stroke()
+
+    def passive_glyph_mapped(self, glyph):
+        # The centering reads the font and allocation of the mapped label, so a new card or a font change runs it again.
+        card = glyph.get_ancestor(Gtk.ListBoxRow)
+        if (card is not None and glyph.get_mapped() and card.asb_dot.has_css_class("asb-passive")
+                and not getattr(glyph, "asb_center_tick", None)):
+            glyph.asb_center_frames = 3
+            glyph.asb_center_tick = glyph.add_tick_callback(self.center_passive_glyph)
+
+    def center_passive_glyph(self, glyph, _clock):
+        """Center the bare question by its actual font ink after style and allocation, with at most three layout frames."""
+        card = glyph.get_ancestor(Gtk.ListBoxRow)
+        if card is not None and card.asb_dot.has_css_class("asb-passive"):
+            read = card.asb_read_button
+            found, point = glyph.compute_point(read, Graphene.Point().init(0, 0))
+            ink, _logical = glyph.get_layout().get_extents()
+            x, y = glyph.get_layout_offsets()
+            if found:
+                # Whole-pixel steps: a margin pair that changes by 2 px moves the centered label 1 px with no rounding of the parent.
+                ex = read.get_width() / 2 - point.x - x - (ink.x + ink.width / 2) / Pango.SCALE
+                ey = read.get_height() / 2 - point.y - y - (ink.y + ink.height / 2) / Pango.SCALE
+                mx = glyph.get_margin_start() - glyph.get_margin_end() + (2 * round(ex) if abs(ex) > .5 else 0)
+                my = glyph.get_margin_top() - glyph.get_margin_bottom() + (2 * round(ey) if abs(ey) > .5 else 0)
+                glyph.set_margin_start(max(0, mx)); glyph.set_margin_end(max(0, -mx))
+                glyph.set_margin_top(max(0, my)); glyph.set_margin_bottom(max(0, -my))
+        glyph.asb_center_frames -= 1
+        if glyph.asb_center_frames > 0:
+            return True
+        glyph.asb_center_tick = None
+        return False
 
     def clear_read_feedback(self, widget):
         if getattr(widget, "asb_read_timer", None):
@@ -9204,7 +9520,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         drawer = getattr(button.asb_card, "asb_drawer_button", None)
         if drawer is not None and drawer.get_visible():
             width += drawer.get_width() + 2
-        # The word and dots must fit inside the content; the corner fade may extend past it.
+        # The word and dots must fit inside the content; the pocket keeps its fade in the mark-to-text gap.
         return self.column_pixel_width >= 240 and found and bounds.origin.x - width - 2 >= 8
 
     def show_copy_tag(self, button, shown):
@@ -9371,15 +9687,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
             done = COPY_DONE_TEXT[kind] if copied else None
             # The footer shows the copied text, so a copy keeps the tooltip as it is.
+            # The wheel and Alt+Up or Alt+Down switch the kind, except on a remote card, which copies the absolute reference only.
             if row.get("remote") is True:
                 tip = reason or f"Copy absolute reference. {copy_relative_reason(row)}"
             else:
-                tip = reason or f"Copy {kind} reference"
+                tip = (reason or f"Copy {kind} reference.") + " Scroll to change the kind."
             if copy.get_tooltip_text() != tip:
                 copy.set_tooltip_text(tip)
             copy.update_property([Gtk.AccessibleProperty.LABEL], [f"Copy {kind} reference: " + row.get("title", "Untitled session")])
-            if done:
-                copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done])
+            if done or row.get("remote") is not True:
+                copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done or COPY_KIND_KEYS])
             else:
                 copy.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
             self.update_copy_tag(widget, kind, row.get("remote") is True)
@@ -9392,9 +9709,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (mute.add_css_class if muted else mute.remove_css_class)("asb-mute-on")
             (mute.add_css_class if pending else mute.remove_css_class)("asb-action-pending")
             tip = mute_button_tip(row, self.mute_for, now_ms)
-            if mute.get_tooltip_text() != tip:
-                mute.set_tooltip_text(tip)
+            text = tip if muted else tip + ". Scroll to change."
+            if mute.get_tooltip_text() != text:
+                mute.set_tooltip_text(text)
             mute.update_property([Gtk.AccessibleProperty.LABEL], [("Unmute" if muted else tip) + ": " + row.get("title", "Untitled session")])
+            if muted:
+                mute.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+            else:
+                mute.update_property([Gtk.AccessibleProperty.DESCRIPTION], [MUTE_TIME_KEYS])
             mute.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, pending])
             self.update_mute_tag(widget.asb_mute_words, widget.asb_mute_dots, muted)
 
@@ -9568,7 +9890,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_action_signature = None
                 self.update_card_actions(widget)
         if countdown:
-            widget.asb_state_label.set_label(("Resets in " if self.view == "comfortable" else "Resets ") + countdown)
+            widget.asb_state_label.set_label("Resets in " + countdown)
         else:
             widget.asb_state_label.set_label(state_text + (" · " + duration if self.view == "compact" and duration else ""))
         if self.view == "comfortable":
@@ -9739,6 +10061,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 focus = self.get_focus()
                 if card and not self.closed and card.get_mapped() and (focus is None or focus.is_ancestor(popup)):
                     card.grab_focus()
+                if self.order_pending and not self.closed:
+                    GLib.idle_add(self.render)
         panel.connect("closed", closed)
         self.context_menu = panel
         self.update_row_panel(panel, row)
@@ -9787,14 +10111,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # While an action for the row runs, the action rows keep their labels.
         now_ms = time.time() * 1000
         controls = panel.asb_controls if pending and panel.asb_controls is not None else row_panel_controls(row, now_ms)
+        # The only visible pin has no moves; at an end of the pins its move is unavailable.
+        moves = pin_moves(self.visible_rows(), row["id"]) if "pin-up" in controls else None
+        if moves is None:
+            controls = {slot: value for slot, value in controls.items() if slot not in ("pin-up", "pin-down")}
         model = tooltip_model(row, now_ms, Path.home(), "", self.drawer_view)
-        values = copy_values(row)
+        values = panel_copy_values(row)
         mute_caption = ""
         if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
             mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
         signature = (self.mute_for, mute_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
-                     panel.asb_copied, panel.asb_copy_error, row_where(row))
+                     panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
         if signature == panel.asb_signature:
             return
         panel.asb_signature, panel.asb_controls = signature, controls
@@ -9809,9 +10137,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_error.set_label(error)
         panel.asb_error.set_visible(bool(error))
         if is_view_only(row):
-            set_panel_label(panel.asb_open, f"On {row_where(row)[1]}" if row.get("remote") else "Runs in a terminal")
+            set_panel_label(panel.asb_open, f"Runs on {row_where(row)[1]}" if row.get("remote") else "Runs in a terminal")
             panel.asb_open.set_sensitive(False)
+            panel.asb_open.add_css_class("asb-panel-where")
         else:
+            panel.asb_open.remove_css_class("asb-panel-where")
             set_panel_label(panel.asb_open, "Open in " + model["app"])
             panel.asb_open.set_sensitive(bool(row.get("canOpen")) and row["id"] not in self.opening)
         set_icon(panel.asb_open.asb_icon, provider_icon(row.get("provider")))
@@ -9837,11 +10167,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         mute_button.asb_caption.set_label(mute_caption)
         mute_button.asb_caption.set_visible(bool(mute_caption))
         (mute_button.add_css_class if mute_caption else mute_button.remove_css_class)("asb-panel-captioned")
-        mute_button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [mute_caption])
+        mute_button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [mute_caption or PANEL_MUTE_KEYS])
+        mute_button.set_tooltip_text(None if mute_caption else PANEL_MUTE_TIP)
+        # A pin move at an end stays focusable with no action, as an unavailable copy row; pin_move_body then has no target.
+        ends = {slot for slot, open_side in zip(("pin-up", "pin-down"), moves or (True, True)) if not open_side}
+        for slot in ("pin-up", "pin-down"):
+            panel.asb_actions[slot].set_tooltip_text(PIN_MOVE_ENDS[slot] if slot in ends else None)
         # A control that turned insensitive under the pointer made GTK pick a new pointer target in the board: the panel got a leave and closed.
-        for button in (panel.asb_open, *panel.asb_actions.values()):
-            (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
-            button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, pending or not button.get_sensitive()])
+        for slot, button in (("open", panel.asb_open), *panel.asb_actions.items()):
+            off = pending or slot in ends
+            (button.add_css_class if off else button.remove_css_class)("asb-action-pending")
+            button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, off or not button.get_sensitive()])
         self.show_copy_rows(panel)
 
     def sync_row_panel(self):
@@ -9908,14 +10244,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 ("full", panel.asb_copy_full, full, full_reason, "Absolute: with ASB, any machine", COPY_DONE_TEXT["absolute"])):
             copied = panel.asb_copied == slot
             # One reason for both rows shows once, under row 2.
-            note = done if copied else caption if value else "" if slot == "short" and reason == full_reason else reason
+            note = done if copied else caption if value else "" if slot == "short" and reason == full_reason \
+                else REMOTE_RELATIVE_CAPTION if reason.startswith(RELATIVE_ONLY_HERE) else reason
             button.asb_caption.set_label(note)
             button.asb_caption.set_lines(1 if value else 2)
             button.asb_caption.set_visible(bool(note))
-            (button.remove_css_class if value else button.add_css_class)("asb-copy-off")
+            remote_relative = slot == "short" and not value and reason.startswith(RELATIVE_ONLY_HERE)
+            (button.remove_css_class if value or remote_relative else button.add_css_class)("asb-copy-off")
             (button.add_css_class if note or not value else button.remove_css_class)("asb-panel-captioned")
             (button.add_css_class if copied else button.remove_css_class)("asb-copy-done")
-            (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
+            (button.add_css_class if pending or remote_relative else button.remove_css_class)("asb-action-pending")
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, not value or pending])
             set_icon(button.asb_icon, "object-select-symbolic" if copied else "edit-copy-symbolic")
             # The caption shows the copied text, so the tooltip keeps the reference.
@@ -10166,7 +10504,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_flights()
         self.events.close()
         self.cancel_side_fill()
-        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim", "heap_trim"):
+        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim", "heap_trim", "order_hold_timer"):
             source = getattr(self, name)
             if source:
                 GLib.source_remove(source)

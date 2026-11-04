@@ -951,7 +951,7 @@ private fun SessionCard(
     val mark: @Composable () -> Unit = {
         ProviderMark(row, limited, messageLit, palette, Modifier.onGloballyPositioned {
             onProviderCenter(it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f))
-        })
+        }, quiet = tones.caption == palette.quietCaption)
     }
     if (!comfortable) Row(
         modifier = card.semantics(mergeDescendants = true) { contentDescription = description }.padding(horizontal = 5.dp),
@@ -961,9 +961,15 @@ private fun SessionCard(
         Box(Modifier.clearAndSetSemantics { }) { mark() }
         Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).clearAndSetSemantics { })
-        if (indicator.isNotEmpty()) IndicatorMark(indicator, palette)
+        if (indicator.isNotEmpty()) IndicatorMark(indicator, palette, compactMarkStyle(row, palette, drawerView, nowMs))
         if (limited) LimitClock(tones.state)
-        Text(if (limited) "Resets $countdown" else state + if (working.isNotEmpty()) " ·$working" else "",
+        val compactState = compactStateText(row, nowMs)
+        Text(buildAnnotatedString {
+            append(compactState)
+            if (!limited && compactState.length > state.length) {
+                addStyle(SpanStyle(color = hexColor(tones.caption)), state.length, compactState.length)
+            }
+        },
             fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.state), maxLines = 1,
             modifier = Modifier.clearAndSetSemantics { })
         if (viewOnly) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
@@ -1021,8 +1027,8 @@ private fun SessionCard(
 @Composable
 internal fun ProviderMark(
     row: Thread, limited: Boolean, messageLit: Boolean, palette: Palette, modifier: Modifier, dot: Boolean = true,
+    quiet: Boolean = false,
 ) {
-    val text = hexColor(palette.text)
     val marker = remember(row.sourceColor, row.sourceCount, row.sourceShowMarker, palette) {
         if (!row.sourceShowMarker || row.sourceCount <= 1 || !row.sourceColor.matches(Regex("#[0-9a-fA-F]{6}"))) ""
         else displaySourceColor(row.sourceColor.lowercase(), listOf(palette.background, palette.highlight))
@@ -1031,7 +1037,7 @@ internal fun ProviderMark(
         Icon(
             painterResource(providerIcon(row.provider)),
             contentDescription = null,
-            tint = if (messageLit) hexColor(palette.accent) else text.copy(alpha = if (limited) .4f else .65f),
+            tint = providerMarkTint(palette, limited, messageLit, quiet),
             modifier = Modifier.fillMaxSize(),
         )
         // The Soft dot: a 6 dp fill with a 1 dp background rim at the lower left of the mark.
@@ -1047,12 +1053,17 @@ private fun LimitClock(color: String) = Icon(painterResource(R.drawable.ic_sched
     tint = hexColor(color), modifier = Modifier.size(LIMIT_CLOCK_SIZE.dp))
 
 @Composable
-private fun IndicatorMark(indicator: String, palette: Palette) {
+private fun IndicatorMark(indicator: String, palette: Palette, style: CompactMarkStyle? = null) {
     when (indicator) {
-        "question" -> Text("?", color = hexColor(palette.accent), fontSize = 11.sp, lineHeight = 14.sp,
-            fontWeight = FontWeight.ExtraBold)
-        "alert" -> Text("!", color = hexColor(palette.accent), fontSize = 11.sp, lineHeight = 14.sp,
-            fontWeight = FontWeight.ExtraBold)
+        "question", "alert" -> if (style != null) Box(
+            if (style.discSize > 0) Modifier.size(style.discSize.dp).background(hexColor(palette.accent), CircleShape)
+            else Modifier,
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(if (indicator == "alert") "!" else "?", color = hexColor(style.color), fontSize = style.fontSize.sp,
+                lineHeight = if (style.discSize > 0) style.fontSize.sp else CAPTION_LINE_HEIGHT.sp,
+                fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
+        }
         "dot" -> Box(Modifier.size(7.dp).background(hexColor(palette.accent), CircleShape))
         "discard" -> Box(Modifier.size(9.dp).border(1.5.dp, hexColor(palette.quietCaption), CircleShape))
         "stop" -> Box(Modifier.size(7.dp).background(hexColor(palette.quietCaption), RoundedCornerShape(1.dp)))
@@ -1337,8 +1348,8 @@ private fun SessionInspector(
                             }
                         }
                         switch("unread", "Unread", rowPanelNote(row))
-                        switch("drawer", "In the drawer")
                         switch("pinned", "Pinned")
+                        switch("drawer", "In the drawer")
                         if ("order" in controls) item {
                             Row(
                                 Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f)

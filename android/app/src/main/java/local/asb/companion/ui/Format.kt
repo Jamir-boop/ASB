@@ -218,3 +218,10 @@ fun scanText(scan: UsageScan): String = when {
 fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine).let { report ->
     if (report.isEmpty()) machineStateText(machine) else "Offline · last report" + report.removePrefix("Last report")
 }
+
+/** The Compact state text: the reset countdown, or the state word and the Working time in whole minutes. */
+fun compactStateText(row: Thread, nowMs: Long): String {
+    val left = limitLeft(row, nowMs)
+    val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
+    return if (left > 0) "Resets in ${limitText(left)}" else cardStateLabel(row) + if (working.isNotEmpty()) " · $working" else ""
+}

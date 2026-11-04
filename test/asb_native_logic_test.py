@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 import os
+import random
 import re
 import sys
 from pathlib import Path, PureWindowsPath
@@ -44,8 +45,8 @@ COLUMN = copy.deepcopy(next(node for node in TREE.body if isinstance(node, ast.C
 COLUMN.bases = []
 # The signal helper follows the GI import block, so it is not in NODES.
 SIGNAL = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "unix_signal_add")
-# The color helpers of the Board and the activity windows also follow the GI import block.
-COLORS = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name in ("rgba", "hex_color", "native_colors")]
+# The color helpers of the Board and the activity windows, and the row panel label helper, also follow the GI import block.
+COLORS = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name in ("rgba", "hex_color", "native_colors", "set_panel_label")]
 SCOPE = {"__file__": str(SOURCE)}
 exec(compile(ast.Module(body=NODES + [SIGNAL] + COLORS + [USAGE_CHART, STRIP, COLUMN, MARKER, SOURCES, PHONE, MACHINES, BACKUPS, PREFERENCES, WINDOW, APPLICATION],
                         type_ignores=[]), str(SOURCE), "exec"), SCOPE)
@@ -54,6 +55,8 @@ SCOPE["SessionColumn"] = lambda **kwargs: SCOPE["Gtk"].ListBox(**kwargs)
 Window = SCOPE["SwitchboardWindow"]
 # The Gtk.Window base is not in this scope: a window here is in the foreground, as a board that is active.
 Window.is_active = lambda _self: True
+# Layout-only windows have no GTK search entry. Tests that edit the search set their own.
+Window.search = SimpleNamespace(get_text=lambda: "")
 Strip = SCOPE["SessionStrip"]
 SourcesEditor = SCOPE["AppSourcesEditor"]
 Preferences = SCOPE["PreferencesWindow"]
@@ -91,6 +94,9 @@ class Box:
 
     def get_spacing(self):
         return 12
+
+    def set_margin_top(self, value):
+        self.margin_top = value
 
     def add_tick_callback(self, *_args):
         return 1
@@ -2359,7 +2365,7 @@ class DataChecks(unittest.TestCase):
         window.opening, window.open_errors = set(), {}
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
-            for view, state in (("comfortable", "Resets in 3d04h"), ("compact", "Resets 3d04h")):
+            for view, state in (("comfortable", "Resets in 3d04h"), ("compact", "Resets in 3d04h")):
                 window.view = view
                 widget = SimpleNamespace(asb_thread={**row, "limitResetsAtMs": NOW + 273_600_000}, asb_time_signature=None,
                                          asb_state_label=Mock(), asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
@@ -2418,7 +2424,7 @@ class DataChecks(unittest.TestCase):
         window.opening, window.open_errors = set(), {}
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0))
         with patch.dict(SCOPE, {"Gtk": gtk}):
-            for view, state in (("comfortable", "Resets in 4h33m"), ("compact", "Resets 4h33m")):
+            for view, state in (("comfortable", "Resets in 4h33m"), ("compact", "Resets in 4h33m")):
                 window.view = view
                 widget = SimpleNamespace(asb_thread={**row, "limitResetsAtMs": NOW + 16_330_000}, asb_time_signature=None,
                                          asb_state_label=Mock(), asb_age_label=Mock(), asb_title_label=Mock(), asb_limit_clock=Mock(),
@@ -2440,10 +2446,10 @@ class DataChecks(unittest.TestCase):
                     widget.asb_age_label.set_label.assert_called_with("4h ago")
                     widget.asb_age_label.set_visible.assert_called_with(True)
                 self.assertEqual(widget.asb_accessible_label, "Open Chat in Codex. Idle.")
-        # A limited remote row keeps the limit look and says where it runs: "Resets in 4h33m" and "studio", or "Resets 4h33m · studio".
+        # A limited remote row keeps the limit look and says where it runs: "Resets in 4h33m" and "studio", or "Resets in 4h33m · studio".
         remote = {**row, "canOpen": False, "remote": True, "machineName": "studio", "limitResetsAtMs": NOW + 16_330_000}
         self.assertEqual(asb.view_only_tone(remote), "")
-        for view, state, where in (("comfortable", "Resets in 4h33m", "studio"), ("compact", "Resets 4h33m", "· studio")):
+        for view, state, where in (("comfortable", "Resets in 4h33m", "studio"), ("compact", "Resets in 4h33m", "· studio")):
             window.view = view
             window.clear_read_feedback = window.update_card_actions = window.update_drawer_style = Mock()
             classes = set()
@@ -2536,13 +2542,13 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(asb.tooltip_model({"state": "idle", "limitResetsAtMs": 1e20}, NOW, "/home/u")["limit"], "")
 
     def test_filters_state_order_pending_and_archive(self):
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["second", "claude:local_mock", "first", "unknown"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["claude:local_mock", "second", "first", "unknown"])
         self.assertEqual(len(asb.filtered_rows(FIXTURE, archived=True)), 5)
         for query, expected in [("SWITCHING", ["first"]), ("/example/Notes", ["claude:local_mock"]),
                                 ("Claude Desktop", ["claude:local_mock"]), ("missing", [])]:
             self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, query=query)], expected)
         self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, app="codex", state="unknown")], ["unknown"])
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, pending_only=True)], ["second", "claude:local_mock"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, pending_only=True)], ["claude:local_mock", "second"])
         self.assertIn("Pinned", asb.row_meta({**FIXTURE["threads"][0], "pinned": True}, NOW))
         self.assertIn("Archived", asb.row_meta(FIXTURE["threads"][-1], NOW))
 
@@ -3023,6 +3029,25 @@ class DataChecks(unittest.TestCase):
         self.assertEqual([row["id"] for row in asb.filtered_rows(board(now))], ["p", "w", "m", "i"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board(0))], ["p", "w", "i", "m"])
 
+    def test_filtered_rows_sorts_pending_rows_by_mark_then_newest_first(self):
+        now = 1_800_000_000_000
+        minute = 60_000
+        def pending(identity, age, **fields):
+            return {"id": identity, "state": "idle", "pending": True, "updatedAtMs": now - age * minute, **fields}
+        threads = [
+            {"id": "pin", "state": "idle", "pinned": True, "pinIndex": 0, "updatedAtMs": now - 90 * minute},
+            pending("question-1", 1, questionAttention=True),
+            pending("permission-2", 2, state="waiting", actionRequired=True, actionAttention=True),
+            *(pending(f"dot-{age}", age, unread=True) for age in range(3, 11)),
+            pending("alert-25", 25, unread=True, alert=True),
+            pending("permission-20", 20, state="waiting", actionRequired=True),
+            pending("working-question", 0, state="working", questionAttention=True, workingSinceMs=now - 30 * minute),
+            pending("working-plain", 0, state="working", workingSinceMs=now - 5 * minute)]
+        random.Random(7).shuffle(threads)
+        self.assertEqual([row["id"] for row in asb.filtered_rows({"threads": threads})],
+                         ["pin", "working-question", "question-1", "permission-2", "permission-20", "alert-25",
+                          *(f"dot-{age}" for age in range(3, 11)), "working-plain"])
+
     def test_filtered_rows_sorts_a_muted_row_with_a_new_question_with_the_pending_rows(self):
         now = 1_800_000_000_000
         minute = 60_000
@@ -3369,7 +3394,7 @@ class DataChecks(unittest.TestCase):
             {"id": "read", "state": "waiting", "pending": False, "updatedAtMs": 800},
             {"id": "old", "state": "idle", "pending": False, "updatedAtMs": 200},
         ]}
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["done", "asks", "approve", "work", "read", "old"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["asks", "approve", "done", "work", "read", "old"])
 
     def test_provider_prefixes(self):
         for prefix, provider in (("cl:", "claude-desktop-code"), ("claude:", "claude-desktop-code"),
@@ -3399,11 +3424,11 @@ class DataChecks(unittest.TestCase):
         selected = asb.filtered_rows(board, state={"working", "idle"})
         self.assertEqual([row["id"] for row in selected], ["second", "first"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, state=set())],
-                         ["second", "claude:local_mock", "first", "unknown"])
+                         ["claude:local_mock", "second", "first", "unknown"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, state={"working", "idle"}, pending_only=True)], ["second"])
         board["threads"][0].update(pinned=True, pinIndex=1)
         board["threads"][2].update(pinned=True, pinIndex=0)
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["unknown", "first", "second", "claude:local_mock"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["unknown", "first", "claude:local_mock", "second"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, "cx:", state={"working", "idle"})], ["first", "second"])
 
     def test_hex_color_clamps_extended_theme_channels_to_rgb_bytes(self):
@@ -6012,6 +6037,171 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertIsNone(row.asb_tooltip_key)
                 row.asb_source_badge.set_color.assert_called_with("")
 
+    def test_row_panel_focus_ring_uses_the_accent_of_the_applied_look(self):
+        def ring_color(css, custom):
+            # The winning outline color for a focused panel row: highest specificity, then the later rule.
+            path = [("window", {"asb-column-flow"} | ({"asb-custom"} if custom else set())), ("popover", {"asb-row-panel"}),
+                    ("button", {"asb-panel-action", "flat"})]
+            def matches(compound, node):
+                tag, classes = node
+                name = re.match(r"[a-z]*", compound).group()
+                pseudo = re.findall(r":([a-z-]+(?:\([^)]*\))?)", compound)
+                return ((not name or name == tag) and set(re.findall(r"\.([\w-]+)", re.sub(r":not\([^)]*\)", "", compound))) <= classes
+                        and all(part == "focus-visible" if node is path[-1] else False for part in pseudo))
+            def selector_matches(selector):
+                compounds, nodes = selector.split(), list(path)
+                if not compounds or not matches(compounds[-1], nodes[-1]):
+                    return False
+                index = len(nodes) - 2
+                for compound in reversed(compounds[:-1]):
+                    while index >= 0 and not matches(compound, nodes[index]):
+                        index -= 1
+                    if index < 0:
+                        return False
+                    index -= 1
+                return True
+            best = None
+            for order, (selectors, body) in enumerate(re.findall(r"([^{}]+)\{([^{}]*)\}", re.sub(r"/\*.*?\*/", "", css, flags=re.S))):
+                color = re.search(r"outline-color:\s*([^;]+);", body) or re.search(r"outline:\s*\S+\s+solid\s+([^;]+);", body)
+                for selector in selectors.split(","):
+                    if color and selector_matches(selector.strip()):
+                        weight = (len(re.findall(r"[.:]", selector)), order)
+                        best = max(best or (weight, ""), (weight, color.group(1).strip()))
+            return best[1]
+        window = object.__new__(Window)
+        window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+        window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
+        window.native_colors = lambda: {"background": "#222226", "text": "#ffffff", "muted": "#99999b", "accent": "#3584e4", "divider": "#3a3a3e"}
+        yours = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
+        navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}
+        for colors, expected in ((yours, "#ffb900"), (navy, "#7cc4ff"), (None, "@accent_color")):
+            with self.subTest(colors=colors):
+                window.set_palette(colors)
+                self.assertEqual(ring_color(window.css.load_from_string.call_args.args[0], bool(colors)), expected)
+
+    def row_panel_window(self, rows):
+        """A window and a mock row panel; the real update_row_panel and show_copy_rows run."""
+        window = object.__new__(Window)
+        window.session_actions, window.opening, window.open_errors, window.mute_for, window.drawer_view = set(), set(), {}, "1h", False
+        window.visible_rows = lambda: rows
+        window.update_mute_tag, window.clear_copy_feedback = Mock(), Mock()
+        def button():
+            item = Mock()
+            item.get_sensitive.return_value = True
+            return item
+        panel = SimpleNamespace(asb_identity=rows[0]["id"], asb_signature=None, asb_controls=None, asb_copy_values=None, asb_copied=None,
+                                asb_copy_error="", asb_title=Mock(), asb_error=Mock(), update_property=Mock(), asb_mute_tag=Mock(),
+                                asb_mute_words=Mock(), asb_mute_dots=[], asb_open=button(), asb_copy=button(), asb_copy_full=button(),
+                                asb_actions={slot: button() for slot in ("read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard")})
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=2))
+        return window, panel, gtk
+
+    def test_remote_row_panel_copies_no_relative_reference_and_says_where_it_runs(self):
+        remote = {"id": "r", "title": "Check the nightly backup", "provider": "claude", "providerLabel": "Claude", "state": "idle",
+                  "remote": True, "machineName": "studio", "canOpen": False, "sessionReference": "claude-desktop-code/local_r",
+                  "reference": "asb:1/9a8b7c6d5e4f3a2b/claude/5e6f7a8b9c0d1e2f/r"}
+        why = "Relative works only on this machine. This session runs on studio."
+        self.assertEqual(asb.panel_copy_values(remote), (None, why, remote["reference"], None))
+        self.assertEqual(asb.panel_copy_values({**remote, "sessionReference": ""})[:2], (None, why))
+        self.assertEqual(asb.panel_copy_values({**remote, "remote": False})[:2], ("claude-desktop-code/local_r", None))
+        window, panel, gtk = self.row_panel_window([remote])
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_row_panel(panel, remote)
+        short, full = panel.asb_copy, panel.asb_copy_full
+        short.asb_caption.set_label.assert_called_with("Works only on this machine.")
+        short.set_tooltip_text.assert_called_with(why)
+        short.update_property.assert_called_with([1], [why])
+        short.update_state.assert_called_with([0, 2], [False, True])
+        short.add_css_class.assert_any_call("asb-action-pending")
+        short.remove_css_class.assert_any_call("asb-copy-off")
+        short.set_sensitive.assert_not_called()
+        full.asb_caption.set_label.assert_called_with("Absolute: with ASB, any machine")
+        full.update_state.assert_called_with([0, 2], [False, False])
+        # The first row says where the session runs; a CLI row runs in a terminal. Both stay insensitive in the floor tone.
+        panel.asb_open.asb_label.set_label.assert_called_with("Runs on studio")
+        panel.asb_open.set_sensitive.assert_called_with(False)
+        panel.asb_open.add_css_class.assert_any_call("asb-panel-where")
+        cli = {**remote, "id": "c", "remote": False, "surface": "cli"}
+        window, panel, gtk = self.row_panel_window([cli])
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_row_panel(panel, cli)
+        panel.asb_open.asb_label.set_label.assert_called_with("Runs in a terminal")
+        panel.asb_open.add_css_class.assert_any_call("asb-panel-where")
+        panel.asb_copy.asb_caption.set_label.assert_called_with("Relative: in the same app")
+        local = {**cli, "id": "l", "surface": None, "canOpen": True}
+        window, panel, gtk = self.row_panel_window([local])
+        with patch.dict(SCOPE, {"Gtk": gtk}):
+            window.update_row_panel(panel, local)
+        panel.asb_open.remove_css_class.assert_any_call("asb-panel-where")
+        window = object.__new__(Window)
+        window.css, window.add_css_class, window.remove_css_class = Mock(), Mock(), Mock()
+        window.badge_css, window.badge_colors, window.row_cache, window.focus_widgets = Mock(), {}, {}, {}
+        window.set_palette({"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"})
+        self.assertRegex(window.css.load_from_string.call_args.args[0],
+                         r"button\.asb-panel-where:disabled, [^{]*button\.asb-panel-where:disabled \* \{\s*color: #757575; opacity: 1; filter: none; \}")
+
+    def test_row_panel_pin_moves_show_only_with_two_visible_pins_and_say_when_at_an_end(self):
+        moves = asb.pin_moves
+        pins = [{"id": key, "pinned": True} for key in "abc"] + [{"id": "d"}]
+        self.assertEqual([moves(pins, key) for key in "abcd"], [(False, True), (True, True), (True, False), None])
+        self.assertIsNone(moves(pins[:1] + pins[3:], "a"))
+        for rows, identity, shown, ends in ((pins[:1], "a", False, {}), (pins, "a", True, {"pin-up": "Already the first pin"}),
+                                            (pins, "b", True, {}), (pins, "c", True, {"pin-down": "Already the last pin"})):
+            with self.subTest(identity=identity, pins=len(rows)):
+                row = {"id": identity, "title": "Chat", "provider": "codex", "state": "idle", "pinned": True, "canOpen": True}
+                window, panel, gtk = self.row_panel_window([row] + [item for item in rows if item["id"] != identity])
+                window.visible_rows = lambda rows=rows, row=row: [row if item["id"] == identity else item for item in rows]
+                with patch.dict(SCOPE, {"Gtk": gtk}):
+                    window.update_row_panel(panel, row)
+                for slot in ("pin-up", "pin-down"):
+                    button = panel.asb_actions[slot]
+                    button.set_visible.assert_called_with(shown)
+                    button.set_tooltip_text.assert_called_with(ends.get(slot))
+                    (button.add_css_class if slot in ends else button.remove_css_class).assert_called_with("asb-action-pending")
+                    button.update_state.assert_called_with([0, 2], [False, slot in ends])
+        # A move at an end has no target, so the focusable row sends nothing.
+        self.assertIsNone(asb.pin_move_body(pins, "a", "up"))
+
+    def test_card_and_panel_mute_and_copy_say_how_to_change_the_choice(self):
+        gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
+        window = object.__new__(Window)
+        window.session_actions, window.column_pixel_width, window.mute_for, window.copy_kind = set(), 240, "1h", "relative"
+        window.update_mute_tag, window.update_copy_tag, window.update_copy_feedback = Mock(), Mock(), Mock()
+        for extra, mute_tip, copy_tip, copy_keys in (
+                ({}, "Mute for 1 hour. Scroll to change.", "Copy relative reference. Scroll to change the kind.", True),
+                ({"muted": True}, "Unmute", "Copy relative reference. Scroll to change the kind.", True),
+                ({"remote": True, "machineName": "studio", "reference": "asb:1/9a8b7c6d5e4f3a2b/codex/5e6f7a8b9c0d1e2f/a"},
+                 "Mute for 1 hour. Scroll to change.", "Copy absolute reference. Relative works only on this machine. This session runs on studio.", False)):
+            with self.subTest(extra=extra):
+                widget = SimpleNamespace(asb_view="comfortable", asb_thread={"id": "a", "title": "Chat", "state": "idle", **extra},
+                                         asb_read_timer=None, asb_copy_timer=None, asb_read_button=Mock(), asb_pin_button=Mock(),
+                                         asb_copy_button=Mock(), asb_mute_button=Mock(), asb_mute_words=Mock(), asb_mute_dots=[])
+                for button in (widget.asb_copy_button, widget.asb_mute_button):
+                    button.get_tooltip_text.return_value = None
+                with patch.dict(SCOPE, {"Gtk": gtk}):
+                    window.update_card_actions(widget)
+                mute, copy = widget.asb_mute_button, widget.asb_copy_button
+                mute.set_tooltip_text.assert_called_with(mute_tip)
+                if extra.get("muted"):
+                    mute.reset_property.assert_called_with(1)
+                else:
+                    mute.update_property.assert_called_with([1], ["Alt+Up or Alt+Down changes the time."])
+                    mute.update_property.assert_any_call([0], ["Mute for 1 hour: Chat"])
+                copy.set_tooltip_text.assert_called_with(copy_tip)
+                if copy_keys:
+                    copy.update_property.assert_called_with([1], ["Alt+Up or Alt+Down changes the kind."])
+                else:
+                    copy.reset_property.assert_called_with(1)
+        row = {"id": "a", "title": "Chat", "provider": "codex", "state": "idle", "canOpen": True}
+        for extra, tip, description in (({}, "Scroll or press Left and Right to change the time.", "Left or Right changes the time."),
+                                        ({"muted": True}, None, "Until you unmute")):
+            with self.subTest(panel=extra):
+                window, panel, gtk = self.row_panel_window([{**row, **extra}])
+                with patch.dict(SCOPE, {"Gtk": gtk}):
+                    window.update_row_panel(panel, {**row, **extra})
+                panel.asb_actions["mute"].set_tooltip_text.assert_called_with(tip)
+                panel.asb_actions["mute"].update_property.assert_any_call([1], [description])
+
     def test_tooltip_query_handler_has_one_row_lifetime_and_no_static_row_tooltip(self):
         window = object.__new__(Window)
         window.update_session_row, window.clear_read_feedback = Mock(), Mock()
@@ -6026,7 +6216,7 @@ class NativeLogicChecks(unittest.TestCase):
             return value
         gtk = SimpleNamespace(ListBoxRow=lambda **_kwargs: widget, EventControllerKey=controller,
                               EventControllerFocus=controller, EventControllerMotion=controller, GestureClick=controller,
-                              DragSource=controller,
+                              GestureLongPress=controller, DragSource=controller,
                               DropTarget=SimpleNamespace(new=lambda *_args: controller()),
                               PropagationPhase=SimpleNamespace(CAPTURE=0))
         with patch.dict(SCOPE, {"Gtk": gtk, "Gdk": SimpleNamespace(DragAction=SimpleNamespace(MOVE=0)),
@@ -6034,7 +6224,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIs(window.session_row({"id": "a"}), widget)
             widget.set_has_tooltip.assert_called_once_with(True)
             widget.connect.assert_called_once_with("query-tooltip", window.query_row_tooltip)
-            self.assertEqual(len(widget.asb_handlers), 6)
+            self.assertEqual(len(widget.asb_handlers), 7)
             widget.add_css_class.assert_any_call("asb-unhovered")
             controllers[2].connect.assert_called_once_with("notify::contains-pointer", window.row_hover, "a")
             self.assertIsNone(widget.asb_tooltip_content)
@@ -6044,7 +6234,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIsNone(widget.asb_tooltip_content)
             self.assertIsNone(widget.asb_tooltip_key)
             widget.disconnect.assert_called_once_with(77)
-            self.assertEqual(widget.remove_controller.call_count, 6)
+            self.assertEqual(widget.remove_controller.call_count, 7)
             self.assertTrue(all(call.args[0] is not widget for call in widget.remove_controller.call_args_list))
             self.assertIsNone(widget.asb_tooltip_handler)
             widget.set_tooltip_text.assert_not_called()
@@ -6832,13 +7022,13 @@ class NativeLogicChecks(unittest.TestCase):
         window.set_palette({**palette, "background": "#202020"})
         self.assertIn("border-color: #202020", window.badge_css.load_from_string.call_args.args[0])
         self.assertFalse(window.focus_widgets)
-        gtk = SimpleNamespace(ListBox=Box, Box=lambda **_kwargs: Mock(), Image=lambda **_kwargs: Mock(),
+        gtk = SimpleNamespace(ListBox=Box, Box=lambda **_kwargs: Mock(), Image=lambda **_kwargs: Mock(), DrawingArea=lambda **_kwargs: Mock(),
                               Overlay=lambda **_kwargs: Mock(), Button=lambda **_kwargs: Mock(),
                               Stack=lambda **_kwargs: Mock(), Revealer=lambda **_kwargs: Mock(),
                               EventControllerMotion=lambda: Mock(),
                               StackTransitionType=SimpleNamespace(SLIDE_UP=0, SLIDE_DOWN=1, CROSSFADE=2),
                               RevealerTransitionType=SimpleNamespace(SLIDE_RIGHT=0),
-                              SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0, CENTER=1, END=2),
+                              SelectionMode=SimpleNamespace(NONE=0), Align=SimpleNamespace(START=0, CENTER=1, END=2, BASELINE_CENTER=3),
                               Orientation=SimpleNamespace(VERTICAL=0), AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1),
                               AccessibleState=SimpleNamespace(BUSY=0, DISABLED=1))
         request = Mock()
@@ -6959,6 +7149,7 @@ class NativeLogicChecks(unittest.TestCase):
                                         {"id": "b", "state": "idle", "updatedAtMs": 10}]}
         window.closed, window.layout_signature, window.focused_id = False, None, None
         window.context_menu, window.cancel_scroll = Mock(asb_identity="a"), Mock()
+        window.context_menu.get_visible.return_value = False
         window.update_row_panel = Mock()
         window.focus_generation = 0
         window.get_focus = lambda: focus[0]
@@ -6984,7 +7175,7 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib}):
             window.render()
             columns, widgets = list(window.list_body.children), dict(window.focus_widgets)
-            # The open panel of row "a" stays open when the row moves, and shows the new row data.
+            # A hidden panel model still receives the new row data when its card moves.
             window.context_menu.get_parent.return_value = widgets["a"]
             focus[0] = widgets["a"]
             for key in operations:
@@ -7141,7 +7332,7 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_card_actions(widget)
             self.assertEqual([item.tip for item in buttons],
-                             ["Mark read in ASB", "Pin in ASB", "Put in drawer: look read here, keep it under Drawer", "Copy relative reference"])
+                             ["Mark read in ASB", "Pin in ASB", "Put in drawer: look read here, keep it under Drawer", "Copy relative reference. Scroll to change the kind."])
             for item in buttons:
                 item.set_tooltip_text.reset_mock()
             # A new title changes the labels but no tooltip.
@@ -7636,7 +7827,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.session_actions, window.open_errors, window.focus_widgets = set(), {}, {"a": widget}
         window.dashboard = {"threads": [dict(row)]}
         window.get_focus = window.focus_key = lambda: None
-        window.update_open_state = window.update_row_text = Mock()
+        window.update_open_state = window.update_row_text = window.passive_glyph_mapped = Mock()
         window.refresh = Mock()
         window.render = Mock(side_effect=lambda **_kwargs: window.update_session_row(
             window.focus_widgets["a"], window.dashboard["threads"][0]))
@@ -8359,7 +8550,8 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertEqual(copy.asb_action, None)
             copy.add_css_class.assert_any_call("asb-copy-off")
             copy.update_state.assert_called_with([1], [True])
-            copy.set_tooltip_text.assert_called_with("This session has an ID in a form that ASB does not know.")
+            copy.set_tooltip_text.assert_called_with("This session has an ID in a form that ASB does not know. Scroll to change the kind.")
+            copy.update_property.assert_any_call([1], ["Alt+Up or Alt+Down changes the kind."])
             copy.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
             window.copy_reference(None, SimpleNamespace(get_string=lambda: "a"))
             clipboard.set.assert_not_called()
@@ -8419,12 +8611,12 @@ class NativeLogicChecks(unittest.TestCase):
             window.update_card_actions.assert_not_called()
             # Success, then a failure within 1.6 seconds: the check ends and the copy button comes back.
             third = widgets[rows[2]["id"]]
-            self.assertEqual(feedback(third), (3, "object-select-symbolic", "Copy relative reference", ([1], ["Relative session copied"])))
+            self.assertEqual(feedback(third), (3, "object-select-symbolic", "Copy relative reference. Scroll to change the kind.", ([1], ["Relative session copied"])))
             third.asb_copy_button.reset_mock()
             clipboard.set.side_effect = TypeError("no clipboard")
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(removed[-1], 3)
-            self.assertEqual(feedback(third), (None, "edit-copy-symbolic", "Copy relative reference", (1,)))
+            self.assertEqual(feedback(third), (None, "edit-copy-symbolic", "Copy relative reference. Scroll to change the kind.", ([1], ["Alt+Up or Alt+Down changes the kind."])))
             self.assertEqual(window.open_errors, {rows[2]["id"]: "Cannot copy the relative reference: no clipboard"})
             window.update_open_state.assert_called_once_with(third)
             self.assertEqual(len(timers), 5)
@@ -8433,7 +8625,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(window.open_errors, {})
             self.assertEqual(window.update_open_state.call_count, 2)
-            self.assertEqual(feedback(third), (6, "object-select-symbolic", "Copy relative reference", ([1], ["Relative session copied"])))
+            self.assertEqual(feedback(third), (6, "object-select-symbolic", "Copy relative reference. Scroll to change the kind.", ([1], ["Relative session copied"])))
             window.open_errors[rows[2]["id"]] = "The server did not answer."
             window.copy_reference(None, target(rows[2]["id"]))
             self.assertEqual(window.open_errors, {rows[2]["id"]: "The server did not answer."})
@@ -8456,13 +8648,10 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertEqual(copy.asb_action, "win.copy-reference")
                 SCOPE["set_icon"].assert_called_with(copy.get_child(), "object-select-symbolic" if copied else "edit-copy-symbolic")
                 (copy.add_css_class if copied else copy.remove_css_class).assert_called_with("asb-copy-confirmed")
-                copy.set_tooltip_text.assert_called_with("Copy relative reference")
+                copy.set_tooltip_text.assert_called_with("Copy relative reference. Scroll to change the kind.")
                 copy.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
                 copy.update_state.assert_called_with([1], [False])
-                if copied:
-                    copy.update_property.assert_called_with([1], ["Relative session copied"])
-                else:
-                    copy.reset_property.assert_called_with(1)
+                copy.update_property.assert_called_with([1], ["Relative session copied" if copied else "Alt+Up or Alt+Down changes the kind."])
             self.assertNotIn(("asb-action-pending",), [call.args for call in copy.add_css_class.call_args_list])
             self.assertNotIn(("asb-copy-off",), [call.args for call in copy.add_css_class.call_args_list])
             copy.set_sensitive.assert_not_called()
@@ -8542,7 +8731,7 @@ class NativeLogicChecks(unittest.TestCase):
                                                asb_copy_timer=None, asb_read_button=Mock(), asb_pin_button=Mock(), asb_copy_button=Mock())
                 window.focus_widgets[local["id"]] = local_widget
                 window.update_card_actions(local_widget)
-                local_widget.asb_copy_button.set_tooltip_text.assert_called_with("Copy relative reference")
+                local_widget.asb_copy_button.set_tooltip_text.assert_called_with("Copy relative reference. Scroll to change the kind.")
                 local_widget.asb_copy_button.update_property.assert_any_call([0], ["Copy relative reference: Chat"])
                 clipboard.reset_mock()
                 window.copy_reference(None, SimpleNamespace(get_string=lambda: local["id"]))

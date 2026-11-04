@@ -3069,12 +3069,11 @@ class WidgetCheck(unittest.TestCase):
             window.sync_row_panel()
             self.assertFalse(panel.asb_error.get_visible())
             self.assertEqual(actions(panel), {"read": ("Mark read", True), "drawer": ("Put in drawer", True), "mute": ("Mute", True),
-                                              "pin": ("Unpin", True), "pin-up": ("Move pin earlier", True), "pin-down": ("Move pin later", True)})
+                                              "pin": ("Unpin", True)})
             # ASB glyphs are file icons, so GTK recolors them like the theme icons.
             icons = [button.asb_icon.get_icon_name() or button.asb_icon.get_gicon().get_file().get_basename()
                      for button in panel.asb_actions.values() if button.get_visible()]
-            self.assertEqual(icons, ["object-select-symbolic", "asb-drawer-symbolic.svg", "asb-muted-symbolic.svg", "asb-unpin-symbolic.svg",
-                                     "go-up-symbolic", "go-down-symbolic"])
+            self.assertEqual(icons, ["object-select-symbolic", "asb-drawer-symbolic.svg", "asb-muted-symbolic.svg", "asb-unpin-symbolic.svg"])
             self.assertTrue(all(button.asb_icon.get_gicon().get_file().query_exists(None) for button in panel.asb_actions.values()
                                 if button.get_visible() and not button.asb_icon.get_icon_name()))
             for button in panel.asb_actions.values():
@@ -3153,7 +3152,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
-            self.assertIs(window.get_focus(), panel.asb_actions["pin-down"])
+            # The only visible pin has no move rows, so Unpin is the last action row.
+            self.assertIs(window.get_focus(), panel.asb_actions["pin"])
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
@@ -4617,7 +4617,7 @@ class WidgetCheck(unittest.TestCase):
             window.ensure_card_controls(card)
         self.drain()
         card = window.focus_widgets[invalid_row["id"]].asb_copy_button
-        self.assertEqual((card.get_visible(), card.asb_action, card.get_tooltip_text()), (True, None, reason))
+        self.assertEqual((card.get_visible(), card.asb_action, card.get_tooltip_text()), (True, None, reason + " Scroll to change the kind."))
         self.assertTrue(card.has_css_class("asb-copy-off"))
         self.assert_accessible_disabled(card, True)
         self.assert_accessible_label(card, "Copy relative reference: " + invalid_row["title"])
@@ -4656,7 +4656,7 @@ class WidgetCheck(unittest.TestCase):
         # A local row, also a view-only CLI row, keeps the relative reference.
         for identity in ("local", "cli"):
             self.assertEqual((card(identity).get_visible(), card(identity).get_tooltip_text(), card(identity).asb_action),
-                             (True, "Copy relative reference", "win.copy-reference"))
+                             (True, "Copy relative reference. Scroll to change the kind.", "win.copy-reference"))
             self.assert_accessible_label(card(identity), "Copy relative reference: " + window.focus_widgets[identity].asb_thread["title"])
             card(identity).emit("clicked"); self.drain(.1)
         self.assertEqual(clipboard.texts, ["codex/" + app_id] * 2)
@@ -4699,7 +4699,7 @@ class WidgetCheck(unittest.TestCase):
             card(identity).emit("clicked"); self.drain(.1)
         self.assertNotIn(remote, window.open_errors)
         self.assertNotIn("local", window.open_errors)
-        # The row panel keeps both entries for a remote row.
+        # The row panel keeps both entries for a remote row; the unavailable relative row copies nothing.
         window.show_context(window.focus_widgets[remote]); self.drain(.3)
         panel = window.context_menu
         self.assertEqual((panel.asb_copy.asb_label.get_label(), panel.asb_copy_full.asb_label.get_label()),
@@ -4707,7 +4707,7 @@ class WidgetCheck(unittest.TestCase):
         count = len(clipboard.texts)
         panel.asb_copy.emit("clicked"); self.drain(.1)
         panel.asb_copy_full.emit("clicked"); self.drain(.1)
-        self.assertEqual(clipboard.texts[count:], ["codex/" + app_id, reference])
+        self.assertEqual(clipboard.texts[count:], [reference])
 
     def test_card_copy_kind_switch_tag_wheel_keys_click_and_feedback(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
@@ -4811,7 +4811,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(cards["local"].asb_age_label.get_parent().get_visible())
             self.assertEqual(local_copy.get_child().get_icon_name(), "object-select-symbolic")
             # The footer shows the copied text, so the tooltip stays.
-            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference")
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference. Scroll to change the kind.")
             self.assert_accessible_label(local_copy, "Absolute session copied", asb.Gtk.AccessibleProperty.DESCRIPTION)
             output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
             if output:
@@ -4822,14 +4822,14 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(footer.get_visible_child_name(), "line")
             self.assertTrue(cards["local"].asb_state_label.get_visible())
             self.assertTrue(cards["local"].asb_age_label.get_parent().get_visible())
-            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference")
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy absolute reference. Scroll to change the kind.")
             # Relative copies the short reference and the relative done text.
             self.assertTrue(window.row_key(None, asb.Gdk.KEY_Up, 0, asb.Gdk.ModifierType.ALT_MASK, "local"))
             self.assertEqual(window.copy_kind, "relative")
             local_copy.emit("clicked"); self.drain(.1)
             self.assertEqual(clipboard.texts[-1], relative)
             self.assertEqual(cards["local"].asb_feedback_label.get_label(), "Relative session copied")
-            self.assertEqual(local_copy.get_tooltip_text(), "Copy relative reference")
+            self.assertEqual(local_copy.get_tooltip_text(), "Copy relative reference. Scroll to change the kind.")
             if output:
                 window.scroll.get_hadjustment().set_value(0); self.drain(.1)
                 self.capture(window, Path(output) / "native-copy-relative-copied.png")
@@ -5074,7 +5074,8 @@ class WidgetCheck(unittest.TestCase):
                 child = child.get_next_sibling()
             self.assertEqual(controls, expected)
             # The drawer is at the left end, then the two tags, then mute, copy, read, and pin (the Tab order).
-            self.assertEqual(card.asb_actions.get_first_child(), card.asb_drawer_button)
+            self.assertEqual(card.asb_actions.get_first_child(), card.asb_corner_spacer)
+            self.assertEqual(card.asb_corner_spacer.get_next_sibling(), card.asb_drawer_button)
             self.assertEqual(card.asb_drawer_button.get_next_sibling(), card.asb_copy_tag)
             self.assertEqual(card.asb_copy_tag.get_next_sibling(), card.asb_mute_tag)
             self.assertEqual(card.asb_mute_tag.get_next_sibling(), card.asb_mute_button)
@@ -5123,7 +5124,8 @@ class WidgetCheck(unittest.TestCase):
         for dot in read.asb_mute_dots:
             found, bounds = dot.compute_bounds(read)
             self.assertTrue(found)
-            self.assertEqual((bounds.size.width, bounds.size.height), (4, 4))
+            # The 1.5px off-ring border can round its outer box to 5px; the on dot keeps its 4px minimum.
+            self.assertTrue(4 <= bounds.size.width <= 5 and 4 <= bounds.size.height <= 5, (bounds.size.width, bounds.size.height))
         found, tag = read.asb_mute_tag.get_child().compute_bounds(read)
         self.assertTrue(found)
         for button in (mute, read.asb_copy_button, read.asb_drawer_button, read.asb_read_button, read.asb_pin_button):
@@ -5164,7 +5166,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain(.3)
         window.scroll_horizontal(None, 0, 1)
         self.assertEqual(window.mute_for, "1h")
-        self.assertEqual(unread.asb_mute_button.get_tooltip_text(), "Mute for 1 hour")
+        self.assertEqual(unread.asb_mute_button.get_tooltip_text(), "Mute for 1 hour. Scroll to change.")
 
     def test_focused_mute_button_does_not_capture_the_wheel_away_from_the_pointer(self):
         window = self.mute_wheel_board(248)
@@ -5377,7 +5379,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNotNone(error)
         message = ctypes.string_at(error).decode()
         self.g_free(error)
-        self.assertEqual(message, "undefined")
+        self.assertIn("Alt+Up or Alt+Down changes the kind.", message)
         self.assertEqual(limited.asb_age_label.get_text(), "")
         self.assertFalse(limited.asb_age_label.get_visible())
         output = os.environ.get("ASB_NATIVE_TEST_SNAPSHOTS")
@@ -6340,6 +6342,339 @@ class WidgetCheck(unittest.TestCase):
         GTK_WARNINGS.clear()
         return window
 
+    def order_hold_window(self, limit=0):
+        window = self.board_window(70, limit=limit)
+        window.order_hold_seconds = .12
+        return window
+
+    def order_change(self, window):
+        board = copy.deepcopy(window.dashboard)
+        moved = next(row for row in board["threads"] if row["id"] == window.row_order[-2])
+        moved.update(title="New question content", pending=True, questionAttention=True, updatedAtMs=NOW + 60_000)
+        return board, moved["id"]
+
+    def column_ids(self, window):
+        return [[card.asb_thread["id"] for card in board_children(column)]
+                for column in window.list_columns if column.get_parent()]
+
+    def test_order_hold_keeps_columns_and_updates_content_and_removed_rows(self):
+        window = self.order_hold_window()
+        window.order_hold_seconds = .5
+        window.pending = True; window.render(); self.drain(.1)
+        columns, order = self.column_ids(window), list(window.row_order)
+        places = {identity: card.compute_bounds(window.list_body)[1].origin.y for identity, card in window.focus_widgets.items()}
+        board, moved = self.order_change(window)
+        leaving = order[0]
+        row = next(row for row in board["threads"] if row["id"] == leaving)
+        row.update(pending=False, unread=False, drawer=True, title="Now in the drawer")
+        window.board_pointer_motion(None, 100, 100)
+        window.apply_dashboard(board, None)
+        self.assertEqual(self.column_ids(window), columns)
+        self.assertEqual(window.focus_widgets[leaving].asb_title_label.get_label(), "Now in the drawer")
+        self.assertTrue(window.focus_widgets[leaving].asb_thread["drawer"])
+        self.assertTrue(window.focus_widgets[moved].asb_dot.has_css_class("asb-question"))
+        self.assertEqual(window.focus_widgets[moved].asb_title_label.get_label(), "New question content")
+        board = copy.deepcopy(board)
+        removed = order[1]
+        board["threads"] = [row for row in board["threads"] if row["id"] != removed]
+        board["threads"].append({**board["threads"][0], "id": "new-session", "pending": True})
+        window.apply_dashboard(board, None)
+        self.assertNotIn(removed, window.row_order)
+        self.assertNotIn("new-session", window.row_order)
+        self.assertEqual(self.column_ids(window), [[identity for identity in part if identity != removed] for part in columns])
+        self.drain(.04)
+        for identity in window.row_order:
+            self.assertEqual(window.focus_widgets[identity].compute_bounds(window.list_body)[1].origin.y, places[identity])
+        # Another refresh keeps the deletion gap and its original hold deadline.
+        window.apply_dashboard(copy.deepcopy(board), None); self.drain(.03)
+        for identity in window.row_order:
+            self.assertEqual(window.focus_widgets[identity].compute_bounds(window.list_body)[1].origin.y, places[identity])
+        window.board_pointer_leave()
+        self.assertTrue(all(card.get_margin_top() == 0 for card in window.focus_widgets.values()))
+        self.assertNotIn(leaving, window.row_order)
+        self.assertIn("new-session", window.row_order)
+
+    def test_order_hold_updates_comfortable_tones_marks_and_corner_actions(self):
+        window = self.order_hold_window()
+        window.view_filter.set_selected(1); self.drain(.1)
+        card = window.card_for("s6")
+        window.ensure_card_controls(card)
+        self.assertEqual(card.asb_read_button.asb_action, "win.mark-read")
+        columns = self.column_ids(window)
+        board, _moved = self.order_change(window)
+        next(row for row in board["threads"] if row["id"] == "s6").update(pending=False, unread=False)
+        window.board_pointer_motion(None, 20, 20)
+        window.apply_dashboard(board, None)
+        self.assertEqual(self.column_ids(window), columns)
+        self.assertTrue(card.has_css_class("asb-idle-read"))
+        self.assertFalse(card.has_css_class("asb-unread"))
+        self.assertEqual(card.asb_read_button.asb_action, "win.discard-result")
+        self.assertFalse(card.asb_drawer_button.get_visible())
+
+    def test_order_hold_ends_after_idle_and_real_motion_extends_it(self):
+        window = self.order_hold_window()
+        before = list(window.row_order)
+        board, moved = self.order_change(window)
+        window.board_pointer_motion(None, 100, 100)
+        window.apply_dashboard(board, None)
+        self.drain(.08)
+        window.board_pointer_motion(None, 101, 100)
+        self.drain(.08)
+        self.assertEqual(window.row_order, before)
+        self.drain(.09)
+        self.assertEqual(window.row_order[0], moved)
+        self.assertIsNone(window.order_hold_timer)
+
+    def test_order_hold_ignores_stationary_generated_motion(self):
+        window = self.order_hold_window()
+        board, moved = self.order_change(window)
+        event = SimpleNamespace(get_position=lambda: (True, 50, 60))
+        controller = SimpleNamespace(get_current_event=lambda: event)
+        window.board_pointer_motion(controller, 10, 20)
+        window.apply_dashboard(board, None)
+        self.drain(.08)
+        window.board_pointer_motion(controller, 70, 80)
+        self.drain(.07)
+        self.assertEqual(window.row_order[0], moved)
+
+    def test_order_hold_ends_at_leave_or_window_key(self):
+        for ending in (lambda window: window.board_pointer_leave(),
+                       lambda window: window.window_key(None, asb.Gdk.KEY_Shift_L, 0, 0)):
+            with self.subTest(ending=ending):
+                window = self.order_hold_window()
+                board, moved = self.order_change(window)
+                window.board_pointer_motion(None, 10, 10)
+                window.apply_dashboard(board, None)
+                self.assertTrue(window.order_pending)
+                ending(window)
+                self.assertEqual(window.row_order[0], moved)
+                self.assertIsNone(window.order_hold_timer)
+                window.close()
+
+    def test_order_hold_panel_waits_for_close_then_pointer_idle(self):
+        window = self.order_hold_window()
+        before, columns = list(window.row_order), self.column_ids(window)
+        card = window.focus_widgets[before[0]]
+        window.show_context(card)
+        board, moved = self.order_change(window)
+        window.apply_dashboard(board, None)
+        self.drain(.2)
+        self.assertEqual(self.column_ids(window), columns)
+        self.assertIs(window.context_menu.get_parent(), card)
+        self.assertIsNone(window.order_hold_timer)
+        window.board_pointer_motion(None, 10, 10)
+        window.context_menu.popdown(); self.drain(.03)
+        self.assertEqual(window.row_order, before)
+        self.drain(.15)
+        self.assertEqual(window.row_order[0], moved)
+
+    def test_order_hold_panel_close_with_keyboard_applies_at_once(self):
+        window = self.order_hold_window()
+        window.show_context(window.focus_widgets[window.row_order[0]])
+        before = list(window.row_order)
+        board, moved = self.order_change(window)
+        window.apply_dashboard(board, None)
+        window.window_key(None, asb.Gdk.KEY_Shift_L, 0, 0)
+        self.assertEqual(window.row_order, before)
+        window.context_menu.popdown(); self.drain(.04)
+        self.assertEqual(window.row_order[0], moved)
+
+    def test_order_hold_never_delays_explicit_layout_changes(self):
+        changes = {
+            "search": lambda w: w.search.set_text("Sample"),
+            "states": lambda w: setattr(w, "states", {"idle"}),
+            "profiles": lambda w: setattr(w, "profiles", {"|missing"}),
+            "pending": lambda w: setattr(w, "pending", True),
+            "archived": lambda w: setattr(w, "archived", True),
+            "drawer": lambda w: setattr(w, "drawer_view", True),
+            "view": lambda w: (setattr(w, "view", "comfortable"), setattr(w, "row_height", asb.COMFORTABLE_ROW_HEIGHT)),
+            "window-size": lambda w: setattr(w, "geometry", (w.geometry[0] - 30, w.geometry[1])),
+            "column-width": lambda w: setattr(w, "column_width", w.column_width + 30),
+            "show-all": lambda w: w.open_row(None, w.card_for(asb.MORE_ID)),
+        }
+        real_pointer = shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10")
+        for name, change in changes.items():
+            with self.subTest(change=name):
+                if real_pointer:
+                    subprocess.run(["xdotool", "mousemove", "9999", "9999"], check=True)
+                window = self.order_hold_window(limit=30)
+                board, moved = self.order_change(window)
+                if real_pointer:
+                    from gi.repository import GdkX11
+                    ok, point = window.list_body.compute_point(window, asb.Graphene.Point().init(window.column_pixel_width + 6, 12))
+                    self.assertTrue(ok)
+                    left, top = window.get_surface_transform()
+                    subprocess.run(["xdotool", "mousemove", "--window", str(GdkX11.X11Surface.get_xid(window.get_surface())),
+                                    str(round(point.x + left)), str(round(point.y + top))], check=True)
+                    self.drain(.02)
+                else:
+                    window.board_pointer_motion(None, 50, 50)
+                before, start = self.column_ids(window), time.monotonic()
+                window.apply_dashboard(board, None)
+                self.assertTrue(window.order_pending)
+                self.assertEqual(self.column_ids(window), before)
+                change(window); window.render()
+                self.assertEqual(window.row_order, [row["id"] for row in window.visible_rows()])
+                self.assertFalse(window.order_pending)
+                self.assertIsNone(window.order_hold_timer)
+                if real_pointer:
+                    print(f"ORDER-BYPASS {name} t={time.monotonic() - start:.3f}s before=during={before} after={self.column_ids(window)}", flush=True)
+                window.close()
+
+    def test_order_hold_pin_move_bypasses_open_panel_and_pointer(self):
+        window = self.order_hold_window()
+        for index, row in enumerate(window.dashboard["threads"][:2]):
+            row.update(pinned=True, pinIndex=index)
+        window.render(); self.drain(.1)
+        real_pointer = shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10")
+        if real_pointer:
+            from gi.repository import GdkX11
+            card = window.focus_widgets[window.row_order[0]]
+            ok, point = card.compute_point(window, asb.Graphene.Point().init(20, 10))
+            self.assertTrue(ok)
+            left, top = window.get_surface_transform()
+            subprocess.run(["xdotool", "mousemove", "--window", str(GdkX11.X11Surface.get_xid(window.get_surface())),
+                            str(round(point.x + left)), str(round(point.y + top)), "click", "3"], check=True)
+            self.drain(.05)
+            self.assertIsNotNone(window.context_menu)
+        else:
+            window.board_pointer_motion(None, 50, 50)
+            window.show_context(window.focus_widgets[window.row_order[0]])
+        before, start = self.column_ids(window), time.monotonic()
+        board, moved = self.order_change(window)
+        window.apply_dashboard(board, None)
+        self.assertTrue(window.order_pending)
+        board = copy.deepcopy(board)
+        for row in board["threads"][:2]:
+            row["pinIndex"] = 1 - row["pinIndex"]
+        window.apply_dashboard(board, None)
+        self.assertEqual(window.row_order[:3], ["s1", "s0", moved])
+        self.assertFalse(window.order_pending)
+        if real_pointer:
+            print(f"ORDER-BYPASS pin-move-with-panel t={time.monotonic() - start:.3f}s before=during={before} after={self.column_ids(window)}", flush=True)
+
+    def test_order_hold_keyboard_authority_keeps_focus_and_number_order(self):
+        window = self.order_hold_window()
+        card = window.focus_widgets[window.row_order[2]]
+        card.grab_focus()
+        window.board_pointer_motion(None, 50, 50)
+        window.window_key(None, asb.Gdk.KEY_Shift_L, 0, 0)
+        board, moved = self.order_change(window)
+        window.apply_dashboard(board, None); self.drain(.1)
+        self.assertEqual(window.row_order[0], moved)
+        self.assertIs(window.get_focus(), card)
+        window.board_pointer_event()
+        board, _moved = self.order_change(window)
+        board["threads"][1].update(pending=True, questionAttention=True, updatedAtMs=NOW + 120_000)
+        before = list(window.row_order)
+        window.apply_dashboard(board, None)
+        self.assertEqual(window.row_order, before)
+        window.update_number_keys()
+        expected = [identity for identity in before if identity in window.number_keys]
+        self.assertEqual(window.number_keys, expected)
+        self.assertEqual([window.focus_widgets[identity].asb_number for identity in expected], list(range(1, len(expected) + 1)))
+
+    def test_order_hold_card_long_press_is_touch_only_and_opens_its_panel_at_point(self):
+        window = self.order_hold_window(limit=30)
+        card = window.focus_widgets[window.row_order[0]]
+        controllers = card.observe_controllers()
+        gestures = [controllers.get_item(index) for index in range(controllers.get_n_items())
+                    if isinstance(controllers.get_item(index), asb.Gtk.GestureLongPress)]
+        self.assertEqual(len(gestures), 1)
+        gesture = gestures[0]
+        self.assertTrue(gesture.get_touch_only())
+        with patch.object(window, "place_row_panel", wraps=window.place_row_panel) as place, \
+                patch.object(gesture, "set_state", return_value=True) as claim:
+            gesture.emit("pressed", 23., 17.)
+            panel = window.context_menu
+            self.assertIs(panel.get_parent(), card)
+            self.assertEqual(panel.asb_identity, card.asb_thread["id"])
+            place.assert_called_once_with(panel, card, 23., 17.)
+            claim.assert_any_call(asb.Gtk.EventSequenceState.CLAIMED)
+        self.drain(.03)
+        self.assertTrue(window.get_focus().is_ancestor(panel))
+        panel.popdown(); self.drain(.03)
+        more = window.card_for(asb.MORE_ID)
+        self.assertFalse(any(isinstance(more.observe_controllers().get_item(index), asb.Gtk.GestureLongPress)
+                             for index in range(more.observe_controllers().get_n_items())))
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer proof needs xdotool on the hidden display :9 or :10.")
+    def test_order_hold_real_pointer_proof_and_mouse_hold(self):
+        from gi.repository import GdkX11
+
+        window = self.order_hold_window()
+        window.order_hold_seconds = 1.0
+        xid = GdkX11.X11Surface.get_xid(window.get_surface())
+        def xdo(*args):
+            subprocess.run(["xdotool", *map(str, args)], check=True)
+        def point(widget, x=20, y=10):
+            ok, p = widget.compute_point(window, asb.Graphene.Point().init(x, y))
+            self.assertTrue(ok)
+            left, top = window.get_surface_transform()
+            xdo("mousemove", "--window", xid, round(p.x + left), round(p.y + top))
+            self.drain(.02)
+        start = time.monotonic()
+        def evidence(stage):
+            print(f"ORDER-PROOF {stage} t={time.monotonic() - start:.3f}s columns={self.column_ids(window)[:3]}", flush=True)
+        point(window.list_columns[0].get_row_at_index(0))
+        before = self.column_ids(window)
+        evidence("before")
+        board, moved = self.order_change(window)
+        window.apply_dashboard(board, None); self.drain(.1)
+        evidence("during")
+        self.assertEqual(self.column_ids(window), before)
+        self.drain(.5)
+        point(window.list_body, window.column_pixel_width + 6, 12)
+        self.drain(.5)
+        self.assertEqual(self.column_ids(window), before)
+        evidence("real-motion-keeps")
+        self.drain(.6)
+        evidence("idle-release")
+        self.assertEqual(window.row_order[0], moved)
+        point(window.focus_widgets[moved], 20, 10)
+        xdo("mousedown", 1); self.drain(.8)
+        self.assertIsNone(window.context_menu)
+        xdo("mouseup", 1); self.drain(.1)
+        board = copy.deepcopy(window.dashboard)
+        board["threads"][10].update(pending=True, questionAttention=True, updatedAtMs=NOW + 120_000)
+        point(window.focus_widgets[moved], 20, 10)
+        window.apply_dashboard(board, None)
+        with patch.object(asb, "request_async") as request:
+            xdo("mousedown", 1); self.drain(.06); xdo("mouseup", 1); self.drain(.03)
+            self.assertTrue(any("/open" in entry.args[1] for entry in request.call_args_list))
+        evidence("click-held-card")
+        xdo("mousemove", "9999", "9999"); self.drain(.03)
+        evidence("leave-release")
+        self.assertEqual(window.row_order[0], "s10")
+        point(window.focus_widgets["s10"], 20, 10)
+        board = copy.deepcopy(window.dashboard)
+        board["threads"][11].update(pending=True, questionAttention=True, updatedAtMs=NOW + 180_000)
+        window.apply_dashboard(board, None)
+        xdo("windowfocus", xid, "key", "Shift_L"); self.drain(.04)
+        evidence("key-release")
+        self.assertEqual(window.row_order[0], "s11")
+        point(window.focus_widgets["s11"], 20, 10)
+        xdo("click", 3); self.drain(.05)
+        self.assertIsNotNone(window.context_menu)
+        board = copy.deepcopy(window.dashboard)
+        board["threads"][12].update(pending=True, questionAttention=True, updatedAtMs=NOW + 240_000)
+        window.apply_dashboard(board, None); self.drain(1.05)
+        evidence("panel-holds")
+        self.assertEqual(window.row_order[0], "s11")
+        window.context_menu.popdown(); self.drain(1.1)
+        evidence("panel-close-release")
+        self.assertEqual(window.row_order[0], "s12")
+        point(window.list_body, window.column_pixel_width + 6, 12)
+        board = copy.deepcopy(window.dashboard)
+        board["threads"][13].update(pending=True, questionAttention=True, updatedAtMs=NOW + 300_000)
+        window.apply_dashboard(board, None)
+        self.assertTrue(window.order_pending)
+        window.archived = True; window.render(); self.drain(.03)
+        evidence("filter-bypass")
+        self.assertEqual(window.row_order[0], "s13")
+        self.assertFalse(window.order_pending)
+
     def assert_board_columns(self, window, laid_out=False):
         """Each column holds its target cards in the target order, as widget children and in the internal list of GTK."""
         shown = [column for column in window.list_columns if column.get_parent()]
@@ -6388,7 +6723,7 @@ class WidgetCheck(unittest.TestCase):
         with patch.object(asb, "column_moves", twice):
             board = copy.deepcopy(window.dashboard)
             board["threads"][window.capacity * 2]["updatedAtMs"] = NOW + 60_000
-            board["threads"][window.capacity * 2]["pending"] = True
+            board["threads"][window.capacity * 2].update(pending=True, unread=True)
             window.apply_dashboard(board, None); self.drain(.3)
         self.assertEqual(window.row_order[0], board["threads"][window.capacity * 2]["id"])
         self.assertEqual(self.assert_board_columns(window, laid_out=True), columns[:window.actual_columns])
@@ -6845,7 +7180,7 @@ class WidgetCheck(unittest.TestCase):
                     self.assertGreaterEqual(asb.contrast(grey, background), 4.5)
                     self.assertLess(asb.contrast(grey, background), asb.contrast(quiet, background))
             else:
-                self.assertEqual(limited.asb_state_label.get_text(), "Resets 1m")
+                self.assertEqual(limited.asb_state_label.get_text(), "Resets in 1m")
                 self.assertIs(limited.asb_limit_clock.get_next_sibling(), limited.asb_state_label)
             self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle. Usage limit. Resets in 1 minute.")
             self.assert_accessible_label(limited, limited.asb_accessible_label)
@@ -6917,7 +7252,7 @@ class WidgetCheck(unittest.TestCase):
             return {"id": identity, "externalId": identity, "provider": "claude-desktop-code", "providerLabel": "Claude Code CLI",
                     "title": "Check the " + identity, "cwd": "/example/" + identity, "projectName": identity, "state": "idle",
                     "canOpen": False, "appDeepLink": "", "updatedAtMs": now - 720_000, "unread": False, "pending": False, **extra}
-        rows = [row("cli", surface="cli"), row("remote", surface="app", remote=True, machineName="homeLP", state="working"),
+        rows = [row("cli", surface="cli"), row("remote", surface="app", remote=True, machineName="studio", state="working"),
                 row("desktop", providerLabel="Claude Desktop Code", surface="app", canOpen=True,
                     appDeepLink="claude://code/continue?session=local_x"),
                 row("unread", surface="cli", unread=True, pendingSource="observed-completion", completionAttention=True)]
@@ -6938,7 +7273,7 @@ class WidgetCheck(unittest.TestCase):
             window.view_filter.set_selected(view); self.settle(window)
             cards = {identity: window.focus_widgets[identity] for identity in ("cli", "remote", "desktop", "unread")}
             comfortable = window.view == "comfortable"
-            for identity, text, icon in (("cli", "CLI", "asb-terminal-symbolic"), ("remote", "homeLP", "asb-machine-symbolic")):
+            for identity, text, icon in (("cli", "CLI", "asb-terminal-symbolic"), ("remote", "studio", "asb-machine-symbolic")):
                 card = cards[identity]
                 self.assertEqual(card.asb_where_label.get_text(), text + " ·" if comfortable else "· " + text)
                 self.assertTrue(card.asb_where_label.get_visible())
@@ -6963,10 +7298,10 @@ class WidgetCheck(unittest.TestCase):
             self.assertNotEqual(hex_color(cards["cli"].asb_title_label), hex_color(cards["unread"].asb_title_label))
             self.assertNotEqual(hex_color(cards["cli"].asb_state_label), hex_color(cards["remote"].asb_state_label))
             self.assertRegex(cards["cli"].asb_accessible_label, r"^Session Check the cli in Claude Code CLI\. Idle\. CLI session\. View only\.$")
-            self.assertRegex(cards["remote"].asb_accessible_label, r"^Session Check the remote in Claude Code CLI\. Working\. On homeLP\. View only\.$")
+            self.assertRegex(cards["remote"].asb_accessible_label, r"^Session Check the remote in Claude Code CLI\. Working\. On studio\. View only\.$")
             self.assert_accessible_label(cards["cli"], cards["cli"].asb_accessible_label)
         # The row panel says why the card does not open.
-        for identity, label in (("cli", "Runs in a terminal"), ("remote", "On homeLP")):
+        for identity, label in (("cli", "Runs in a terminal"), ("remote", "Runs on studio")):
             window.show_context(window.focus_widgets[identity]); self.drain(.3)
             panel = window.context_menu
             self.assertEqual((panel.asb_open.asb_label.get_label(), panel.asb_open.get_sensitive()), (label, False))
@@ -6983,6 +7318,164 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(file_icon(card.asb_mark), (None, "asb-claude-symbolic.svg", True))
         window.update_session_row(card, {**card.asb_thread, "provider": "codex"})
         self.assertEqual(file_icon(card.asb_mark), (None, "asb-openai-symbolic.svg", True))
+
+    def rgba(self, widget):
+        """The unpremultiplied RGBA rows of one widget (Cairo renderer): rows[y][x] is (r, g, b, a)."""
+        snapshot = asb.Gtk.Snapshot()
+        width, height = widget.get_width(), widget.get_height()
+        asb.Gtk.WidgetPaintable.new(widget).snapshot(snapshot, width, height)
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), asb.Graphene.Rect().init(0, 0, width, height)))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        renderer.unrealize()
+        data = data.get_data()
+        return [[tuple(data[y * stride + x * 4:y * stride + x * 4 + 4]) for x in range(width)] for y in range(height)]
+
+    def card_board(self, rows, palette=None, font="Cantarell 11"):
+        asb.Gtk.Settings.get_default().set_property("gtk-font-name", font)
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                    (asb, "request_async", lambda *args: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                       theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.set_default_size(520, 400)
+        window.present(); window.set_focus(None); self.drain(.3)
+        window.view_filter.set_selected(1); self.drain(.3); window.check_geometry(); self.drain()
+        if palette:
+            window.set_palette(palette)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.settle(window)
+        return window
+
+    @staticmethod
+    def card_row(key, **extra):
+        return {"id": key, "provider": "codex", "providerLabel": "Codex", "title": "Write the release notes for the summer catalog",
+                "cwd": "/example/docs-site", "projectName": "docs-site", "state": "idle", "canOpen": True,
+                "updatedAtMs": NOW - 60_000, **extra}
+
+    def test_escape_with_nothing_to_clear_hides_the_card_controls_until_a_new_hover_or_focus(self):
+        unread = dict(pending=True, unread=True, completionAttention=True, pendingSource="observed-completion")
+        window = self.card_board([self.card_row("a", **unread), self.card_row("b")])
+        settle, cards = (lambda: self.settle(window)), window.focus_widgets
+        one, two = cards["a"], cards["b"]
+        controls = lambda card: tuple(self.ink(button) for button in (card.asb_drawer_button, card.asb_mute_button, card.asb_copy_button))
+        cue = one.asb_read_button.get_child().get_first_child().get_next_sibling()
+        self.assertTrue(cue.has_css_class("asb-read-cue"))
+        self.hover_card(window, one, True); settle()
+        self.assertEqual((controls(one), self.ink(one.asb_dot)), ((255, 255, 255), 0))
+        window.show_copy_tag(one.asb_copy_button, True); settle()
+        self.assertTrue(one.asb_copy_tag.get_reveal_child())
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        self.assertTrue(one.has_css_class("asb-dismissed"))
+        self.assertFalse(one.asb_copy_tag.get_reveal_child())
+        # The corner buttons and the pocket go; the dot has its rest look and no check cue shows.
+        self.assertEqual((controls(one), self.ink(one.asb_dot), self.ink(cue)), ((0, 0, 0), 255, 0))
+        # A hidden button takes no pointer input: GTK does not pick a widget at opacity 0.
+        picked = window.pick(*self.center_in(window, one.asb_copy_button), asb.Gtk.PickFlags.DEFAULT)
+        self.assertFalse(picked is one.asb_copy_button or picked is not None and picked.is_ancestor(one.asb_copy_button))
+        # A second Escape changes nothing; the pointer on another card shows the controls there and on the first card again.
+        self.assertFalse(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0))
+        self.hover_card(window, one, False); self.hover_card(window, one, True); settle()
+        self.assertTrue(one.has_css_class("asb-dismissed"))
+        self.hover_card(window, one, False); self.hover_card(window, two, True); settle()
+        self.assertFalse(one.has_css_class("asb-dismissed"))
+        self.assertEqual(controls(two)[1:], (255, 255))
+        self.hover_card(window, two, False); self.hover_card(window, one, True); settle()
+        self.assertEqual(controls(one), (255, 255, 255))
+        self.hover_card(window, one, False); settle()
+        # Keyboard: Escape on a focused corner button gives the focus to the card; Tab into a button shows them again.
+        window.set_focus_visible(True); one.asb_copy_button.grab_focus(); settle()
+        self.assertGreater(controls(one)[2], 0)
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        self.assertIs(window.get_focus(), one)
+        self.assertEqual(controls(one), (0, 0, 0))
+        self.assertTrue(one.child_focus(asb.Gtk.DirectionType.TAB_FORWARD)); settle()
+        self.assertFalse(one.has_css_class("asb-dismissed"))
+        self.assertEqual(controls(one), (255, 255, 255))
+        one.grab_focus(); self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        two.grab_focus(); settle()
+        self.assertFalse(one.has_css_class("asb-dismissed"))
+        # With a query, Escape clears the search and all filters, as before, and hides no control.
+        two.grab_focus(); window.search.set_text("release"); settle()
+        self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); settle()
+        self.assertEqual(window.search.get_text(), "")
+        self.assertFalse(any(card.has_css_class("asb-dismissed") for card in window.focus_widgets.values()))
+
+    def center_in(self, window, widget):
+        found, point = widget.compute_point(window, asb.Graphene.Point().init(widget.get_width() / 2, widget.get_height() / 2))
+        self.assertTrue(found)
+        return point.x, point.y
+
+    def test_a_tag_pocket_covers_the_text_column_and_fades_only_before_the_text_edge(self):
+        for palette in (None, CUSTOM):
+            with self.subTest(palette=palette):
+                window = self.card_board([self.card_row("a"), self.card_row("b")], palette)
+                card = window.focus_widgets["a"]
+                window.set_focus(None); self.settle(window)
+                corner = card.asb_actions
+                self.hover_card(window, card, True); self.settle(window)
+                self.assertEqual(corner.compute_bounds(card)[1].origin.x, card.get_width() - 5 - corner.get_width() - 16)
+                for button in (card.asb_mute_button, card.asb_copy_button):
+                    # The pointer rest path, as the rest timer runs it.
+                    window.copy_hover, button.asb_rest_at = button, time.monotonic() - 1
+                    window.show_copy_tag(button, True); self.settle(window)
+                    tag = button.asb_tag
+                    self.assertTrue(tag.get_visible())
+                    self.assertEqual(corner.compute_bounds(card)[1].origin.x, 22)
+                    left = round(tag.compute_bounds(card)[1].origin.x)
+                    self.assertGreaterEqual(left, 29)
+                    rows = self.rgba(card)
+                    # Opaque, one color, from the text edge to the tag over the folder line and title line 1: no ink of either shows.
+                    band = {rows[y][x] for y in range(2, 34) for x in range(29, left)}
+                    self.assertEqual(len(band), 1, band)
+                    self.assertEqual(band.pop()[3], 255)
+                    # The fade is in the gap between the provider mark (ends at 22) and the text edge.
+                    self.assertTrue(corner.has_css_class("asb-corner-tagged"))
+                    window.hide_copy_tag(button); self.drain(.5); self.settle(window)
+                    self.assertFalse(tag.get_visible())
+                    self.assertEqual(corner.compute_bounds(card)[1].origin.x, card.get_width() - 5 - corner.get_width() - 16)
+                self.hover_card(window, card, False)
+                window.close(); self.drain(.2)
+
+    def test_comfortable_marks_share_one_center(self):
+        rows = [self.card_row("question", state="waiting", pending=True, questionPending=True, questionAttention=True, pendingSource="user-question"),
+                self.card_row("dot", pending=True, unread=True, completionAttention=True, pendingSource="observed-completion"),
+                self.card_row("ring", state="working", discardResult=True, workingSinceMs=NOW - 60_000),
+                self.card_row("stop", lastOutcome="stopped"),
+                self.card_row("passive", state="waiting", actionRequired=True, actionAttention=False)]
+        # DejaVu Serif and JetBrains Mono put the ink of "?" off the center of its logical box, as Cascadia Code does in the user's style.
+        for font in ("Cantarell 11", "Cascadia Code NF 11", "DejaVu Serif 11", "JetBrains Mono 11"):
+            with self.subTest(font=font):
+                window = self.card_board(rows, CUSTOM, font)
+                centers = {}
+                for key, card in window.focus_widgets.items():
+                    read = card.asb_read_button
+                    pixels = self.rgba(read)
+                    background = pixels[0][0]
+                    ink = [(x, y) for y, line in enumerate(pixels) for x, value in enumerate(line)
+                           if max(abs(value[index] - background[index]) for index in range(4)) > 40]
+                    xs, ys = [x for x, _y in ink], [y for _x, y in ink]
+                    centers[key] = ((min(xs) + max(xs) + 1) / 2, (min(ys) + max(ys) + 1) / 2)
+                # The passive glyph has no disc. Check the actual Pango ink too, before raster rounding can hide a one-pixel shift.
+                card = window.focus_widgets["passive"]
+                glyph, read = card.asb_dot.get_first_child(), card.asb_read_button
+                found, point = glyph.compute_point(read, asb.Graphene.Point().init(0, 0))
+                self.assertTrue(found)
+                ink, _logical = glyph.get_layout().get_extents()
+                ox, oy = glyph.get_layout_offsets()
+                self.assertLessEqual(abs(point.x + ox + (ink.x + ink.width / 2) / asb.Pango.SCALE - 12), .5)
+                self.assertLessEqual(abs(point.y + oy + (ink.y + ink.height / 2) / asb.Pango.SCALE - 12), .5)
+                for key, (x, y) in centers.items():
+                    self.assertLessEqual(abs(x - 12), .5, (key, centers))
+                    self.assertLessEqual(abs(y - 12), .5, (key, centers))
+                window.close(); self.drain(.2)
 
     def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
         def row(n, **extra):
@@ -7039,14 +7532,15 @@ class WidgetCheck(unittest.TestCase):
 
         # The drawer button: only for a row with an unread dot, before Read and Pin, and only with the pointer on the card.
         self.assertEqual(window.column_pixel_width, 250)
-        self.assertEqual(window.row_order, ["s1", "s2", "s5", "s4", "s3"])
+        self.assertEqual(window.row_order, ["s5", "s1", "s2", "s4", "s3"])
         self.assertEqual({identity: card.asb_drawer_button.get_visible() for identity, card in cards.items()},
                          {"s1": True, "s2": True, "s3": False, "s4": False, "s5": False})
         one, question = cards["s1"], cards["s5"]
-        drawer, read, cue = one.asb_drawer_button, one.asb_read_button, one.asb_read_button.get_child().get_last_child()
+        drawer, read, cue = one.asb_drawer_button, one.asb_read_button, one.asb_read_button.get_child().get_first_child().get_next_sibling()
         copy_button = one.asb_copy_button
         # The drawer is first in the corner, then the two tags, mute, copy, read, pin. Every state has copy, and every wide corner has the pocket.
-        self.assertIs(drawer.get_parent().get_first_child(), drawer)
+        self.assertIs(drawer.get_parent().get_first_child(), one.asb_corner_spacer)
+        self.assertIs(one.asb_corner_spacer.get_next_sibling(), drawer)
         self.assertIs(drawer.get_next_sibling(), copy_button.asb_tag)
         self.assertIs(copy_button.asb_tag.get_next_sibling(), one.asb_mute_tag)
         self.assertIs(one.asb_mute_tag.get_next_sibling(), one.asb_mute_button)
@@ -7056,7 +7550,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual((copy_button.get_width(), copy_button.get_height(), copy_button.asb_action, copy_button.get_child().get_icon_name()),
                          (24, 24, "win.copy-reference", "edit-copy-symbolic"))
         self.assertEqual(copy_button.get_child().get_pixel_size(), 12)
-        self.assertEqual(copy_button.get_tooltip_text(), "Copy relative reference")
+        self.assertEqual(copy_button.get_tooltip_text(), "Copy relative reference. Scroll to change the kind.")
         self.assert_accessible_label(copy_button, "Copy relative reference: " + one.asb_thread["title"])
         self.assertTrue(all(card.asb_copy_button.get_visible() and card.asb_copy_button.get_parent().has_css_class("asb-corner-wide")
                             for card in cards.values()))
@@ -7111,7 +7605,7 @@ class WidgetCheck(unittest.TestCase):
         reply("s1", unread=False, pending=False, drawer=True)
         self.assertIs(cards["s1"], one)
         self.assertIsNone(window.dashboard_etag)
-        self.assertEqual(window.row_order, ["s2", "s5", "s4", "s1", "s3"])
+        self.assertEqual(window.row_order, ["s5", "s2", "s4", "s1", "s3"])
         self.assertFalse(hasattr(window, "count"))
         self.assertTrue(one.has_css_class("asb-drawer") and one.has_css_class("asb-idle-read"))
         self.assertEqual((self.ink(one.asb_dot), self.ink(read), self.ink(drawer)), (0, 0, 0))
@@ -7195,7 +7689,7 @@ class WidgetCheck(unittest.TestCase):
 
         # The drawer view: only drawer rows, with the unread look. Drawer and Pending do not combine.
         window.set_pending(True); settle()
-        self.assertEqual(window.row_order, ["s2", "s5"])
+        self.assertEqual(window.row_order, ["s5", "s2"])
         pill.set_active(True); settle()
         self.assertFalse(window.pending)
         self.assertTrue(one.has_css_class("asb-drawer-lit"))
@@ -7217,7 +7711,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_pending(True); settle()
         self.assertFalse(pill.get_active())
         self.assertFalse(window.has_css_class("asb-drawer-lit"))
-        self.assertEqual(window.row_order, ["s2", "s5"])
+        self.assertEqual(window.row_order, ["s5", "s2"])
         window.query_row_tooltip(one, 0, 0, False, tooltip)
         self.assertEqual(one.asb_tooltip_key[0]["indicator"], "")
         window.search.set_text("no such session"); pill.set_active(True); settle()
@@ -7235,7 +7729,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(bubble.get_visible())
         self.assertFalse(pill.has_css_class("asb-drawer-filled"))
         pill.set_active(False); settle()
-        self.assertEqual(window.row_order, ["s1", "s2", "s5", "s4", "s3"])
+        self.assertEqual(window.row_order, ["s5", "s1", "s2", "s4", "s3"])
         self.assertFalse(one.has_css_class("asb-drawer"))
         self.assertEqual((self.ink(one.asb_dot), drawer.asb_action), (255, "win.drawer-in"))
 
@@ -7435,7 +7929,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(self.ink(busy.asb_dot), 0)
         self.hover_card(window, plain, True); settle()
         self.assertTrue(plain.asb_read_button.get_visible() and plain.asb_read_button.has_css_class("asb-discard-offer"))
-        self.assertGreater(self.ink(plain.asb_dot), 0)
+        self.assertGreater(self.ink(plain.asb_read_button.get_child().get_last_child()), 0)
         self.hover_card(window, busy, False); self.hover_card(window, plain, False); settle()
         # A narrow column ellipsizes a long folder name first; the icon stays visible inside the card.
         dashboard["threads"][0]["projectName"] = "a-very-long-project-folder-name-for-the-mute-check"
@@ -8623,7 +9117,9 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(click(cards["s3"].asb_read_button), ["/api/threads/s3/discard-result"])
         failed()
         self.assertEqual(click(cards["s2"].asb_pin_button), ["/api/threads/s2/pin"])
-        requests[-1][2]({"changed": True, "pinnedOrder": ["s2"]}, None); self.drain(.8)
+        requests[-1][2]({"changed": True, "pinnedOrder": ["s2"]}, None); self.drain(.3)
+        self.assertNotEqual(window.row_order[0], "s2")
+        self.drain(1.1)
         self.assertEqual(window.row_order[0], "s2")
         self.assertFalse(window.opening or window.session_actions)
         # Directly after an action is complete, a click on the card body opens the session one time.
@@ -8641,7 +9137,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(one.get_state_flags() & asb.Gtk.StateFlags.FOCUS_WITHIN)
         self.assertEqual((window.get_focus_visible(), one.has_css_class("asb-key-focus")), (False, False))
         self.assertFalse(one.get_state_flags() & asb.Gtk.StateFlags.PRELIGHT)
-        shown = lambda card: (self.ink(card.asb_dot), self.ink(card.asb_read_button.get_child().get_last_child()) > 0,
+        shown = lambda card: (self.ink(card.asb_dot), self.ink(card.asb_read_button.get_child().get_first_child().get_next_sibling()) > 0,
                               self.ink(card.asb_drawer_button))
         self.assertEqual(shown(one), (255, False, 0))
         self.assertGreater(self.ink(one.asb_pin_button), 0)  # The pin rule of 1.5.0.
@@ -8798,6 +9294,8 @@ class WidgetCheck(unittest.TestCase):
                     self.assertEqual(hovered(), ["s1"])
                     dashboard["threads"][-1]["pinned"] = True
                     window.render(); self.drain(.08)
+                    self.assertTrue(window.pointer_on(cards["s1"]))
+                    self.drain(1.3)
                     self.assertTrue(window.pointer_on(cards["s4"]))
                     self.assertEqual(hovered(), ["s4"])
                     # An enter must clear the layout hover even when GTK sends no leave for that card.
