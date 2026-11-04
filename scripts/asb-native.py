@@ -746,8 +746,15 @@ def filtered_rows(dashboard, query="", app="all", state="all", archived=False, p
             return max(row.get("updatedAtMs", 0), row.get("mutedAtMs") or 0)
         start = row.get("workingSinceMs")
         return start if type(start) in (int, float) and start > 0 else 0
+    def mark(row):
+        # Pending rows sort by the mark that the card shows: a Working ?, any other ?, !, the dot, then the rest.
+        if not row.get("pending"):
+            return row.get("state") != "working"
+        indicator = attention_indicator(row, True)
+        return 0 if indicator == "question" and row.get("state") == "working" else \
+            {"question": 1, "alert": 2, "dot": 3}.get(indicator, 4)
     rows.sort(key=lambda row: (0, row.get("pinIndex", 0), row["id"]) if row.get("pinned") else
-              (1, bucket(row), row.get("state") != "working", -moment(row), row["id"]))
+              (1, bucket(row), mark(row), -moment(row), row["id"]))
     return rows
 
 

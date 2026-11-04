@@ -6,6 +6,7 @@ import io
 import itertools
 import json
 import os
+import random
 import re
 import sys
 from pathlib import Path, PureWindowsPath
@@ -2542,13 +2543,13 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(asb.tooltip_model({"state": "idle", "limitResetsAtMs": 1e20}, NOW, "/home/u")["limit"], "")
 
     def test_filters_state_order_pending_and_archive(self):
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["second", "claude:local_mock", "first", "unknown"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE)], ["claude:local_mock", "second", "first", "unknown"])
         self.assertEqual(len(asb.filtered_rows(FIXTURE, archived=True)), 5)
         for query, expected in [("SWITCHING", ["first"]), ("/example/Notes", ["claude:local_mock"]),
                                 ("Claude Desktop", ["claude:local_mock"]), ("missing", [])]:
             self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, query=query)], expected)
         self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, app="codex", state="unknown")], ["unknown"])
-        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, pending_only=True)], ["second", "claude:local_mock"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(FIXTURE, pending_only=True)], ["claude:local_mock", "second"])
         self.assertIn("Pinned", asb.row_meta({**FIXTURE["threads"][0], "pinned": True}, NOW))
         self.assertIn("Archived", asb.row_meta(FIXTURE["threads"][-1], NOW))
 
@@ -3029,6 +3030,25 @@ class DataChecks(unittest.TestCase):
         self.assertEqual([row["id"] for row in asb.filtered_rows(board(now))], ["p", "w", "m", "i"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board(0))], ["p", "w", "i", "m"])
 
+    def test_filtered_rows_sorts_pending_rows_by_mark_then_newest_first(self):
+        now = 1_800_000_000_000
+        minute = 60_000
+        def pending(identity, age, **fields):
+            return {"id": identity, "state": "idle", "pending": True, "updatedAtMs": now - age * minute, **fields}
+        threads = [
+            {"id": "pin", "state": "idle", "pinned": True, "pinIndex": 0, "updatedAtMs": now - 90 * minute},
+            pending("question-1", 1, questionAttention=True),
+            pending("permission-2", 2, state="waiting", actionRequired=True, actionAttention=True),
+            *(pending(f"dot-{age}", age, unread=True) for age in range(3, 11)),
+            pending("alert-25", 25, unread=True, alert=True),
+            pending("permission-20", 20, state="waiting", actionRequired=True),
+            pending("working-question", 0, state="working", questionAttention=True, workingSinceMs=now - 30 * minute),
+            pending("working-plain", 0, state="working", workingSinceMs=now - 5 * minute)]
+        random.Random(7).shuffle(threads)
+        self.assertEqual([row["id"] for row in asb.filtered_rows({"threads": threads})],
+                         ["pin", "working-question", "question-1", "permission-2", "permission-20", "alert-25",
+                          *(f"dot-{age}" for age in range(3, 11)), "working-plain"])
+
     def test_filtered_rows_sorts_a_muted_row_with_a_new_question_with_the_pending_rows(self):
         now = 1_800_000_000_000
         minute = 60_000
@@ -3375,7 +3395,7 @@ class DataChecks(unittest.TestCase):
             {"id": "read", "state": "waiting", "pending": False, "updatedAtMs": 800},
             {"id": "old", "state": "idle", "pending": False, "updatedAtMs": 200},
         ]}
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["done", "asks", "approve", "work", "read", "old"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["asks", "approve", "done", "work", "read", "old"])
 
     def test_provider_prefixes(self):
         for prefix, provider in (("cl:", "claude-desktop-code"), ("claude:", "claude-desktop-code"),
@@ -3405,11 +3425,11 @@ class DataChecks(unittest.TestCase):
         selected = asb.filtered_rows(board, state={"working", "idle"})
         self.assertEqual([row["id"] for row in selected], ["second", "first"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, state=set())],
-                         ["second", "claude:local_mock", "first", "unknown"])
+                         ["claude:local_mock", "second", "first", "unknown"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, state={"working", "idle"}, pending_only=True)], ["second"])
         board["threads"][0].update(pinned=True, pinIndex=1)
         board["threads"][2].update(pinned=True, pinIndex=0)
-        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["unknown", "first", "second", "claude:local_mock"])
+        self.assertEqual([row["id"] for row in asb.filtered_rows(board)], ["unknown", "first", "claude:local_mock", "second"])
         self.assertEqual([row["id"] for row in asb.filtered_rows(board, "cx:", state={"working", "idle"})], ["first", "second"])
 
     def test_hex_color_clamps_extended_theme_channels_to_rgb_bytes(self):

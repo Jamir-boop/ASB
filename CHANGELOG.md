@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Pending cards now sort by their mark: a Working `?`, other `?` cards, `!`, the dot, then the rest. Each mark group keeps newest first.
+
 - Made the card marks clearer. In Comfortable and in the tooltip, `?` and `!` are 16 px filled discs in the accent color with the glyph in the background color, and their Read button has no plate until the pointer or keyboard focus is on the card. A read permission wait shows a quiet `?` with no disc. The pinned pin at rest has no plate, and the pin, the stop square, and the armed Discard ring use the quiet caption color. Compact keeps the `?` and `!` glyphs.
 - The card now says **Failed** after a failed task and **Stopped** after you stop a task or a usage limit stops it (before, **Stopped** for a failed task and **Idle** for a stopped task). A usage-limit card shows **Resets in 4h32m** as one phrase at the left, and its stop square shows after the reset. The board, the browser view, and the Android app use the same words.
 - Compact rows now have a 14 px mark cell at the row end, so the marks of a column line up. A pinned row with no mark shows a small quiet pin there. Read Idle and read Waiting rows use the quiet tones, as in Comfortable, and a Working row says `Working · 3m12s`.
