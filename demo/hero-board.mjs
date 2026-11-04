@@ -5,7 +5,7 @@ import { escape, number as n } from './hero-smil.mjs';
 
 export const scene = JSON.parse(readFileSync(new URL('hero-board.json', import.meta.url), 'utf8'));
 const icons = new Map();
-for (const name of ['claude', 'openai', 'opencode', 'machine', 'terminal', 'link', 'globe', 'drawer', 'filter', 'muted']) {
+for (const name of ['claude', 'openai', 'opencode', 'machine', 'terminal', 'link', 'globe', 'drawer', 'pin-outline', 'filter', 'muted']) {
   const key = `asb-${name}-symbolic`;
   const raw = readFileSync(new URL(`../assets/icons/${key}.svg`, import.meta.url), 'utf8');
   icons.set(key, `<symbol id="board-${key}" viewBox="${raw.match(/viewBox="([^"]+)"/)[1]}">${raw.match(/<path\b[^>]*\/>/g).join('')}</symbol>`);
@@ -15,7 +15,6 @@ const ownIcons = {
   'system-search-symbolic': '<circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 4 4"/>',
   'edit-copy-symbolic': '<rect x="5" y="2" width="8" height="9" rx="1"/><path d="M10 13H3V5"/>',
   'object-select-symbolic': '<path d="m3 8 3 3 7-7"/>',
-  'view-pin-symbolic': '<path d="M5 1h6v2h-1v3l2 3H9v6H7V9H4l2-3V3H5Z" fill="#ffffff" stroke="none"/>',
   'view-refresh-symbolic': '<path d="M12 5A5 5 0 1 0 13 10M13 2v4H9"/>',
   'view-more-symbolic': '<path d="M8 3h.01M8 8h.01M8 13h.01" stroke-width="3"/>',
   'window-close-symbolic': '<circle cx="8" cy="8" r="7" fill="#252525" stroke="none"/><path d="m5.5 5.5 5 5m0-5-5 5"/>',
@@ -30,7 +29,7 @@ function draw(item) {
     assert.ok(ownIcons[item.n], `known board icon ${item.n}`);
     return `<g transform="translate(${n(item.x)} ${n(item.y)}) scale(${n(item.size / 16)})" fill="none" ${fill(item.c, 'stroke')} stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"${item.o === undefined ? '' : ` opacity="${n(item.o)}"`}>${ownIcons[item.n]}</g>`;
   }
-  const stroke = item.stroke ? ` ${fill(item.stroke, 'stroke')} stroke-width="${n(item.sw)}"${item.dash ? ` stroke-dasharray="${item.dash}"` : ''}` : '';
+  const stroke = item.stroke ? ` ${fill(item.stroke, 'stroke')} stroke-width="${n(item.sw)}"${item.dash ? ` stroke-dasharray="${item.dash}" stroke-dashoffset="${item.dashoffset}"` : ''}` : '';
   if (item.k === 'circle') return `<circle cx="${n(item.cx)}" cy="${n(item.cy)}" r="${n(item.r)}" ${attrs(item)}${stroke}/>`;
   assert.equal(item.k, 'rect');
   return `<rect x="${n(item.x)}" y="${n(item.y)}" width="${n(item.w)}" height="${n(item.h)}" rx="${n(item.rx)}" ${attrs(item)}${stroke}/>`;
