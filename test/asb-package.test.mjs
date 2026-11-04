@@ -19,6 +19,14 @@ test('release runtime includes the drawer glyph of the native row panel', () => 
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-drawer-symbolic.svg'));
 });
 
+test('release runtime includes every ASB symbolic icon that the native board loads', async () => {
+  const board = await readFile(new URL('../scripts/asb-native.py', import.meta.url), 'utf8');
+  const icons = (await readdir(new URL('../assets/icons/', import.meta.url)))
+    .filter((name) => name.endsWith('-symbolic.svg') && board.includes(name.slice(0, -'.svg'.length)));
+  assert.ok(icons.includes('asb-discard-symbolic.svg'));
+  assert.deepEqual(icons.filter((name) => !RUNTIME_FILES.includes(`assets/icons/${name}`)), []);
+});
+
 test('release runtime includes the filter glyph of the native toolbar', () => {
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-filter-symbolic.svg'));
 });
