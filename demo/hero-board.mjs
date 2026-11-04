@@ -31,6 +31,8 @@ function draw(item) {
   }
   const stroke = item.stroke ? ` ${fill(item.stroke, 'stroke')} stroke-width="${n(item.sw)}"${item.dash ? ` stroke-dasharray="${item.dash}" stroke-dashoffset="${item.dashoffset}"` : ''}` : '';
   if (item.k === 'circle') return `<circle cx="${n(item.cx)}" cy="${n(item.cy)}" r="${n(item.r)}" ${attrs(item)}${stroke}/>`;
+  // The Discard offer ring: eight measured arcs.
+  if (item.k === 'path') return `<path d="${item.d}" fill="none"${stroke}/>`;
   assert.equal(item.k, 'rect');
   return `<rect x="${n(item.x)}" y="${n(item.y)}" width="${n(item.w)}" height="${n(item.h)}" rx="${n(item.rx)}" ${attrs(item)}${stroke}/>`;
 }
