@@ -321,8 +321,6 @@ class AsbButton extends PanelMenu.Button {
         this._sep1 = new St.Widget({style_class: 'asb-sep', y_expand: true});
         this._capsule.add_child(this._sep1);
         this._working = this._segment('asb-seg-working', new AsbMark('circle', 11));
-        this._sep2 = new St.Widget({style_class: 'asb-sep', y_expand: true});
-        this._capsule.add_child(this._sep2);
         this._total = this._segment('asb-seg-total asb-seg-first asb-seg-last asb-off', this._icon('asb-chat-symbolic.svg', 13));
         this.menu.actor.add_style_class_name('asb-menu');
         this._lightPanel = false;
@@ -366,7 +364,6 @@ class AsbButton extends PanelMenu.Button {
         this.accessible_name = accessibleName(state);
         // The capsule counts only the sessions that need you and the sessions that work; the last segment says Off while ASB does not run.
         this._needs.box.visible = this._working.box.visible = this._sep1.visible = state !== null;
-        this._sep2.visible = false;
         this._total.box.visible = state === null;
         if (state)
             this._working.box.add_style_class_name('asb-seg-last');

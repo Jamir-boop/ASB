@@ -5891,7 +5891,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.ui_report_last, self.ui_report_at, self.ui_report_sending = None, 0, False
         self.ui_report_failed = False
         self.refresh_interval_ms = 5000
-        self.clock_interval = self.clock_timer = None
+        self.clock_timer = None
         self.notice_timer, self.notice_generation, self.provider_notice = None, 0, ""
         self.opening, self.focus_widgets, self.row_cache = set(), {}, {}
         self.copy_wheel_state = dict(COPY_WHEEL_STATE)
@@ -7131,6 +7131,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def zoomed_column_width(self):
         return round(self.column_width * getattr(self, "board_zoom", 100) / 100)
 
+    # ponytail: the zoom scales the CSS text and minimum sizes only; icon pixel sizes and the 24 px card buttons stay at 100%,
+    # so at 200% the buttons look small next to the text. Scale them too if large zooms are common.
     def set_board_zoom(self, zoom):
         """Show the board at a zoom level and save it; the cards measure their new height at the next layout."""
         zoom = validate_zoom(zoom)
@@ -9485,12 +9487,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not threads:
             if self.clock_timer:
                 GLib.source_remove(self.clock_timer)
-            self.clock_timer = self.clock_interval = None
+            self.clock_timer = None
             return False
         # Times show whole minutes: the clock wakes at the next minute that changes a caption, a new timer each time.
         if getattr(self, "clock_timer", None):
             GLib.source_remove(self.clock_timer)
-        self.clock_interval = None
         self.clock_timer = GLib.timeout_add(math.ceil(clock_wait(threads, now_ms) * 1000), self.update_clock)
         return True
 

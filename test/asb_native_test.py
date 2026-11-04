@@ -6813,7 +6813,7 @@ class WidgetCheck(unittest.TestCase):
         window.set_default_size(520, 400)
         window.present(); window.set_focus(None); self.drain(.3)
         window.apply_dashboard(window.dashboard, None)
-        self.assertIsNone(window.clock_interval)
+        self.assertFalse(hasattr(window, "clock_interval"))
         self.assertTrue(asb.Gtk.IconTheme.get_for_display(window.get_display()).has_icon("preferences-system-time-symbolic"))
         hex_color = lambda label: asb.SwitchboardWindow.hex_color(label.get_color())
         background = window.native_colors()["background"]
@@ -6863,7 +6863,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertFalse(limited.asb_limit_clock and limited.asb_limit_clock.get_visible())
         self.assertEqual(limited.asb_state_label.get_text(), "Idle")
         self.assertEqual(limited.asb_accessible_label, "Open Plan the alarm export in Codex. Idle.")
-        self.assertIsNone(window.clock_interval)
+        self.assertFalse(hasattr(window, "clock_interval"))
         window.view_filter.set_selected(1); self.settle(window)
         limited, normal = window.focus_widgets["limited"], window.focus_widgets["normal"]
         self.assertEqual((limited.asb_state_label.get_text(), limited.asb_age_label.get_text()), ("Idle", "10m ago"))
@@ -6893,7 +6893,7 @@ class WidgetCheck(unittest.TestCase):
             self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
         self.foreground(window, False)
         assert_time("4m")
-        self.assertIsNone(window.clock_interval)
+        self.assertFalse(hasattr(window, "clock_interval"))
         source = asb.GLib.MainContext.default().find_source_by_id(window.clock_timer)
         self.assertAlmostEqual((source.get_ready_time() - asb.GLib.get_monotonic_time()) / 1e6, 48, delta=1)
         now[0] += 48_000
@@ -6906,7 +6906,7 @@ class WidgetCheck(unittest.TestCase):
         self.poll_calls.reset_mock()
         self.foreground(window)
         assert_time("5m")
-        self.assertIsNone(window.clock_interval)
+        self.assertFalse(hasattr(window, "clock_interval"))
         self.poll_calls.assert_not_called()
         self.foreground(window, False)
         assert_time("5m")
