@@ -4,7 +4,9 @@ import androidx.compose.ui.graphics.Color
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.math.abs
+import kotlin.math.floor
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 import local.asb.companion.R
 import local.asb.companion.data.Message
 import local.asb.companion.data.Palette
@@ -431,6 +433,23 @@ data class CompactMarkStyle(val discSize: Int, val fontSize: Int, val color: Str
 fun compactMarkStyle(row: Thread, palette: Palette, drawerView: Boolean, nowMs: Long): CompactMarkStyle {
     val active = cornerControls(row, drawerView, false, nowMs).any { it.kind in setOf("question", "alert") && it.action != null }
     return if (active) CompactMarkStyle(12, 9, palette.background) else CompactMarkStyle(0, 11, palette.quietCaption)
+}
+
+/** The plain centered place in a free space of px, rounded as `Alignment.Center` rounds it. */
+fun plainCenteredPlace(space: Int): Int = (space / 2f).roundToInt()
+
+/**
+ * The whole-pixel top-left of a one-glyph text in a box, so that its ink (not its line box) is centered:
+ * the plain centered place, moved by the offset of the ink center from the text layout center. All values are px.
+ */
+fun inkCenteredPlace(
+    boxWidth: Int, boxHeight: Int, textWidth: Int, textHeight: Int,
+    inkLeft: Float, inkTop: Float, inkRight: Float, inkBottom: Float,
+): Pair<Int, Int> {
+    // Round half up (a half pixel goes right or down), so a .5 never depends on the float rounding mode.
+    fun place(box: Int, text: Int, start: Float, end: Float) =
+        floor((box - text) / 2f - ((start + end) / 2f - text / 2f) + .5f).toInt()
+    return place(boxWidth, textWidth, inkLeft, inkRight) to place(boxHeight, textHeight, inkTop, inkBottom)
 }
 
 /** The provider mark tint: the message light, then the limit, then the quiet caption of a quiet card. */

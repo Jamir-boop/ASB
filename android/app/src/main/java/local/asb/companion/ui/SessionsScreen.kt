@@ -1,5 +1,10 @@
 package local.asb.companion.ui
 
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Rect
+import android.graphics.RectF
+import android.graphics.Typeface
 import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
@@ -169,7 +174,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.paneTitle
@@ -1055,18 +1064,54 @@ private fun LimitClock(color: String) = Icon(painterResource(R.drawable.ic_sched
 @Composable
 private fun IndicatorMark(indicator: String, palette: Palette, style: CompactMarkStyle? = null) {
     when (indicator) {
-        "question", "alert" -> if (style != null) Box(
-            if (style.discSize > 0) Modifier.size(style.discSize.dp).background(hexColor(palette.accent), CircleShape)
-            else Modifier,
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(if (indicator == "alert") "!" else "?", color = hexColor(style.color), fontSize = style.fontSize.sp,
-                lineHeight = if (style.discSize > 0) style.fontSize.sp else CAPTION_LINE_HEIGHT.sp,
+        "question", "alert" -> if (style != null) {
+            val glyph = if (indicator == "alert") "!" else "?"
+            if (style.discSize > 0) InkCenteredGlyph(glyph, hexColor(style.color), style.fontSize.sp, style.fontSize.sp,
+                Modifier.size(style.discSize.dp).background(hexColor(palette.accent), CircleShape))
+            else Text(glyph, color = hexColor(style.color), fontSize = style.fontSize.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                 fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
         }
         "dot" -> Box(Modifier.size(7.dp).background(hexColor(palette.accent), CircleShape))
         "discard" -> Box(Modifier.size(9.dp).border(1.5.dp, hexColor(palette.quietCaption), CircleShape))
         "stop" -> Box(Modifier.size(7.dp).background(hexColor(palette.quietCaption), RoundedCornerShape(1.dp)))
+    }
+}
+
+// A ? or ! placed so that its ink, not its line box, is centered in the box of the modifier, at a whole pixel.
+// The ink is the glyph outline from a Paint with the typeface and size of the Text (ExtraBold is weight 800).
+@Composable
+private fun InkCenteredGlyph(glyph: String, color: Color, fontSize: TextUnit, lineHeight: TextUnit, modifier: Modifier) {
+    val textSize = with(LocalDensity.current) { fontSize.toPx() }
+    val ink = remember(glyph, textSize) {
+        val paint = Paint().apply {
+            typeface = Typeface.create(Typeface.DEFAULT, 800, false)
+            isAntiAlias = true
+            this.textSize = textSize
+        }
+        val bounds = RectF()
+        Path().also { paint.getTextPath(glyph, 0, glyph.length, 0f, 0f, it) }.computeBounds(bounds, true)
+        if (bounds.isEmpty) Rect().also { paint.getTextBounds(glyph, 0, glyph.length, it) }.let { bounds.set(it) }
+        bounds.takeUnless { it.isEmpty }
+    }
+    val result = remember { arrayOfNulls<TextLayoutResult>(1) }
+    Layout({
+        Text(glyph, color = color, fontSize = fontSize, lineHeight = lineHeight, fontWeight = FontWeight.ExtraBold,
+            onTextLayout = { result[0] = it })
+    }, modifier) { measurables, constraints ->
+        val text = measurables.single().measure(Constraints())
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            val layout = result[0]
+            val (x, y) = if (ink == null || layout == null) {
+                plainCenteredPlace(constraints.maxWidth - text.width) to plainCenteredPlace(constraints.maxHeight - text.height)
+            } else {
+                // The Paint bounds are relative to the pen start on the baseline.
+                val left = layout.getLineLeft(0)
+                val baseline = layout.firstBaseline
+                inkCenteredPlace(constraints.maxWidth, constraints.maxHeight, text.width, text.height,
+                    left + ink.left, baseline + ink.top, left + ink.right, baseline + ink.bottom)
+            }
+            text.place(x, y)
+        }
     }
 }
 
@@ -1100,13 +1145,10 @@ private fun CornerButton(control: CornerControl, title: String, busy: Boolean, p
                     modifier = Modifier.size(12.dp))
                 "pin" -> Icon(PinIcon, contentDescription = null, tint = hexColor(palette.quietCaption), modifier = Modifier.size(12.dp))
                 // An unread ? or ! is a 16 dp accent disc with the glyph in the background color; a read permission wait is a bare quiet glyph.
-                "question", "alert" -> if (control.action != null) Box(
-                    Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape), contentAlignment = Alignment.Center,
-                ) {
-                    Text(if (control.kind == "alert") "!" else "?", color = hexColor(palette.background), fontSize = 11.sp,
-                        lineHeight = 11.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
-                } else Text("?", color = hexColor(palette.quietCaption), fontSize = 11.sp, lineHeight = 14.sp,
-                    fontWeight = FontWeight.ExtraBold)
+                "question", "alert" -> if (control.action != null) InkCenteredGlyph(
+                    if (control.kind == "alert") "!" else "?", hexColor(palette.background), 11.sp, 11.sp,
+                    Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape),
+                ) else InkCenteredGlyph("?", hexColor(palette.quietCaption), 11.sp, 14.sp, Modifier.size(24.dp))
                 "drawer" -> DrawerGlyph(hexColor(palette.accent), hexColor(palette.background))
                 else -> IndicatorMark(control.kind, palette)
             }

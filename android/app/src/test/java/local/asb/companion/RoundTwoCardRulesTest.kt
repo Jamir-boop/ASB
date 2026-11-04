@@ -9,6 +9,8 @@ import local.asb.companion.ui.compactMarkStyle
 import local.asb.companion.ui.compactStateText
 import local.asb.companion.ui.filteredRows
 import local.asb.companion.ui.hexColor
+import local.asb.companion.ui.inkCenteredPlace
+import local.asb.companion.ui.plainCenteredPlace
 import local.asb.companion.ui.providerMarkTint
 import local.asb.companion.ui.quietRow
 import local.asb.companion.ui.rowMenuActions
@@ -132,5 +134,26 @@ class RoundTwoCardRulesTest {
         assertFalse(quietRow(unknown, false, false, now))
         assertFalse(quietRow(unknown.copy(drawer = true), true, true, now))
         assertTrue(quietRow(unknown.copy(drawer = true), true, false, now))
+    }
+
+    @Test
+    fun inkCenteredPlaceCentersTheInkAtWholePixels() {
+        // Ink already centered in a 21x31 px text: the plain centered place in a 45 px box.
+        assertEquals(12 to 7, inkCenteredPlace(45, 45, 21, 31, 7f, 5f, 14f, 26f))
+        // The phone case: plain centered, the ink is 3 px right of and 4.5 px above the box center.
+        // The place moves 3 px left and 5 px down (a half pixel rounds down the screen).
+        assertEquals(9 to 12, inkCenteredPlace(45, 45, 21, 31, 10f, 5f, 17f, 17f))
+        // An odd 33 px box and an even 34 px box, with a 20x30 px text.
+        assertEquals(7 to 2, inkCenteredPlace(33, 33, 20, 30, 6f, 4f, 14f, 26f))
+        assertEquals(8 to 3, inkCenteredPlace(33, 33, 20, 30, 5f, 3f, 13f, 25f))
+        assertEquals(7 to 2, inkCenteredPlace(34, 34, 20, 30, 6f, 4f, 14f, 26f))
+        assertEquals(5 to 2, inkCenteredPlace(34, 34, 20, 30, 9f, 4f, 16f, 26f))
+    }
+
+    @Test
+    fun plainCenteredPlaceRoundsAsAlignmentCenter() {
+        // A 20 px text in a 45 px box: 12.5 rounds to 13, as Alignment.Center gives.
+        assertEquals(13, plainCenteredPlace(45 - 20))
+        assertEquals(12, plainCenteredPlace(45 - 21))
     }
 }
