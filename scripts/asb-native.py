@@ -9361,8 +9361,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def passive_glyph_mapped(self, glyph):
         # The centering reads the font and allocation of the mapped label, so a new card or a font change runs it again.
+        # Only the Comfortable read slot centers the glyph; a Compact card has no read button.
         card = glyph.get_ancestor(Gtk.ListBoxRow)
-        if (card is not None and glyph.get_mapped() and card.asb_dot.has_css_class("asb-passive")
+        if (card is not None and getattr(card, "asb_view", None) == "comfortable" and glyph.get_mapped()
+                and card.asb_dot.has_css_class("asb-passive")
                 and not getattr(glyph, "asb_center_tick", None)):
             glyph.asb_center_frames = 3
             glyph.asb_center_tick = glyph.add_tick_callback(self.center_passive_glyph)

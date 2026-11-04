@@ -7475,6 +7475,29 @@ class WidgetCheck(unittest.TestCase):
                     self.assertLessEqual(abs(y - 12), .5, (key, centers))
                 window.close(); self.drain(.2)
 
+    def test_compact_passive_question_maps_without_an_error(self):
+        # The ink centering of the bare "?" needs the Comfortable read slot. A Compact card must not run it.
+        errors = []
+        with patch.object(sys, "excepthook", lambda *args: errors.append(args)):
+            asb.Gtk.Settings.get_default().set_property("gtk-font-name", "Cantarell 11")
+            for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                        (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                        (asb, "request_async", lambda *args: None)):
+                patcher = patch.object(target, name, value)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            rows = [self.card_row("passive", state="waiting", actionRequired=True, actionAttention=False)]
+            window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                           theme_path=False, layout_path=False)
+            self.addCleanup(window.close)
+            window.set_default_size(520, 400)
+            window.present(); window.set_focus(None); self.drain(.5)
+            card = window.focus_widgets["passive"]
+            self.assertEqual(card.asb_view, "compact")
+            self.assertTrue(card.asb_dot.get_first_child().get_mapped())
+            self.assertTrue(card.asb_dot.has_css_class("asb-passive"))
+        self.assertEqual(errors, [])
+
     def test_drawer_pill_card_button_views_peek_and_narrow_column(self):
         def row(n, **extra):
             return {"id": f"s{n}", "provider": "codex", "providerLabel": "Codex", "title": f"Summarize the open issues into one short note {n}",
