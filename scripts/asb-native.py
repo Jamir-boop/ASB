@@ -481,6 +481,14 @@ def popover_shift(anchor_x, anchor_width, popover_width, window_width, margin=8)
 def popover_outside_press(gesture, _count, x, y, window, popover, anchor):
     if not popover.get_visible():
         return
+    event = gesture.get_current_event()
+    # After a widget under a still pointer hides, GTK 4 picks the new pointer target on the window with the popover's
+    # surface coordinates, so the next press goes to a board widget; it belongs to the popover.
+    if getattr(popover, "asb_misrouted", False) and event is not None and event.get_surface() == popover.get_surface():
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        if hasattr(window, "panel_forward_press") and hasattr(popover, "asb_identity"):
+            window.panel_forward_press(popover, *window.panel_event_point(popover, event))
+        return
     point = Graphene.Point().init(x, y)
     if isinstance(anchor, (Gtk.MenuButton, Gtk.DropDown, Adw.ComboRow)):
         found, bounds = anchor.compute_bounds(window)
@@ -516,6 +524,8 @@ def non_autohide_popover(window, popover, anchor):
     popover.add_controller(focus)
     press = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
     press_handler = press.connect("pressed", popover_outside_press, window, popover, anchor)
+    release_handler = press.connect("released", lambda gesture, *_args: window.panel_forward_release(
+        popover, *window.panel_event_point(popover, gesture.get_current_event())) if getattr(popover, "asb_forward", None) else None)
     window.add_controller(press)
     handlers = [window.connect("notify::is-active", lambda owner, _param: popover.popdown() if not owner.is_active() else None),
                 window.connect("unmap", lambda *_: popover.popdown()),
@@ -527,6 +537,7 @@ def non_autohide_popover(window, popover, anchor):
                 window.disconnect(handler)
             window.remove_controller(press)
             press.disconnect(press_handler)
+            press.disconnect(release_handler)
     # Row panels are short lived; do not keep them through the window's handlers.
     popover.connect("notify::parent", unparented)
 
@@ -598,8 +609,8 @@ def panel_copy_values(row):
     return (None, copy_relative_reason(row), *values[2:]) if row.get("remote") is True else values
 
 
-# The panel caption of the remote relative row; its tooltip and description have the full copy_relative_reason.
-REMOTE_RELATIVE_CAPTION = "Works only on this machine."
+# The remote relative row uses plain caption and description text; its tooltip keeps the full reason.
+REMOTE_RELATIVE_CAPTION = "Only for a session on this machine."
 PIN_MOVE_ENDS = {"pin-up": "Already the first pin", "pin-down": "Already the last pin"}
 PANEL_MUTE_TIP = "Click the time to choose it. Scroll or press Left and Right to change it."
 PANEL_MUTE_KEYS = "Left or Right changes the time."
@@ -6854,11 +6865,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 /* A view-only first row stays insensitive, in the limited tone (4.5:1) in place of the theme's disabled opacity. */
 {base} .asb-row-panel button.asb-panel-where:disabled, {base} .asb-row-panel button.asb-panel-where:disabled * {{
     color: {panel['floor'][0]}; opacity: 1; filter: none; -gtk-icon-filter: none; }}
-/* An unavailable row: the icon, the label, and the hint in the same floor tone at full opacity; its reason keeps the caption color. */
+/* Every part of an unavailable row has the same floor tone at full opacity. */
 {base} .asb-row-panel button.asb-panel-off image, {base} .asb-row-panel button.asb-panel-off .asb-panel-label,
 {base} .asb-row-panel button.asb-panel-off .asb-panel-key {{ color: {panel['floor'][0]}; opacity: 1; }}
 {base} .asb-row-panel button.asb-panel-off .asb-panel-caption:not(.asb-panel-key),
-{base} .asb-row-panel button.asb-panel-where:disabled .asb-panel-caption:not(.asb-panel-key) {{ color: {panel_caption}; opacity: 1; }}
+{base} .asb-row-panel button.asb-panel-where:disabled .asb-panel-caption:not(.asb-panel-key) {{ color: {panel['floor'][0]}; opacity: 1; }}
 /* The raised row panel surface: its edge, its dim text at 4.5:1, and the Mute tag off dots at 3:1 on their tag. */
 {base} .asb-row-panel .dim-label {{ color: {panel['floor'][0]}; opacity: 1; }}
 {base} .asb-row-panel .asb-mute-tag .asb-copy-tag-dot:not(.asb-copy-tag-on) {{ background: {panel['dot']}; }}
@@ -9146,7 +9157,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def row_hover(self, controller, *_args):
         # A class on the card in place of the hover pseudo-class, so a hover change on the strip or a column does not restyle every card.
-        self.set_row_hover(controller.get_widget(), controller.contains_pointer())
+        widget, hovered = controller.get_widget(), controller.contains_pointer()
+        panel = getattr(self, "context_menu", None)
+        # A stale GTK pointer target under a still pointer on the row panel is not a hover of a card behind it.
+        if hovered and panel is not None and panel.get_parent() is not widget and panel.get_visible() and self.pointer_on_panel(panel):
+            return
+        self.set_row_hover(widget, hovered)
 
     def set_row_hover(self, widget, hovered):
         previous = getattr(self, "hovered_card", None)
@@ -9744,16 +9760,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if pin is not None:
             pin.set_visible(bool(row.get("pinned")) and not indicator)
 
-    @staticmethod
-    def draw_radio_mark(area, context, width, height):
-        """The time list radio: a 14 px ring with a 1.5 px stroke; when on, a filled disc with a 6 px hole."""
+    def draw_radio_mark(self, area, context, width, height):
+        """The time list radio: a 14 px ring, or an accent disc with a 6 px foreground dot."""
         color = area.get_color()
         context.set_source_rgba(color.red, color.green, color.blue, color.alpha)
         if area.has_css_class("asb-radio-on"):
             context.arc(width / 2, height / 2, 7, 0, 2 * math.pi)
-            # The hole runs the other way, so the nonzero fill leaves it clear.
-            context.new_sub_path()
-            context.arc_negative(width / 2, height / 2, 3, 2 * math.pi, 0)
+            context.fill()
+            dot = Gdk.RGBA()
+            if self.hover_colors:
+                dot.parse(self.hover_colors["background"])
+            else:
+                _found, dot = area.get_style_context().lookup_color("accent_fg_color")
+            context.set_source_rgba(dot.red, dot.green, dot.blue, dot.alpha)
+            context.arc(width / 2, height / 2, 3, 0, 2 * math.pi)
             context.fill()
         else:
             context.set_line_width(1.5)
@@ -10017,8 +10037,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
             set_icon(drawer.get_child(), "asb-drawer-filled-symbolic" if tucked else "asb-drawer-symbolic")
             drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
-            controls.append((drawer, "Take out of drawer: show as unread again" if tucked
-                             else "Put in drawer: look read here, keep it under Drawer", not pending))
+            controls.append((drawer, "Take out of drawer: unread on the board again" if tucked
+                             else "Put in drawer: stays unread in the drawer", not pending))
         for button, text, enabled in controls:
             button.set_sensitive(True)
             (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
@@ -10380,7 +10400,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_title.set_max_width_chars(1)
         panel.asb_title.set_hexpand(True)
         root.append(panel.asb_title)
-        # The Mute time list is a second page under the same header; a panel placed above its point keeps its height.
+        # The Mute time list fits its rows; its pointing point keeps the header in place above the anchor.
         panel.asb_pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False)
         root.append(panel.asb_pages)
         main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -10410,7 +10430,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         main.append(Gtk.Separator())
         panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy, "short")
         panel.asb_copy_full = action_row("edit-copy-symbolic", self.panel_copy, "full")
-        for button, text in ((panel.asb_open, None), (panel.asb_actions["mute"], "Mute"), (panel.asb_copy, "Copy relative reference"),
+        for button, text in ((panel.asb_open, None), (panel.asb_actions["mute"], "Mute"), (panel.asb_actions["read"], None),
+                             (panel.asb_actions["drawer"], None), (panel.asb_copy, "Copy relative reference"),
                              (panel.asb_copy_full, "Copy absolute reference")):
             if text:
                 set_panel_label(button, text)
@@ -10463,10 +10484,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_times_back = action_row("go-previous-symbolic", lambda button: self.show_mute_times(button.get_ancestor(Gtk.Popover), False),
                                           parent=times)
         set_panel_label(panel.asb_times_back, "Mute")
+        panel.asb_times_back.update_property([Gtk.AccessibleProperty.LABEL], ["Back to Mute"])
         times.append(Gtk.Separator())
+        panel.asb_time_group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, accessible_role=Gtk.AccessibleRole.RADIO_GROUP)
+        panel.asb_time_group.update_property([Gtk.AccessibleProperty.LABEL], ["Mute time"])
+        times.append(panel.asb_time_group)
         panel.asb_times = {}
         for choice in MUTE_CHOICES:
-            button = action_row(None, self.panel_mute_pick, choice, parent=times, role=Gtk.AccessibleRole.RADIO)
+            button = action_row(None, self.panel_mute_pick, choice, parent=panel.asb_time_group, role=Gtk.AccessibleRole.RADIO)
             set_panel_label(button, MUTE_WORDS[choice])
             # The radio mark takes the 14 px icon column; it is drawn, as the Discard offer, so the 1.5 px ring stays 14 px.
             mark = Gtk.DrawingArea(width_request=14, height_request=14, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, can_target=False)
@@ -10490,11 +10515,21 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         main.append(panel.asb_error)
         # The clamp keeps a long label from widening the panel past about 280px.
         panel.set_child(Adw.Clamp(maximum_size=260, tightening_threshold=260, child=root))
+        panel.asb_page_press, panel.asb_last_press, panel.asb_close_timer = None, None, None
+        panel.asb_misrouted, panel.asb_forward = False, None
+        clicks = Gtk.GestureClick(button=0, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        clicks.connect("pressed", self.panel_page_pressed)
+        clicks.connect("released", lambda gesture, _n, x, y: self.panel_forward_release(gesture.get_widget(), x, y)
+                       if gesture.get_widget().asb_forward else None)
+        panel.add_controller(clicks)
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.panel_key)
         panel.add_controller(keys)
         motion = Gtk.EventControllerMotion()
         motion.connect("leave", self.panel_pointer_left)
+        motion.connect("enter", self.panel_pointer_entered)
+        # Only real pointer motion picks the target in the panel again; a crossing that GTK makes for a still pointer does not.
+        motion.connect("motion", lambda controller, _x, _y: setattr(controller.get_widget().get_ancestor(Gtk.Popover), "asb_misrouted", False))
         # The content edge ignores motion between controls inside the panel.
         panel.get_child().get_parent().add_controller(motion)
         if gesture:
@@ -10511,6 +10546,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # A repack moves the row, which unmaps its panel; GTK maps the panel again with the row.
             if popup.get_visible() and not self.closed:
                 return
+            self.cancel_panel_close(popup)
             self.clear_copy_feedback(popup)
             GLib.idle_add(popup.unparent)
             if self.context_menu is popup:
@@ -10530,18 +10566,43 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
     @staticmethod
-    def panel_pointer_left(controller):
-        # A page change hides the widget under a still pointer, and GTK sends a leave for it: the panel stays while the pointer is on it.
-        content = controller.get_widget()
-        panel = content.get_ancestor(Gtk.Popover)
-        surface, pointer = panel.get_surface(), content.get_display().get_default_seat().get_pointer()
+    def cancel_panel_close(panel):
+        if panel.asb_close_timer:
+            GLib.source_remove(panel.asb_close_timer)
+            panel.asb_close_timer = None
+
+    def panel_pointer_entered(self, controller, _x, _y):
+        self.cancel_panel_close(controller.get_widget().get_ancestor(Gtk.Popover))
+
+    def queue_panel_close(self, panel):
+        if panel.asb_close_timer:
+            return
+        def close():
+            panel.asb_close_timer = None
+            panel.popdown()
+            return GLib.SOURCE_REMOVE
+        panel.asb_close_timer = GLib.timeout_add(400, close)
+
+    @staticmethod
+    def pointer_on_panel(panel):
+        """True while the pointer is on the panel content, from the device position, not from GTK's pointer target."""
+        content = panel.get_child().get_parent()
+        surface, pointer = panel.get_surface(), panel.get_display().get_default_seat().get_pointer()
         found, bounds = content.compute_bounds(panel)
-        if surface is not None and pointer is not None and found:
-            inside, x, y, _mask = surface.get_device_position(pointer)
-            left, top = panel.get_surface_transform()
-            if inside and bounds.contains_point(Graphene.Point().init(x - left, y - top)):
-                return
-        panel.popdown()
+        if surface is None or pointer is None or not found:
+            return False
+        inside, x, y, _mask = surface.get_device_position(pointer)
+        left, top = panel.get_surface_transform()
+        return inside and bounds.contains_point(Graphene.Point().init(x - left, y - top))
+
+    def panel_pointer_left(self, controller):
+        # A page change can send leave under a still pointer; test the content bounds first.
+        panel = controller.get_widget().get_ancestor(Gtk.Popover)
+        if self.pointer_on_panel(panel):
+            # GTK moved the pointer target to the board under a still pointer; popover_outside_press takes its presses.
+            panel.asb_misrouted = True
+            return
+        self.queue_panel_close(panel)
 
     def panel_pointer_motion(self, controller, x, y):
         panel = controller.get_widget()
@@ -10554,9 +10615,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 return
             x, y = point.x, point.y
         found, bounds = panel.get_child().get_parent().compute_bounds(panel)
-        if found and (x < bounds.origin.x - 24 or x > bounds.origin.x + bounds.size.width + 24
-                      or y < bounds.origin.y - 24 or y > bounds.origin.y + bounds.size.height + 24):
-            panel.popdown()
+        if found:
+            if bounds.contains_point(Graphene.Point().init(x, y)):
+                self.cancel_panel_close(panel)
+            elif (x < bounds.origin.x - 24 or x > bounds.origin.x + bounds.size.width + 24
+                  or y < bounds.origin.y - 24 or y > bounds.origin.y + bounds.size.height + 24):
+                self.queue_panel_close(panel)
 
     def place_row_panel(self, panel, widget, x, y):
         """GTK keeps a popover inside the monitor only; this keeps the centered panel inside the window."""
@@ -10576,8 +10640,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         rectangle.x, rectangle.y, rectangle.width, rectangle.height = round(local.x), round(local.y), 1, 1
         panel.set_pointing_to(rectangle)
         panel.set_position(Gtk.PositionType.TOP if side == "top" else Gtk.PositionType.BOTTOM)
-        # A panel below its point keeps its top edge, so it may shrink to the time list; one above keeps its height, so the header stays.
-        panel.asb_pages.set_vhomogeneous(side == "top")
+        panel.asb_point, panel.asb_side = rectangle, side
 
     def update_row_panel(self, panel, row):
         """Show the row data in the open panel; an unchanged row keeps every widget as it is."""
@@ -10595,7 +10658,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
             mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
         read_note = question_wait_note(row) if controls.get("read", (None,))[0] == "mark-read" else ""
-        signature = (self.mute_for, self.copy_kind, mute_caption, read_note, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
+        unread_caption = "The dot shows when this task ends." if row.get("state") == "working" and controls.get("read", (None,))[0] == "mark-unread" else ""
+        drawer_caption = {"drawer-in": "Stays unread in the drawer.", "drawer-out": "Unread on the board again."}.get(controls.get("drawer", (None,))[0], "")
+        signature = (self.mute_for, self.copy_kind, mute_caption, read_note, unread_caption, drawer_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
         if signature == panel.asb_signature:
@@ -10639,6 +10704,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 _action, text, icon = controls[slot]
                 set_panel_label(button, text)
                 set_icon(button.asb_icon, icon)
+        for slot, caption in (("read", unread_caption), ("drawer", drawer_caption)):
+            if slot in gone:
+                continue
+            button = panel.asb_actions[slot]
+            button.asb_caption.set_label(caption)
+            button.asb_caption.set_visible(bool(caption))
+            (button.add_css_class if caption else button.remove_css_class)("asb-panel-captioned")
         mute_button = panel.asb_actions["mute"]
         panel.asb_mute_tag.set_visible(not mute_caption)
         self.update_mute_tag(panel.asb_mute_words, panel.asb_mute_dots)
@@ -10671,8 +10743,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, off or not button.get_sensitive()])
             if slot in gone:
                 button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [PANEL_GONE_TEXT])
-            elif slot == "read" and read_note:
-                button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [read_note])
+            elif slot == "read" and (read_note or unread_caption):
+                button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [read_note or unread_caption])
+            elif slot == "drawer" and drawer_caption:
+                button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [drawer_caption])
             elif slot not in ("open", "mute"):
                 button.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         # Alt+C follows the card choice (always Absolute for a remote card), not the last panel copy.
@@ -10770,7 +10844,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.asb_tip = value or reason
             if slot == "short":
                 button.set_tooltip_text(button.asb_tip)
-            button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done if copied else button.asb_tip])
+            button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done if copied else REMOTE_RELATIVE_CAPTION if remote_relative else button.asb_tip])
 
     def query_copy_tooltip(self, button, _x, _y, _keyboard, tooltip):
         text = Gtk.Label(label=button.asb_tip, xalign=0, wrap=True, max_width_chars=36)
@@ -10804,16 +10878,95 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         card = self.focus_widgets.get(panel.asb_identity)
         if shown and (card is None or mute_active(card.asb_thread)):
             return
-        panel.asb_pages.set_visible_child_name("times" if shown else "main")
+        target = "times" if shown else "main"
+        if panel.asb_pages.get_visible_child_name() != target:
+            if panel.asb_last_press:
+                panel.asb_page_press = panel.asb_last_press
+            # The widget under a still pointer hides: GTK keeps a stale pointer target until the pointer moves.
+            panel.asb_misrouted = True
+            if panel.asb_side == "top":
+                width = panel.asb_pages.get_width()
+                main_height = panel.asb_pages.get_child_by_name("main").measure(Gtk.Orientation.VERTICAL, width)[1]
+                times_height = panel.asb_pages.get_child_by_name("times").measure(Gtk.Orientation.VERTICAL, width)[1]
+                rectangle = Gdk.Rectangle()
+                rectangle.x, rectangle.y = panel.asb_point.x, panel.asb_point.y + (times_height - main_height if shown else 0)
+                rectangle.width = rectangle.height = 1
+                panel.set_pointing_to(rectangle)
+            panel.asb_pages.set_visible_child_name(target)
         (panel.asb_times[self.mute_for] if shown else panel.asb_actions["mute"]).grab_focus()
+
+    @staticmethod
+    def panel_page_pressed(gesture, _presses, x, y):
+        panel = gesture.get_widget()
+        if panel.asb_misrouted:
+            # The stale target can be a container that no row button sees; the panel clicks the row under the pointer.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            SwitchboardWindow.panel_forward_press(panel, x, y)
+            return
+        dropped = SwitchboardWindow.panel_press_dropped(panel, x, y)
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED if dropped else Gtk.EventSequenceState.DENIED)
+
+    @staticmethod
+    def panel_press_dropped(panel, x, y):
+        """Record a panel press (panel coordinates); true for the second press of a double click after a page change."""
+        now = time.monotonic()
+        previous, guard = panel.asb_last_press, panel.asb_page_press
+        settings = panel.get_settings()
+        panel.asb_last_press = (now, x, y)
+        if guard and previous and (now - previous[0]) * 1000 < settings.get_property("gtk-double-click-time"):
+            distance = settings.get_property("gtk-double-click-distance")
+            if abs(x - guard[1]) <= distance and abs(y - guard[2]) <= distance:
+                return True
+        panel.asb_page_press = None
+        return False
+
+    @staticmethod
+    def panel_on_tag(panel, widget, x, y):
+        """True for a point (widget coordinates) on the Mute tag, 4 px beside it, over the full Mute row height."""
+        tag, mute = panel.asb_mute_tag, panel.asb_actions["mute"]
+        found, bounds = tag.compute_bounds(widget)
+        row_found, row = mute.compute_bounds(widget)
+        return tag.get_mapped() and found and row_found and bounds.origin.x - 4 <= x <= bounds.origin.x + bounds.size.width + 4 \
+            and row.origin.y <= y <= row.origin.y + row.size.height
 
     @staticmethod
     def panel_tag_pressed(gesture, _presses, x, y):
         main = gesture.get_widget()
-        tag = main.get_ancestor(Gtk.Popover).asb_mute_tag
-        target = main.pick(x, y, Gtk.PickFlags.DEFAULT)
-        on_tag = tag.get_visible() and target is not None and (target is tag or target.is_ancestor(tag))
+        on_tag = SwitchboardWindow.panel_on_tag(main.get_ancestor(Gtk.Popover), main, x, y)
         gesture.set_state(Gtk.EventSequenceState.CLAIMED if on_tag else Gtk.EventSequenceState.DENIED)
+
+    @staticmethod
+    def panel_event_point(panel, event):
+        if event is None:
+            return -1, -1
+        _found, x, y = event.get_position()
+        left, top = panel.get_surface_transform()
+        return x - left, y - top
+
+    @staticmethod
+    def panel_forward_press(panel, x, y):
+        """A press with a stale pointer target (panel coordinates): the guard first, then the row under it on release."""
+        panel.asb_forward = None
+        if SwitchboardWindow.panel_press_dropped(panel, x, y):
+            return
+        target = panel.pick(x, y, Gtk.PickFlags.DEFAULT)
+        if SwitchboardWindow.panel_on_tag(panel, panel, x, y):
+            panel.asb_forward = "tag"
+        elif target is not None:
+            panel.asb_forward = target if isinstance(target, Gtk.Button) else target.get_ancestor(Gtk.Button)
+
+    def panel_forward_release(self, panel, x, y):
+        target, panel.asb_forward = panel.asb_forward, None
+        if not panel.get_visible():
+            return
+        if target == "tag":
+            if self.panel_on_tag(panel, panel, x, y):
+                self.show_mute_times(panel, True)
+            return
+        # A normal click: the release is on the pressed row, which is still shown and sensitive.
+        found, bounds = target.compute_bounds(panel) if target else (False, None)
+        if found and target.get_mapped() and target.is_sensitive() and bounds.contains_point(Graphene.Point().init(x, y)):
+            target.emit("clicked")
 
     def panel_mute_pick(self, button, choice):
         # A pick sets the time as the wheel does and goes back; it does not mute.
@@ -10833,6 +10986,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def panel_key(self, controller, key, _code, state):
         panel = controller.get_widget()
+        panel.asb_last_press = None
         if self.card_key(key, state, panel.asb_identity):
             return True
         if key in (Gdk.KEY_Left, Gdk.KEY_Right) and not state & SHORTCUT_MASK and self.get_focus() is panel.asb_actions["mute"]:

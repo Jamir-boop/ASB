@@ -3452,7 +3452,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIsNotNone(panel.asb_copy_timer)
         finalized = []
         panel.weak_ref(lambda: finalized.append(True))
-        xdo("mousemove", 1500, 950); self.drain(.3)
+        xdo("mousemove", 1500, 950); self.drain(.5)
         self.assertIsNone(window.context_menu)
         self.assertFalse(panel.get_visible())
         self.assertIsNone(panel.asb_copy_timer)
@@ -3466,7 +3466,7 @@ class WidgetCheck(unittest.TestCase):
         panel = window.context_menu
         self.assertIsNotNone(panel)
         move_to(panel.asb_open, panel)
-        move_to(window.menu_button, window)
+        move_to(window.menu_button, window); self.drain(.4)
         self.assertIsNone(window.context_menu)
         self.assertFalse(window.opening or window.session_actions)
 
@@ -3500,7 +3500,11 @@ class WidgetCheck(unittest.TestCase):
                                    (x, y - 24), (x, y + height + 24), (x + width / 2, y + height / 2)):
                         motion.emit("motion", px, py); self.drain(.03)
                         self.assertTrue(panel.get_visible())
-                    motion.emit("motion", x + width / 2, y - 30); self.drain(.2)
+                    motion.emit("motion", x + width / 2, y - 30); self.drain(.3)
+                    self.assertTrue(panel.get_visible())
+                    motion.emit("motion", x + width / 2, y + height / 2); self.drain(.2)
+                    self.assertTrue(panel.get_visible())
+                    motion.emit("motion", x + width / 2, y - 30); self.drain(.43)
                     self.assertFalse(panel.get_visible())
                     self.assertIsNone(window.context_menu)
                 else:
@@ -3542,7 +3546,7 @@ class WidgetCheck(unittest.TestCase):
         xdo("mouseup", 3); self.drain(.2)
         panel = window.context_menu
         self.assertTrue(panel is not None and panel.get_mapped())
-        xdo("mousemove_relative", "--", -40, -60); self.drain(.3)
+        xdo("mousemove_relative", "--", -40, -60); self.drain(.5)
         self.assertFalse(panel.get_visible())
         self.assertIsNone(window.context_menu)
 
@@ -8191,7 +8195,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain()
         settle = lambda: self.settle(window)
         pill, bubble, cards, hover = window.drawer_only, window.drawer_dot, window.focus_widgets, asb.Gtk.StateFlags.PRELIGHT
-        put, out = "Put in drawer: look read here, keep it under Drawer", "Take out of drawer: show as unread again"
+        put, out = "Put in drawer: stays unread in the drawer", "Take out of drawer: unread on the board again"
         def reply(identity, **change):
             requests[-1][2]({"changed": True, "threadId": identity, "thread": dict(cards[identity].asb_thread, **change)}, None)
             settle()
@@ -9049,6 +9053,238 @@ class WidgetCheck(unittest.TestCase):
                     if scale == 1:
                         self.assertEqual(height, asb.COMFORTABLE_ROW_HEIGHT)
 
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer timing needs xdotool and DISPLAY=:9 or :10")
+    def test_row_panel_pointer_return_at_300_ms_cancels_400_ms_close(self):
+        window = self.mute_wheel_board(720)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        for held in (False, True):
+            with self.subTest(held=held):
+                window.show_context(window.focus_widgets["read"], 20, 20, gesture=Mock()); self.drain(.3)
+                panel = window.context_menu
+                found, point = panel.asb_title.compute_point(window, asb.Graphene.Point().init(20, 5))
+                self.assertTrue(found)
+                left, top = window.get_surface_transform()
+                def move(outside):
+                    subprocess.run(["xdotool", "mousemove", "--window", str(window.get_surface().get_xid()),
+                                    str(round(point.x + left + (350 if outside else 0))), str(round(point.y + top))], check=True)
+                move(False); self.drain(.03)
+                if held:
+                    subprocess.run(["xdotool", "mousedown", "1"], check=True)
+                    self.addCleanup(subprocess.run, ["xdotool", "mouseup", "1"], check=True)
+                else:
+                    subprocess.run(["xdotool", "click", "1"], check=True)
+                move(True); self.drain(.30)
+                self.assertTrue(panel.get_visible())
+                move(False); self.drain(.20)
+                self.assertTrue(panel.get_visible())
+                move(True)
+                start = time.monotonic()
+                self.drain(.35)
+                self.assertTrue(panel.get_visible())
+                while panel.get_visible() and time.monotonic() - start < .6:
+                    self.drain(.005)
+                elapsed = time.monotonic() - start
+                self.assertFalse(panel.get_visible())
+                self.assertGreaterEqual(elapsed, .38)
+                self.assertLess(elapsed, .48)
+                print("panel pointer close", "held" if held else "quick", round(elapsed * 1000), "ms; return at 300 ms kept open")
+                if held:
+                    subprocess.run(["xdotool", "mouseup", "1"], check=True)
+                self.drain(.15)
+
+    def test_row_panel_page_press_guard_time_distance_and_chain(self):
+        window = self.mute_wheel_board()
+        window.show_context(window.focus_widgets["read"]); self.drain(.3)
+        panel = window.context_menu
+        gesture = next(c for c in panel.observe_controllers() if isinstance(c, asb.Gtk.GestureClick))
+        self.assertEqual(gesture.get_propagation_phase(), asb.Gtk.PropagationPhase.CAPTURE)
+        delay = panel.get_settings().get_property("gtk-double-click-time") / 1000
+        distance = panel.get_settings().get_property("gtk-double-click-distance")
+        def press(at, x=100, y=100):
+            # The pointer moved: the press goes to its row through the panel guard.
+            panel.asb_misrouted = False
+            with patch.object(asb.time, "monotonic", return_value=at), patch.object(gesture, "set_state") as state:
+                window.panel_page_pressed(gesture, 1, x, y)
+            return state.call_args.args[0]
+        denied, claimed = asb.Gtk.EventSequenceState.DENIED, asb.Gtk.EventSequenceState.CLAIMED
+        self.assertEqual(press(10), denied)
+        window.show_mute_times(panel, True)
+        # A page change leaves GTK a stale target under the still pointer.
+        self.assertTrue(panel.asb_misrouted)
+        self.assertEqual(press(10 + delay * .6), claimed)
+        self.assertEqual(press(10 + delay * 1.2), claimed)  # Each dropped press restarts the interval.
+        self.assertEqual(press(10 + delay * 2.3), denied)
+        window.show_mute_times(panel, False)
+        self.assertEqual(press(10 + delay * 2.4, 100 + distance + 1), denied)
+        window.show_mute_times(panel, True)
+        self.assertEqual(press(10 + delay * 2.5, 100 + distance + 1, 100 + distance), claimed)
+        # Keyboard page changes still work, even during the pointer guard.
+        self.assertTrue(window.panel_key(SimpleNamespace(get_widget=lambda: panel), asb.Gdk.KEY_Escape, 0, 0))
+        self.assertEqual(panel.asb_pages.get_visible_child_name(), "main")
+        # With the stale target, the panel claims every press and clicks the row under it on release.
+        self.assertTrue(panel.asb_misrouted)
+        mute = panel.asb_actions["mute"]
+        found, point = mute.asb_label.compute_point(panel, asb.Graphene.Point().init(2, 2))
+        self.assertTrue(found)
+        clicks = []
+        handler = mute.connect("clicked", lambda *_args: clicks.append(True))
+        with patch.object(gesture, "set_state") as state, patch.object(window, "session_action") as action:
+            window.panel_page_pressed(gesture, 1, point.x, point.y)
+            state.assert_called_once_with(claimed)
+            window.panel_forward_release(panel, point.x, point.y)
+        mute.disconnect(handler)
+        self.assertEqual(clicks, [True])
+        action.assert_called_once()
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real target edges need xdotool and DISPLAY=:9 or :10")
+    def test_row_panel_real_tag_edges_choose_and_five_px_outside_mutes(self):
+        window = self.mute_wheel_board(720)
+        window.session_action = Mock()
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        for side in ("left", "right"):
+            for gap in (4, 5):
+                for edge in ("top", "bottom"):
+                    with self.subTest(side=side, gap=gap, edge=edge):
+                        window.show_context(window.focus_widgets["read"], 20, 20); self.drain(.3)
+                        panel = window.context_menu
+                        tag = panel.asb_mute_tag.compute_bounds(window)[1]
+                        row = panel.asb_actions["mute"].compute_bounds(window)[1]
+                        x = tag.origin.x - gap if side == "left" else tag.origin.x + tag.size.width + gap
+                        y = row.origin.y + 1 if edge == "top" else row.origin.y + row.size.height - 1
+                        left, top = window.get_surface_transform()
+                        subprocess.run(["xdotool", "mousemove", "--window", str(window.get_surface().get_xid()),
+                                        str(round(x + left)), str(round(y + top)), "click", "1"], check=True)
+                        self.drain(.25)
+                        if gap == 4:
+                            self.assertEqual(panel.asb_pages.get_visible_child_name(), "times")
+                            window.session_action.assert_not_called()
+                            self.assertTrue(panel.get_visible())
+                            panel.popdown(); self.drain(.1)
+                        else:
+                            window.session_action.assert_called_once_with("read", "mute", asb.mute_body(window.mute_for))
+                            self.assertFalse(panel.get_visible())
+                        window.session_action.reset_mock()
+
+    def test_row_panel_tag_target_has_four_px_sides_and_full_row_height(self):
+        window = self.mute_wheel_board()
+        window.show_context(window.focus_widgets["read"]); self.drain(.3)
+        panel = window.context_menu
+        main = panel.asb_pages.get_child_by_name("main")
+        gesture = next(c for c in main.observe_controllers() if isinstance(c, asb.Gtk.GestureClick))
+        tag = panel.asb_mute_tag.compute_bounds(main)[1]
+        row = panel.asb_actions["mute"].compute_bounds(main)[1]
+        for x, yes in ((tag.origin.x - 4, True), (tag.origin.x + tag.size.width + 4, True),
+                       (tag.origin.x - 5, False), (tag.origin.x + tag.size.width + 5, False)):
+            for y in (row.origin.y + .5, row.origin.y + row.size.height - .5):
+                with self.subTest(x=x, y=y), patch.object(gesture, "set_state") as state:
+                    window.panel_tag_pressed(gesture, 1, x, y)
+                    state.assert_called_once_with(asb.Gtk.EventSequenceState.CLAIMED if yes else asb.Gtk.EventSequenceState.DENIED)
+
+    def test_row_panel_floor_and_plain_captions(self):
+        rows = self.card_rows(("work", {"state": "working", "workingSinceMs": NOW - 1000}),
+                              ("idle", {}), ("unread", {"unread": True, "pending": True}),
+                              ("drawer", {"unread": True, "pending": True, "drawer": True}),
+                              ("remote", {"remote": True, "surface": "remote", "machineName": "Example", "canOpen": False,
+                                          "actionRequired": True, "actionAttention": True}))
+        window = self.mute_wheel_board(620, rows)
+        description = asb.Gtk.AccessibleProperty.DESCRIPTION
+        for identity, slot, text in (("work", "read", "The dot shows when this task ends."), ("idle", "read", ""),
+                                     ("unread", "read", ""), ("unread", "drawer", "Stays unread in the drawer."),
+                                     ("drawer", "drawer", "Unread on the board again.")):
+            window.show_context(window.focus_widgets[identity]); self.drain(.25)
+            button = window.context_menu.asb_actions[slot]
+            self.assertEqual(button.asb_caption.get_label(), text)
+            self.assertEqual(button.asb_caption.get_visible(), bool(text))
+            if text:
+                self.assert_accessible_label(button, text, description)
+            window.context_menu.popdown(); self.drain(.1)
+        window.show_context(window.focus_widgets["remote"]); self.drain(.3)
+        panel = window.context_menu
+        self.assertEqual(panel.asb_copy.asb_caption.get_label(), "Only for a session on this machine.")
+        self.assert_accessible_label(panel.asb_copy, "Only for a session on this machine.", description)
+        for palette in (None, {"background": "#000000", "text": "#ffffff", "muted": "#bcbcbc", "accent": "#e5a535", "divider": "#333333"},
+                        {"background": "#10141c", "text": "#e8eaf0", "muted": "#9aa4b2", "accent": "#5b9dee", "divider": "#303540"}):
+            window.set_palette(palette); self.settle(window)
+            for button in (panel.asb_copy, panel.asb_open):
+                expected = button.asb_icon.get_color()
+                for part in (button.asb_label, button.asb_caption):
+                    self.assertTrue(part.get_color().equal(expected), (palette, part.get_color().to_string(), expected.to_string()))
+
+    def test_row_panel_radio_disc_and_dot_colors(self):
+        window = self.mute_wheel_board()
+        window.show_context(window.focus_widgets["read"]); self.drain(.3)
+        panel = window.context_menu
+        window.change_mute_for("1h"); window.show_mute_times(panel, True); self.drain(.3)
+        for palette in (None, {"background": "#000000", "text": "#ffffff", "muted": "#bcbcbc", "accent": "#e5a535", "divider": "#333333"}):
+            window.set_palette(palette); self.settle(window)
+            mark = panel.asb_times["1h"].asb_icon
+            pixels = self.rgba(mark)
+            disc = asb.Gdk.RGBA(); dot = asb.Gdk.RGBA()
+            if palette:
+                disc.parse(palette["accent"]); dot.parse(palette["background"])
+            else:
+                _, disc = mark.get_style_context().lookup_color("accent_bg_color")
+                _, dot = mark.get_style_context().lookup_color("accent_fg_color")
+            rgb = lambda color: tuple(round(v * 255) for v in (color.red, color.green, color.blue))
+            self.assertEqual(pixels[7][2], (*rgb(disc), 255))
+            self.assertEqual(pixels[7][7], (*rgb(dot), 255))
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real page presses need xdotool and DISPLAY=:9 or :10")
+    def test_row_panel_page_changes_drop_real_second_presses(self):
+        # The pointer never moves between the presses: GTK keeps the old pointer target, which it picked again on the board.
+        settings = asb.Gtk.Settings.get_default()
+        previous = settings.get_property("gtk-enable-animations")
+        self.addCleanup(settings.set_property, "gtk-enable-animations", previous)
+        delay = settings.get_property("gtk-double-click-time") / 1000
+        rows = self.card_rows(*((f"c{n}", {"unread": n == 0, "pending": n == 0}) for n in range(12)))
+        for animations in (True, False):
+            settings.set_property("gtk-enable-animations", animations)
+            for change in ("tag", "back", "time"):
+                for held in (False, True):
+                    with self.subTest(animations=animations, change=change, held=held):
+                        window = self.mute_wheel_board(720, rows)
+                        window.session_action = Mock()
+                        window.open_row = Mock()
+                        xid = str(window.get_surface().get_xid())
+                        subprocess.run(["xdotool", "windowfocus", xid], check=True)
+                        window.show_context(window.focus_widgets["c0"], 20, 20); self.drain(.3)
+                        panel = window.context_menu
+                        choice = window.mute_for
+                        if change != "tag":
+                            window.show_mute_times(panel, True); self.drain(.3)
+                        target = panel.asb_mute_tag if change == "tag" else panel.asb_times_back if change == "back" else panel.asb_times["always"]
+                        found, point = target.compute_point(window, asb.Graphene.Point().init(target.get_width() / 2, target.get_height() / 2))
+                        self.assertTrue(found)
+                        left, top = window.get_surface_transform()
+                        subprocess.run(["xdotool", "mousemove", "--window", xid, str(round(point.x + left)), str(round(point.y + top))], check=True)
+                        self.drain(.1)
+                        hold = ["sleep", ".08"] if held else []
+                        # One xdotool call keeps both presses inside the double-click time.
+                        subprocess.run(["xdotool", "mousedown", "1", *hold, "mouseup", "1", "sleep", ".03",
+                                        "mousedown", "1", *hold, "mouseup", "1"], check=True)
+                        self.drain(.15)
+                        page = "times" if change == "tag" else "main"
+                        self.assertTrue(panel.get_visible())
+                        self.assertEqual((panel.asb_pages.get_visible_child_name(), window.mute_for), (page, "always" if change == "time" else choice))
+                        window.session_action.assert_not_called(); window.open_row.assert_not_called()
+                        # The stale pointer target behind the panel gives no card a hover.
+                        self.assertEqual([key for key, card in window.focus_widgets.items() if key != "c0" and card.has_css_class("asb-hovered")], [])
+                        self.drain(delay + .05)
+                        # After the double-click time the same still pointer clicks the panel row under it.
+                        found, local = window.compute_point(panel, point)
+                        under = panel.pick(local.x, local.y, asb.Gtk.PickFlags.DEFAULT)
+                        row = under if isinstance(under, asb.Gtk.Button) else under.get_ancestor(asb.Gtk.Button)
+                        self.assertIsNotNone(row)
+                        clicks = []
+                        row.connect("clicked", lambda *_args: clicks.append(True))
+                        subprocess.run(["xdotool", "mousedown", "1", *hold, "mouseup", "1"], check=True)
+                        self.drain(.2)
+                        self.assertEqual(clicks, [True], row.asb_label.get_label())
+                        window.close(); self.drain(.1)
+
     def test_row_panel_mute_tag_opens_a_list_of_times(self):
         window = self.mute_wheel_board()
         window.session_action = Mock()
@@ -9059,6 +9295,10 @@ class WidgetCheck(unittest.TestCase):
             found, point = panel.asb_title.compute_point(window, asb.Graphene.Point().init(0, 0))
             self.assertTrue(found)
             return round(point.x), round(point.y)
+        def bottom_padding(panel, row):
+            content = panel.get_child().get_parent().compute_bounds(panel)[1]
+            bottom = row.compute_bounds(panel)[1]
+            return round(content.origin.y + content.size.height - bottom.origin.y - bottom.size.height)
         def open_list(panel):
             # The main page claims a press on the tag in the capture phase, before the Mute button.
             main = panel.asb_pages.get_child_by_name("main")
@@ -9081,23 +9321,32 @@ class WidgetCheck(unittest.TestCase):
                 window.show_context(card, card.get_width() / 2, y - top.y); self.drain(.4)
                 panel = window.context_menu
                 self.assertEqual(panel.get_position(), asb.Gtk.PositionType.TOP if side == "top" else asb.Gtk.PositionType.BOTTOM)
-                self.assertEqual(panel.asb_pages.get_vhomogeneous(), side == "top")
+                self.assertFalse(panel.asb_pages.get_vhomogeneous())
                 mute = panel.asb_actions["mute"]
                 self.assertEqual(mute.get_tooltip_text(), "Click the time to choose it. Scroll or press Left and Right to change it.")
                 self.assertEqual(panel.asb_mute_tag.get_tooltip_text(), "Choose how long to mute")
                 before, height = header(panel), panel.get_child().get_height()
+                padding = bottom_padding(panel, panel.asb_copy_full)
                 open_list(panel)
                 window.session_action.assert_not_called()
                 self.assertEqual(panel.asb_pages.get_visible_child_name(), "times")
                 self.assertEqual(header(panel), before)
-                # Below its point the panel shrinks to the list; above it, it keeps its height.
-                self.assertEqual(panel.get_child().get_height() == height, side == "top", (panel.get_child().get_height(), height))
+                # Both placements fit the shorter time list, with no band under Always.
+                self.assertLess(panel.get_child().get_height(), height)
+                self.assertEqual(bottom_padding(panel, panel.asb_times["always"]), padding)
+                print("panel geometry", side, "title", before[1], header(panel)[1], "padding", padding,
+                      bottom_padding(panel, panel.asb_times["always"]), "height", height, panel.get_child().get_height())
+                self.assertEqual(panel.asb_pages.get_height(), panel.asb_pages.get_child_by_name("times").get_height())
                 # A back row, a separator, then five 30 px radio rows in MUTE_CHOICES order, with the current time checked.
                 times = panel.asb_pages.get_child_by_name("times")
                 children = board_children(times)
                 self.assertIs(children[0], panel.asb_times_back)
                 self.assertIsInstance(children[1], asb.Gtk.Separator)
-                self.assertEqual(children[2:], [panel.asb_times[choice] for choice in asb.MUTE_CHOICES])
+                self.assertEqual(children[2:], [panel.asb_time_group])
+                self.assertEqual(board_children(panel.asb_time_group), [panel.asb_times[choice] for choice in asb.MUTE_CHOICES])
+                self.assertEqual(panel.asb_time_group.get_accessible_role(), asb.Gtk.AccessibleRole.RADIO_GROUP)
+                self.assert_accessible_label(panel.asb_time_group, "Mute time")
+                self.assert_accessible_label(panel.asb_times_back, "Back to Mute")
                 self.assertEqual((icon_name(panel.asb_times_back.asb_icon), panel.asb_times_back.asb_label.get_label(),
                                   panel.asb_times_back.get_height()), ("go-previous-symbolic", "Mute", 30))
                 for choice, button in panel.asb_times.items():
@@ -9123,6 +9372,8 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(panel.asb_mute_words.get_visible_child_name(), "8h")
                 self.assertIs(window.get_focus(), mute)
                 self.assertEqual(header(panel), before)
+                self.assertEqual(bottom_padding(panel, panel.asb_copy_full), padding)
+                print("panel return", side, "title", header(panel)[1], "padding", bottom_padding(panel, panel.asb_copy_full))
                 # The back row and Escape go back with no change; Escape on the main page is left to the popover, which closes.
                 open_list(panel)
                 self.assertTrue(panel.asb_times["8h"].asb_icon.has_css_class("asb-radio-on"))

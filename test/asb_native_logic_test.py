@@ -6148,9 +6148,9 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_row_panel(panel, remote)
         short, full = panel.asb_copy, panel.asb_copy_full
-        short.asb_caption.set_label.assert_called_with("Works only on this machine.")
+        short.asb_caption.set_label.assert_called_with("Only for a session on this machine.")
         short.set_tooltip_text.assert_called_with(why)
-        short.update_property.assert_called_with([1], [why])
+        short.update_property.assert_called_with([1], ["Only for a session on this machine."])
         short.update_state.assert_called_with([0, 2], [False, True])
         short.add_css_class.assert_any_call("asb-action-pending")
         short.remove_css_class.assert_any_call("asb-copy-off")
@@ -6276,7 +6276,7 @@ class NativeLogicChecks(unittest.TestCase):
                 self.assertIn(".asb-row-panel button.asb-panel-off image, .asb-column-flow .asb-row-panel button.asb-panel-off .asb-panel-label,\n"
                               f".asb-column-flow .asb-row-panel button.asb-panel-off .asb-panel-key {{ color: {floor}; opacity: 1; }}", css)
                 self.assertIn(".asb-row-panel button.asb-panel-off .asb-panel-caption:not(.asb-panel-key),\n.asb-column-flow .asb-row-panel "
-                              f"button.asb-panel-where:disabled .asb-panel-caption:not(.asb-panel-key) {{ color: {caption}; opacity: 1; }}", css)
+                              f"button.asb-panel-where:disabled .asb-panel-caption:not(.asb-panel-key) {{ color: {floor}; opacity: 1; }}", css)
                 self.assertIn("button.asb-panel-where:disabled * {\n    color: " + floor + "; opacity: 1; filter: none; -gtk-icon-filter: none; }", css)
                 self.assertIn(".asb-row-panel button.asb-action-pending:not(.asb-panel-off) > * { opacity: .5; }", css)
                 self.assertGreaterEqual(asb.contrast(floor, surface), 4.5)
@@ -6320,7 +6320,7 @@ class NativeLogicChecks(unittest.TestCase):
                 else:
                     self.assertNotIn(call([1], [note]), read.update_property.call_args_list)
                 # The row keeps one line: no caption.
-                read.asb_caption.set_visible.assert_not_called()
+                read.asb_caption.set_visible.assert_called_with(False)
 
     def test_row_panel_pin_moves_show_only_with_two_visible_pins_and_say_when_at_an_end(self):
         moves = asb.pin_moves
@@ -7441,7 +7441,7 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk}):
             window.update_card_actions(widget)
             self.assertEqual([item.tip for item in buttons],
-                             ["Mark read in ASB", "Pin in ASB", "Put in drawer: look read here, keep it under Drawer", "Copy relative reference. Scroll to change the kind."])
+                             ["Mark read in ASB", "Pin in ASB", "Put in drawer: stays unread in the drawer", "Copy relative reference. Scroll to change the kind."])
             for item in buttons:
                 item.set_tooltip_text.reset_mock()
             # A new title changes the labels but no tooltip.
@@ -8367,7 +8367,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.update_row_text(text, 100_000)
             self.assertNotIn("drawer", text.asb_accessible_label)
 
-        put, out = "Put in drawer: look read here, keep it under Drawer", "Take out of drawer: show as unread again"
+        put, out = "Put in drawer: stays unread in the drawer", "Take out of drawer: unread on the board again"
         row = {**unread, "id": "a"}
         widget = SimpleNamespace(asb_view="comfortable", asb_thread=dict(row), asb_focus_key="a", asb_read_timer=None,
                                  asb_read_generation=1, asb_read_button=Mock(), asb_pin_button=Mock(), asb_drawer_button=Mock(),
