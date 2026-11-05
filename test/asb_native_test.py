@@ -5760,6 +5760,89 @@ class WidgetCheck(unittest.TestCase):
         caption.set_label(text); caption.set_lines(1)
         self.assertIsNone(caption.glue_at(width))
 
+    def test_row_panel_caption_starts_each_sentence_on_a_line_and_keeps_words_in_their_sentence(self):
+        caption = asb.PanelCaption()
+        caption.set_wrap(True)
+        caption.set_wrap_mode(asb.Pango.WrapMode.WORD_CHAR)
+        text = "The Claude Code process ended during a task. Not read yet."
+        caption.set_label(text)
+        full = caption.create_pango_layout(text).get_pixel_size()[0]
+        second = text.index("Not")
+        self.assertEqual(caption.breaks_at(full + 1), ())
+        for width in range(full - 2, 60, -1):
+            breaks = caption.breaks_at(width)
+            self.assertEqual(breaks, (second - 1,), width)
+            glued = caption.glue_at(width, breaks) or ()
+            # A kept range ends at the end of its sentence and holds no sentence break.
+            for start, end in zip(glued[::2], glued[1::2]):
+                self.assertIn(end, (second - 1, len(text)), width)
+                self.assertFalse(start <= second - 1 < end, width)
+        # The shown text breaks between the sentences; get_label() keeps the plain text.
+        caption.breaks = caption.breaks_at(full // 2)
+        asb.Gtk.Label.set_label(caption, caption.broken(text.encode(), caption.breaks))
+        self.assertEqual(asb.Gtk.Label.get_label(caption), text.replace(" Not", "\nNot"))
+        self.assertEqual(caption.get_label(), text)
+        caption.set_label(text)
+        self.assertEqual(asb.Gtk.Label.get_label(caption), text.replace(" Not", "\nNot"))
+        caption.set_label("Two words.")
+        self.assertEqual((caption.breaks, caption.glued, asb.Gtk.Label.get_label(caption)), ((), None, "Two words."))
+        # One sentence keeps the greedy breaks.
+        caption.set_label("No current task signal is available.")
+        self.assertEqual(caption.breaks_at(40), ())
+
+    def test_row_panel_copy_reason_keeps_the_greedy_wrap_when_the_sentence_breaks_need_more_lines(self):
+        caption = asb.PanelCaption()
+        caption.set_wrap(True)
+        caption.set_wrap_mode(asb.Pango.WrapMode.WORD_CHAR)
+        caption.set_ellipsize(asb.Pango.EllipsizeMode.END)
+        caption.set_lines(2)
+        text = "This version of ASB does not know this app. Update ASB on this machine."
+        caption.set_label(text)
+        full = caption.create_pango_layout(text).get_pixel_size()[0]
+        broken = text.replace(". ", ".\n")
+        counts = {width: (caption.wrapped(text, width).get_line_count(), caption.wrapped(broken, width).get_line_count())
+                  for width in range(full - 1, 40, -1)}
+        greedy_only = [width for width, (greedy, lines) in counts.items() if greedy == 2 and lines > 2]
+        both = [width for width, (greedy, lines) in counts.items() if greedy == 2 and lines == 2]
+        self.assertTrue(greedy_only and both)
+        for width in greedy_only:
+            self.assertEqual(caption.breaks_at(width), (), width)
+        for width in both:
+            self.assertEqual(caption.breaks_at(width), (text.index(" Update"),), width)
+        caption.set_lines(0)
+        self.assertEqual(caption.breaks_at(greedy_only[0]), (text.index(" Update"),))
+
+    def test_row_panel_two_sentence_caption_breaks_between_sentences_at_every_zoom(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
+        settings.set_property("gtk-font-name", "Monospace 11")
+        ended = "The Claude Code process ended during a task."
+        rows = self.card_rows(("ended", {"state": "unknown", "provider": "claude-desktop-code", "providerLabel": "Claude Desktop Code",
+                                         "unread": True, "pending": True, "alert": True, "failedAttention": True,
+                                         "pendingSource": "observed-failure", "reason": ended, "processEnded": True}))
+        window = self.mute_wheel_board(520, rows)
+        text = ended + " Not read yet."
+        for zoom in (100, 200):
+            with self.subTest(zoom=zoom):
+                window.set_board_zoom(zoom); self.settle(window)
+                window.show_context(window.focus_widgets["ended"]); self.drain(.4)
+                button = window.context_menu.asb_open
+                label = button.asb_caption
+                lines = self.caption_lines(label)
+                self.assertEqual(label.get_label(), text)
+                self.assertEqual(" ".join(lines), text)
+                self.assertFalse(label.get_layout().is_ellipsized())
+                self.assertTrue(all(line.get_extents()[1].width <= label.get_width() * asb.Pango.SCALE
+                                    for line in label.get_layout().get_lines_readonly()))
+                if zoom == 100:
+                    self.assertGreater(len(lines), 1)
+                if len(lines) > 1:
+                    self.assertEqual(lines[-1], "Not read yet.", lines)
+                    self.assertEqual(" ".join(lines[:-1]), ended, lines)
+                self.assert_accessible_label(button, text, asb.Gtk.AccessibleProperty.DESCRIPTION)
+                window.context_menu.popdown(); self.drain(.2)
+        window.set_board_zoom(100); self.settle(window)
+
     @staticmethod
     def greedy_last_words(label, text, width):
         layout = label.create_pango_layout(text)
@@ -9235,6 +9318,64 @@ class WidgetCheck(unittest.TestCase):
                         window.no_open_toast.dismiss(); self.drain(.1)
             window.close(); self.drain(.1)
 
+    def test_no_open_toast_breaks_its_reason_between_sentences_in_a_narrow_board_and_shows_one_line_when_wide(self):
+        rows = [self.card_row("cli", canOpen=False, surface="cli"),
+                self.card_row("remote", canOpen=False, remote=True, machineName="studio"),
+                self.card_row("opencode", canOpen=False, provider="opencode", providerLabel="OpenCode"),
+                self.card_row("other", canOpen=False)]
+        narrow = {"cli": ["Runs in a terminal.", "ASB does not open", "CLI sessions."], "remote": ["Runs on studio.", "Open it on studio."],
+                  "opencode": ["ASB cannot open", "OpenCode sessions.", "Open it in OpenCode."]}
+        window = self.card_board(rows)
+        def shown(row):
+            title = window.no_open_toast.get_custom_title()
+            layout = title.get_layout()
+            self.assertEqual(title.get_label(), asb.no_open_title(row))
+            self.assertFalse(layout.is_ellipsized())
+            self.assertTrue(all(line.get_extents()[1].width <= title.get_width() * asb.Pango.SCALE for line in layout.get_lines_readonly()))
+            lines = self.caption_lines(title)
+            self.assertEqual(" ".join(lines), asb.no_open_title(row))
+            return lines
+        for width in (1036, 420, 1036):
+            window.set_default_size(width, 410); window.check_geometry(); self.settle(window)
+            for row in rows:
+                with self.subTest(width=width, row=row["id"]):
+                    window.show_no_open_toast(row); self.drain(.4)
+                    lines = shown(row)
+                    if width == 1036:
+                        self.assertEqual(lines, [asb.no_open_title(row)])
+                    elif row["id"] in narrow:
+                        self.assertEqual(lines, narrow[row["id"]])
+                    window.no_open_toast.dismiss(); self.drain(.1)
+        # A toast that shows in a narrow board takes one line when the board becomes wide again.
+        window.set_default_size(420, 410); window.check_geometry(); self.settle(window)
+        window.show_no_open_toast(rows[0]); self.drain(.4)
+        self.assertEqual(shown(rows[0]), narrow["cli"])
+        window.set_default_size(1036, 410); window.check_geometry(); self.settle(window); self.drain(.4)
+        self.assertEqual(shown(rows[0]), [asb.no_open_title(rows[0])])
+
+    def test_no_open_toast_announces_its_reason_once_and_an_open_announces_nothing(self):
+        rows = [self.card_row("cli", canOpen=False, surface="cli"),
+                self.card_row("remote", canOpen=False, remote=True, machineName="studio"),
+                self.card_row("opencode", canOpen=False, provider="opencode", providerLabel="OpenCode"),
+                self.card_row("other", canOpen=False), self.card_row("opens")]
+        window = self.card_board(rows)
+        announced = []
+        patcher = patch.object(window.toast_overlay, "announce", lambda text, priority: announced.append((text, priority)), create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        medium = asb.Gtk.AccessibleAnnouncementPriority.MEDIUM
+        for row in rows[:4]:
+            with self.subTest(row=row["id"]):
+                del announced[:]
+                window.open_row(None, window.focus_widgets[row["id"]]); self.drain(.3)
+                self.assertEqual(announced, [(asb.no_open_title(row), medium)])
+                self.assertNotIn("  ", announced[0][0])
+                self.assertNotIn("\n", announced[0][0])
+        del announced[:]
+        window.open_row(None, window.focus_widgets["opens"]); self.drain(.3)
+        self.assertEqual(announced, [])
+        self.assertIn("opens", window.opening)
+
     def test_no_open_toast_escape_keeps_board_state_and_popovers_keep_the_toast(self):
         asb.gi.require_version("GdkX11", "4.0")
         from gi.repository import GdkX11
@@ -9335,7 +9476,9 @@ class WidgetCheck(unittest.TestCase):
         titles = ["Runs in a terminal. ASB does not open CLI sessions.", "Runs on studio. Open it on studio.",
                   "ASB cannot open OpenCode sessions. Open it in OpenCode.", "ASB cannot open this session. Open it in Codex.",
                   "ASB cannot open this session. Open it in Sample app.", "ASB cannot open this session."]
-        captions = ["ASB does not open CLI sessions.", "Open it on studio.", *titles[2:], "Waits for your permission.",
+        # A row that is not view-only and cannot open says only that ASB cannot open it; its label says where it opens.
+        captions = ["ASB does not open CLI sessions.", "Open it on studio.", "ASB cannot open OpenCode sessions.",
+                    *["ASB cannot open this session."] * 3, "Waits for your permission.",
                     "Waits for your answer.", "No recent signal.", "The Claude Code process ended during a task. Not read yet."]
         window = self.card_board(rows)
         for index, row in enumerate(rows):
@@ -9383,6 +9526,34 @@ class WidgetCheck(unittest.TestCase):
             self.assertFalse(button.has_css_class("asb-panel-where"))
             window.context_menu.popdown(); self.drain(.1)
             window.opening.discard("opens")
+
+    def test_no_open_panel_open_row_says_where_the_session_opens(self):
+        rows = [self.card_row("opencode", canOpen=False, provider="opencode", providerLabel="OpenCode"),
+                self.card_row("codex", canOpen=False), self.card_row("opens"),
+                self.card_row("remote", canOpen=False, remote=True, machineName="studio"),
+                self.card_row("cli", canOpen=False, surface="cli", provider="claude-desktop-code", providerLabel="Claude Code CLI")]
+        window = self.card_board(rows)
+        expected = {"opencode": ("Opens only in OpenCode", "ASB cannot open OpenCode sessions.", False, True),
+                    "codex": ("Opens only in Codex", "ASB cannot open this session.", False, True),
+                    "opens": ("Open in Codex", "", True, False),
+                    "remote": ("Runs on studio", "Open it on studio.", False, True),
+                    "cli": ("Runs in a terminal", "ASB does not open CLI sessions.", False, True)}
+        for identity, (text, caption, sensitive, where) in expected.items():
+            with self.subTest(row=identity):
+                window.show_context(window.card_for(identity)); self.drain(.2)
+                button = window.context_menu.asb_open
+                self.assertEqual((button.asb_label.get_label(), button.asb_caption.get_label(), button.asb_caption.get_visible()),
+                                 (text, caption, bool(caption)))
+                self.assertEqual((button.get_sensitive(), button.has_css_class("asb-panel-where")), (sensitive, where))
+                if caption:
+                    self.assert_accessible_label(button, caption, asb.Gtk.AccessibleProperty.DESCRIPTION)
+                window.context_menu.popdown(); self.drain(.1)
+        # A row that opens keeps its label while it opens.
+        window.opening.add("opens")
+        window.show_context(window.card_for("opens")); self.drain(.2)
+        self.assertEqual(window.context_menu.asb_open.asb_label.get_label(), "Open in Codex")
+        window.context_menu.popdown(); self.drain(.1)
+        window.opening.discard("opens")
 
     def test_no_open_toast_has_the_row_panel_surface_in_custom_colors_and_keeps_its_size_at_every_zoom(self):
         window = self.card_board([self.card_row("cli", canOpen=False, surface="cli"), self.card_row("b")])

@@ -3214,20 +3214,127 @@ def label(text, css=None):
     return widget
 
 
-class ToastTitle(Gtk.Label):
+# A sentence ends with ".", "?", or "!" and a space follows; a sentence break replaces that space.
+SENTENCE_SPACE = re.compile(rb"(?<=[.?!]) (?=\S)")
+
+
+class SentenceLabel(Gtk.Label):
+    """A wrapped label. When its text does not fit on one line, each sentence starts a line, if the label line limit allows it.
+    A one-word last line of a sentence takes the word above when it fits there, as in CardTitle.title_layouts.
+    get_label() gives the plain text: a break replaces one space with a newline, so both texts have the same byte offsets."""
+    breaks, glued, balance_idle = (), None, None
+
+    def get_label(self):
+        return Gtk.Label.get_label(self).replace("\n", " ")
+
+    def set_label(self, text):
+        if text == self.get_label():
+            return
+        # Old breaks must not stay on new text; the next allocation breaks and balances again.
+        self.breaks, self.glued = (), None
+        self.set_attributes(None)
+        Gtk.Label.set_label(self, text)
+
+    def wrapped(self, text, width):
+        layout = self.create_pango_layout(text)
+        layout.set_width(max(1, width) * Pango.SCALE)
+        layout.set_wrap(self.get_wrap_mode())
+        return layout
+
+    @staticmethod
+    def broken(encoded, breaks):
+        text = bytearray(encoded)
+        for index in breaks:
+            text[index] = ord("\n")
+        return text.decode("utf-8")
+
+    def breaks_at(self, width):
+        """The byte offsets of the spaces that start a sentence on a new line, or () when the greedy wrap stays."""
+        text = self.get_label()
+        encoded = text.encode("utf-8")
+        spaces = tuple(match.start() for match in SENTENCE_SPACE.finditer(encoded))
+        if not self.get_wrap() or not spaces or self.wrapped(text, width).get_line_count() < 2:
+            return ()
+        if 0 < self.get_lines() < self.wrapped(self.broken(encoded, spaces), width).get_line_count():
+            return ()
+        return spaces
+
+    def glue_at(self, width, breaks=()):
+        """The byte ranges kept on the last line of a sentence, as (start, end, ...), or None when the greedy breaks stay."""
+        text = self.get_label()
+        if not self.get_wrap() or " " not in text:
+            return None
+        encoded = text.encode("utf-8")
+        layout = self.wrapped(self.broken(encoded, breaks), width)
+        count = layout.get_line_count()
+        if count < 2 or 0 < self.get_lines() < count:
+            return None
+        lines = [(line.start_index, line.length) for line in layout.get_lines_readonly()]
+        glued, begin = (), 0
+        for end in (*breaks, len(encoded)):
+            # A word never moves to another sentence.
+            sentence = [line for line in lines if begin <= line[0] < end]
+            begin = end + 1
+            if len(sentence) < 2:
+                continue
+            (above, length), (last, _length) = sentence[-2:]
+            words = encoded[above:above + length].decode("utf-8").rstrip().split(" ")
+            if " " in encoded[last:end].decode("utf-8").strip() or len(words) < 3:
+                continue
+            start = above + len(" ".join(words[:-1]).encode("utf-8")) + 1
+            layout.set_attributes(self.kept(start, end))
+            # The same number of lines, and the moved word is not cut.
+            if layout.get_line_count() == count and any(line.start_index == start and line.get_extents()[1].width <= width * Pango.SCALE
+                                                        for line in layout.get_lines_readonly()):
+                glued += (start, end)
+        return glued or None
+
+    def shown_at(self, width):
+        breaks = self.breaks_at(width)
+        return breaks, self.glue_at(width, breaks)
+
+    def do_size_allocate(self, width, height, baseline):
+        Gtk.Label.do_size_allocate(self, width, height, baseline)
+        if not self.balance_idle and self.shown_at(width) != (self.breaks, self.glued):
+            self.balance_idle = GLib.idle_add(self.balance)
+
+    def balance(self):
+        self.balance_idle = None
+        breaks, self.glued = self.shown_at(self.get_width())
+        if breaks != self.breaks:
+            self.breaks = breaks
+            Gtk.Label.set_label(self, self.broken(self.get_label().encode("utf-8"), breaks))
+        self.set_attributes(self.kept(*self.glued) if self.glued else None)
+        return False
+
+    @staticmethod
+    def kept(*bounds):
+        """Attributes with no line break in each (start, end) range."""
+        attrs = Pango.AttrList()
+        for start, end in zip(bounds[::2], bounds[1::2]):
+            keep = Pango.attr_allow_breaks_new(False)
+            keep.start_index, keep.end_index = start, end
+            attrs.insert(keep)
+        return attrs
+
+
+class ToastTitle(SentenceLabel):
     """The toast overlay clamps its preferred width without measuring its height again."""
     title_width, resize_idle = None, None
 
     def do_measure(self, orientation, for_size):
         if orientation == Gtk.Orientation.HORIZONTAL:
             minimum, natural, *_baselines = Gtk.Label.do_measure(self, orientation, -1)
+            if self.breaks:
+                # The natural width stays the whole text on one line, so a board that becomes wide shows one line again.
+                natural = max(natural, -(-self.create_pango_layout(self.get_label()).get_extents()[1].width // Pango.SCALE))
             return minimum, natural, -1, -1
         if self.title_width is not None:
             for_size = min(for_size, self.title_width) if for_size >= 0 else self.title_width
         return Gtk.Label.do_measure(self, orientation, for_size)
 
     def do_size_allocate(self, width, height, baseline):
-        Gtk.Label.do_size_allocate(self, width, height, baseline)
+        SentenceLabel.do_size_allocate(self, width, height, baseline)
         if width != self.title_width:
             self.title_width = width
             if not self.resize_idle:
@@ -3239,62 +3346,11 @@ class ToastTitle(Gtk.Label):
         return False
 
 
-class PanelCaption(Gtk.Label):
-    """A row panel caption. A one-word last line takes the word above when it fits there, as in CardTitle.title_layouts."""
+class PanelCaption(SentenceLabel):
+    """A row panel caption, with the sentence breaks and the balance of SentenceLabel."""
     def __init__(self):
         super().__init__(label="", xalign=0)
         self.add_css_class("asb-panel-caption")
-        self.glued, self.balance_idle = None, None
-
-    def set_label(self, text):
-        if text != self.get_label():
-            # An old break must not stay on new text; the next allocation balances again.
-            self.glued = None
-            self.set_attributes(None)
-        Gtk.Label.set_label(self, text)
-
-    def glue_at(self, width):
-        """The byte range kept on the last line, or None when the greedy breaks stay."""
-        text = self.get_label()
-        if not self.get_wrap() or " " not in text:
-            return None
-        layout = self.create_pango_layout(text)
-        layout.set_width(max(1, width) * Pango.SCALE)
-        layout.set_wrap(self.get_wrap_mode())
-        count = layout.get_line_count()
-        if count < 2 or 0 < self.get_lines() < count:
-            return None
-        encoded = text.encode("utf-8")
-        above, last = layout.get_line_readonly(count - 2), layout.get_line_readonly(count - 1)
-        words = encoded[above.start_index:above.start_index + above.length].decode("utf-8").rstrip().split(" ")
-        if " " in encoded[last.start_index:].decode("utf-8").strip() or len(words) < 3:
-            return None
-        start = above.start_index + len(" ".join(words[:-1]).encode("utf-8")) + 1
-        layout.set_attributes(self.kept(start, len(encoded)))
-        last = layout.get_line_readonly(count - 1)
-        # The same number of lines, and the moved word is not cut.
-        if layout.get_line_count() != count or last.start_index != start or last.get_extents()[1].width > width * Pango.SCALE:
-            return None
-        return start, len(encoded)
-
-    def do_size_allocate(self, width, height, baseline):
-        Gtk.Label.do_size_allocate(self, width, height, baseline)
-        if self.glue_at(width) != self.glued and not self.balance_idle:
-            self.balance_idle = GLib.idle_add(self.balance)
-
-    def balance(self):
-        self.balance_idle = None
-        self.glued = self.glue_at(self.get_width())
-        self.set_attributes(self.kept(*self.glued) if self.glued else None)
-        return False
-
-    @staticmethod
-    def kept(start, end):
-        """Attributes with no line break from start to end."""
-        attrs, keep = Pango.AttrList(), Pango.attr_allow_breaks_new(False)
-        keep.start_index, keep.end_index = start, end
-        attrs.insert(keep)
-        return attrs
 
 
 def layout_cut(layout, text, width):
@@ -11374,7 +11430,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else row.get("reason", "") if row.get("state") == "unknown" else ""
         if not row.get("canOpen") and not open_caption:
             open_caption = f"Open it on {row.get('machineName') or 'another machine'}." if row.get("remote") else \
-                "ASB does not open CLI sessions." if row.get("surface") == "cli" else no_open_title(row)
+                "ASB does not open CLI sessions." if row.get("surface") == "cli" else \
+                "ASB cannot open OpenCode sessions." if row.get("provider") == "opencode" else "ASB cannot open this session."
         signature = (self.mute_for, self.copy_kind, mute_caption, read_note, unread_caption, drawer_caption, open_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
@@ -11402,7 +11459,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         else:
             # A row that cannot open has the where look; a row that opens now keeps the GTK insensitive look.
             (panel.asb_open.remove_css_class if row.get("canOpen") else panel.asb_open.add_css_class)("asb-panel-where")
-            set_panel_label(panel.asb_open, "Open in " + model["app"])
+            set_panel_label(panel.asb_open, ("Open in " if row.get("canOpen") else "Opens only in ") + model["app"])
             panel.asb_open.set_sensitive(bool(row.get("canOpen")) and row["id"] not in self.opening)
         set_icon(panel.asb_open.asb_icon, provider_icon(row.get("provider")))
         panel.asb_open.asb_caption.set_label(open_caption)
@@ -11997,6 +12054,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         toast.connect("dismissed", lambda shown: setattr(self, "no_open_toast", None) if self.no_open_toast is shown else None)
         self.no_open_toast = toast
         self.toast_overlay.add_toast(toast)
+        # Adwaita announces only the title string of a toast, and this toast has a custom title (GTK 4.14 and later).
+        if hasattr(self.toast_overlay, "announce"):
+            self.toast_overlay.announce(no_open_title(row), Gtk.AccessibleAnnouncementPriority.MEDIUM)
 
     def on_close(self, *_args):
         if self.closed:
