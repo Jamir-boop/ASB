@@ -884,7 +884,7 @@ private fun ProviderWarning(provider: Provider, onDismiss: () -> Unit) {
 
 /** The accessible words of the card mark [indicator]. */
 internal fun indicatorMeaning(row: Thread, indicator: String): String = when (indicator) {
-    "question" -> if (showsAction(row)) "Action required on the PC" else "Question needs attention"
+    "question" -> if (showsAction(row) || row.drawer && row.actionRequired) "Action required on the PC" else "Question needs attention"
     "alert" -> if (row.processEnded) "Process ended during a task, unread"
         else if (row.lastOutcome == "failed") "Failed task, unread" else "Usage limit stopped the task, unread"
     "dot" -> when {

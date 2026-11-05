@@ -743,7 +743,10 @@ export class PendingTracker {
       // The read mark of a required action lasts for one wait: a member row has no wait time, so the mark goes when the wait ends.
       if (row.actionRequired ?? (row.state === 'waiting' && !row.questionPending)) {
         this.set(record, 'actionSeen', Math.max(record.actionSeen, row[ACTION_AT] || 1));
-      } else if (!row[OFFLINE_MEMBER]) { this.set(record, 'actionSeen', 0); this.set(record, 'actionAck', 0); }
+      } else if (!row[OFFLINE_MEMBER]) {
+        this.set(record, 'actionSeen', 0); this.set(record, 'actionAck', 0);
+        if (row.state !== 'waiting' && !row.questionPending) this.set(record, 'drawerAsk', 0);
+      }
       if (row.nativeUnread === true && (!record.nativeSeen || completion > record.seen)) {
         this.set(record, 'nativeAt', Math.max(record.nativeAt + 1, Number(dashboard.generatedAtMs || Date.now()), completion));
       }
@@ -834,7 +837,7 @@ export class PendingTracker {
     const newAsk = Boolean(row.questionAttention && record?.questionSeen > record?.drawerAsk
       || row.actionAttention && record?.actionSeen > record?.drawerAsk);
     if (record?.drawer === 1 && (record.seen > record.drawerSeen || row.state === 'working' || newAsk
-      || !(record.manual === 1 || record.retained || record.pending > record.ack || row.state === 'waiting' || row.questionAttention
+      || !(record.manual === 1 || record.retained || record.pending > record.ack || row[OFFLINE_MEMBER] || row.state === 'waiting' || row.questionAttention
         || row.actionAttention || row.nativeUnread !== false && record.nativeAt > record.nativeAck))) this.set(record, 'drawer', 0);
     row.drawer = record?.drawer === 1;
     // A drawer chat looks read here: its open question or permission request is not Pending.

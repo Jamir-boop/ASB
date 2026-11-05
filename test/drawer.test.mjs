@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ACTION_AT, createSwitchboardServer, PendingTracker, QUESTION_AT } from '../src/switchboard.mjs';
+import { ACTION_AT, createSwitchboardServer, PendingTracker, OFFLINE_MEMBER, QUESTION_AT } from '../src/switchboard.mjs';
 
 const id = '123e4567-e89b-12d3-a456-426614174000';
 async function temp(t) {
@@ -326,6 +326,54 @@ test('a waiting card stays in the drawer until it works or asks again', async ()
   assert.deepEqual([view(again), again.actionAttention], [[false, false, true], true]);
 });
 
+test('a read member permission wait stays in the drawer through an offline scan', async () => {
+  const tracker = new PendingTracker(false);
+  const wait = { remote: true, actionRequired: true, [ACTION_AT]: 100 };
+  const row = await scan(tracker, 'waiting', wait);
+  await tracker.acknowledge(id);
+  tracker.apply(row);
+  assert.deepEqual([row.pending, row.actionAttention], [false, false]);
+  await tracker.setDrawer(row, true);
+  const offline = await scan(tracker, 'unknown', { ...wait, [OFFLINE_MEMBER]: true });
+  assert.deepEqual(view(offline), [true, false, false]);
+  const back = await scan(tracker, 'waiting', wait);
+  assert.deepEqual([view(back), back.actionAttention], [[true, false, false], false]);
+});
+
+test('a read local permission wait stays in the drawer on the next scan', async () => {
+  const tracker = new PendingTracker(false);
+  const wait = { actionRequired: true, [ACTION_AT]: 100 };
+  const row = await scan(tracker, 'waiting', wait);
+  await tracker.acknowledge(id);
+  tracker.apply(row);
+  assert.deepEqual([row.pending, row.actionAttention], [false, false]);
+  await tracker.setDrawer(row, true);
+  assert.deepEqual(view(await scan(tracker, 'waiting', wait)), [true, false, false]);
+});
+
+test('a new permission wait with no time leaves the drawer after an observed wait end', async () => {
+  const tracker = new PendingTracker(false);
+  await scan(tracker, 'idle');
+  await tracker.markUnread(id);
+  const wait = { remote: true, actionRequired: true };
+  await tracker.setDrawer(await scan(tracker, 'waiting', wait), true);
+  assert.equal(tracker.records[id].drawerAsk, 1);
+  const ended = await scan(tracker, 'idle', { remote: true });
+  assert.deepEqual([view(ended), ended.manualUnread], [[true, false, false], true]);
+  const again = await scan(tracker, 'waiting', wait);
+  assert.deepEqual([view(again), again.actionAttention], [[false, true, true], true]);
+});
+
+test('permission waits with no time and no intervening scan stay in the drawer', async () => {
+  const tracker = new PendingTracker(false);
+  await scan(tracker, 'idle');
+  await tracker.markUnread(id);
+  const wait = { remote: true, actionRequired: true };
+  await tracker.setDrawer(await scan(tracker, 'waiting', wait), true);
+  const again = await scan(tracker, 'waiting', wait);
+  assert.deepEqual([view(again), again.actionAttention, tracker.records[id].drawerAsk], [[true, false, false], false, 1]);
+});
+
 test('a muted Waiting card in the drawer: a new question takes it out, and only a question after the mute start shows', async () => {
   const tracker = new PendingTracker(false);
   await scan(tracker, 'idle');
@@ -355,7 +403,7 @@ test('a Waiting card in the drawer that starts to work with Mark read when done 
   const working = await scan(tracker, 'working');
   assert.deepEqual([view(working), tracker.records[id].drawer], [[false, false, false], 0]);
   await tracker.setDiscard(working, true);
-  assert.equal(tracker.records[id].drawerAsk, 100);
+  assert.equal(tracker.records[id].drawerAsk, 0);
   const done = await scan(tracker, 'idle', { completionAtMs: 300 });
   assert.deepEqual([view(done), done.discardResult, tracker.records[id].drawer], [[false, false, false], false, 0]);
 });

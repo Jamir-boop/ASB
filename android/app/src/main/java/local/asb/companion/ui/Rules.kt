@@ -237,7 +237,7 @@ fun panelFocusReturn(key: String?, controls: Map<String, PanelControl>): String?
 // Port of row_panel_note: the subtitle of the panel Unread switch.
 fun rowPanelNote(row: Thread): String = when {
     row.actionRequired -> "Waits for your permission."
-    row.questionAttention -> "Asks a question."
+    row.questionAttention || row.drawer && row.state == "waiting" -> "Asks a question."
     row.alert -> if (row.processEnded) "The Claude Code process ended during a task. Not read yet."
         else if (row.lastOutcome == "failed") "Failed. Not read yet." else "Usage limit stopped the task. Not read yet."
     (row.unread || row.drawer) && row.state != "working" -> if (row.manualUnread) "Marked unread." else "Finished. Not read yet."

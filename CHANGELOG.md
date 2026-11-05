@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- A Waiting chat of an offline member now stays in the drawer. A new question or permission request with no ask time now takes a chat out of the drawer when ASB saw the old wait end first; two asks with no scan between them still keep it in the drawer.
+- The Android app now names the wait kind of a Waiting chat in the drawer: the row panel says **Asks a question.** for a question, and TalkBack says **Action required on the PC** for a permission request.
+
 - Added Ctrl+wheel zoom on the board: up zooms in, down zooms out, in steps from 80% to 200%. The zoom changes the text, the card buttons and marks, the row heights, and the column width of the board, adds to the GNOME text scale, and is saved for the next start. The title, the folder line, and the hover pocket keep clear of the zoomed corner buttons, and the row panel fits its labels at each zoom. Ctrl+wheel on a card button or the row panel zooms and does not change the copy kind or the mute time. Ctrl+0 resets it to 100%; Ctrl+1 to Ctrl+9 still open cards. Ctrl+wheel no longer scrolls the board.
 - A Waiting session (a question or a permission request in the original app) can now go in the drawer, from the row panel or the card drawer button, on the board and in the Android app. In the normal list it then looks read: no `?`, not Pending, no sound, and no phone notification. It leaves the drawer when it starts to work or asks a new question or for a new permission.
 - No time shows seconds now, on the board, in its tooltips, and in the Android app: a Working time shows `<1m` in its first minute, then whole minutes (`Working · 3m`), and a usage-limit countdown rounds up to whole minutes (`Resets in 1m`). The board clock wakes once a minute, also while the pointer is on the board.

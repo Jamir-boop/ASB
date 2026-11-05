@@ -19,6 +19,7 @@ import local.asb.companion.ui.attentionIndicator
 import local.asb.companion.ui.casefold
 import local.asb.companion.ui.clockInterval
 import local.asb.companion.ui.filteredRows
+import local.asb.companion.ui.indicatorMeaning
 import local.asb.companion.ui.keepIndexOnChange
 import local.asb.companion.ui.keptPosition
 import local.asb.companion.ui.limitLeft
@@ -315,6 +316,24 @@ class RulesTest {
         for (row in listOf(base.copy(state = "waiting", questionAttention = true), base.copy(state = "waiting", actionRequired = true),
             base.copy(state = "waiting", actionRequired = true, actionAttention = false)))
             assertEquals(listOf("drawer-in"), rowMenuActions(row).map { it.action }.filter { it.startsWith("drawer-") })
+    }
+
+    @Test fun waitingDrawerQuestionNamesItsWaitKind() {
+        val row = Thread(state = "waiting", drawer = true, questionPending = true, questionAttention = false)
+        assertEquals("Asks a question.", rowPanelNote(row))
+        assertEquals("Question needs attention", indicatorMeaning(row, attentionIndicator(row, drawer = true)))
+        val out = row.copy(drawer = false, questionAttention = true)
+        assertEquals("Asks a question.", rowPanelNote(out))
+        assertEquals("Question needs attention", indicatorMeaning(out, attentionIndicator(out)))
+    }
+
+    @Test fun waitingDrawerPermissionNamesItsWaitKind() {
+        val row = Thread(state = "waiting", drawer = true, actionRequired = true, actionAttention = false)
+        assertEquals("Waits for your permission.", rowPanelNote(row))
+        assertEquals("Action required on the PC", indicatorMeaning(row, attentionIndicator(row, drawer = true)))
+        val out = row.copy(drawer = false, actionAttention = true)
+        assertEquals("Waits for your permission.", rowPanelNote(out))
+        assertEquals("Action required on the PC", indicatorMeaning(out, attentionIndicator(out)))
     }
 
     @Test fun pinMoveTargetsTheVisiblePinnedNeighborAndEscapesItsId() {
