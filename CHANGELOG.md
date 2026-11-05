@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- The description of the GNOME top-bar extension (in the Extensions app) no longer names a count of all sessions. The top bar shows two counts: the sessions that need you and the sessions that work.
 - The OpenCode mark on a card now has about the ink of the Codex and Claude marks: it uses 60% of the provider mark tone of that card, with a 3:1 contrast floor on the card and hover surfaces. Its shape, size, and place do not change.
 - During the Read confirmation, the Read button now keeps its success plate (GNOME colors) or accent plate (custom colors) also while the card has hover or key focus. After a Read, the drawer button keeps its place but is unavailable (`Not available now.`) until the hover and the key focus end; Escape hides it with the other corner buttons, and Mark unread brings it back.
 - The board zoom now also scales the corner gaps, the gap between a corner tag and its button, the top padding, and the right inset of the corner, in whole pixels. At 100% the corner does not change.

@@ -25,7 +25,7 @@ test('machine hues and provider file names match the native board rules', async 
 test('metadata matches the extension contract exactly', async () => {
   assert.deepEqual(JSON.parse(await read('../gnome-shell/metadata.json')), {
     uuid: 'asb@jamir-boop.github.io', name: 'ASB',
-    description: 'Shows in the top bar how many ASB sessions need you, how many are working, and the number of sessions on all your machines. Needs ASB (Agent Switch Board).',
+    description: 'Shows in the top bar how many ASB sessions need you and how many are working. Needs ASB (Agent Switch Board).',
     'shell-version': ['45', '46', '47', '48', '49'], url: 'https://github.com/Jamir-boop/ASB',
   });
 });
