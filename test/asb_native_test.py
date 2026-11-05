@@ -8074,7 +8074,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(card.asb_state_label.get_text(), "Working")
             self.assertEqual(card.asb_working_time.get_text(), " · " + text)
             self.assertEqual(card.asb_tooltip.split("\n")[2], "Working · " + text)
-            self.assert_accessible_label(card, card.asb_accessible_label + " Working time " + text + ".")
+            self.assert_accessible_label(card, card.asb_accessible_label + " Working time " + asb.spoken_duration((now[0] - NOW) / 1000) + ".")
             self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
         self.foreground(window, False)
         assert_time("4m")
@@ -8448,6 +8448,217 @@ class WidgetCheck(unittest.TestCase):
                 with patch.object(window, "render", wraps=window.render) as render:
                     self.drain(.4)
                 render.assert_not_called()
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and DISPLAY=:9 or :10.")
+    def test_real_card_tooltip_zoom_scales_text_and_marks_in_its_css_position(self):
+        self.assertIsNotNone(shutil.which("xdotool"))
+        self.addCleanup(subprocess.run, ["xdotool", "mousemove", "9999", "9999"], check=True)
+        window = self.card_board([self.card_row("dot", unread=True, pending=True),
+                                  self.card_row("question", state="waiting", questionAttention=True),
+                                  self.card_row("discard", state="working", workingSinceMs=NOW, discardResult=True)])
+        window.set_default_size(900, 800); self.settle(window)
+        for key in ("dot", "question", "discard"):
+            metrics = {}
+            for zoom in (100, 200):
+                with self.subTest(key=key, zoom=zoom):
+                    subprocess.run(["xdotool", "mousemove", "9999", "9999"], check=True)
+                    self.drain(.15)
+                    window.set_board_zoom(zoom); self.settle(window)
+                    card = window.focus_widgets[key]
+                    point = card.asb_title_label.compute_point(window, asb.Graphene.Point().init(10, 6))[1]
+                    left, top = window.get_surface_transform()
+                    subprocess.run(["xdotool", "mousemove", "--window", str(window.get_surface().get_xid()),
+                                    str(round(point.x + left)), str(round(point.y + top))], check=True)
+                    self.drain(1)
+                    root = card.asb_tooltip_content
+                    self.assertTrue(root.get_mapped())
+                    # GTK parents GtkTooltipWindow under the board; its CSS ancestors include .asb-column-flow.
+                    tooltip = root.get_parent().get_parent()
+                    self.assertEqual(tooltip.get_css_name(), "tooltip")
+                    self.assertIs(tooltip.get_parent(), window)
+                    fonts = [w.get_pango_context().get_font_description().get_size() for w in descendants(root)
+                             if isinstance(w, asb.Gtk.Label)]
+                    self.assertGreaterEqual(len(fonts), 5)  # title, path, state, app, note (and the question glyph)
+                    mark = next(w for w in descendants(root) if w.has_css_class("asb-dot"))
+                    metrics[zoom] = fonts, (mark.get_width(), mark.get_height())
+            self.assertEqual(metrics[200][0], [size * 2 for size in metrics[100][0]])
+            for before, after in zip(metrics[100][1], metrics[200][1]):
+                self.assertAlmostEqual(after, before * 2, delta=1)
+        subprocess.run(["xdotool", "mousemove", "9999", "9999"], check=True)
+
+    def test_zoom_keeps_toolbar_search_chips_and_filters_at_100_percent(self):
+        window = self.card_board([self.card_row("a", unread=True, pending=True)])
+        window.set_default_size(900, 600)
+        window.states = {"idle"}; window.render()
+        window.open_search(); self.settle(window)
+        chrome = [window.tools, *descendants(window.tools), window.search, *descendants(window.search)]
+        def sizes(widgets):
+            return [(w.get_width(), w.get_height(), w.get_pango_context().get_font_description().get_size()) for w in widgets]
+        before = sizes(chrome)
+        window.open_filters_popover(); self.drain(.3)
+        filters = list(descendants(window.filter_popover))
+        filter_before = sizes(filters)
+        window.set_board_zoom(200); self.settle(window)
+        self.assertEqual(sizes(chrome), before)
+        self.assertEqual(sizes(filters), filter_before)
+        self.assertTrue(window.filter_popover.get_visible())
+        window.close_filters_popover()
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real pointer movement needs xdotool and DISPLAY=:9 or :10.")
+    def test_zoom_change_alone_updates_the_one_column_corner(self):
+        subprocess.run(["xdotool", "mousemove", "9999", "9999"], check=True)
+        window = self.card_board([self.card_row("a", unread=True, pending=True, reference="asb:1/sample/a")])
+        window.set_default_size(420, 600); self.settle(window)
+        card = window.focus_widgets["a"]
+        for zoom in (100, 175, 200, 100):
+            with self.subTest(zoom=zoom):
+                window.set_board_zoom(zoom); self.settle(window)
+                window.check_geometry(); self.settle(window)
+                self.assertEqual((window.columns, window.column_pixel_width), (1, 412))
+                self.assertIs(window.focus_widgets["a"], card)
+                self.assertFalse(card.has_css_class("asb-hovered"))
+                self.assertEqual(card.asb_mute_button.get_visible(), 412 >= asb.zoomed(240, zoom))
+                wide = 412 >= asb.zoomed(190, zoom)
+                self.assertEqual(card.asb_copy_button.get_visible(), wide)
+                self.assertEqual(card.asb_drawer_button.get_visible(), wide)
+                self.assertEqual(card.asb_actions.has_css_class("asb-corner-wide"), wide)
+
+    def test_real_zoom_css_preserves_each_selectors_scope_order_and_parses(self):
+        import re
+        window = self.card_board([self.card_row("a")])
+        for palette in (None, CUSTOM):
+            window.set_palette(palette)
+            original = self.board_css(window)
+            clean = re.sub(r"/\*.*?\*/", "", original, flags=re.S)
+            rules = re.findall(r"([^{}]+)\{([^{}]*)\}", clean)
+            # The real selector lists have no commas inside parentheses; the logic test covers those.
+            self.assertFalse(any(re.search(r"\([^)]*,", selector) for selector, _body in rules))
+            for zoom in asb.ZOOM_LEVELS:
+                with self.subTest(palette=bool(palette), zoom=zoom):
+                    css = asb.zoom_css(original, zoom)
+                    errors = []
+                    provider = asb.Gtk.CssProvider()
+                    provider.connect("parsing-error", lambda _provider, _section, error: errors.append(str(error)))
+                    provider.load_from_string(css)
+                    self.assertEqual(errors, [])
+                    if zoom == 100:
+                        self.assertEqual(css, original)
+                        continue
+                    expected = []
+                    for selectors, body in rules:
+                        scaled = re.sub(r"\b(font-size|min-height|min-width|line-height):\s*(\d+(?:\.\d+)?)px",
+                                        lambda m: f"{m[1]}: {round(float(m[2]) * zoom / 100)}px", body)
+                        for selector in map(str.strip, selectors.split(",")):
+                            chrome = set(re.findall(r"\.([\w-]+)", selector)) & {"asb-" + name for name in (
+                                "toolbar", "toolbar-button", "filter-pill", "filter-row", "filter-head", "filter-footer", "chip-dot", "chip-scroll",
+                                "drawer-dot", "drawer-glyph", "drawer-handle")}
+                            if asb.ZOOM_SCOPE.search(selector) and "asb-preferences" not in selector and not chrome:
+                                expected.extend([(selector.replace(".asb-column-flow", ".asb-column-flow:not(.asb-preferences)", 1), scaled),
+                                                 (selector.replace(".asb-column-flow", ".asb-column-flow.asb-preferences", 1), body)])
+                            else:
+                                tooltip = ".asb-tooltip" in selector.split()[0]
+                                expected.append((selector + ":not(.asb-zoom-none)", scaled if tooltip else body))
+                    actual = [(selector.strip(), body) for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)]
+                    self.assertEqual(actual, expected)
+
+    def test_zoom_keeps_every_preferences_page_and_pet_stage_at_100_percent(self):
+        window = self.card_board([self.card_row("a")])
+        window.open_preferences(); self.drain(.2)
+        preferences = window.preferences_window
+        settings = preferences.get_settings()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)
+        for page in ("sessions", "appearance", "profiles", "phone", "machines", "usage"):
+            with self.subTest(page=page):
+                window.set_board_zoom(100)
+                preferences.show_section(page); self.drain(.3)
+                widgets = [preferences, *descendants(preferences)]
+                before = [(w, w.get_width(), w.get_height(), w.get_pango_context().get_font_description().get_size()) for w in widgets]
+                if page == "appearance":
+                    stage = next(w for w in widgets if isinstance(w, asb.PetStage))
+                    scroll = preferences.stack.get_visible_child()
+                    bounds = stage.compute_bounds(scroll)[1]
+                    adjustment = scroll.get_vadjustment()
+                    adjustment.set_value(adjustment.get_value() + bounds.origin.y + bounds.size.height - scroll.get_height())
+                    self.drain(.1)
+                    bounds = stage.compute_bounds(scroll)[1]
+                    self.assertTrue(stage.get_mapped())
+                    self.assertGreaterEqual(bounds.origin.y, 0)
+                    self.assertLessEqual(bounds.origin.y + bounds.size.height, scroll.get_height())
+                window.set_board_zoom(200); self.drain(.3)
+                for widget, width, height, font in before:
+                    self.assertEqual((widget.get_width(), widget.get_height(), widget.get_pango_context().get_font_description().get_size()),
+                                     (width, height, font), (page, type(widget).__name__, widget.get_css_classes()))
+        window.set_board_zoom(100)
+
+    def test_waiting_drawer_permission_and_question_words_in_both_views(self):
+        rows = [self.card_row("permission", state="waiting", drawer=True, actionRequired=True),
+                self.card_row("question", state="waiting", drawer=True, questionPending=True), self.card_row("dot", drawer=True)]
+        window = self.card_board(rows)
+        for drawer_view in (False, True):
+            window.drawer_only.set_active(drawer_view); self.settle(window)
+            for key, kind in (("permission", "permission"), ("question", "answer")):
+                with self.subTest(drawer_view=drawer_view, kind=kind):
+                    card = window.focus_widgets[key]
+                    note = f"The session still waits for your {kind}."
+                    model = asb.tooltip_model(card.asb_thread, NOW, "/example", drawer_view=drawer_view)
+                    self.assertEqual(model["note"], "Waits for your permission." if kind == "permission" else "Asks a question. Open the chat to answer.")
+                    self.assertEqual(asb.question_wait_note(card.asb_thread), note)
+                    self.assert_accessible_label(card.asb_read_button, note, asb.Gtk.AccessibleProperty.DESCRIPTION)
+                    question = " A user action is required in the original app." if kind == "permission" else " Question needs your answer."
+                    self.assertEqual(card.asb_accessible_label, "Open " + card.asb_thread["title"] + " in Codex. Waiting." + question + " In the drawer.")
+                    self.assert_accessible_label(card, card.asb_accessible_label)
+                    window.show_context(card); self.drain(.1)
+                    self.assertIn(note, window.context_menu.asb_actions["read"].get_tooltip_text())
+                    window.context_menu.popdown(); self.drain(.1)
+            self.assertTrue(window.focus_widgets["dot"].asb_accessible_label.endswith(" In the drawer. Still unread."))
+
+    def test_drawer_hover_and_key_focus_show_the_read_cue_only_outside_drawer(self):
+        rows = [self.card_row("question", state="waiting", drawer=True, questionPending=True),
+                self.card_row("dot", drawer=True), self.card_row("unread", unread=True, pending=True)]
+        window = self.card_board(rows)
+        for drawer_view in (False, True):
+            window.drawer_only.set_active(drawer_view); self.settle(window)
+            for key in ("question", "dot", *(() if drawer_view else ("unread",))):
+                card = window.focus_widgets[key]
+                cue = next(w for w in descendants(card.asb_read_button) if w.has_css_class("asb-read-cue"))
+                for hover, focus in ((False, False), (True, False), (False, True)):
+                    with self.subTest(view=drawer_view, key=key, hover=hover, focus=focus):
+                        window.set_focus(None)
+                        window.set_focus_visible(focus)
+                        if focus:
+                            card.grab_focus()
+                        self.hover_card(window, card, hover); self.settle(window)
+                        expected = hover and (key != "question" or not drawer_view) or focus and not drawer_view and key != "unread"
+                        self.assertEqual(self.ink(cue), 255 if expected else 0)
+                        self.assertTrue(cue.get_color().equal(card.get_color()))
+                        if not drawer_view and key != "unread" and (hover or focus):
+                            self.assertTrue(window.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); self.settle(window)
+                            self.assertTrue(card.has_css_class("asb-dismissed"))
+                            self.assertEqual(self.ink(card.asb_read_button), 0)
+                            # A pointer move to another card clears the dismissal; a return to this card alone does not.
+                            other = window.focus_widgets["unread"]
+                            self.hover_card(window, card, False); self.hover_card(window, other, True)
+                            self.hover_card(window, other, False); self.hover_card(window, card, hover)
+                            self.settle(window)
+                            self.assertFalse(card.has_css_class("asb-dismissed"))
+                            self.assertEqual(self.ink(cue), 255)
+                            self.assertGreater(self.ink(card.asb_read_button), 0)
+                self.hover_card(window, card, False)
+                window.set_focus(None)
+
+    def test_working_accessible_name_uses_whole_minutes_in_words(self):
+        window = self.card_board([self.card_row("a", state="working", workingSinceMs=NOW)])
+        card = window.focus_widgets["a"]
+        for seconds, words, visible in ((30, "less than a minute", "<1m"), (60, "1 minute", "1m"),
+                                        (720, "12 minutes", "12m"), (3900, "1 hour 5 minutes", "1h05m")):
+            with self.subTest(seconds=seconds):
+                window.update_row_text(card, NOW + seconds * 1000)
+                self.assertEqual(card.asb_age_label.get_text(), visible)
+                self.assertIn("Working · " + visible, card.asb_tooltip)
+                self.assert_accessible_label(card, card.asb_accessible_label + " Working time " + words + ".")
 
     def test_board_zoom_scales_the_card_corner_title_and_pocket_at_each_text_scale(self):
         settings = asb.Gtk.Settings.get_default()

@@ -6808,10 +6808,12 @@ class NativeLogicChecks(unittest.TestCase):
                ".asb-tooltip { font-size: 12px; }\n")
         self.assertEqual(asb.zoom_css(css, 100), css)
         self.assertEqual(asb.zoom_css(css, 150),
-                         ".asb-column-flow .asb-session { min-height: 33px; font-size: 20px; padding: 2px; }\n"
-                         ".asb-column-flow.asb-comfortable .asb-session { min-height: 102px; }\n"
-                         ".asb-column-flow.asb-preferences .asb-x { font-size: 13px; }\n"
-                         ".asb-tooltip { font-size: 12px; }\n")
+                         ".asb-column-flow:not(.asb-preferences) .asb-session { min-height: 33px; font-size: 20px; padding: 2px; }\n"
+                         ".asb-column-flow.asb-preferences .asb-session { min-height: 22px; font-size: 13px; padding: 2px; }\n"
+                         ".asb-column-flow:not(.asb-preferences).asb-comfortable .asb-session { min-height: 102px; }\n"
+                         ".asb-column-flow.asb-preferences.asb-comfortable .asb-session { min-height: 68px; }\n"
+                         ".asb-column-flow.asb-preferences .asb-x:not(.asb-zoom-none) { font-size: 13px; }\n"
+                         ".asb-tooltip:not(.asb-zoom-none) { font-size: 18px; }\n")
         for value in (100, 80, 200):
             self.assertEqual(asb.validate_zoom(value), value)
         for value in (0, 95, 100.0, True, "100", None):
@@ -6830,10 +6832,19 @@ class NativeLogicChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 asb.read_layout(path)
 
+    def test_zoom_css_splits_only_top_level_commas_and_removes_comments(self):
+        css = "/* .asb-column-flow .fake {} */ .asb-column-flow .x:not(.a, :not(.b, .c)), .asb-tooltip .x, .other { font-size: 12px; color: red; }"
+        self.assertEqual(asb.zoom_css(css, 200),
+                         ".asb-column-flow:not(.asb-preferences) .x:not(.a, :not(.b, .c)) { font-size: 24px; color: red; }\n"
+                         ".asb-column-flow.asb-preferences .x:not(.a, :not(.b, .c)) { font-size: 12px; color: red; }\n"
+                         ".asb-tooltip .x:not(.asb-zoom-none) { font-size: 24px; color: red; }\n"
+                         ".other:not(.asb-zoom-none) { font-size: 12px; color: red; }")
+
     def test_zoom_scales_compact_pseudo_rules_and_python_corner_sizes(self):
         css = ".asb-column-flow:not(.asb-comfortable) .asb-dot { min-width: 12px; min-height: 12px; }"
         self.assertEqual(asb.zoom_css(css, 200),
-                         ".asb-column-flow:not(.asb-comfortable) .asb-dot { min-width: 24px; min-height: 24px; }")
+                         ".asb-column-flow:not(.asb-preferences):not(.asb-comfortable) .asb-dot { min-width: 24px; min-height: 24px; }\n"
+                         ".asb-column-flow.asb-preferences:not(.asb-comfortable) .asb-dot { min-width: 12px; min-height: 12px; }")
         for zoom, expected in ((80, 44), (100, 54), (150, 78), (200, 102)):
             self.assertEqual(asb.corner_reserve(zoom), expected)
         window = object.__new__(Window)
@@ -8617,7 +8628,7 @@ class NativeLogicChecks(unittest.TestCase):
                 (corner.add_css_class if width >= 190 else corner.remove_css_class).assert_called_with("asb-corner-wide")
         css = SOURCE.read_text()
         for rule in ("{base} .asb-unread.asb-hovered .asb-dot,", "{base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}",
-                     "{base} .asb-unread.asb-hovered .asb-read-cue {{", "{base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}"):
+                     "{base} .asb-unread.asb-hovered .asb-read-cue,", "{base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}"):
             self.assertIn(rule, css)
         self.assertIn('"drawer-in", "drawer-out", "mute", "unmute"):', css)
 

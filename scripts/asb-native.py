@@ -662,6 +662,8 @@ def question_wait_note(row):
     """The second sentence of the card "?" button and of the panel Mark read row, while the row has an unread "?"."""
     if attention_indicator(row, True) != "question":
         return ""
+    if row.get("drawer") and row.get("state") == "waiting":
+        return "The session still waits for your permission." if row.get("actionRequired") else "The session still waits for your answer."
     if not shows_action(row):
         return "The session still waits for your answer."
     return "The session still waits for your permission." if row.get("actionAttention") or row.get("unread") else ""
@@ -1464,16 +1466,34 @@ def corner_reserve(zoom):
 
 
 def zoom_css(css, zoom):
-    """The board CSS at a zoom level: the text sizes and minimum sizes of the rules inside the board scale. The Preferences window
-    and rules outside the board keep their sizes."""
+    """Scale board and tooltip sizes, but keep Preferences and all other sizes unchanged."""
     if zoom == 100:
         return css
     def rule(match):
-        selector, body = match.group(1), match.group(2)
-        if not ZOOM_SCOPE.search(selector) or "asb-preferences" in selector:
-            return match.group(0)
-        return selector + "{" + ZOOM_SIZE.sub(lambda size: f"{size.group(1)}: {zoomed(float(size.group(2)), zoom)}px", body) + "}"
-    return re.sub(r"([^{}]+)\{([^{}]*)\}", rule, css)
+        selectors, body = match.group(1), match.group(2)
+        scaled = ZOOM_SIZE.sub(lambda size: f"{size.group(1)}: {zoomed(float(size.group(2)), zoom)}px", body)
+        parts, start, depth = [], 0, 0
+        for token in re.finditer(r"[(),]", selectors):
+            if token[0] == "(":
+                depth += 1
+            elif token[0] == ")":
+                depth -= 1
+            elif depth == 0:
+                parts.append(selectors[start:token.start()].strip())
+                start = token.end()
+        parts.append(selectors[start:].strip())
+        rules = []
+        # One extra class per selector preserves specificity and source order at every zoom.
+        for selector in parts:
+            if ZOOM_SCOPE.search(selector) and "asb-preferences" not in selector and not re.search(
+                    r"\.asb-(?:toolbar(?:-button)?|filter-(?:pill|row|head|footer)|chip-(?:dot|scroll)|drawer-(?:dot|glyph|handle))(?![\w-])", selector):
+                rules.append(selector.replace(".asb-column-flow", ".asb-column-flow:not(.asb-preferences)", 1) + " {" + scaled + "}")
+                rules.append(selector.replace(".asb-column-flow", ".asb-column-flow.asb-preferences", 1) + " {" + body + "}")
+            else:
+                tooltip = re.match(r"^[^\s>+~]*\.asb-tooltip(?![\w-])", selector)
+                rules.append(selector + ":not(.asb-zoom-none) {" + (scaled if tooltip else body) + "}")
+        return ("\n" if match.start() else "") + "\n".join(rules)
+    return re.sub(r"([^{}]+)\{([^{}]*)\}", rule, re.sub(r"/\*.*?\*/", "", css, flags=re.S))
 
 
 def validate_card_limit(value):
@@ -1775,7 +1795,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     shape = "" if indicator in ("dot", "question") and row.get("drawer") and not row.get("unread") and not drawer_view else indicator
     note = ""
     if indicator == "question":
-        note = "Waits for your permission." if shows_action(row) else "Asks a question. Open the chat to answer."
+        note = "Waits for your permission." if (row.get("actionRequired") if row.get("drawer") and state == "waiting" else shows_action(row)) else "Asks a question. Open the chat to answer."
     elif indicator == "alert":
         note = "Usage limit stopped the task. Not read yet." if row.get("lastOutcome") == "limit" else failed_unread_note(row)
     elif indicator == "dot":
@@ -6954,7 +6974,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     background: linear-gradient(to right, alpha(@window_bg_color, 0), @window_bg_color {POCKET_TAG_FADE}px); }}
 {base} .asb-unread.asb-hovered .asb-dot,
 {base} .asb-drawer:not(.asb-drawer-lit) .asb-dot {{ opacity: 0; }}
-{base} .asb-unread.asb-hovered .asb-read-cue {{ opacity: 1; }}
+{base} .asb-unread.asb-hovered .asb-read-cue,
+{base} .asb-drawer:not(.asb-drawer-lit).asb-hovered .asb-read-cue,
+{base} .asb-drawer:not(.asb-drawer-lit).asb-key-focus .asb-read-cue {{ opacity: 1; }}
 {base} .asb-drawer.asb-unhovered:not(.asb-drawer-lit):not(.asb-key-focus) .asb-read-button {{ opacity: 0; }}
 {base}:not(.asb-custom) .asb-unread.asb-hovered .asb-state:not(.success) {{ opacity: .55; }}
 {base} .asb-drawer.asb-drawer-lit.asb-unhovered .asb-state {{ opacity: 1; }}
@@ -7159,6 +7181,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {dismissed} .asb-pin-button.asb-pinned {{ background: none; color: {quiet_caption}; }}
 {base} .asb-unread.asb-dismissed:not(.asb-drawer) .asb-read-button .asb-dot {{ opacity: 1; }}
 {base} .asb-unread.asb-dismissed:not(.asb-drawer) .asb-read-button .asb-read-cue {{ opacity: 0; }}
+{base} .asb-drawer.asb-dismissed:not(.asb-drawer-lit) .asb-read-button {{ opacity: 0; }}
 """
         text = colors['text'] if colors else "@window_fg_color"
         muted = colors['muted'] if colors else "@window_fg_color"
@@ -9115,8 +9138,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         parts = self.hold_board_parts(rows, parts, inputs, pins, order_now)
         rows = [row for part in parts for row in part]
         # The copy and drawer buttons show from 190 px, the mute button from 240 px.
-        narrow = (self.column_pixel_width < zoomed(190, self.board_zoom), self.column_pixel_width < zoomed(240, self.board_zoom))
+        previous_narrow = getattr(self, "corner_narrow", None)
         self.column_pixel_width = max(1, (width - 8 - 12 * (self.columns - 1)) // self.columns)
+        self.corner_narrow = (self.column_pixel_width < zoomed(190, self.board_zoom), self.column_pixel_width < zoomed(240, self.board_zoom))
         self.actual_columns = len(parts)
         self.row_order = [row["id"] for row in rows]
         self.column_parts = parts
@@ -9170,7 +9194,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.filled_columns = frozenset(filled)
         for number in sorted(filled):
             for row in parts[number]:
-                self.prepare_card(row, narrow != (self.column_pixel_width < zoomed(190, self.board_zoom), self.column_pixel_width < zoomed(240, self.board_zoom)))
+                self.prepare_card(row, previous_narrow != self.corner_narrow)
         visible_widgets = {row["id"]: self.row_cache[row["id"]] for row in rows if self.row_columns[row["id"]] in filled}
         if repack or reorder:
             self.layout_signature = layout_signature
@@ -10686,8 +10710,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         manual = " Marked as unread in ASB." if shown and row.get("manualUnread") else ""
         native_unread = " Unread in the original app." if shown and row.get("nativeAttention") else ""
         pinned = " Pinned in ASB." if row.get("pinned") else ""
-        question = " A user action is required in the original app." if shows_action(row) \
-            else " Question needs your answer." if row.get("questionAttention") else ""
+        question = " A user action is required in the original app." if shows_action(row) or row.get("drawer") and row.get("state") == "waiting" and row.get("actionRequired") \
+            else " Question needs your answer." if row.get("questionAttention") or row.get("drawer") and row.get("state") == "waiting" else ""
         retained = " Unread retained in ASB. Use Read to clear it." if shown and row.get("retainedUnread") else ""
         outcome = " Task stopped." if row.get("lastOutcome") == "stopped" \
             else " Usage limit stopped the task." if row.get("lastOutcome") == "limit" \
@@ -10695,7 +10719,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else " Task failed." if row.get("lastOutcome") == "failed" or row.get("failedAttention") \
             else " Task completed." if row.get("completionAttention") else ""
         discard = (" No dot when the next task ends." if row.get("state") == "idle" else " No dot when this task ends.") if row.get("discardResult") else ""
-        drawer = " In the drawer. Still unread." if row.get("drawer") else ""
+        drawer = (" In the drawer." if row.get("state") == "waiting" else " In the drawer. Still unread.") if row.get("drawer") else ""
         muted = " " + mute_flag + "." if mute_flag else ""
         limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
         where = (f" On {row.get('machineName') or 'another machine'}." if row.get("remote") else "") \
@@ -11598,7 +11622,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         duration = widget.asb_duration
         name = "Opening " + widget.asb_accessible_label.removeprefix("Open ") if opening else widget.asb_accessible_label
         if duration:
-            name += " Working time " + duration + "."
+            seconds = ((time.time() * 1000 if now_ms is None else now_ms) - row["workingSinceMs"]) / 1000
+            name += " Working time " + spoken_duration(seconds) + "."
         model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error)
         widget.asb_tooltip = tooltip_description(model)
         description = getattr(widget, "asb_mute_done", None) or widget.asb_tooltip
