@@ -3020,15 +3020,15 @@ class WidgetCheck(unittest.TestCase):
                 self.assert_accessible_label(panel, "A session without a desktop link")
                 self.assertEqual(panel.asb_title.get_label(), "A session without a desktop link")
                 self.assertEqual(panel.asb_title.get_tooltip_text(), "/example/Tools\ncodex/")
-                self.assertEqual(panel.asb_open.asb_label.get_label(), "Open in Codex")
+                self.assertEqual(panel.asb_open.asb_label.get_label(), "Opens only in Codex")
                 # The Open row has the provider mark of the card, and the panel has no note.
                 self.assertEqual(icon_name(panel.asb_open.asb_icon), "asb-openai-symbolic")
                 self.assertFalse(panel.asb_open.get_sensitive())
                 self.assertEqual(actions(panel), {"read": ("Mark unread", True), "mute": ("Mute", True), "pin": ("Pin", True)})
                 self.assertFalse(hasattr(panel, "asb_note"))
                 self.assertTrue(panel.asb_open.asb_caption.get_visible())
-                self.assertEqual(panel.asb_open.asb_caption.get_label(), "ASB cannot open this session. Open it in Codex.")
-                self.assert_accessible_label(panel.asb_open, "ASB cannot open this session. Open it in Codex.",
+                self.assertEqual(panel.asb_open.asb_caption.get_label(), "ASB cannot open this session.")
+                self.assert_accessible_label(panel.asb_open, "ASB cannot open this session.",
                                              asb.Gtk.AccessibleProperty.DESCRIPTION)
                 self.assertFalse(window.row_key(None, asb.Gdk.KEY_Down, 0, 0, "unknown"))
                 panel.popdown()
