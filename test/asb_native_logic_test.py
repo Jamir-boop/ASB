@@ -6031,7 +6031,7 @@ class NativeLogicChecks(unittest.TestCase):
                   "sourceColor": "#B28F80", "pinned": True, "archived": True, "canOpen": False, "reason": "Recorded state reason."}
         value = model(source, 223_000, "/home/test", "Cannot open this session.")
         self.assertEqual((value["app"], value["app_color"], value["flags"]),
-                         ("Codex · Personal", "#b28f80", "Pinned · Archived · No direct link"))
+                         ("Codex · Personal", "#b28f80", "Pinned · Archived · No direct link. ASB cannot open this session. Open it in Codex."))
         for text in (base["title"], "Recorded state reason.", "Personal", "codex-personal", "Cannot open this session."):
             self.assertIn(text, description(value))
         self.assertEqual(model({**source, "sourceLabel": "Codex"}, 223_000, "/home/test")["app"], "Codex")
@@ -6043,14 +6043,14 @@ class NativeLogicChecks(unittest.TestCase):
                     "sourceLabel": "OpenCode", "sourceId": "opencode"}
         value = model(opencode, 223_000, "/home/test")
         self.assertEqual((value["app"], value["flags"]),
-                         ("OpenCode", "Pinned · No direct link. OpenCode cannot open one session from a link."))
-        self.assertIn("OpenCode cannot open one session from a link.", description(value))
+                         ("OpenCode", "Pinned · No direct link. ASB cannot open OpenCode sessions. Open it in OpenCode."))
+        self.assertIn("ASB cannot open OpenCode sessions. Open it in OpenCode.", description(value))
         # A view-only row says where it runs in place of "No direct link".
         for extra, flags in (({"surface": "cli", "pinned": True}, "Pinned · CLI session. Runs in a terminal. ASB does not open CLI sessions."),
                              ({"remote": True, "machineName": "homeLP"}, "On homeLP. Open it on homeLP."),
                              ({"remote": True, "machineName": "homeLP", "surface": "cli"}, "On homeLP · CLI session. Open it on homeLP."),
                              ({"remote": True, "machineName": ""}, "On another machine. Open it on another machine."),
-                             ({"surface": "app"}, "No direct link")):
+                             ({"surface": "app"}, "No direct link. ASB cannot open this session. Open it in Codex.")):
             value = model({**base, "canOpen": False, **extra}, 223_000, "/home/test")
             self.assertEqual(value["flags"], flags)
             self.assertIn(flags, description(value))

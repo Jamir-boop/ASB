@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- The no-open toast now wraps its whole reason in a narrow board without shrinking its buttons. Escape on the board, a card, or its button closes only the toast first; moving to another card or scrolling the board closes it too. The next Escape keeps its usual action. Popovers, search, and Preferences keep their own Escape action.
+- Clearer no-open words name ASB and the app that can open the session. The no-link tooltip uses the same words, and a disabled Open row with no other caption shows the reason. **Show messages** in the row panel now has the caption **Between sessions** and a description that says these are messages between sessions.
 - On card hover or key focus, a title line 1 whose first word does not fit left of the corner pocket fade with `…` now shows the start of that word in whole letters, with `…` right after it (`data-sync-nightly-…`), as the folder line. Before, it showed only `…`.
 - The live notification of the Android app shows two counts now, `1 pending · 2 working`. The count of all sessions is gone from it, as from the GNOME top bar.
 - Added a zoom badge in the toolbar: while the board zoom is not 100%, a pill left of Refresh (or of ⋮) shows the level, such as `125%`, also at start with a saved zoom. Each zoom change updates it at once and rings it in the accent color for 400 ms, and screen readers hear the new level. A click, Enter, or Space on it resets the zoom to 100%; after a reset it shows `100%` for 1.5 seconds, then hides. The badge keeps its size at every zoom.

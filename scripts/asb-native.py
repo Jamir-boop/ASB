@@ -1736,8 +1736,9 @@ def no_open_title(row):
     if row.get("surface") == "cli":
         return "Runs in a terminal. ASB does not open CLI sessions."
     if row.get("provider") == "opencode":
-        return "OpenCode cannot open one session from a link."
-    return "ASB has no direct link to this session."
+        return "ASB cannot open OpenCode sessions. Open it in OpenCode."
+    app = row.get("providerLabel") or APP_NAMES.get(row.get("provider"), "")
+    return "ASB cannot open this session." + (f" Open it in {app}." if app else "")
 
 
 def view_only_tone(row):
@@ -1850,8 +1851,7 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
         flags += f". Open it on {machine}." if row.get("remote") else ". Runs in a terminal. ASB does not open CLI sessions."
     elif not row.get("canOpen"):
         flags += (" · " if flags else "") + "No direct link"
-        if row.get("provider") == "opencode":
-            flags += ". OpenCode cannot open one session from a link."
+        flags += ". " + no_open_title(row)
     source = "Profile: " + (source_label or source_id) if source_label or source_id else ""
     if source_label and source_id:
         source += " (" + source_id + ")"
@@ -3213,6 +3213,31 @@ def label(text, css=None):
     if css:
         widget.add_css_class(css)
     return widget
+
+
+class ToastTitle(Gtk.Label):
+    """The toast overlay clamps its preferred width without measuring its height again."""
+    title_width, resize_idle = None, None
+
+    def do_measure(self, orientation, for_size):
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            minimum, natural, *_baselines = Gtk.Label.do_measure(self, orientation, -1)
+            return minimum, natural, -1, -1
+        if self.title_width is not None:
+            for_size = min(for_size, self.title_width) if for_size >= 0 else self.title_width
+        return Gtk.Label.do_measure(self, orientation, for_size)
+
+    def do_size_allocate(self, width, height, baseline):
+        Gtk.Label.do_size_allocate(self, width, height, baseline)
+        if width != self.title_width:
+            self.title_width = width
+            if not self.resize_idle:
+                self.resize_idle = GLib.idle_add(self.resize_title)
+
+    def resize_title(self):
+        self.resize_idle = None
+        self.queue_resize()
+        return False
 
 
 class PanelCaption(Gtk.Label):
@@ -8064,6 +8089,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     else:
                         self.step_copy_kind(getattr(copy, "asb_card", None))
                 return True
+        self.dismiss_no_open_toast()
         adjustment = self.scroll.get_hadjustment()
         unit = controller.get_unit() if controller else Gdk.ScrollUnit.WHEEL
         distance = max(32, adjustment.get_step_increment()) if unit == Gdk.ScrollUnit.WHEEL else 1
@@ -8382,6 +8408,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         return None
 
     def focus_changed(self, *_args):
+        if self.no_open_toast:
+            identity = self.focus_key()
+            if identity:
+                self.dismiss_no_open_toast(identity)
         # A repack makes GTK move focus to a column or to nothing; only a user focus change cancels a queued restore.
         focus = self.get_focus()
         if focus is not None and type(focus).__name__ not in ("ListBox", "SessionColumn"):
@@ -8661,6 +8691,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if key == Gdk.KEY_Escape:
             if any(popover.get_mapped() for popover in self.open_popovers):
                 return False
+            if not isinstance(focus, (Gtk.Editable, Gtk.TextView)) and self.dismiss_no_open_toast():
+                return True
             return self.clear_search() or self.dismiss_card_controls()
         if isinstance(focus, (Gtk.Editable, Gtk.TextView)) \
                 or key in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
@@ -10097,7 +10129,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def row_no_open_click(self, gesture, count, _x, _y, _identity):
         """A primary click on the body of a card that ASB cannot open says why (open_row); a card button claims its own click."""
         widget = gesture.get_widget()
-        if count == 1 and not widget.get_activatable() and not (self.context_menu and self.context_menu.get_visible()):
+        if count >= 1 and not widget.get_activatable() and not (self.context_menu and self.context_menu.get_visible()):
             self.open_row(None, widget)
 
     def row_long_press(self, gesture, x, y, identity):
@@ -11056,7 +11088,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         main.append(Gtk.Separator())
         panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy, "short")
         panel.asb_copy_full = action_row("edit-copy-symbolic", self.panel_copy, "full")
-        for button, text in ((panel.asb_open, None), (panel.asb_actions["mute"], "Mute"), (panel.asb_actions["read"], None),
+        for button, text in ((panel.asb_messages, None), (panel.asb_open, None), (panel.asb_actions["mute"], "Mute"), (panel.asb_actions["read"], None),
                              (panel.asb_actions["drawer"], None), (panel.asb_copy, "Copy relative reference"),
                              (panel.asb_copy_full, "Copy absolute reference")):
             if text:
@@ -11071,11 +11103,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             button.asb_caption.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             # Pango shows one line of a wrapped, ellipsized label with no line limit. The Open, Read, and drawer captions show
             # all their words; the Mute caption is one line, and the copy captions set their line limit in show_copy_rows.
-            if button not in (panel.asb_open, panel.asb_actions["read"], panel.asb_actions["drawer"]):
+            if button not in (panel.asb_messages, panel.asb_open, panel.asb_actions["read"], panel.asb_actions["drawer"]):
                 button.asb_caption.set_ellipsize(Pango.EllipsizeMode.END)
             button.asb_caption.set_max_width_chars(1)
             words.append(button.asb_caption)
             button.get_child().append(words)
+        panel.asb_messages.asb_caption.set_label("Between sessions")
+        panel.asb_messages.add_css_class("asb-panel-captioned")
+        panel.asb_messages.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Messages between this session and other sessions"])
         for slot, button in (*panel.asb_actions.items(), ("copy", panel.asb_copy), ("copy", panel.asb_copy_full)):
             if slot in CARD_ACTION_KEYS:
                 button.asb_hint = label(CARD_ACTION_KEYS[slot], "asb-panel-caption")
@@ -11308,6 +11343,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         open_caption = "Waits for your permission." if row.get("actionRequired") else "Waits for your answer." if row.get("questionPending") \
             else model["note"] if row.get("processEnded") and attention_indicator(row, True) == "alert" \
             else row.get("reason", "") if row.get("state") == "unknown" else ""
+        if not row.get("canOpen") and not open_caption:
+            open_caption = f"Open it on {row.get('machineName') or 'another machine'}." if row.get("remote") else \
+                "ASB does not open CLI sessions." if row.get("surface") == "cli" else no_open_title(row)
         signature = (self.mute_for, self.copy_kind, mute_caption, read_note, unread_caption, drawer_caption, open_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
@@ -11333,7 +11371,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             panel.asb_open.set_sensitive(False)
             panel.asb_open.add_css_class("asb-panel-where")
         else:
-            panel.asb_open.remove_css_class("asb-panel-where")
+            # A row that cannot open has the where look; a row that opens now keeps the GTK insensitive look.
+            (panel.asb_open.remove_css_class if row.get("canOpen") else panel.asb_open.add_css_class)("asb-panel-where")
             set_panel_label(panel.asb_open, "Open in " + model["app"])
             panel.asb_open.set_sensitive(bool(row.get("canOpen")) and row["id"] not in self.opening)
         set_icon(panel.asb_open.asb_icon, provider_icon(row.get("provider")))
@@ -11853,6 +11892,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.update_state([Gtk.AccessibleState.BUSY], [opening])
 
     def card_pointer_event(self, _gesture, _count, x, y):
+        identity = self.card_at(x, y)
+        if identity:
+            self.dismiss_no_open_toast(identity)
         self.card_pointer = (x, y)
         GLib.idle_add(self.clear_card_pointer)
 
@@ -11905,12 +11947,23 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return False
         request_async(self.base, "/api/threads/" + quote(row["id"], safe="") + "/open", finished, GLib.idle_add, "POST")
 
+    def dismiss_no_open_toast(self, identity=None):
+        """Dismiss on moving on; input on the same card keeps its toast."""
+        if self.no_open_toast and (identity is None or identity != self.no_open_toast.asb_identity):
+            self.no_open_toast.dismiss()
+            return True
+        return False
+
     def show_no_open_toast(self, row):
         """Say why a card does not open, with Show messages for its session. A new toast first dismisses the shown one."""
-        if self.no_open_toast:
-            self.no_open_toast.dismiss()
+        self.dismiss_no_open_toast()
         identity, title = row["id"], " ".join((row.get("title") or "Untitled session").split())
-        toast = Adw.Toast(title=GLib.markup_escape_text(no_open_title(row)), button_label="Show messages", timeout=4)
+        toast = Adw.Toast(button_label="Show messages", timeout=4)
+        words = ToastTitle(label=no_open_title(row), xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                          lines=3, ellipsize=Pango.EllipsizeMode.END)
+        words.add_css_class("heading")
+        toast.set_custom_title(words)
+        toast.asb_identity = identity
         toast.connect("button-clicked", lambda _toast: self.get_application().show_activity("messages", seat=identity, title=title))
         toast.connect("dismissed", lambda shown: setattr(self, "no_open_toast", None) if self.no_open_toast is shown else None)
         self.no_open_toast = toast

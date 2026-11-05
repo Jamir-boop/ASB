@@ -3026,7 +3026,10 @@ class WidgetCheck(unittest.TestCase):
                 self.assertFalse(panel.asb_open.get_sensitive())
                 self.assertEqual(actions(panel), {"read": ("Mark unread", True), "mute": ("Mute", True), "pin": ("Pin", True)})
                 self.assertFalse(hasattr(panel, "asb_note"))
-                self.assertFalse(panel.asb_open.asb_caption.get_visible())
+                self.assertTrue(panel.asb_open.asb_caption.get_visible())
+                self.assertEqual(panel.asb_open.asb_caption.get_label(), "ASB cannot open this session. Open it in Codex.")
+                self.assert_accessible_label(panel.asb_open, "ASB cannot open this session. Open it in Codex.",
+                                             asb.Gtk.AccessibleProperty.DESCRIPTION)
                 self.assertFalse(window.row_key(None, asb.Gdk.KEY_Down, 0, 0, "unknown"))
                 panel.popdown()
                 self.drain()
@@ -9087,8 +9090,8 @@ class WidgetCheck(unittest.TestCase):
                 row("cli", surface="cli", provider="claude-desktop-code", providerLabel="Claude Code CLI"),
                 row("opencode", provider="opencode", providerLabel="OpenCode"), row("other"), self.card_row("opens")]
         titles = {"remote": "Runs on studio. Open it on studio.", "nameless": "Runs on another machine. Open it on another machine.",
-                  "cli": "Runs in a terminal. ASB does not open CLI sessions.", "opencode": "OpenCode cannot open one session from a link.",
-                  "other": "ASB has no direct link to this session."}
+                  "cli": "Runs in a terminal. ASB does not open CLI sessions.", "opencode": "ASB cannot open OpenCode sessions. Open it in OpenCode.",
+                  "other": "ASB cannot open this session. Open it in Codex."}
         window = self.card_board(rows)
         requests, activity = [], []
         for target, name, value in ((asb, "request_async", lambda *args: requests.append(args)),
@@ -9117,7 +9120,7 @@ class WidgetCheck(unittest.TestCase):
         def toast(identity):
             shown = window.no_open_toast
             self.assertIsNotNone(shown)
-            self.assertEqual((shown.get_title(), shown.get_button_label(), shown.get_timeout()), (titles[identity], "Show messages", 4))
+            self.assertEqual((shown.get_custom_title().get_label(), shown.get_button_label(), shown.get_timeout()), (titles[identity], "Show messages", 4))
             shown.connect("dismissed", lambda item: dismissed.append(item))
             return shown
         for identity in titles:
@@ -9170,6 +9173,186 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual([request[1] for request in requests], ["/api/threads/opens/open"])
         self.assertIsNone(window.no_open_toast)
         requests[-1][2]({"opened": True}, None); self.drain(.2)
+
+    def test_no_open_toast_wraps_whole_reasons_in_narrow_boards_and_one_line_in_wide_boards(self):
+        rows = [self.card_row("cli", canOpen=False, surface="cli"),
+                self.card_row("remote", canOpen=False, remote=True, machineName="studio"),
+                self.card_row("opencode", canOpen=False, provider="opencode", providerLabel="OpenCode"),
+                self.card_row("other", canOpen=False)]
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if "Cascadia Code NF" in self.font_families() else [])
+        for font in fonts:
+            window = self.card_board(rows, font=font)
+            for width in (420, 1004):
+                window.set_default_size(width, 410); window.check_geometry(); self.settle(window)
+                for row in rows:
+                    with self.subTest(font=font, width=width, row=row["id"]):
+                        window.show_no_open_toast(row); self.drain(.3)
+                        title = window.no_open_toast.get_custom_title()
+                        self.assertIsInstance(title, asb.Gtk.Label)
+                        self.assertEqual(title.get_label(), asb.no_open_title(row))
+                        self.assertEqual(title.get_css_classes(), ["heading"])
+                        self.assertEqual((title.get_xalign(), title.get_wrap(), title.get_wrap_mode(), title.get_lines(), title.get_ellipsize()),
+                                         (0, True, asb.Pango.WrapMode.WORD_CHAR, 3, asb.Pango.EllipsizeMode.END))
+                        layout = title.get_layout()
+                        toast = next(widget for widget in descendants(window.toast_overlay) if widget.get_css_name() == "toast" and widget.get_mapped())
+                        found, box = title.compute_bounds(toast)
+                        self.assertTrue(found)
+                        self.assertGreaterEqual(box.origin.y, 0)
+                        self.assertLessEqual(box.origin.y + box.size.height, toast.get_height())
+                        self.assertLessEqual(layout.get_pixel_size()[1], title.get_height())
+                        self.assertFalse(layout.is_ellipsized(), (title.get_width(), title.get_label()))
+                        self.assertIn(layout.get_line_count(), (1,) if width == 1004 else (2, 3))
+                        window.no_open_toast.dismiss(); self.drain(.1)
+            window.close(); self.drain(.1)
+
+    def test_no_open_toast_escape_keeps_board_state_and_popovers_keep_the_toast(self):
+        asb.gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+        row = self.card_row("cli", canOpen=False, surface="cli")
+        window = self.card_board([row])
+        xid = GdkX11.X11Surface.get_xid(window.get_surface())
+        def escape():
+            subprocess.run(["xdotool", "windowfocus", str(xid), "key", "Escape"], check=True, capture_output=True)
+            self.drain(.15)
+        card = window.card_for("cli")
+        for target in (None, card, card.asb_pin_button, window.search_button, window.drawer_only):
+            window.search.set_text("release"); self.settle(window)
+            window.set_focus(target)
+            window.restore_card_controls(card)
+            window.show_no_open_toast(row); self.drain(.15)
+            escape()
+            self.assertIsNone(window.no_open_toast)
+            self.assertEqual(window.search.get_text(), "release")
+            self.assertFalse(window.card_dismissed(card))
+            escape()
+            self.assertEqual(window.search.get_text(), "")
+        window.set_focus_visible(True)
+        card.grab_focus()
+        window.show_no_open_toast(row); self.drain(.15)
+        escape()
+        self.assertFalse(window.card_dismissed(card))
+        escape()
+        self.assertTrue(window.card_dismissed(card))
+        window.restore_card_controls(card)
+        window.show_context(card); self.drain(.15)
+        window.show_no_open_toast(row); self.drain(.15)
+        shown = window.no_open_toast
+        escape()
+        self.assertFalse(window.context_menu and window.context_menu.get_visible())
+        self.assertIs(window.no_open_toast, shown)
+        window.search.set_text("release"); window.search.grab_focus(); self.drain(.1)
+        escape()
+        self.assertEqual(window.search.get_text(), "")
+        self.assertIs(window.no_open_toast, shown)
+        window.open_filters_popover(); self.drain(.15)
+        escape()
+        self.assertFalse(window.filter_popover and window.filter_popover.get_visible())
+        self.assertIs(window.no_open_toast, shown)
+        window.menu_button.popup(); self.drain(.15)
+        escape()
+        self.assertFalse(window.menu_button.get_popover().get_visible())
+        self.assertIs(window.no_open_toast, shown)
+        window.open_preferences(); self.drain(.15)
+        preferences = window.preferences_window
+        self.assertTrue(preferences.window_key(None, asb.Gdk.KEY_Escape, 0, 0)); self.drain(.1)
+        self.assertIs(window.no_open_toast, shown)
+
+    def test_no_open_toast_dismisses_on_another_card_focus_click_or_board_scroll(self):
+        asb.gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+        row = self.card_row("cli", canOpen=False, surface="cli")
+        window = self.card_board([row, self.card_row("other", canOpen=False)])
+        xid = GdkX11.X11Surface.get_xid(window.get_surface())
+        def click(widget):
+            found, box = widget.compute_bounds(window)
+            self.assertTrue(found)
+            left, top = window.get_surface_transform()
+            subprocess.run(["xdotool", "mousemove", "--window", str(xid), str(int(box.origin.x + box.size.width / 2 + left)),
+                            str(int(box.origin.y + box.size.height / 2 + top)), "click", "1"], check=True, capture_output=True)
+            self.drain(.15)
+        card, other = window.card_for("cli"), window.card_for("other")
+        card.grab_focus(); window.show_no_open_toast(row); self.drain(.1)
+        other.asb_pin_button.grab_focus(); self.drain(.1)
+        self.assertIsNone(window.no_open_toast)
+        for target in (other.asb_pin_button, other.asb_title_label):
+            window.show_no_open_toast(row); self.drain(.1)
+            shown = window.no_open_toast
+            click(target)
+            self.assertIsNot(window.no_open_toast, shown)
+            if window.no_open_toast:
+                self.assertEqual(window.no_open_toast.asb_identity, "other")
+                window.no_open_toast.dismiss(); self.drain(.1)
+        click(card.asb_title_label)
+        shown = window.no_open_toast
+        self.assertIsNotNone(shown)
+        click(card.asb_title_label)
+        self.assertIsNot(window.no_open_toast, shown)
+        self.assertIsNotNone(window.no_open_toast)
+        window.scroll_horizontal(None, 0, 1); self.drain(.1)
+        self.assertIsNone(window.no_open_toast)
+
+    def test_no_open_words_tooltips_panel_reasons_and_between_sessions_caption(self):
+        rows = [self.card_row("cli", canOpen=False, surface="cli"),
+                self.card_row("remote", canOpen=False, remote=True, machineName="studio"),
+                self.card_row("opencode", canOpen=False, provider="opencode", providerLabel="OpenCode"),
+                self.card_row("other", canOpen=False),
+                self.card_row("custom", canOpen=False, provider="custom", providerLabel="Sample app"),
+                self.card_row("nameless", canOpen=False, provider="", providerLabel=""),
+                self.card_row("wait", canOpen=False, actionRequired=True),
+                self.card_row("question", canOpen=False, questionPending=True),
+                self.card_row("unknown", canOpen=False, state="unknown", reason="No recent signal."),
+                self.card_row("ended", canOpen=False, state="unknown", processEnded=True, alert=True, unread=True)]
+        titles = ["Runs in a terminal. ASB does not open CLI sessions.", "Runs on studio. Open it on studio.",
+                  "ASB cannot open OpenCode sessions. Open it in OpenCode.", "ASB cannot open this session. Open it in Codex.",
+                  "ASB cannot open this session. Open it in Sample app.", "ASB cannot open this session."]
+        captions = ["ASB does not open CLI sessions.", "Open it on studio.", *titles[2:], "Waits for your permission.",
+                    "Waits for your answer.", "No recent signal.", "The Claude Code process ended during a task. Not read yet."]
+        window = self.card_board(rows)
+        for index, row in enumerate(rows):
+            with self.subTest(row=row["id"]):
+                if index < len(titles):
+                    self.assertEqual(asb.no_open_title(row), titles[index])
+                    if index >= 2:
+                        self.assertTrue(asb.tooltip_model(row, NOW, "/example")["flags"].endswith("No direct link. " + titles[index]))
+                window.show_context(window.card_for(row["id"])); self.drain(.1)
+                panel = window.context_menu
+                self.assertEqual(panel.asb_open.asb_caption.get_label(), captions[index])
+                self.assert_accessible_label(panel.asb_open, captions[index], asb.Gtk.AccessibleProperty.DESCRIPTION)
+                self.assertEqual(panel.asb_messages.asb_caption.get_label(), "Between sessions")
+                self.assert_accessible_label(panel.asb_messages, "Messages between this session and other sessions",
+                                             asb.Gtk.AccessibleProperty.DESCRIPTION)
+                self.assertIn("asb-panel-caption", panel.asb_messages.asb_caption.get_css_classes())
+                panel.popdown(); self.drain(.1)
+
+    def test_no_open_panel_open_row_uses_the_where_floor_tone_in_every_look(self):
+        rows = [self.card_row("opencode", canOpen=False, provider="opencode", providerLabel="OpenCode"),
+                self.card_row("other", canOpen=False), self.card_row("opens")]
+        window = self.card_board(rows)
+        looks = ((None, "#9f9fa0", "#36363a"),
+                 ({"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}, "#838383", "#1a1a1a"),
+                 ({"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}, "#8f9197", "#262931"))
+        for palette, floor, surface in looks:
+            window.set_palette(palette); self.settle(window)
+            for identity in ("opencode", "other"):
+                with self.subTest(palette=bool(palette), row=identity):
+                    window.show_context(window.card_for(identity)); self.drain(.2)
+                    button = window.context_menu.asb_open
+                    self.assertFalse(button.get_sensitive())
+                    self.assertTrue(button.has_css_class("asb-panel-where"))
+                    for part in (button.asb_icon, button.asb_label, button.asb_caption):
+                        color = part.get_color()
+                        self.assertEqual((asb.hex_color(color), round(color.alpha, 3)), (floor, 1), part)
+                        self.assertEqual(part.get_opacity(), 1)
+                    self.assertGreaterEqual(asb.contrast(floor, surface), 4.5)
+                    window.context_menu.popdown(); self.drain(.1)
+            # A row that can open but opens now keeps the GTK insensitive look.
+            window.opening.add("opens")
+            window.show_context(window.card_for("opens")); self.drain(.2)
+            button = window.context_menu.asb_open
+            self.assertFalse(button.get_sensitive())
+            self.assertFalse(button.has_css_class("asb-panel-where"))
+            window.context_menu.popdown(); self.drain(.1)
+            window.opening.discard("opens")
 
     def test_no_open_toast_has_the_row_panel_surface_in_custom_colors_and_keeps_its_size_at_every_zoom(self):
         window = self.card_board([self.card_row("cli", canOpen=False, surface="cli"), self.card_row("b")])
