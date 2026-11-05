@@ -916,7 +916,7 @@ private fun SessionCard(
     val left = limitLeft(row, nowMs)
     val limited = left > 0
     val countdown = if (limited) limitText(left) else ""
-    val indicator = attentionIndicator(row, drawerView, nowMs)
+    val indicator = cardIndicator(row, drawerView, nowMs)
     val state = cardStateLabel(row)
     val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
     val viewOnly = isViewOnly(row)

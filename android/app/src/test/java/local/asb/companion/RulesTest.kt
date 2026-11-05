@@ -5,6 +5,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import local.asb.companion.data.AsbJson
+import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
 import local.asb.companion.data.Message
 import local.asb.companion.ui.APP_FILTERS
@@ -16,7 +17,12 @@ import local.asb.companion.ui.PanelControl
 import local.asb.companion.ui.STATES
 import local.asb.companion.ui.actionNeedsAttention
 import local.asb.companion.ui.attentionIndicator
+import local.asb.companion.ui.CompactMarkStyle
+import local.asb.companion.ui.CornerControl
+import local.asb.companion.ui.cardIndicator
 import local.asb.companion.ui.casefold
+import local.asb.companion.ui.compactMarkStyle
+import local.asb.companion.ui.cornerControls
 import local.asb.companion.ui.clockInterval
 import local.asb.companion.ui.filteredRows
 import local.asb.companion.ui.indicatorMeaning
@@ -591,5 +597,37 @@ class RulesTest {
         // Portrait with 2 warnings: row 2 is item 4.
         assertEquals(4, startIndex(ids.indexOf("c"), flow = false, capacity = 4, lead = 2))
         assertEquals(2, startIndex(ids.indexOf("a"), flow = false, capacity = 4, lead = 2))
+    }
+
+    @Test fun waitingDrawerRowsNameTheWaitAndAPermissionWaitKeepsItsPassiveMark() {
+        val now = 1_800_000_000_000L
+        val palette = Palette()
+        val permission = Thread(state = "waiting", actionRequired = true, actionAttention = false, drawer = true)
+        val question = Thread(state = "waiting", questionPending = true, drawer = true)
+        val dot = Thread(state = "idle", completionAttention = true, drawer = true)
+        // The drawer control of a Waiting row names the wait; other rows keep the unread words.
+        for (row in listOf(permission, question))
+            assertEquals("Take out of drawer: show as waiting again", cornerControls(row, false, false, now).first().label)
+        assertEquals("Take out of drawer: show as unread again", cornerControls(dot, false, false, now).first().label)
+        // Outside the drawer view a drawer permission wait shows the passive "?" of a read permission wait, in both views.
+        val read = Thread(state = "waiting", actionRequired = true, actionAttention = false)
+        val passive = CornerControl("question", null, "A user action is required in the original app")
+        assertEquals(listOf(passive), cornerControls(read, false, false, now))
+        assertEquals("question", cardIndicator(permission, false, now))
+        assertEquals(passive, cornerControls(permission, false, false, now).single { it.kind == "question" })
+        assertEquals(CompactMarkStyle(0, 11, palette.quietCaption), compactMarkStyle(permission, palette, false, now))
+        assertEquals(compactMarkStyle(read, palette, false, now), compactMarkStyle(permission, palette, false, now))
+        assertEquals("Action required on the PC", indicatorMeaning(permission, cardIndicator(permission, false, now)))
+        // A drawer question wait has no mark outside the drawer view, as a read question wait.
+        assertEquals("", cardIndicator(question, false, now))
+        assertEquals(listOf("drawer"), cornerControls(question, false, false, now).map { it.kind })
+        // In the drawer view both keep the "?" disc with its Read target.
+        for (row in listOf(permission, question)) {
+            assertEquals("question", cardIndicator(row, true, now))
+            assertEquals("mark-read", cornerControls(row, true, false, now).single { it.kind == "question" }.action)
+            assertEquals(CompactMarkStyle(12, 9, palette.background), compactMarkStyle(row, palette, true, now))
+        }
+        // The list order and the drawer offer use attentionIndicator, which keeps its rule.
+        assertEquals("", attentionIndicator(permission))
     }
 }

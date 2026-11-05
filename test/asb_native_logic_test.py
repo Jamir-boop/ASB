@@ -72,6 +72,7 @@ REQUEST_ASYNC = SCOPE["request_async"]
 SCOPE["set_icon"] = Mock()
 SCOPE["CardTitle"] = lambda: SCOPE["label"]("")
 SCOPE["CompactTitle"] = lambda: SCOPE["label"]("", "asb-title")
+SCOPE["FolderCaption"] = lambda **_kwargs: SCOPE["label"]("")
 # The heap trim test sets its own malloc_trim; the GLib stubs of the other tests have no timers for it.
 SCOPE["MALLOC_TRIM"] = None
 asb = SimpleNamespace(**SCOPE)
@@ -6850,8 +6851,11 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(Window)
         for zoom in (80, 100, 200):
             window.board_zoom = zoom
-            card = SimpleNamespace(asb_workspace=Mock(), asb_read_slot=Mock(), asb_mark_cell=Mock())
+            # The card images (zoom_icon) take whole px at the zoom.
+            image = SimpleNamespace(asb_icon_px=11, set_pixel_size=Mock(), get_first_child=lambda: None, get_next_sibling=lambda: None)
+            card = SimpleNamespace(asb_workspace=Mock(), asb_read_slot=Mock(), asb_mark_cell=Mock(), get_first_child=lambda: image)
             window.zoom_card_sizes(card)
+            image.set_pixel_size.assert_called_once_with(round(11 * zoom / 100))
             self.assertEqual(card.asb_zoom, zoom)
             card.asb_workspace.set_margin_end.assert_called_once_with(asb.corner_reserve(zoom))
             card.asb_read_slot.set_size_request.assert_called_once_with(asb.zoomed(24, zoom), asb.zoomed(24, zoom))
@@ -9112,7 +9116,8 @@ class NativeLogicChecks(unittest.TestCase):
         window.number_hold = None
         window.hide_numbers, window.set_board_zoom, window.open_number = Mock(), Mock(), Mock()
         blocked = [False]
-        window.numbers_blocked = lambda: blocked[0]
+        # The zoom keys have their own popup check (zoom_keys_blocked): the open row panel does not block them.
+        window.numbers_blocked = window.zoom_keys_blocked = lambda: blocked[0]
         with patch.dict(SCOPE, {"Gdk": gdk, "SHORTCUT_MASK": 4 | 8 | 16 | 32}):
             for key in (0x30, 0xffb0):  # 0 and keypad 0.
                 window.set_board_zoom.reset_mock()
@@ -9128,6 +9133,70 @@ class NativeLogicChecks(unittest.TestCase):
             blocked[0] = True
             self.assertIsNone(window.number_key_pressed(0x30, modifiers.CONTROL_MASK))
             window.set_board_zoom.assert_not_called()
+
+    def test_ctrl_plus_and_ctrl_minus_step_the_zoom_as_one_wheel_notch(self):
+        modifiers = SimpleNamespace(SHIFT_MASK=1, CONTROL_MASK=4, ALT_MASK=8, SUPER_MASK=16, META_MASK=32, HYPER_MASK=64)
+        gdk = SimpleNamespace(KEY_Control_L=0xffe3, KEY_Control_R=0xffe4, ModifierType=modifiers)
+        window = object.__new__(Window)
+        window.number_hold, window.closed = None, False
+        window.hide_numbers, window.open_number = Mock(), Mock()
+        window.set_board_zoom = Mock(side_effect=lambda zoom: setattr(window, "board_zoom", zoom))
+        window.zoom_keys_blocked = lambda: False
+        control, shift = modifiers.CONTROL_MASK, modifiers.SHIFT_MASK
+        # plus, Shift+plus, equal, and keypad plus zoom in; minus and keypad minus zoom out (X keysyms).
+        keys = {"plus": (0x2b, control, 1), "shift plus": (0x2b, control | shift, 1), "equal": (0x3d, control, 1),
+                "keypad plus": (0xffab, control, 1), "minus": (0x2d, control, -1), "keypad minus": (0xffad, control, -1)}
+        with patch.dict(SCOPE, {"Gdk": gdk, "SHORTCUT_MASK": 4 | 8 | 16 | 32}):
+            for name, (key, state, step) in keys.items():
+                for start, expected in ((100, asb.zoom_step(100, step)), (200 if step > 0 else 80, 200 if step > 0 else 80)):
+                    with self.subTest(key=name, start=start):
+                        window.board_zoom = start
+                        window.set_board_zoom.reset_mock()
+                        self.assertTrue(window.number_key_pressed(key, state))
+                        window.set_board_zoom.assert_called_once_with(expected)
+                        self.assertEqual(window.board_zoom, expected)
+            self.assertEqual((asb.zoom_step(100, 1), asb.zoom_step(100, -1)), (110, 90))
+            window.open_number.assert_not_called()
+            # No step without Ctrl, with Alt, or with Shift on equal or minus.
+            window.set_board_zoom.reset_mock()
+            for key, state in ((0x2b, 0), (0x2d, 0), (0x2b, control | modifiers.ALT_MASK), (0x3d, control | shift), (0x2d, control | shift)):
+                self.assertIsNone(window.number_key_pressed(key, state))
+            window.set_board_zoom.assert_not_called()
+            # A popup that blocks the zoom keys keeps them; the key goes on to GTK.
+            window.zoom_keys_blocked = lambda: True
+            for key, state, _step in keys.values():
+                self.assertIsNone(window.number_key_pressed(key, state))
+            self.assertIsNone(window.number_key_pressed(0x30, control))
+            window.set_board_zoom.assert_not_called()
+
+    def test_zoom_keys_act_on_the_board_and_in_the_row_panel_but_not_in_other_popups(self):
+        class Popover:
+            pass
+        panel, filters = Popover(), Popover()
+        panel.get_visible = panel.get_mapped = lambda: True
+        filters.get_mapped = lambda: True
+        focus = SimpleNamespace(get_ancestor=lambda _kind: None)
+        window = object.__new__(Window)
+        window.get_focus = lambda: focus
+        window.open_popovers = {panel}
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(Popover=Popover)}):
+            window.context_menu = None
+            window.open_popovers = set()
+            self.assertFalse(window.zoom_keys_blocked())  # The board, a card, or a card button.
+            window.context_menu, window.open_popovers = panel, {panel}
+            self.assertFalse(window.zoom_keys_blocked())
+            focus.get_ancestor = lambda _kind: panel  # The focus in the open row panel.
+            self.assertFalse(window.zoom_keys_blocked())
+            # The Filters popover, the main menu, or another popup blocks them, and so does the focus in one.
+            window.open_popovers = {panel, filters}
+            self.assertTrue(window.zoom_keys_blocked())
+            window.open_popovers = {panel}
+            focus.get_ancestor = lambda _kind: filters
+            self.assertTrue(window.zoom_keys_blocked())
+            focus.get_ancestor = lambda _kind: None
+            window.context_menu = None
+            with patch.object(Window, "is_active", lambda _self: False):
+                self.assertTrue(window.zoom_keys_blocked())
 
     def test_ctrl_hold_shows_numbers_and_ctrl_digit_opens_the_card(self):
         timers, removed = {}, []

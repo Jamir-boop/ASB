@@ -8859,6 +8859,313 @@ class WidgetCheck(unittest.TestCase):
         self.assertRegex(window.context_menu.asb_actions["mute"].asb_caption.get_label(), r"^Until " + clock[1:])
         window.context_menu.popdown(); self.drain(.2)
 
+    @contextlib.contextmanager
+    def caption_theme(self, theme):
+        """As the user's theme for "user": a caption size in points at USER priority, which the zoom CSS cannot scale."""
+        display, user = asb.Gdk.Display.get_default(), asb.Gtk.CssProvider()
+        user.load_from_string(".caption { font-size: 9pt; }")
+        if theme == "user":
+            asb.Gtk.StyleContext.add_provider_for_display(display, user, asb.Gtk.STYLE_PROVIDER_PRIORITY_USER)
+        try:
+            yield
+        finally:
+            if theme == "user":
+                asb.Gtk.StyleContext.remove_provider_for_display(display, user)
+                self.drain(.1)
+
+    def caption_rows(self):
+        return [self.card_row("a", projectName="docs-site", surface="cli", unread=True, pending=True),
+                self.card_row("b", projectName="garden")]
+
+    @staticmethod
+    def font_px(widget):
+        return widget.get_pango_context().get_font_description().get_size() / asb.Pango.SCALE
+
+    def test_board_zoom_scales_the_card_captions_also_with_a_point_size_theme_caption(self):
+        for theme in ("user", "stock"):
+            with self.subTest(theme=theme), self.caption_theme(theme):
+                window = self.card_board(self.caption_rows())
+                window.set_default_size(900, 600); self.settle(window)
+                card = window.focus_widgets["a"]
+                parts = {"folder": card.asb_folder, "age": card.asb_age_label, "where": card.asb_where_label}
+                at_100 = {name: self.font_px(widget) for name, widget in parts.items()}
+                # At 100% each caption has the theme caption size: 9 pt at 96 dpi, or Adwaita's 82% of the 13 px card text.
+                expected = 12.0 if theme == "user" else 13 * .82
+                for name, value in at_100.items():
+                    self.assertAlmostEqual(value, expected, delta=.01, msg=name)
+                for zoom in (80, 200, 100):
+                    window.set_board_zoom(zoom); self.settle(window)
+                    for name, widget in parts.items():
+                        self.assertAlmostEqual(self.font_px(widget), asb.zoomed(at_100[name], zoom), delta=.5, msg=(name, zoom))
+                window.close(); self.drain(.1)
+
+    def test_board_zoom_keeps_card_caption_sizes_at_100_percent_and_at_large_text(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        for theme in ("user", "stock"):
+            for dpi, scale in ((98304, 1.0), (122880, 1.25), (147456, 1.5)):
+                with self.subTest(theme=theme, scale=scale), self.caption_theme(theme):
+                    settings.set_property("gtk-xft-dpi", dpi); self.drain(.3)
+                    window = self.card_board(self.caption_rows())
+                    card = window.focus_widgets["a"]
+                    # The theme size at the text scale: 9 pt follows the resolution, 82% follows the 13 px card text.
+                    expected = 9 * 96 * scale / 72 if theme == "user" else 13 * scale * .82
+                    for part in (card.asb_folder, card.asb_age_label, card.asb_where_label):
+                        self.assertAlmostEqual(self.font_px(part), expected, delta=.01)
+                    # A text scale change while the board is open measures the theme size again.
+                    settings.set_property("gtk-xft-dpi", 98304); self.drain(.3); self.settle(window)
+                    self.assertAlmostEqual(self.font_px(card.asb_folder), 12.0 if theme == "user" else 13 * .82, delta=.01)
+                    window.close(); self.drain(.1)
+
+    def test_waiting_drawer_rows_name_the_wait_in_the_drawer_button_and_row_panel(self):
+        rows = self.card_rows(
+            ("permission", {"state": "waiting", "actionRequired": True, "actionAttention": True, "pending": True}),
+            ("permission-drawer", {"state": "waiting", "actionRequired": True, "drawer": True}),
+            ("question", {"state": "waiting", "questionPending": True, "questionAttention": True, "pending": True}),
+            ("question-drawer", {"state": "waiting", "questionPending": True, "drawer": True}),
+            ("dot", {"unread": True, "pending": True, "completionAttention": True}),
+            ("dot-drawer", {"drawer": True, "completionAttention": True}))
+        window = self.mute_wheel_board(720, rows)
+        # Every card is on screen at 200% too.
+        window.set_default_size(1580, 980); self.settle(window)
+        for palette in (None, CUSTOM):
+            window.set_palette(palette)
+            for zoom in (100, 200):
+                window.set_board_zoom(zoom); self.drain(.3); window.check_geometry(); self.settle(window)
+                for identity in ("permission", "permission-drawer", "question", "question-drawer", "dot", "dot-drawer"):
+                    with self.subTest(palette=bool(palette), zoom=zoom, identity=identity):
+                        card = window.focus_widgets[identity]
+                        window.ensure_card_controls(card)
+                        tucked, waiting = identity.endswith("-drawer"), not identity.startswith("dot")
+                        tip = ("Take out of drawer: waits on the board again" if waiting else "Take out of drawer: unread on the board again") if tucked \
+                            else "Put in drawer: keeps waiting in the drawer" if waiting else "Put in drawer: stays unread in the drawer"
+                        drawer = card.asb_drawer_button
+                        self.assertEqual(drawer.get_tooltip_text(), tip)
+                        self.assert_accessible_label(drawer, tip + ": " + card.asb_thread["title"])
+                        window.show_context(card); self.drain(.3)
+                        caption = window.context_menu.asb_actions["drawer"].asb_caption
+                        self.assertEqual(caption.get_label(), ("Waits on the board again." if waiting else "Unread on the board again.") if tucked
+                                         else "Keeps waiting in the drawer." if waiting else "Stays unread in the drawer.")
+                        # All its words show: the caption wraps, and nothing is cut.
+                        self.assertFalse(caption.get_layout().is_ellipsized())
+                        self.assertFalse(window.context_menu.asb_actions["drawer"].asb_label.get_layout().is_ellipsized())
+                        window.context_menu.popdown(); self.drain(.2)
+        window.set_board_zoom(100)
+
+    def test_ctrl_plus_minus_and_0_zoom_from_the_board_a_card_the_row_panel_and_the_search(self):
+        window = self.card_board([self.card_row("a", unread=True, pending=True), self.card_row("b")])
+        window.set_default_size(900, 600); self.settle(window)
+        control, shift = asb.Gdk.ModifierType.CONTROL_MASK, asb.Gdk.ModifierType.SHIFT_MASK
+        def press(key, state=control):
+            # The capture key handler of the board, as GTK calls it for a key press in the window or its row panel.
+            return window.window_key(None, key, 0, state)
+        card = window.focus_widgets["a"]
+        card.grab_focus(); self.drain(.1)
+        for key, state, expected in ((asb.Gdk.KEY_plus, control, 110), (asb.Gdk.KEY_plus, control | shift, 125), (asb.Gdk.KEY_equal, control, 150),
+                                     (asb.Gdk.KEY_KP_Add, control, 175), (asb.Gdk.KEY_minus, control, 150), (asb.Gdk.KEY_KP_Subtract, control, 125)):
+            with self.subTest(key=asb.Gdk.keyval_name(key), state=int(state)):
+                self.assertTrue(press(key, state))
+                self.assertEqual(window.board_zoom, expected)
+        # The limits: no level above 200% or below 80%.
+        window.set_board_zoom(200)
+        self.assertTrue(press(asb.Gdk.KEY_plus)); self.assertEqual(window.board_zoom, 200)
+        window.set_board_zoom(80)
+        self.assertTrue(press(asb.Gdk.KEY_minus)); self.assertEqual(window.board_zoom, 80)
+        # Ctrl+0 from a card button and from the open row panel resets to 100%.
+        window.ensure_card_controls(card)
+        card.asb_pin_button.grab_focus(); self.drain(.1)
+        self.assertTrue(press(asb.Gdk.KEY_0)); self.assertEqual(window.board_zoom, 100)
+        window.show_context(card); self.drain(.3)
+        window.context_menu.asb_open.grab_focus(); self.drain(.1)
+        self.assertIs(window.get_focus().get_ancestor(asb.Gtk.Popover), window.context_menu)
+        self.assertTrue(press(asb.Gdk.KEY_plus)); self.assertEqual(window.board_zoom, 110)
+        self.assertTrue(press(asb.Gdk.KEY_0)); self.assertEqual(window.board_zoom, 100)
+        self.assertTrue(window.context_menu.get_visible())
+        window.context_menu.popdown(); self.drain(.2)
+        # In the search entry the keys zoom and type nothing.
+        window.open_search(); window.search.set_text("gar"); self.drain(.1)
+        window.search.grab_focus(); self.drain(.1)
+        for key, expected in ((asb.Gdk.KEY_plus, 110), (asb.Gdk.KEY_KP_Add, 125), (asb.Gdk.KEY_minus, 110), (asb.Gdk.KEY_0, 100)):
+            self.assertTrue(press(key)); self.assertEqual(window.board_zoom, expected)
+        self.assertEqual(window.search.get_text(), "gar")
+        # The Filters popover keeps the keys.
+        window.open_filters_popover(); self.drain(.3)
+        for key in (asb.Gdk.KEY_plus, asb.Gdk.KEY_minus, asb.Gdk.KEY_0):
+            self.assertFalse(press(key))
+        self.assertEqual(window.board_zoom, 100)
+        window.close_filters_popover(); self.drain(.2)
+
+    def folder_draws(self, folder):
+        """The text that the folder line draws now, and the right end of its ink in the folder."""
+        cut = folder.pocket_layout() if hasattr(folder, "pocket_layout") else None
+        snapshot = asb.Gtk.Snapshot()
+        asb.Gtk.WidgetPaintable.new(folder).snapshot(snapshot, folder.get_width(), folder.get_height())
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        texture = renderer.render_texture(snapshot.to_node(), asb.Graphene.Rect().init(0, 0, folder.get_width(), folder.get_height()))
+        data, stride = asb.Gdk.TextureDownloader.new(texture).download_bytes()
+        renderer.unrealize()
+        data = data.get_data()
+        right = max((x for y in range(texture.get_height()) for x in range(texture.get_width()) if data[y * stride + x * 4 + 3]), default=-1)
+        return (cut.get_text() if cut else folder.get_label()), right + 1
+
+    def test_folder_name_under_the_corner_ends_with_a_whole_glyph_ellipsis(self):
+        FOLDER = "release-kit-for-the-catalog"  # As release-kit in a narrow column: the hover corner reaches it.
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        for dpi, scale in ((98304, 1.0), (122880, 1.25), (147456, 1.5)):
+            settings.set_property("gtk-xft-dpi", dpi); self.drain(.3)
+            window = self.card_board([self.card_row("a", projectName=FOLDER, unread=True, pending=True), self.card_row("b")])
+            card = window.focus_widgets["a"]
+            folder = card.asb_folder
+            for zoom in (100, 125, 200):
+                with self.subTest(scale=scale, zoom=zoom):
+                    # One column as wide as a 250 px column at the zoom: the board scales as a whole.
+                    window.set_default_size(asb.zoomed(250, zoom) + 8, 600)
+                    window.set_board_zoom(zoom); self.drain(.3); window.check_geometry(); self.settle(window)
+                    # The zoom gives the focus back to the card; at rest it has no hover and no key focus.
+                    window.set_focus(None); window.set_focus_visible(False)
+                    self.hover_card(window, card, False); self.settle(window)
+                    # At rest the folder line is unchanged.
+                    shown, _right = self.folder_draws(folder)
+                    self.assertEqual((shown, folder.get_label()), (FOLDER, FOLDER))
+                    self.assertIsNone(getattr(folder, "pocket_layout", lambda: None)())
+                    for mode in ("hover", "focus"):
+                        if mode == "hover":
+                            self.hover_card(window, card, True)
+                        else:
+                            window.set_focus_visible(True); card.grab_focus()
+                        self.settle(window)
+                        self.assertTrue(card.asb_actions.has_css_class("asb-corner-wide"))
+                        fade = card.asb_actions.compute_bounds(folder)[1].origin.x
+                        measure = folder.get_layout().copy(); measure.set_width(-1); measure.set_ellipsize(asb.Pango.EllipsizeMode.NONE)
+                        self.assertGreater(measure.get_pixel_size()[0], fade)  # The corner reaches the folder name.
+                        shown, right = self.folder_draws(folder)
+                        # The longest whole-glyph start whose "…" ends at or left of the fade.
+                        self.assertTrue(shown.endswith("…") and FOLDER.startswith(shown[:-1]), shown)
+                        measure.set_text(shown, -1)
+                        self.assertLessEqual(measure.get_size()[0] / asb.Pango.SCALE, fade)
+                        if len(shown) < len(FOLDER):
+                            measure.set_text(FOLDER[:len(shown)] + "…", -1)
+                            self.assertGreater(measure.get_size()[0] / asb.Pango.SCALE, fade)
+                        # No glyph ink right of the fade start, and the label keeps its text and width.
+                        self.assertLessEqual(right, fade + .5)
+                        self.assertEqual(folder.get_label(), FOLDER)
+                        self.assertEqual(folder.get_layout().get_text(), FOLDER)
+                        if mode == "hover":
+                            self.hover_card(window, card, False)
+                        else:
+                            window.set_focus(None); window.set_focus_visible(False)
+                        self.settle(window)
+            # A tag out keeps the folder unchanged: the pocket covers it from the text edge.
+            window.set_board_zoom(100); self.drain(.3); window.check_geometry(); self.settle(window)
+            self.hover_card(window, card, True); self.settle(window)
+            card.asb_actions.add_css_class("asb-corner-tagged")
+            self.assertEqual(self.folder_draws(folder)[0], FOLDER)
+            card.asb_actions.remove_css_class("asb-corner-tagged")
+            self.hover_card(window, card, False)
+            window.close(); self.drain(.1)
+
+    def test_board_zoom_scales_card_row_panel_and_tooltip_icons_in_whole_pixels(self):
+        rows = [self.card_row("a", unread=True, pending=True, pinned=True, muted=True, surface="cli", reference="asb:1/sample/a"),
+                self.card_row("b", state="working", workingSinceMs=NOW - 60_000)]
+        window = self.card_board(rows)
+        window.set_default_size(1004, 640); self.settle(window)
+        tools = [w for w in descendants(window.tools) if isinstance(w, asb.Gtk.Image)]
+        self.assertTrue(tools)
+        tool_sizes = [(w.get_width(), w.get_height()) for w in tools]
+        def card_icons(card):
+            names = {}
+            if card.asb_view == "comfortable":
+                window.ensure_card_controls(card)
+                for part in ("clock", "mute", "where", "feedback"):
+                    window.ensure_card_part(card, part)
+                names.update(pin=card.asb_pin_button.get_child(), drawer=card.asb_drawer_button.get_child(),
+                              copy=card.asb_copy_button.get_child(), mute_button=card.asb_mute_button.get_child(),
+                              where=card.asb_where_icon, feedback=card.asb_feedback.get_first_child(),
+                              read=next(w for w in descendants(card.asb_read_button) if w.has_css_class("asb-read-cue")),
+                              offer=next(w for w in descendants(card.asb_read_button) if w.has_css_class("asb-discard-cue")))
+            else:
+                names.update(compact_pin=card.asb_compact_pin)
+            names.update(mark=card.asb_mark, clock=card.asb_limit_clock, mute=card.asb_mute_glyph)
+            return names
+        base = {"mark": 14, "clock": 12, "mute": 12, "pin": 12, "drawer": 12, "copy": 12, "mute_button": 12, "where": 11,
+                "feedback": 12, "read": 12, "offer": 12, "compact_pin": 10, "panel": 14, "radio": 14, "tooltip": 14}
+        def size(widget):
+            return widget.get_pixel_size() if isinstance(widget, asb.Gtk.Image) else widget.get_size_request()[0]
+        for view in (1, 0):
+            window.view_filter.set_selected(view); self.drain(.5)
+            for zoom in (80, 100, 200):
+                with self.subTest(view=view, zoom=zoom):
+                    window.set_board_zoom(zoom); self.drain(.3); window.check_geometry(); self.settle(window)
+                    card = window.focus_widgets["a"]
+                    for name, widget in card_icons(card).items():
+                        self.assertEqual(size(widget), round(asb.zoomed(base[name], zoom)), name)
+                    if view == 1:
+                        # The title and the footer start under the folder, after the zoomed mark and its 7 px spacing.
+                        self.assertEqual(card.asb_title_label.get_margin_start(), asb.zoomed(14, zoom) + 7)
+                        self.assertEqual(card.asb_footer_stack.get_margin_start(), asb.zoomed(14, zoom) + 7)
+                        window.show_context(card); self.drain(.3)
+                        panel = window.context_menu
+                        for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy):
+                            self.assertEqual(button.asb_icon.get_pixel_size(), asb.zoomed(14, zoom))
+                        # A zoom step with the panel open resizes its icons.
+                        other = 100 if zoom != 100 else 200
+                        window.set_board_zoom(other); self.drain(.3)
+                        self.assertEqual(panel.asb_open.asb_icon.get_pixel_size(), asb.zoomed(14, other))
+                        window.show_mute_times(panel, True); self.drain(.3)
+                        radio = next(w for w in descendants(panel) if w.has_css_class("asb-radio-mark"))
+                        self.assertEqual(size(radio), asb.zoomed(14, other))
+                        panel.popdown(); self.drain(.2)
+                        window.set_board_zoom(zoom); self.drain(.3)
+                        tooltip = window.tooltip_content(card.asb_thread, asb.tooltip_model(card.asb_thread, NOW, "/example"))
+                        mark = next(w for w in descendants(tooltip) if isinstance(w, asb.Gtk.Image))
+                        self.assertEqual(mark.get_pixel_size(), asb.zoomed(14, zoom))
+                    # The toolbar icons keep their size.
+                    self.assertEqual([(w.get_width(), w.get_height()) for w in tools], tool_sizes)
+        window.set_board_zoom(100)
+
+    def test_drawer_permission_wait_keeps_the_passive_question_mark_outside_the_drawer_view(self):
+        rows = self.card_rows(("read-wait", {"state": "waiting", "actionRequired": True, "actionAttention": False}),
+                              ("permission", {"state": "waiting", "actionRequired": True, "drawer": True}),
+                              ("question", {"state": "waiting", "questionPending": True, "drawer": True}))
+        window = self.mute_wheel_board(720, rows)
+        for view in (1, 0):
+            window.view_filter.set_selected(view); self.drain(.5); window.check_geometry(); self.settle(window)
+            for drawer_view in (False, True):
+                window.drawer_only.set_active(drawer_view); self.settle(window)
+                cards = window.focus_widgets
+                for key in ("permission", "question"):
+                    with self.subTest(view=view, drawer_view=drawer_view, key=key):
+                        card, dot = cards[key], cards[key].asb_dot
+                        self.hover_card(window, card, False); self.settle(window)
+                        note = "The session still waits for your permission." if key == "permission" else "The session still waits for your answer."
+                        # The tooltip, Read button, and accessible label texts do not change.
+                        self.assertEqual(asb.question_wait_note(card.asb_thread), note)
+                        self.assertEqual(asb.tooltip_model(card.asb_thread, NOW, "/example", drawer_view=drawer_view)["note"],
+                                         "Waits for your permission." if key == "permission" else "Asks a question. Open the chat to answer.")
+                        if view == 1:
+                            self.assertEqual(card.asb_read_button.get_tooltip_text(), "Mark read. " + note)
+                        self.assertFalse(card.asb_thread.get("pending"))
+                        if drawer_view:
+                            # In the drawer view: the "?" disc, as before.
+                            self.assertFalse(dot.has_css_class("asb-passive"))
+                            self.assertGreater(self.ink(dot), 0)
+                        elif key == "question":
+                            # A drawer question wait has no mark, as a read question wait.
+                            self.assertEqual(self.ink(card.asb_read_button if view == 1 else dot), 0)
+                        else:
+                            # A drawer permission wait looks as the read permission wait: the same quiet "?", color, size, and place.
+                            reference = cards["read-wait"].asb_dot
+                            self.assertTrue(dot.has_css_class("asb-passive") and reference.has_css_class("asb-passive"))
+                            self.assertGreater(self.ink(card.asb_read_button if view == 1 else dot), 0)
+                            self.assertEqual(dot.get_color().to_string(), reference.get_color().to_string())
+                            self.assertEqual((dot.get_width(), dot.get_height()), (reference.get_width(), reference.get_height()))
+                            self.assertEqual(dot.compute_bounds(card)[1].origin.x, reference.compute_bounds(cards["read-wait"])[1].origin.x)
+                            glyph, other = dot.get_first_child(), reference.get_first_child()
+                            self.assertEqual(glyph.compute_bounds(card)[1].origin.y, other.compute_bounds(cards["read-wait"])[1].origin.y)
+            window.drawer_only.set_active(False); self.settle(window)
+
     def test_waiting_and_process_ended_cards_in_and_out_of_the_drawer(self):
         reason = "The Claude Code process ended during a task."
         rows = self.card_rows(
@@ -8871,17 +9178,21 @@ class WidgetCheck(unittest.TestCase):
             ("p1", {"unread": True, "pending": True, "completionAttention": True, "pendingSource": "observed-completion"}))
         window = self.mute_wheel_board(720, rows)
         cards = window.focus_widgets
-        put, out = "Put in drawer: stays unread in the drawer", "Take out of drawer: unread on the board again"
         for identity, tucked in (("wait", False), ("ended", False), ("wait-drawer", True), ("ended-drawer", True)):
             with self.subTest(identity=identity):
                 card = cards[identity]
                 drawer = card.asb_drawer_button
                 self.assertTrue(drawer.get_visible())
+                # A Waiting row names its wait; the other rows keep the unread words.
+                waiting = identity.startswith("wait")
+                put = "Put in drawer: keeps waiting in the drawer" if waiting else "Put in drawer: stays unread in the drawer"
+                out = "Take out of drawer: waits on the board again" if waiting else "Take out of drawer: unread on the board again"
                 self.assertEqual((drawer.get_tooltip_text(), drawer.asb_action), (out, "win.drawer-out") if tucked else (put, "win.drawer-in"))
                 window.show_context(card); self.drain(.3)
                 row = window.context_menu.asb_actions["drawer"]
+                captions = ("Keeps waiting in the drawer.", "Waits on the board again.") if waiting else ("Stays unread in the drawer.", "Unread on the board again.")
                 self.assertEqual((row.asb_label.get_label(), row.asb_caption.get_label()),
-                                 ("Take out of drawer", "Unread on the board again.") if tucked else ("Put in drawer", "Stays unread in the drawer."))
+                                 ("Take out of drawer", captions[1]) if tucked else ("Put in drawer", captions[0]))
                 window.context_menu.popdown(); self.drain(.2)
                 # Alt+D runs the drawer action of the focused card.
                 with patch.object(window, "session_action") as action:

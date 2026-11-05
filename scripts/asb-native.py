@@ -3402,13 +3402,8 @@ class CardTitle(Gtk.Widget):
     def pocket_line(self, first):
         """Line 1 before an untagged, visible pocket that it reaches: a copy of the layout with the longest whole-word start whose
         "…" ends at or left of the fade, or "…" alone; None when line 1 ends left of the fade. Line breaks stay unchanged."""
-        card = self.get_ancestor(Gtk.ListBoxRow)
-        pocket = getattr(card, "asb_actions", None)
-        if pocket is None or not pocket.has_css_class("asb-corner-wide") or pocket.has_css_class("asb-corner-tagged") \
-                or card.has_css_class("asb-dismissed") or not (card.has_css_class("asb-hovered") or card.has_css_class("asb-key-focus")):
-            return None
-        found, pocket_bounds = pocket.compute_bounds(self)
-        if not found:
+        pocket_bounds = pocket_fade(self)
+        if pocket_bounds is None:
             return None
         text = first.get_text()
         measure = first.copy()
@@ -3436,6 +3431,50 @@ class CardTitle(Gtk.Widget):
         if two:
             snapshot.translate(Graphene.Point().init(0, offset))
             snapshot.append_layout(second, self.get_color())
+
+
+def pocket_fade(widget):
+    """The bounds, in the widget, of the wide, untagged pocket of its card while the card has hover or key focus; else None."""
+    card = widget.get_ancestor(Gtk.ListBoxRow)
+    pocket = getattr(card, "asb_actions", None)
+    if pocket is None or not pocket.has_css_class("asb-corner-wide") or pocket.has_css_class("asb-corner-tagged") \
+            or card.has_css_class("asb-dismissed") or not (card.has_css_class("asb-hovered") or card.has_css_class("asb-key-focus")):
+        return None
+    found, bounds = pocket.compute_bounds(widget)
+    return bounds if found else None
+
+
+class FolderCaption(Gtk.Label):
+    """The Comfortable folder line. Before a pocket that it reaches, it ends with "…" at or left of the fade, as title line 1, but
+    with whole glyphs: a folder name is one word. The label keeps its text and allocation; only the drawn text changes."""
+    def pocket_layout(self):
+        """The cut folder line as a layout, or None when the folder line draws as it is."""
+        bounds = pocket_fade(self)
+        if bounds is None or not self.get_label():
+            return None
+        measure = self.get_layout().copy()
+        measure.set_width(-1)
+        measure.set_ellipsize(Pango.EllipsizeMode.NONE)
+        def width(value):
+            measure.set_text(value, -1)
+            return measure.get_size()[0]
+        fade = bounds.origin.x * Pango.SCALE
+        if width(self.get_label()) <= fade:
+            return None
+        measure.set_text(ellipsis_cut(self.get_label(), fade, width), -1)
+        return measure
+
+    def do_snapshot(self, snapshot):
+        layout = self.pocket_layout()
+        if layout is None:
+            Gtk.Label.do_snapshot(self, snapshot)
+            return
+        # The place where GtkLabel draws a start-aligned line: on the allocated baseline, else centered by its logical height.
+        _ink, logical = layout.get_pixel_extents()
+        baseline = self.get_baseline()
+        y = baseline - layout.get_baseline() / Pango.SCALE if baseline != -1 else math.floor((self.get_height() - logical.height) * self.get_yalign())
+        snapshot.translate(Graphene.Point().init(math.floor(-logical.x), y))
+        snapshot.append_layout(layout, self.get_color())
 
 
 class CompactTitle(Gtk.Label):
@@ -6302,6 +6341,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     text_scale, card_heights, text_scale_signal = 1.0, (ROW_HEIGHT, COMFORTABLE_ROW_HEIGHT), None
     pocket_bottom, board_zoom, zoom_frame = POCKET_BOTTOM, 100, None
+    caption_probe = caption_probe_css = caption_probe_rule = caption_size = context_menu = None
     copy_kind = "relative"
     mute_for = "30m"
     pet = "off"
@@ -6418,6 +6458,20 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.set_icon_name(APP_ID)
         if os.name == "nt":
             self.connect("realize", set_windows_icon)
+        # The theme caption size: a hidden label with the caption class in a box with the card text size (caption_px). It is in
+        # the window from the start; an unmapped label can keep an old style, so the map checks the size again.
+        self.caption_probe_css = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(self.get_display(), self.caption_probe_css, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        self.caption_probe = Gtk.Label(accessible_role=Gtk.AccessibleRole.PRESENTATION)
+        self.caption_probe.add_css_class("caption")
+        probe = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.START, can_target=False, opacity=0)
+        probe.add_css_class("asb-caption-probe")
+        probe.append(self.caption_probe)
+        self.content_overlay = Gtk.Overlay()
+        self.content_overlay.add_overlay(probe)
+        self.content_overlay.set_measure_overlay(probe, False)
+        self.set_content(self.content_overlay)
+        self.connect("map", lambda *_args: self.caption_px() == self.caption_size or self.set_palette(self.hover_colors))
         self.set_palette(None)
         self.text_scale_signal = self.get_settings().connect("notify::gtk-xft-dpi", self.text_scale_changed)
         self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh sessions")
@@ -6726,7 +6780,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         motion.connect("leave", lambda *_args: self.list_body.set_cursor_from_name(None))
         motion.connect("leave", lambda *_args: self.list_body.show_hover(None))
         self.list_body.add_controller(motion)
-        self.set_content(body)
+        self.content_overlay.set_child(body)
         keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.window_key)
         keys.connect("key-released", self.window_key_released)
@@ -6840,9 +6894,27 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         found = [context.lookup_color(name) for name in ("popover_bg_color", "popover_fg_color")]
         return [self.hex_color(value) if ok else palette[key] for (ok, value), key in zip(found, ("background", "text"))]
 
+    def caption_px(self):
+        """The theme caption size in px at zoom 100, in the card text size (a relative theme size such as Adwaita's 82% follows the
+        card text); None while the window has no probe."""
+        probe = self.caption_probe
+        if probe is None:
+            return None
+        rule = f".asb-caption-probe {{ font-size: {13 * self.text_scale:g}px; }}"
+        if rule != self.caption_probe_rule:
+            self.caption_probe_rule = rule
+            self.caption_probe_css.load_from_string(rule)
+        # A new Pango context reads the current style; GTK gives an absolute size, and a size in points uses the screen resolution.
+        font = probe.create_pango_context().get_font_description()
+        size = font.get_size() / Pango.SCALE
+        return size if font.get_size_is_absolute() else size * 96 * self.text_scale / 72
+
     def set_palette(self, colors):
         base = ".asb-column-flow"
         scale = self.text_scale  # The GNOME text scale; mark glyphs, the number keycap, icons, and buttons keep their sizes.
+        # The card captions get the theme caption size in px, so the zoom scales it also when a theme sets it in points.
+        self.caption_size = self.caption_px()
+        caption = f"{base} .asb-session .caption {{ font-size: {self.caption_size:g}px; }}" if self.caption_size else ""
         ink_moves = "\n".join(f"{base} .asb-ink-x{n} {{ margin-left: {n}px; margin-right: {-n}px; }} "
                               f"{base} .asb-ink-y{n} {{ margin-top: {n}px; margin-bottom: {-n}px; }}" for n in INK_MOVES)
         css = f"""
@@ -6875,6 +6947,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} menubutton.asb-toolbar-button {{ min-height: 0; min-width: 0; padding: 0; }}
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: {11 * scale:g}px; }}
+{caption}
 {base} .asb-provider {{ opacity: .65; }}
 {base} .asb-message-lit .asb-provider {{ color: @accent_color; opacity: 1; }}
 {base} .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color;
@@ -7182,6 +7255,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-unread.asb-dismissed:not(.asb-drawer) .asb-read-button .asb-dot {{ opacity: 1; }}
 {base} .asb-unread.asb-dismissed:not(.asb-drawer) .asb-read-button .asb-read-cue {{ opacity: 0; }}
 {base} .asb-drawer.asb-dismissed:not(.asb-drawer-lit) .asb-read-button {{ opacity: 0; }}
+/* Outside the drawer view a drawer permission wait keeps its quiet "?" at rest; on Comfortable hover or key focus the Read cue replaces it. */
+{base} .asb-drawer.asb-drawer-wait.asb-unhovered:not(.asb-drawer-lit):not(.asb-key-focus) .asb-read-button,
+{base} .asb-drawer.asb-drawer-wait.asb-unhovered:not(.asb-drawer-lit):not(.asb-key-focus) .asb-dot,
+{base} .asb-drawer.asb-drawer-wait.asb-dismissed:not(.asb-drawer-lit) .asb-read-button,
+{base} .asb-drawer.asb-drawer-wait.asb-dismissed:not(.asb-drawer-lit) .asb-dot,
+{base}:not(.asb-comfortable) .asb-drawer.asb-drawer-wait:not(.asb-drawer-lit) .asb-dot {{ opacity: 1; }}
+{base} .asb-drawer.asb-drawer-wait.asb-dismissed:not(.asb-drawer-lit) .asb-read-cue {{ opacity: 0; }}
 """
         text = colors['text'] if colors else "@window_fg_color"
         muted = colors['muted'] if colors else "@window_fg_color"
@@ -7824,9 +7904,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def zoomed_column_width(self):
         return round(self.column_width * getattr(self, "board_zoom", 100) / 100)
 
-    # shortcut: the zoom scales the CSS text and minimum sizes, so the card buttons scale with it (24 px at 100%, 48 px at 200%);
-    # zoom_card_sizes and zoomed() scale the Python sizes that stand for them. Icon pixel sizes (pin, provider, row panel marks)
-    # and paddings, margins, and spacing stay at 100%. Scale the icons too if large zooms look unbalanced.
+    # The zoom scales the CSS text and minimum sizes, the card captions, and the card, row panel, and card tooltip icons (zoom_icon);
+    # paddings, margins, and spacing stay at 100%, except the title indent under the provider mark.
     def set_board_zoom(self, zoom):
         """Show the board at a zoom level and save it; the cards measure their new height at the next layout."""
         zoom = validate_zoom(zoom)
@@ -7854,6 +7933,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.save_width()
         panel = getattr(self, "context_menu", None)
         if panel:
+            self.zoom_widget_icons(panel)
             # An open row panel fits its labels again once its rows have the new text size.
             GLib.idle_add(lambda: self.fit_row_panel(panel, panel.get_child().get_child(), zoomed(260, zoom)) if panel.get_visible() else None)
         return True
@@ -8255,10 +8335,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.restore_card_controls()
             if self.key_focus_row:
                 self.key_focus_row.remove_css_class("asb-key-focus")
-                self.key_focus_row.asb_title_label.queue_draw()
+                self.draw_pocket_text(self.key_focus_row)
             if row:
                 row.add_css_class("asb-key-focus")
-                row.asb_title_label.queue_draw()
+                self.draw_pocket_text(row)
             self.key_focus_row = row
         # The tag of the copy button under the pointer stays until the pointer leaves.
         old = getattr(self, "copy_focus_button", None)
@@ -8300,7 +8380,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                  if card is not None and getattr(card, "asb_view", None) == "comfortable" and not card.has_css_class("asb-dismissed")}
         for card in cards:
             card.add_css_class("asb-dismissed")
-            card.asb_title_label.queue_draw()
+            self.draw_pocket_text(card)
             for button in (getattr(card, "asb_drawer_button", None), getattr(card, "asb_mute_button", None),
                            getattr(card, "asb_copy_button", None), card.asb_pin_button):
                 if button is not None:
@@ -8324,7 +8404,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         for widget in list(cards) if card is None else [card] if card in cards else []:
             widget.remove_css_class("asb-dismissed")
-            widget.asb_title_label.queue_draw()
+            self.draw_pocket_text(widget)
             for button in (getattr(widget, "asb_drawer_button", None), getattr(widget, "asb_mute_button", None),
                            getattr(widget, "asb_copy_button", None), widget.asb_pin_button):
                 if button is not None:
@@ -8362,9 +8442,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         popover = focus.get_ancestor(Gtk.Popover) if focus else None
         return popover is not None
 
+    def zoom_keys_blocked(self):
+        """The zoom keys act where Ctrl+wheel does: on the board, a card, a card button, and the open row panel; every other popup blocks them."""
+        panel = self.context_menu if self.context_menu and self.context_menu.get_visible() else None
+        if not self.is_active() or any(popover.get_mapped() and popover is not panel for popover in self.open_popovers):
+            return True
+        focus = self.get_focus()
+        popover = focus.get_ancestor(Gtk.Popover) if focus else None
+        return popover is not None and popover is not panel
+
     def number_key_pressed(self, key, modifiers):
-        """Hold Ctrl alone to show the numbers; Ctrl+1 to Ctrl+9 open a card, and Ctrl+0 resets the board zoom to 100%.
-        None keeps the usual key handling."""
+        """Hold Ctrl alone to show the numbers; Ctrl+1 to Ctrl+9 open a card. Ctrl+0 resets the board zoom to 100%, and Ctrl+plus
+        (also Ctrl+equal) and Ctrl+minus step it as one Ctrl+wheel notch. None keeps the usual key handling."""
         held = modifiers & (SHORTCUT_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.HYPER_MASK)
         if key in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
             # The state is from before the press: key repeat and a hold that a popup interrupted already have Control.
@@ -8375,10 +8464,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if number and held == Gdk.ModifierType.CONTROL_MASK and not self.numbers_blocked():
             self.open_number(number)
             return True
-        # 0 and keypad 0 (X keysyms): Ctrl+0 resets the zoom and opens no card.
-        if key in (0x30, 0xffb0) and held == Gdk.ModifierType.CONTROL_MASK and not self.numbers_blocked():
+        # X keysyms: 0 and keypad 0 reset the zoom (and open no card); plus, equal, and keypad plus zoom in; minus and keypad minus
+        # zoom out. Shift is free with plus, as many layouts send Ctrl+Shift+equal as plus.
+        control = Gdk.ModifierType.CONTROL_MASK
+        steps = 1 if key in (0x2b, 0xffab) and held in (control, control | Gdk.ModifierType.SHIFT_MASK) or key == 0x3d and held == control \
+            else -1 if key in (0x2d, 0xffad) and held == control else 0
+        if (steps or key in (0x30, 0xffb0) and held == control) and not self.zoom_keys_blocked():
             self.hide_numbers()
-            self.set_board_zoom(100)
+            self.set_board_zoom(zoom_step(getattr(self, "board_zoom", 100), steps) if steps else 100)
             return True
         if held & Gdk.ModifierType.CONTROL_MASK:
             self.hide_numbers()
@@ -9063,6 +9156,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if lit != getattr(widget, "asb_drawer_lit", False):
             (widget.add_css_class if lit else widget.remove_css_class)("asb-drawer-lit")
             widget.asb_drawer_lit = lit
+            # Only a drawer permission wait looks different outside the drawer view (update_indicator).
+            if row.get("state") == "waiting" and row.get("actionRequired") and hasattr(widget, "asb_dot"):
+                self.update_indicator(widget)
 
     @staticmethod
     def drawer_glyph():
@@ -9315,6 +9411,34 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_read_slot.set_size_request(zoomed(24, zoom), zoomed(24, zoom))
         if getattr(widget, "asb_mark_cell", None) is not None:
             widget.asb_mark_cell.set_size_request(zoomed(14, zoom), -1)
+        if getattr(widget, "asb_view", None) == "comfortable" and getattr(widget, "asb_footer_stack", None) is not None:
+            # The title and the footer start under the folder: the zoomed provider mark and its 7 px spacing.
+            for part in (widget.asb_title_label, widget.asb_footer_stack):
+                part.set_margin_start(zoomed(14, zoom) + 7)
+        self.zoom_widget_icons(widget)
+
+    def zoom_icon(self, image, px):
+        """An image or drawn mark of a card, the row panel, or the card tooltip: px at zoom 100, in whole px at the board zoom."""
+        image.asb_icon_px = px
+        size = zoomed(px, getattr(self, "board_zoom", 100))
+        if hasattr(image, "set_pixel_size"):
+            image.set_pixel_size(size)
+        else:
+            image.set_size_request(size, size)
+        return image
+
+    def zoom_widget_icons(self, root):
+        """Size each zoom_icon image under root at the board zoom."""
+        widgets = [root]
+        while widgets:
+            widget = widgets.pop()
+            px = getattr(widget, "asb_icon_px", None)
+            if px is not None:
+                self.zoom_icon(widget, px)
+            child = widget.get_first_child()
+            while child is not None:
+                widgets.append(child)
+                child = child.get_next_sibling()
 
     def attach_column(self, number):
         listing = self.list_columns[number]
@@ -9582,7 +9706,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.hovered_card = None
         widget.add_css_class("asb-hovered" if hovered else "asb-unhovered")
         widget.remove_css_class("asb-unhovered" if hovered else "asb-hovered")
-        widget.asb_title_label.queue_draw()
+        self.draw_pocket_text(widget)
         if not hovered:
             self.hide_copy_tag(getattr(widget, "asb_copy_button", None), keep_focused=True)
             self.hide_copy_tag(getattr(widget, "asb_mute_button", None), keep_focused=True)
@@ -9666,7 +9790,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.set_margin_start(indent)
             return widget
         path = Gtk.Box(spacing=7)
-        mark = Gtk.Image(pixel_size=14, valign=Gtk.Align.START)
+        mark = self.zoom_icon(Gtk.Image(valign=Gtk.Align.START), 14)
+        # The title and the footer start under the path, after the zoomed mark.
+        indent = zoomed(14, getattr(self, "board_zoom", 100)) + 7
         set_icon(mark, provider_icon(row.get("provider")))
         mark.add_css_class("asb-provider")
         path.append(mark)
@@ -9674,9 +9800,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         path_label.add_css_class("asb-tooltip-muted")
         path.append(path_label)
         root.append(path)
-        root.append(text(model["title"], "asb-tooltip-title", 21))
+        root.append(text(model["title"], "asb-tooltip-title", indent))
         footer = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=False, min_children_per_line=1,
-                             max_children_per_line=2, column_spacing=10, row_spacing=2, margin_start=21)
+                             max_children_per_line=2, column_spacing=10, row_spacing=2, margin_start=indent)
         footer.add_css_class("asb-tooltip-footer")
         state = text(model["state_text"], "asb-state")
         state.add_css_class("asb-" + model["state"])
@@ -9692,7 +9818,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         footer.append(app)
         root.append(footer)
         if model["limit"] or model["note"] or model["flags"] or model["error"]:
-            notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=21)
+            notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=indent)
             notes.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL, margin_top=4, margin_bottom=4))
             if model["limit"]:
                 notes.append(text(model["limit"]))
@@ -9749,6 +9875,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             box.connect("notify::child-revealed", lambda tag, _param: tag.get_child_revealed() or tag.get_reveal_child() or tag.set_visible(False))
         return box, words, children
 
+    @staticmethod
+    def draw_pocket_text(card):
+        """Draw title line 1 and the folder line again: they end with "…" before the pocket on hover and key focus."""
+        card.asb_title_label.queue_draw()
+        folder = getattr(card, "asb_folder", None)
+        if folder is not None:
+            folder.queue_draw()
+
     def tag_visible_changed(self, tag, _param):
         card = tag.get_ancestor(Gtk.ListBoxRow)
         if card is not None:
@@ -9775,7 +9909,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         corner.set_halign(Gtk.Align.FILL if tagged else Gtk.Align.END)
         corner.set_margin_start(POCKET_TAG_START if tagged else 0)
         (corner.add_css_class if tagged else corner.remove_css_class)("asb-corner-tagged")
-        card.asb_title_label.queue_draw()
+        self.draw_pocket_text(card)
 
     def update_mute_tag(self, words, dots, muted=False):
         choice = "unmute" if muted else self.mute_for
@@ -9793,10 +9927,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if widget.asb_view != "comfortable" or widget.asb_thread["id"] == MORE_ID or getattr(widget, "asb_copy_button", None):
             return
         row, actions = widget.asb_thread, widget.asb_actions
-        drawer = Gtk.Button(child=Gtk.Image(pixel_size=12))
+        drawer = Gtk.Button(child=self.zoom_icon(Gtk.Image(), 12))
         set_icon(drawer.get_child(), "asb-drawer-symbolic")
-        copy = Gtk.Button(child=Gtk.Image(icon_name="edit-copy-symbolic", pixel_size=12))
-        mute = Gtk.Button(child=Gtk.Image(pixel_size=12))
+        copy = Gtk.Button(child=self.zoom_icon(Gtk.Image(icon_name="edit-copy-symbolic"), 12))
+        mute = Gtk.Button(child=self.zoom_icon(Gtk.Image(), 12))
         tag, tag_words, dots = self.choice_tag(COPY_KIND_WORDS)
         mute_tag, mute_words, mute_dots = self.choice_tag({**MUTE_WORDS, "unmute": "Unmute"}, mute=True)
         for button, name in ((mute, "mute"), (copy, "copy"), (drawer, "drawer")):
@@ -9834,12 +9968,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def ensure_card_part(self, widget, name):
         """Build a rarely shown Comfortable part in its fixed place; Compact builds them with the card."""
         if name == "clock" and widget.asb_limit_clock is None:
-            clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
+            clock = self.zoom_icon(Gtk.Image(icon_name="preferences-system-time-symbolic", visible=False), 12)
             clock.add_css_class("asb-limit-clock")
             widget.asb_footer_line.prepend(clock)
             widget.asb_limit_clock = clock
         elif name == "mute" and widget.asb_mute_glyph is None:
-            mute = Gtk.Image(pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+            mute = self.zoom_icon(Gtk.Image(visible=False, valign=Gtk.Align.CENTER), 12)
             set_icon(mute, "asb-muted-symbolic")
             mute.add_css_class("asb-mute-glyph")
             mute.add_css_class("dim-label")
@@ -9859,7 +9993,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_mute_box = pair
             widget.asb_mute_time = mute_time
         elif name == "where" and widget.asb_where_label is None:
-            where_icon = Gtk.Image(pixel_size=11, visible=False, valign=Gtk.Align.CENTER)
+            where_icon = self.zoom_icon(Gtk.Image(visible=False, valign=Gtk.Align.CENTER), 11)
             where_icon.add_css_class("asb-where-icon")
             where_icon.add_css_class("dim-label")
             where = WhereCaption()
@@ -9878,7 +10012,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         elif name == "feedback" and widget.asb_feedback is None:
             feedback = Gtk.Box(spacing=6)
             feedback.add_css_class("asb-copy-feedback")
-            feedback_icon = Gtk.Image(icon_name="object-select-symbolic", pixel_size=12)
+            feedback_icon = self.zoom_icon(Gtk.Image(icon_name="object-select-symbolic"), 12)
             feedback_label = label("", "caption")
             feedback_label.add_css_class("asb-copy-feedback")
             feedback.append(feedback_icon)
@@ -9942,7 +10076,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
-            mark = Gtk.Image(pixel_size=14)
+            mark = self.zoom_icon(Gtk.Image(), 14)
             mark.add_css_class("asb-provider")
             widget.asb_mark = mark
             mark_overlay = Gtk.Overlay(child=mark)
@@ -9984,7 +10118,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 workspace = Gtk.Box(spacing=7)
                 widget.asb_workspace = workspace
                 workspace.append(mark_overlay)
-                folder = label("", "caption")
+                folder = FolderCaption(xalign=0)
+                folder.add_css_class("caption")
                 folder.add_css_class("asb-folder")
                 folder.add_css_class("dim-label")
                 folder.set_ellipsize(Pango.EllipsizeMode.END)
@@ -9993,7 +10128,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_folder = folder
                 workspace.append(folder)
                 content.append(workspace)
-                title.set_margin_start(21)
+                title.set_margin_start(zoomed(14, self.board_zoom) + 7)
                 content.append(title)
                 line = Gtk.Box(spacing=6)
                 # One baseline for the state and the age: fonts such as Cascadia Code give the two labels different heights.
@@ -10014,7 +10149,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 line.append(right)
                 # The done text replaces the footer line for 1.6 s; the limit clock keeps its own rule on the line.
                 footer = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=100,
-                                   hhomogeneous=True, vhomogeneous=True, margin_start=21)
+                                   hhomogeneous=True, vhomogeneous=True, margin_start=zoomed(14, self.board_zoom) + 7)
                 footer.add_css_class("asb-footer")
                 footer.add_named(line, "line")
                 widget.asb_feedback = widget.asb_feedback_label = None
@@ -10027,17 +10162,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 widget.asb_read_slot = read_slot
                 read_icon = Gtk.Overlay(child=dot)
                 dot.set_halign(Gtk.Align.CENTER)
-                check = Gtk.Image(icon_name="object-select-symbolic", pixel_size=12,
-                                  halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+                check = self.zoom_icon(Gtk.Image(icon_name="object-select-symbolic", halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER), 12)
                 check.add_css_class("asb-read-cue")
                 read_icon.add_overlay(check)
                 # The Discard offer: 8 equal dashes, as the row panel glyph; a CSS dashed border has uneven dashes.
-                offer = Gtk.DrawingArea(width_request=12, height_request=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, can_target=False)
+                offer = self.zoom_icon(Gtk.DrawingArea(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, can_target=False), 12)
                 offer.set_draw_func(self.draw_discard_offer)
                 offer.add_css_class("asb-discard-cue")
                 read_icon.add_overlay(offer)
                 read = Gtk.Button(child=read_icon)
-                pin = Gtk.Button(child=Gtk.Image(pixel_size=12))
+                pin = Gtk.Button(child=self.zoom_icon(Gtk.Image(), 12))
                 set_icon(pin.get_child(), "asb-pin-outline-symbolic")
                 for button, name in ((read, "read"), (pin, "pin")):
                     button.add_css_class("flat")
@@ -10058,10 +10192,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 overlay.set_measure_overlay(actions, False)
                 content = overlay
             else:
-                clock = Gtk.Image(icon_name="preferences-system-time-symbolic", pixel_size=12, visible=False)
+                clock = self.zoom_icon(Gtk.Image(icon_name="preferences-system-time-symbolic", visible=False), 12)
                 clock.add_css_class("asb-limit-clock")
                 widget.asb_limit_clock = clock
-                mute = Gtk.Image(pixel_size=12, visible=False, valign=Gtk.Align.CENTER)
+                mute = self.zoom_icon(Gtk.Image(visible=False, valign=Gtk.Align.CENTER), 12)
                 set_icon(mute, "asb-muted-symbolic")
                 mute.add_css_class("asb-mute-glyph")
                 mute.add_css_class("dim-label")
@@ -10078,7 +10212,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 cell = Gtk.Box(homogeneous=True)
                 widget.asb_mark_cell = cell
                 dot.set_halign(Gtk.Align.CENTER)
-                pin = Gtk.Image(pixel_size=10, visible=False, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+                pin = self.zoom_icon(Gtk.Image(visible=False, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER), 10)
                 set_icon(pin, "asb-pin-symbolic")
                 pin.add_css_class("asb-compact-pin")
                 widget.asb_compact_pin = pin
@@ -10137,7 +10271,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if self.view == "comfortable":
                 widget.asb_folder.set_label(f"After the first {row['asbLimit']}")
                 if not getattr(widget, "asb_more_glyph", None):
-                    glyph = Gtk.Image(icon_name="go-next-symbolic", pixel_size=11, valign=Gtk.Align.CENTER)
+                    glyph = self.zoom_icon(Gtk.Image(icon_name="go-next-symbolic", valign=Gtk.Align.CENTER), 11)
                     glyph.add_css_class("dim-label")
                     widget.asb_state_label.get_parent().insert_child_after(glyph, widget.asb_state_label)
                     widget.asb_more_glyph = glyph
@@ -10157,9 +10291,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (widget.asb_dot.add_css_class if indicator == "alert" else widget.asb_dot.remove_css_class)("asb-alert")
         (widget.asb_dot.add_css_class if indicator == "question" else widget.asb_dot.remove_css_class)("asb-question")
         (widget.asb_dot.add_css_class if indicator == "stop" else widget.asb_dot.remove_css_class)("asb-stop")
-        # A read permission wait keeps a quiet "?" with no Read action, in both views.
+        # A read permission wait keeps a quiet "?" with no Read action, in both views. Outside the drawer view a drawer permission
+        # wait looks read, so it shows the same quiet "?" at rest (asb-drawer-wait).
+        wait = stored and row.get("state") == "waiting" and bool(row.get("actionRequired"))
+        (widget.add_css_class if wait else widget.remove_css_class)("asb-drawer-wait")
         unread = bool(row.get("actionAttention") or row.get("unread")) if shows_action(row) else indicator in ("question", "alert", "dot")
-        passive = indicator == "question" and not unread
+        passive = indicator == "question" and (not unread or wait and not getattr(widget, "asb_drawer_lit", False))
         (widget.asb_dot.add_css_class if passive else widget.asb_dot.remove_css_class)("asb-passive")
         # A "?" or "!" is centered by its ink: the bare passive "?" in the Comfortable read slot, a disc in both views.
         glyph = widget.asb_dot.get_first_child()
@@ -10178,6 +10315,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         """The time list radio: a 14 px ring, or an accent disc with a 6 px foreground dot."""
         color = area.get_color()
         context.set_source_rgba(color.red, color.green, color.blue, color.alpha)
+        # The mark is 14 px at zoom 100 and scales with the board zoom.
+        context.scale(width / 14, height / 14)
+        width = height = 14
         if area.has_css_class("asb-radio-on"):
             context.arc(width / 2, height / 2, 7, 0, 2 * math.pi)
             context.fill()
@@ -10199,6 +10339,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         """The card ring: 10 px outer, 2 px stroke, eight 27° dashes with the first centered at the top."""
         color = area.get_color()
         context.set_source_rgba(color.red, color.green, color.blue, color.alpha)
+        # The ring is 12 px at zoom 100 and scales with the board zoom.
+        context.scale(width / 12, height / 12)
+        width = height = 12
         context.set_line_width(2)
         for index in range(8):
             middle = -math.pi / 2 + index * math.pi / 4
@@ -10451,8 +10594,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
             set_icon(drawer.get_child(), "asb-drawer-filled-symbolic" if tucked else "asb-drawer-symbolic")
             drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
-            controls.append((drawer, "Take out of drawer: unread on the board again" if tucked
-                             else "Put in drawer: stays unread in the drawer", not pending))
+            # A Waiting row keeps its wait in the drawer; other rows keep their unread mark.
+            waiting = row.get("state") == "waiting"
+            controls.append((drawer, ("Take out of drawer: waits on the board again" if waiting else "Take out of drawer: unread on the board again")
+                             if tucked else "Put in drawer: keeps waiting in the drawer" if waiting else "Put in drawer: stays unread in the drawer",
+                             not pending))
         for button, text, enabled in controls:
             button.set_sensitive(True)
             (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
@@ -10814,7 +10960,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # One flat button per slot: an update changes its icon and label, so the focus stays on the slot.
             content = Gtk.Box(spacing=10)
             button = Gtk.Button(child=content, accessible_role=role)
-            button.asb_icon, button.asb_label = Gtk.Image(pixel_size=14), Gtk.Label(xalign=0, hexpand=True)
+            button.asb_icon, button.asb_label = self.zoom_icon(Gtk.Image(), 14), Gtk.Label(xalign=0, hexpand=True)
             set_icon(button.asb_icon, icon)
             button.asb_label.set_ellipsize(Pango.EllipsizeMode.END)
             content.append(button.asb_icon)
@@ -10905,8 +11051,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         for choice in MUTE_CHOICES:
             button = action_row(None, self.panel_mute_pick, choice, parent=panel.asb_time_group, role=Gtk.AccessibleRole.RADIO)
             set_panel_label(button, MUTE_WORDS[choice])
-            # The radio mark takes the 14 px icon column; it is drawn, as the Discard offer, so the 1.5 px ring stays 14 px.
-            mark = Gtk.DrawingArea(width_request=14, height_request=14, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, can_target=False)
+            # The radio mark takes the icon column (14 px at zoom 100); it is drawn, as the Discard offer, with a 1.5 px ring at 100%.
+            mark = self.zoom_icon(Gtk.DrawingArea(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, can_target=False), 14)
             mark.set_draw_func(self.draw_radio_mark)
             mark.add_css_class("asb-radio-mark")
             content = button.get_child()
@@ -11081,7 +11227,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
         read_note = question_wait_note(row) if controls.get("read", (None,))[0] == "mark-read" else ""
         unread_caption = "The dot shows when this task ends." if row.get("state") == "working" and controls.get("read", (None,))[0] == "mark-unread" else ""
-        drawer_caption = {"drawer-in": "Stays unread in the drawer.", "drawer-out": "Unread on the board again."}.get(controls.get("drawer", (None,))[0], "")
+        drawer_caption = ({"drawer-in": "Keeps waiting in the drawer.", "drawer-out": "Waits on the board again."} if row.get("state") == "waiting" else
+                          {"drawer-in": "Stays unread in the drawer.", "drawer-out": "Unread on the board again."}).get(controls.get("drawer", (None,))[0], "")
         # An Unknown row says why; a process end that is not read yet says so with its "!" words.
         open_caption = "Waits for your permission." if row.get("actionRequired") else "Waits for your answer." if row.get("questionPending") \
             else model["note"] if row.get("processEnded") and attention_indicator(row, True) == "alert" \
@@ -11728,6 +11875,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_columns = []
         Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.css)
         Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.badge_css)
+        if self.caption_probe_css:
+            Gtk.StyleContext.remove_provider_for_display(self.get_display(), self.caption_probe_css)
         # The hidden Messages and Usage windows go with the board; a shown one stays until it closes.
         application = self.get_application() if hasattr(self, "get_application") else None
         for window in list(getattr(application, "activity_windows", {}).values()):

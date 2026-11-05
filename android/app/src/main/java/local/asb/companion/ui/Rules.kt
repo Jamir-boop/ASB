@@ -103,6 +103,13 @@ fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = Syste
     else -> ""
 }
 
+// The card mark: outside the drawer view a drawer row looks read, so a drawer permission wait keeps the passive "?" of a read
+// permission wait (the desktop shows it with CSS).
+fun cardIndicator(row: Thread, drawerView: Boolean, nowMs: Long = System.currentTimeMillis()): String =
+    attentionIndicator(row, drawerView, nowMs).ifEmpty {
+        if (!drawerView && row.drawer && row.state == "waiting" && row.actionRequired) "question" else ""
+    }
+
 // Port of provider_query
 fun providerQuery(query: String, app: String = "all"): Pair<String, String> {
     val match = providerPrefix.matchEntire(query)
@@ -419,16 +426,18 @@ data class CornerControl(val kind: String, val action: String?, val label: Strin
 fun cornerControls(
     row: Thread, drawerView: Boolean, confirmed: Boolean, nowMs: Long = System.currentTimeMillis(),
 ): List<CornerControl> = buildList {
-    val indicator = attentionIndicator(row, drawerView, nowMs)
+    val indicator = cardIndicator(row, drawerView, nowMs)
     val discard = row.state == "working" && indicator !in setOf("question", "alert", "dot")
-    if (row.drawer) add(CornerControl("drawer", "drawer-out", "Take out of drawer: show as unread again"))
+    if (row.drawer) add(CornerControl("drawer", "drawer-out",
+        if (row.state == "waiting") "Take out of drawer: show as waiting again" else "Take out of drawer: show as unread again"))
     when {
         discard && row.discardResult -> add(CornerControl("discard", "keep-result", "Leave unread when done: the dot shows when this task ends"))
         discard -> Unit
         confirmed -> add(CornerControl("confirmed", null, "Read in ASB"))
         showsAction(row) && (actionNeedsAttention(row) || row.unread) ->
             add(CornerControl("question", "mark-read", "A user action is required in the original app. Mark read in ASB"))
-        showsAction(row) -> add(CornerControl("question", null, "A user action is required in the original app"))
+        showsAction(row) || row.drawer && !drawerView && indicator == "question" ->
+            add(CornerControl("question", null, "A user action is required in the original app"))
         indicator == "question" -> add(CornerControl("question", "mark-read", "Mark read in ASB"))
         indicator == "alert" -> add(CornerControl("alert", "mark-read", "Mark read in ASB"))
         indicator == "dot" -> add(CornerControl("dot", "mark-read", "Mark read in ASB"))
