@@ -6851,7 +6851,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(asb.zoom_css(css, 200),
                          ".asb-column-flow:not(.asb-preferences):not(.asb-comfortable) .asb-dot { min-width: 24px; min-height: 24px; }\n"
                          ".asb-column-flow.asb-preferences:not(.asb-comfortable) .asb-dot { min-width: 12px; min-height: 12px; }")
-        for zoom, expected in ((80, 44), (100, 54), (150, 78), (200, 102)):
+        for zoom, expected in ((80, 43), (100, 54), (150, 82), (200, 109)):
             self.assertEqual(asb.corner_reserve(zoom), expected)
         window = object.__new__(Window)
         for zoom in (80, 100, 200):

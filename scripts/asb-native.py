@@ -1460,9 +1460,8 @@ def zoomed(px, zoom):
 
 
 def corner_reserve(zoom):
-    """The end of a Comfortable card that its corner takes at rest: the 24 px Read slot and the 24 px pin, which scale with the
-    zoom (their CSS min sizes), with the 2 px spacing and the 5 px end margin, which do not; 54 px at 100%."""
-    return 54 + 2 * (zoomed(24, zoom) - 24)
+    """The Read and pin slots, their gap and end margin at the zoom, less the 1 px card border; 54 px at 100%."""
+    return 2 * zoomed(24, zoom) + zoomed(2, zoom) + zoomed(5, zoom) - 1
 
 
 def zoom_css(css, zoom):
@@ -7047,7 +7046,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-read-button {{ color: @accent_color; background: transparent; }}
 /* A 16 px rest plate: a 4.5 px spread around the 7 px dot, with no layout change. */
 {base} .asb-session:not(.asb-hovered):not(.asb-key-focus) .asb-read-button .asb-dot:not(.asb-question):not(.asb-alert):not(.asb-stop):not(.asb-discard) {{ box-shadow: 0 0 0 4.5px alpha(@window_fg_color, .08); }}
-{base} .asb-session.asb-hovered .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc), {base} .asb-key-focus .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc) {{ background: alpha(@window_fg_color, .08); }}
+{base} .asb-session.asb-hovered .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc):not(.asb-read-confirmed), {base} .asb-key-focus .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc):not(.asb-read-confirmed) {{ background: alpha(@window_fg_color, .08); }}
 {base} .asb-read-button.asb-read-disc {{ background: transparent; }}
 {base} .asb-session.asb-hovered .asb-read-button.asb-read-disc, {base} .asb-key-focus .asb-read-button.asb-read-disc {{ background: alpha(@window_fg_color, .08); }}
 {base} .asb-read-button:hover, {base} .asb-read-button:focus-visible,
@@ -7060,7 +7059,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-read-button:hover:not(.asb-passive-indicator):not(.asb-discard-button) .asb-read-cue,
 {base} .asb-read-button:focus-visible:not(.asb-passive-indicator):not(.asb-discard-button) .asb-read-cue,
 {base} .asb-read-confirmed .asb-read-cue {{ opacity: 1; }}
-{base} .asb-read-button.asb-read-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
+{base} .asb-session .asb-read-button.asb-read-confirmed {{ color: @success_color; background: alpha(@success_color, .12); }}
 {base} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
 {base} .asb-read-button.asb-discard-button {{ background: transparent; }}
 {base} .asb-discard-button.asb-discard-offer {{ opacity: 0; }}
@@ -7089,8 +7088,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-copy-tag-dot.asb-copy-tag-on {{ background: @accent_color; }}
 {base} .asb-copy-tag-dot.asb-copy-tag-off {{ opacity: .5; }}
 {base} .asb-copy-feedback {{ color: @success_color; }}
-{base} .asb-corner {{ padding-top: 2px; }}
-{base} .asb-corner-wide {{ padding: 2px 0 {self.pocket_bottom}px 16px; border-radius: 0; }}
+{base} .asb-corner {{ padding-top: {zoomed(2, self.board_zoom)}px; }}
+{base} .asb-corner-wide {{ padding: {zoomed(2, self.board_zoom)}px 0 {self.pocket_bottom}px 16px; border-radius: 0; }}
 /* The pocket has the card surface: the hover paint, or with key focus only the window (a GNOME card has no focus background). */
 {base} .asb-session.asb-hovered .asb-corner-wide {{
     background: linear-gradient(to right, alpha(mix(@window_bg_color, @window_fg_color, .07), 0), mix(@window_bg_color, @window_fg_color, .07) 16px); }}
@@ -7170,12 +7169,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {scope}.asb-preferences separator {{ background: {colors['divider']}; }}
 {scope} .asb-read-button {{ color: {colors['accent']}; background: transparent; }}
 {scope} .asb-session:not(.asb-hovered):not(.asb-key-focus) .asb-read-button .asb-dot:not(.asb-question):not(.asb-alert):not(.asb-stop):not(.asb-discard) {{ box-shadow: 0 0 0 4.5px alpha({colors['text']}, .08); }}
-{scope} .asb-session.asb-hovered .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc), {scope} .asb-key-focus .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc) {{ background: alpha({colors['text']}, .08); }}
+{scope} .asb-session.asb-hovered .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc):not(.asb-read-confirmed), {scope} .asb-key-focus .asb-read-button:not(.asb-passive-indicator):not(.asb-discard-button):not(.asb-read-disc):not(.asb-read-confirmed) {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-read-button.asb-read-disc {{ background: transparent; }}
 {scope} .asb-session.asb-hovered .asb-read-button.asb-read-disc, {scope} .asb-key-focus .asb-read-button.asb-read-disc {{ background: alpha({colors['text']}, .08); }}
 {scope} .asb-read-button:hover, {scope} .asb-read-button:focus-visible,
 {scope} .asb-session .asb-read-button.asb-read-disc:hover, {scope} .asb-session .asb-read-button.asb-read-disc:focus-visible,
-{scope} .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
+{scope} .asb-session .asb-read-button.asb-read-confirmed {{ color: {colors['accent']}; background: alpha({colors['accent']}, .15); }}
 {scope} .asb-read-cue {{ color: {colors['text']}; }}
 {scope} .asb-read-confirmed .asb-read-cue {{ color: {colors['accent']}; }}
 {scope} .asb-read-button.asb-passive-indicator {{ background: transparent; }}
@@ -7255,14 +7254,18 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             limited_hover = f"mix(@window_bg_color, @window_fg_color, {hover_fraction})"
         quiet_mark = mix_color(palette["background"], palette["muted" if colors else "text"], caption_fraction * .75)
         quiet_mark = contrast_floor(quiet_mark, palette["text"], palette["background"], 3)
-        def claude_tone(key, fraction):
-            tone = mix_color(palette["background"], palette[key], fraction * .75)
+        def provider_tone(key, fraction, alpha):
+            tone = mix_color(palette["background"], palette[key], fraction * alpha)
             for surface in (palette["background"], highlight):
                 tone = contrast_floor(tone, palette[key], surface, 3)
             return tone
-        claude_bright = claude_tone("text", .65 if colors else .55)
-        claude_quiet = claude_tone("muted" if colors else "text", caption_fraction)
-        claude_limited = claude_tone("text", .4)
+        claude_bright = provider_tone("text", .65 if colors else .55, .75)
+        claude_quiet = provider_tone("muted" if colors else "text", caption_fraction, .75)
+        claude_limited = provider_tone("text", .4, .75)
+        opencode_bright = provider_tone("text", .65 if colors else .55, .6)
+        opencode_quiet = provider_tone("muted" if colors else "text", caption_fraction, .6)
+        opencode_limited = provider_tone("text", .4, .6)
+        corner_floor = provider_tone("text", 0, 1)
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
         quiet = [base + " .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
         parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-mute-time", " .asb-where",
@@ -7329,6 +7332,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         css += f"""
 {base} .asb-session:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_bright}; opacity: 1; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_limited}; opacity: 1; }}
+{base} .asb-session:not(.asb-message-lit) .asb-provider.asb-opencode {{ color: {opencode_bright}; opacity: 1; }}
+{base} .asb-limited:not(.asb-message-lit) .asb-provider.asb-opencode {{ color: {opencode_limited}; opacity: 1; }}
+{base} .asb-session:not(.asb-dismissed) .asb-drawer-button.asb-corner-off,
+{base} .asb-session:not(.asb-dismissed) .asb-drawer-button.asb-corner-off * {{ color: {corner_floor}; background: none;
+    opacity: 1; filter: none; -gtk-icon-filter: none; }}
 {", ".join(row + " .asb-pin-button.asb-pinned" for row in quiet)},
 {", ".join(row + " .asb-compact-pin" for row in quiet)},
 {", ".join(row + " .asb-mute-glyph" for row in quiet)} {{ color: {quiet_mark}; opacity: 1; }}
@@ -7357,6 +7365,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 """
         for quiet_row in (*quiet, view_only, view_only_rest):
             css += f"{quiet_row}:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_quiet}; opacity: 1; }}\n"
+            css += f"{quiet_row}:not(.asb-message-lit) .asb-provider.asb-opencode {{ color: {opencode_quiet}; opacity: 1; }}\n"
         self.css.load_from_string(zoom_css(css, self.board_zoom))
         self.hover_colors = colors
         for widget in self.row_cache.values():
@@ -7780,8 +7789,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if getattr(card, "asb_view", None) == "comfortable" and hasattr(title, "title_layouts") and title.get_width() > 0:
                 found, point = title.compute_point(card, Graphene.Point().init(0, title.title_layouts(title.get_width())[2]))
                 if found:
-                    # The corner buttons take 2 px of top padding and 24 px (at the zoom).
-                    return max(0, math.ceil(point.y) - 2 - zoomed(24, self.board_zoom))
+                    # The top padding and the corner buttons both follow the zoom.
+                    return max(0, math.ceil(point.y) - zoomed(2, self.board_zoom) - zoomed(24, self.board_zoom))
         scale = self.text_scale * self.board_zoom / 100
         return POCKET_BOTTOM + self.line_growth(13, scale) + self.line_growth(11, scale)
 
@@ -8426,13 +8435,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if row is not self.key_focus_row:
             if row is not None and not self.card_dismissed(row):
                 self.restore_card_controls()
-            if self.key_focus_row:
-                self.key_focus_row.remove_css_class("asb-key-focus")
-                self.draw_pocket_text(self.key_focus_row)
+            previous = self.key_focus_row
+            self.key_focus_row = row
+            if previous:
+                previous.remove_css_class("asb-key-focus")
+                self.draw_pocket_text(previous)
+                self.update_card_actions(previous)
             if row:
                 row.add_css_class("asb-key-focus")
                 self.draw_pocket_text(row)
-            self.key_focus_row = row
+                self.update_card_actions(row)
         # The tag of the copy button under the pointer stays until the pointer leaves.
         old = getattr(self, "copy_focus_button", None)
         if focus is not None and getattr(focus, "asb_card_action", None):
@@ -9502,6 +9514,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_zoom = zoom = self.board_zoom
         if getattr(widget, "asb_workspace", None) is not None:
             widget.asb_workspace.set_margin_end(corner_reserve(zoom))
+        if getattr(widget, "asb_actions", None) is not None:
+            widget.asb_actions.set_spacing(zoomed(2, zoom))
+            widget.asb_actions.set_margin_end(zoomed(5, zoom))
         if getattr(widget, "asb_read_slot", None) is not None:
             widget.asb_read_slot.set_size_request(zoomed(24, zoom), zoomed(24, zoom))
         if getattr(widget, "asb_mark_cell", None) is not None:
@@ -9803,6 +9818,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.add_css_class("asb-hovered" if hovered else "asb-unhovered")
         widget.remove_css_class("asb-unhovered" if hovered else "asb-hovered")
         self.draw_pocket_text(widget)
+        self.update_card_actions(widget)
         if not hovered:
             self.hide_copy_tag(getattr(widget, "asb_copy_button", None), keep_focused=True)
             self.hide_copy_tag(getattr(widget, "asb_mute_button", None), keep_focused=True)
@@ -9998,7 +10014,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             for tag in (getattr(card, "asb_copy_tag", None), getattr(card, "asb_mute_tag", None)):
                 if tag is not None and tag.get_visible():
                     width += tag.get_child().measure(Gtk.Orientation.HORIZONTAL, -1)[1] - tag.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
-            tagged = width <= card.get_width() - 5 - POCKET_TAG_START
+            tagged = width <= card.get_width() - zoomed(5, self.board_zoom) - POCKET_TAG_START
         if tagged == spacer.get_visible():
             return
         spacer.set_visible(tagged)
@@ -10023,7 +10039,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if widget.asb_view != "comfortable" or widget.asb_thread["id"] == MORE_ID or getattr(widget, "asb_copy_button", None):
             return
         row, actions = widget.asb_thread, widget.asb_actions
-        drawer = Gtk.Button(child=self.zoom_icon(Gtk.Image(), 12))
+        drawer = Gtk.Button(child=self.zoom_icon(Gtk.Image(), 12), visible=False)
         set_icon(drawer.get_child(), "asb-drawer-symbolic")
         copy = Gtk.Button(child=self.zoom_icon(Gtk.Image(icon_name="edit-copy-symbolic"), 12))
         mute = Gtk.Button(child=self.zoom_icon(Gtk.Image(), 12))
@@ -10340,6 +10356,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         name = provider_icon(row.get("provider"))
         set_icon(widget.asb_mark, name)
         (widget.asb_mark.add_css_class if name == "asb-claude-symbolic" else widget.asb_mark.remove_css_class)("asb-claude")
+        (widget.asb_mark.add_css_class if name == "asb-opencode-symbolic" else widget.asb_mark.remove_css_class)("asb-opencode")
         widget.asb_source_badge.set_color(source_marker_color(row))
         where_icon, where = row_where(row)
         comfortable = self.view == "comfortable"
@@ -10543,9 +10560,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # A shown drawer button moves left of the tag, so it must fit too.
         drawer = getattr(button.asb_card, "asb_drawer_button", None)
         if drawer is not None and drawer.get_visible():
-            width += drawer.get_width() + 2
+            width += drawer.get_width() + zoomed(2, self.board_zoom)
         # The word and dots must fit inside the content; the pocket keeps its fade in the mark-to-text gap.
-        return self.column_pixel_width >= zoomed(240, self.board_zoom) and found and bounds.origin.x - width - 2 >= 8
+        return self.column_pixel_width >= zoomed(240, self.board_zoom) and found and bounds.origin.x - width - zoomed(2, self.board_zoom) >= 8
 
     def show_copy_tag(self, button, shown):
         tag = getattr(button, "asb_tag", None)
@@ -10633,7 +10650,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indicator = attention_indicator(row, True)
         copy_choice = card_copy(row, self.copy_kind)
         muted = mute_active(row, now_ms)
-        signature = (self.mute_for, self.column_pixel_width >= zoomed(240, self.board_zoom), mute_button_tip(row, self.mute_for, now_ms),
+        corner_active = getattr(self, "hovered_card", None) is widget or getattr(self, "key_focus_row", None) is widget
+        signature = (corner_active, self.mute_for, self.column_pixel_width >= zoomed(240, self.board_zoom), mute_button_tip(row, self.mute_for, now_ms),
                      getattr(widget, "asb_mute_done", None), indicator, row.get("state"), row.get("actionRequired"), row.get("actionAttention"), row.get("unread"), row.get("discardResult"),
                      row.get("pinned"), row.get("drawer"), mute_active(row, now_ms), row.get("title"), pending, bool(widget.asb_read_timer),
                      self.column_pixel_width >= zoomed(190, self.board_zoom), bool(getattr(widget, "asb_copy_timer", None)), copy_choice,
@@ -10691,24 +10709,35 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         controls = [(read, read_text, (unread or discard) and not pending), (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)]
         if drawer:
             tucked = bool(row.get("drawer"))
-            shown = self.column_pixel_width >= zoomed(190, self.board_zoom) and (tucked or drawer_offer(row))
+            offered = tucked or drawer_offer(row)
+            shown = self.column_pixel_width >= zoomed(190, self.board_zoom) and (offered or drawer.get_visible() and corner_active)
             drawer.set_visible(shown)
+            (drawer.remove_css_class if offered else drawer.add_css_class)("asb-corner-off")
+            drawer.set_sensitive(offered)
+            if offered:
+                drawer.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+            else:
+                drawer.update_property([Gtk.AccessibleProperty.DESCRIPTION], [PANEL_GONE_TEXT])
             (drawer.add_css_class if tucked else drawer.remove_css_class)("asb-drawer-filled")
             set_icon(drawer.get_child(), "asb-drawer-filled-symbolic" if tucked else "asb-drawer-symbolic")
-            drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if not pending else None
+            drawer.asb_action = ("win.drawer-out" if tucked else "win.drawer-in") if offered and not pending else None
             # A Waiting row keeps its wait in the drawer; other rows keep their unread mark.
             waiting = row.get("state") == "waiting"
-            controls.append((drawer, ("Take out of drawer: waits on the board again" if waiting else "Take out of drawer: unread on the board again")
-                             if tucked else "Put in drawer: keeps waiting in the drawer" if waiting else "Put in drawer: stays unread in the drawer",
-                             not pending))
+            drawer_name = ("Take out of drawer: waits on the board again" if waiting else "Take out of drawer: unread on the board again") \
+                if tucked else "Put in drawer: keeps waiting in the drawer" if waiting else "Put in drawer: stays unread in the drawer"
+            controls.append((drawer, drawer_name, offered and not pending))
+            if not offered:
+                controls[-1] = (drawer, PANEL_GONE_TEXT, False)
         for button, text, enabled in controls:
-            button.set_sensitive(True)
+            if button is not drawer:
+                button.set_sensitive(True)
             (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
             # GTK queries the tooltip again at each set, which is slow for a card under the pointer.
             if button.get_tooltip_text() != text:
                 button.set_tooltip_text(text)
-            button.update_property([Gtk.AccessibleProperty.LABEL], [("Mark read" if button is read and question_note else text)
-                                                                    + ": " + row.get("title", "Untitled session")])
+            # The unavailable drawer keeps its control name; its tooltip and description say why it is off.
+            name = drawer_name if button is drawer else "Mark read" if button is read and question_note else text
+            button.update_property([Gtk.AccessibleProperty.LABEL], [name + ": " + row.get("title", "Untitled session")])
             if button is read:
                 if question_note:
                     button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [question_note])

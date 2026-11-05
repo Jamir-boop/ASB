@@ -8665,6 +8665,36 @@ class WidgetCheck(unittest.TestCase):
                 self.assertIn("Working · " + visible, card.asb_tooltip)
                 self.assert_accessible_label(card, card.asb_accessible_label + " Working time " + words + ".")
 
+    def test_corner_gaps_padding_inset_and_tag_gap_follow_zoom(self):
+        window = self.card_board([self.card_row("gap", unread=True, pending=True)], font="Cascadia Code NF 11")
+        window.set_default_size(1500, 600)
+        window.width_control.set_value(600); self.settle(window)
+        for zoom in (80, 100, 150, 200):
+            with self.subTest(zoom=zoom):
+                window.set_board_zoom(zoom); self.settle(window)
+                card = window.focus_widgets["gap"]
+                self.hover_card(window, card, True); self.settle(window)
+                gap = asb.zoomed(2, zoom)
+                self.assertEqual(card.asb_actions.get_spacing(), gap)
+                self.assertEqual(card.asb_actions.get_margin_end(), asb.zoomed(5, zoom))
+                buttons = (card.asb_drawer_button, card.asb_mute_button, card.asb_copy_button, card.asb_read_button, card.asb_pin_button)
+                boxes = [button.compute_bounds(card)[1] for button in buttons]
+                self.assertEqual({box.origin.y for box in boxes}, {asb.zoomed(2, zoom)})
+                for left, right in zip(boxes, boxes[1:]):
+                    self.assertEqual(right.origin.x - left.origin.x - left.size.width, gap)
+                self.assertEqual(card.get_width() - boxes[-1].origin.x - boxes[-1].size.width, asb.zoomed(5, zoom))
+                for button in (card.asb_copy_button, card.asb_mute_button):
+                    window.set_focus(button); window.set_focus_visible(True); window.key_focus_changed()
+                    window.show_copy_tag(button, True); self.drain(.3); self.settle(window)
+                    tag = button.asb_tag.compute_bounds(card)[1]
+                    box = card.asb_mute_button.compute_bounds(card)[1]
+                    self.assertEqual(box.origin.x - tag.origin.x - tag.size.width, gap)
+                    window.show_copy_tag(button, False); self.settle(window)
+                title = card.asb_title_label
+                line2 = title.compute_point(card, asb.Graphene.Point().init(0, title.title_layouts(title.get_width())[2]))[1].y
+                corner = card.asb_actions.compute_bounds(card)[1]
+                self.assertEqual(corner.origin.y + corner.size.height, 34 if zoom == 100 else math.ceil(line2))
+
     def test_board_zoom_scales_the_card_corner_title_and_pocket_at_each_text_scale(self):
         settings = asb.Gtk.Settings.get_default()
         self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
@@ -10807,6 +10837,166 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(window.card_key(asb.Gdk.KEY_r, asb.CARD_KEY_ALT, "dot"))
             self.assertTrue(window.get_focus_visible())
             window.session_actions.clear()
+
+    def test_opencode_card_mark_uses_sixty_percent_with_floor_in_both_views(self):
+        navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}
+        rows = [self.card_row(provider + state, provider=provider, state="working" if state == "bright" else "idle",
+                              lastOutcome="limit" if state == "limited" else "",
+                              limitResetsAtMs=int(time.time() * 1000) + 3600_000 if state == "limited" else 0)
+                for provider in ("opencode", "claude", "codex") for state in ("bright", "quiet", "limited")]
+        window = self.card_board(rows, font="Cascadia Code NF 11")
+        window.set_default_size(1004, 700)
+        user = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
+        for view in (1, 0):
+            window.view_filter.set_selected(view); self.settle(window); self.fill_board(window)
+            for palette in (user, CUSTOM, navy, None):
+                window.set_palette(palette); window.set_focus(None); self.settle(window)
+                colors = palette or window.native_colors()
+                highlight = asb.highlight_color(colors) if palette else asb.mix_color(colors["background"], colors["text"], .07)
+                caption = asb.quiet_tones(colors, highlight, bool(palette))[1][1]
+                for provider, alpha in (("opencode", .6), ("claude", .75), ("codex", 1)):
+                    for state in ("bright", "quiet", "limited"):
+                        card = window.focus_widgets[provider + state]
+                        for active in ("rest", "hover", "focus"):
+                            with self.subTest(view=view, palette=palette, provider=provider, state=state, active=active):
+                                self.hover_card(window, card, active == "hover")
+                                if active == "focus":
+                                    window.set_focus_visible(True); card.grab_focus()
+                                else:
+                                    window.set_focus(None)
+                                self.settle(window)
+                                quiet = state == "quiet" and active == "rest"
+                                key = "muted" if quiet and palette else "text"
+                                fraction = caption if quiet else .4 if state == "limited" else .65 if palette else .55
+                                if provider == "codex":
+                                    expected = asb.mix_color(colors["background"], colors[key], fraction) if quiet else colors["text"]
+                                    opacity = 1
+                                else:
+                                    expected = asb.mix_color(colors["background"], colors[key], fraction * alpha)
+                                    for surface in (colors["background"], highlight):
+                                        expected = asb.contrast_floor(expected, colors[key], surface, 3)
+                                    opacity = 1
+                                    self.assertGreaterEqual(min(asb.contrast(expected, surface) for surface in (colors["background"], highlight)), 3)
+                                rgba = asb.Gdk.RGBA(); rgba.parse(expected)
+                                if provider == "codex" and not quiet and state != "limited" and not palette:
+                                    rgba.alpha = .55
+                                actual = card.asb_mark.get_color()
+                                for got, want in zip((actual.red, actual.green, actual.blue, actual.alpha), (rgba.red, rgba.green, rgba.blue, rgba.alpha)):
+                                    self.assertAlmostEqual(got, want, delta=1 / 255)
+                                self.assertAlmostEqual(card.asb_mark.get_opacity(), opacity, delta=.005)
+                                self.assertEqual(card.asb_mark.get_pixel_size(), 14)
+                        window.set_focus(None); self.hover_card(window, card, False)
+
+    def test_read_confirmation_plate_on_hover_and_key_focus(self):
+        window = self.card_board([self.card_row("read", unread=True, pending=True)])
+        card = window.focus_widgets["read"]
+        for palette in (None, CUSTOM):
+            window.set_palette(palette)
+            for active in ("hover", "focus"):
+                with self.subTest(palette=palette, active=active):
+                    self.hover_card(window, card, active == "hover")
+                    window.set_focus_visible(active == "focus")
+                    window.set_focus(card if active == "focus" else None)
+                    read = card.asb_read_button
+                    read.add_css_class("asb-read-confirmed"); self.drain(.3); self.settle(window)
+                    ink = asb.Gdk.RGBA()
+                    if palette:
+                        ink.parse(palette["accent"])
+                    else:
+                        ink = window.get_style_context().lookup_color("success_color")[1]
+                    pixel = self.rgba(read)[12][4]
+                    self.assertAlmostEqual(pixel[3], 255 * (.15 if palette else .12), delta=2)
+                    for actual, expected in zip(pixel[:3], (ink.red, ink.green, ink.blue)):
+                        self.assertAlmostEqual(actual * pixel[3] / 255, expected * 255 * (.15 if palette else .12), delta=1.5)
+                    cue = next(w for w in descendants(read) if w.has_css_class("asb-read-cue"))
+                    self.assertTrue(cue.get_color().equal(ink))
+                    read.remove_css_class("asb-read-confirmed")
+
+    def test_read_retires_drawer_until_hover_and_key_focus_end(self):
+        window = self.card_board([self.card_row("read", unread=True, pending=True)])
+        requests = []
+        with patch.object(asb, "request_async", lambda *args: requests.append(args)):
+            for active in ("hover", "focus"):
+                card = window.focus_widgets["read"]
+                window.update_session_row(card, {**card.asb_thread, "unread": True, "pending": True})
+                self.hover_card(window, card, active == "hover")
+                window.set_focus_visible(active == "focus")
+                window.set_focus(card if active == "focus" else None)
+                self.settle(window)
+                drawer = card.asb_drawer_button
+                self.assertTrue(drawer.get_visible() and drawer.get_sensitive())
+                self.assert_accessible_label(drawer, "Put in drawer: stays unread in the drawer: " + card.asb_thread["title"])
+                self.assertFalse(asb.Gtk.test_accessible_has_property(drawer, asb.Gtk.AccessibleProperty.DESCRIPTION))
+                controls = (drawer, card.asb_mute_button, card.asb_copy_button, card.asb_read_button, card.asb_pin_button)
+                before = [control.compute_bounds(card)[1].origin.x for control in controls]
+                title = card.asb_title_label.title_layouts(card.asb_title_label.get_width())[0].get_text()
+                pocket = card.asb_actions.compute_bounds(card)[1]
+                if active == "hover":
+                    card.asb_read_button.emit("clicked")
+                else:
+                    self.assertTrue(window.card_key(asb.Gdk.KEY_r, asb.CARD_KEY_ALT, "read"))
+                self.assertTrue(requests[-1][1].endswith("/mark-read"))
+                requests[-1][2]({"changed": True, "threadId": "read", "thread": {**card.asb_thread, "unread": False, "pending": False}}, None)
+                self.settle(window)
+                self.assertTrue(drawer.get_visible())
+                self.assertFalse(drawer.get_sensitive())
+                self.assertIsNone(drawer.asb_action)
+                self.assertEqual(drawer.get_tooltip_text(), asb.PANEL_GONE_TEXT)
+                self.assert_accessible_label(drawer, "Put in drawer: stays unread in the drawer: " + card.asb_thread["title"])
+                self.assert_accessible_label(drawer, asb.PANEL_GONE_TEXT, asb.Gtk.AccessibleProperty.DESCRIPTION)
+                self.assert_accessible_disabled(drawer, True)
+                self.assertEqual(before, [control.compute_bounds(card)[1].origin.x for control in controls])
+                self.assertEqual(title, card.asb_title_label.title_layouts(card.asb_title_label.get_width())[0].get_text())
+                after = card.asb_actions.compute_bounds(card)[1]
+                self.assertEqual((pocket.origin.x, pocket.origin.y, pocket.size.width, pocket.size.height),
+                                 (after.origin.x, after.origin.y, after.size.width, after.size.height))
+                for palette in (None, CUSTOM):
+                    window.set_palette(palette); self.settle(window)
+                    colors = palette or window.native_colors()
+                    highlight = asb.highlight_color(colors) if palette else asb.mix_color(colors["background"], colors["text"], .07)
+                    expected = colors["background"]
+                    for surface in (colors["background"], highlight):
+                        expected = asb.contrast_floor(expected, colors["text"], surface, 3)
+                    rgba = asb.Gdk.RGBA(); rgba.parse(expected)
+                    self.assertTrue(drawer.get_color().equal(rgba))
+                    for flags in (asb.Gtk.StateFlags.NORMAL, asb.Gtk.StateFlags.PRELIGHT):
+                        drawer.set_state_flags(flags, False); self.settle(window)
+                        self.assertEqual(self.rgba(drawer)[12][2][3], 0)
+                    drawer.unset_state_flags(asb.Gtk.StateFlags.PRELIGHT)
+                self.hover_card(window, card, False); window.set_focus(None); self.settle(window)
+                self.assertFalse(drawer.get_visible())
+                window.activate_action("win.mark-unread", asb.GLib.Variant("s", "read"))
+                requests[-1][2]({"changed": True, "threadId": "read", "thread": {**card.asb_thread, "unread": True, "pending": True}}, None)
+                self.hover_card(window, card, True); self.settle(window)
+                self.assertTrue(drawer.get_visible() and drawer.get_sensitive())
+                self.assertEqual(drawer.asb_action, "win.drawer-in")
+                self.assert_accessible_label(drawer, "Put in drawer: stays unread in the drawer: " + card.asb_thread["title"])
+                self.assertFalse(asb.Gtk.test_accessible_has_property(drawer, asb.Gtk.AccessibleProperty.DESCRIPTION))
+                self.hover_card(window, card, False)
+
+    def test_escape_hides_the_unavailable_drawer_without_moving_the_corner(self):
+        window = self.card_board([self.card_row("read", unread=True, pending=True)])
+        requests = []
+        with patch.object(asb, "request_async", lambda *args: requests.append(args)):
+            card = window.focus_widgets["read"]
+            self.hover_card(window, card, True); self.settle(window)
+            card.asb_read_button.emit("clicked")
+            requests[-1][2]({"changed": True, "threadId": "read", "thread": {**card.asb_thread, "unread": False, "pending": False}}, None)
+            self.settle(window)
+            controls = (card.asb_drawer_button, card.asb_mute_button, card.asb_copy_button, card.asb_read_button, card.asb_pin_button)
+            before = [control.compute_bounds(card)[1].origin.x for control in controls]
+            self.assertFalse(card.asb_drawer_button.get_sensitive())
+            for palette in (None, CUSTOM):
+                window.restore_card_controls(card)
+                window.set_palette(palette); self.settle(window)
+                self.assertTrue(window.dismiss_card_controls())
+                self.settle(window)
+                self.assertTrue(card.has_css_class("asb-dismissed"))
+                self.assertEqual(before, [control.compute_bounds(card)[1].origin.x for control in controls])
+                for control in (card.asb_drawer_button, card.asb_mute_button, card.asb_copy_button, card.asb_pin_button):
+                    snapshot = asb.Gtk.Snapshot()
+                    asb.Gtk.WidgetPaintable.new(control).snapshot(snapshot, control.get_width(), control.get_height())
+                    self.assertIsNone(snapshot.to_node(), (palette, control.get_css_classes()))
 
     def test_round_four_mark_tones_and_passive_centers(self):
         for font in ("Cantarell 11", "Cascadia Code NF 11"):

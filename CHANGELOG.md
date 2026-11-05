@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- The OpenCode mark on a card now has about the ink of the Codex and Claude marks: it uses 60% of the provider mark tone of that card, with a 3:1 contrast floor on the card and hover surfaces. Its shape, size, and place do not change.
+- During the Read confirmation, the Read button now keeps its success plate (GNOME colors) or accent plate (custom colors) also while the card has hover or key focus. After a Read, the drawer button keeps its place but is unavailable (`Not available now.`) until the hover and the key focus end; Escape hides it with the other corner buttons, and Mark unread brings it back.
+- The board zoom now also scales the corner gaps, the gap between a corner tag and its button, the top padding, and the right inset of the corner, in whole pixels. At 100% the corner does not change.
 - The no-open toast now wraps its whole reason in a narrow board without shrinking its buttons. Escape on the board, a card, or its button closes only the toast first; moving to another card or scrolling the board closes it too. The next Escape keeps its usual action. Popovers, search, and Preferences keep their own Escape action.
 - Clearer no-open words name ASB and the app that can open the session. The no-link tooltip uses the same words, and a disabled Open row with no other caption shows the reason. **Show messages** in the row panel now has the caption **Between sessions** and a description that says these are messages between sessions.
 - On card hover or key focus, a title line 1 whose first word does not fit left of the corner pocket fade with `…` now shows the start of that word in whole letters, with `…` right after it (`data-sync-nightly-…`), as the folder line. Before, it showed only `…`.
