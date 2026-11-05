@@ -5829,12 +5829,17 @@ class NativeLogicChecks(unittest.TestCase):
             read.set_focusable.assert_called_with(False)
             read.add_css_class.assert_any_call("asb-passive-indicator")
             read.remove_css_class.assert_any_call("asb-discard-button")
-            # Mute and another machine take the card offer away.
-            for extra in ({"muted": True}, {"remote": True}):
-                _widget, read = card({**idle, **extra})
-                read.set_visible.assert_called_with(False)
-                self.assertEqual(read.asb_action, None)
-                read.remove_css_class.assert_any_call("asb-discard-button")
+            # Mute takes the card offer away; another machine shows the unarmed ring as unavailable, with no action.
+            _widget, read = card({**idle, "muted": True})
+            read.set_visible.assert_called_with(False)
+            self.assertEqual(read.asb_action, None)
+            read.remove_css_class.assert_any_call("asb-discard-button")
+            _widget, read = card({**idle, "remote": True})
+            read.set_visible.assert_called_with(True)
+            self.assertEqual(read.asb_action, None)
+            read.set_sensitive.assert_called_with(False)
+            read.add_css_class.assert_any_call("asb-corner-off")
+            read.set_tooltip_text.assert_called_with("Mark next result read. " + asb.REMOTE_RELATIVE_CAPTION)
             # The check after a Read keeps the slot until it ends; an arm made meanwhile takes it.
             widget, read = card(dict(idle), timer=42)
             window.clear_read_feedback.assert_not_called()

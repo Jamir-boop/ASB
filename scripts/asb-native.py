@@ -3645,12 +3645,56 @@ class CompactTitle(Gtk.Label):
             self.queue_cut()
 
 
+class FreeSpace(Gtk.Widget):
+    """The expanding start of a Comfortable footer where box: its width is the free width of the line. A width change asks the
+    where caption to check its age form again. A plain widget: GTK skips do_size_allocate on a widget with a layout manager."""
+    def __init__(self, caption):
+        super().__init__(hexpand=True, can_target=False, accessible_role=Gtk.AccessibleRole.PRESENTATION)
+        self.caption = caption
+
+    def do_measure(self, _orientation, _for_size):
+        return 0, 0, -1, -1
+
+    def do_size_allocate(self, width, height, baseline):
+        self.caption.queue_cut()
+
+
 class WhereCaption(CompactTitle):
     """The Comfortable where caption, `<name> ·`. When it does not fit, the name shows its longest start that fits with "…" right
-    after its last visible character, and the " ·" after it stays whole. A caption without the separator keeps the Pango cut."""
-    def __init__(self):
+    after its last visible character, and the " ·" after it stays whole. A caption without the separator keeps the Pango cut.
+    When the line has no room for the whole name and the whole age, the age after it drops " ago" first; the whole age comes
+    back when the free width of the line (space, a FreeSpace) holds the " ago" width again. The checks run in the cut idle."""
+    def __init__(self, age=None):
         Gtk.Label.__init__(self, xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.text, self.natural, self.cut_key, self.cut_idle = "", None, None, None
+        self.age, self.age_text, self.age_short, self.space = age, age.get_label() if age else "", False, None
+
+    def set_age(self, text):
+        """Show the age text in the age label: whole, or without " ago" while the line has no room for it."""
+        self.age_text = text
+        self.show_age(self.age_short)
+
+    def show_age(self, short):
+        short = bool(short and self.get_visible() and self.text.endswith(" ·") and self.age_text.endswith(" ago"))
+        self.age_short = short
+        shown = self.age_text[:-4] if short else self.age_text
+        if self.age.get_label() != shown:
+            self.age.set_label(shown)
+
+    def show_cut(self):
+        CompactTitle.show_cut(self)
+        width = self.get_width()
+        if self.age is None or self.natural is None or width <= 0 or self.space is None:
+            return False
+        if self.age_short:
+            def measure(value):
+                return self.age.create_pango_layout(value).get_pixel_size()[0]
+            # The whole age needs the " ago" width more than the short age; the free width of the line must hold it.
+            if self.space.get_width() >= measure(self.age_text) - measure(self.age_text[:-4]) and width >= self.natural:
+                self.show_age(False)
+        elif width < self.natural:
+            self.show_age(True)
+        return False
 
     def cut_text(self, width):
         if not self.text.endswith(" ·"):
@@ -7171,17 +7215,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 .asb-tooltip .asb-working {{ color: @success_color; }}
 .asb-tooltip .asb-provider {{ opacity: .65; }}
 .asb-tooltip .asb-source-badge {{ min-width: 6px; min-height: 6px; padding: 0; border: 1px solid @window_bg_color; border-radius: 50%; }}
-{base} popover.asb-row-panel > contents {{ padding: 8px; border: 1px solid mix(@popover_bg_color, @popover_fg_color, .15); border-radius: 12px;
+{base} popover.asb-row-panel > contents {{ padding: {zoomed(8, self.board_zoom)}px; border: 1px solid mix(@popover_bg_color, @popover_fg_color, .15); border-radius: 12px;
     background: @popover_bg_color; box-shadow: 0 1px 5px 1px alpha(black, .09), 0 2px 14px 3px alpha(black, .05); }}
-{base} .asb-row-panel .asb-panel-title {{ font-size: {12 * scale:g}px; font-weight: bold; margin: 4px 8px 8px; }}
-{base} .asb-row-panel .asb-panel-action {{ min-height: 30px; padding: 0 8px; border-radius: 5px; font-size: {13 * scale:g}px; font-weight: normal; }}
-{base} .asb-row-panel separator {{ margin: 4px 0; }}
+{base} .asb-row-panel .asb-panel-title {{ font-size: {12 * scale:g}px; font-weight: bold; margin: {zoomed(4, self.board_zoom)}px {zoomed(8, self.board_zoom)}px {zoomed(8, self.board_zoom)}px; }}
+{base} .asb-row-panel .asb-panel-action {{ min-height: 30px; padding: 0 {zoomed(8, self.board_zoom)}px; border-radius: 5px; font-size: {13 * scale:g}px; font-weight: normal; }}
+{base} .asb-row-panel separator {{ margin: {zoomed(4, self.board_zoom)}px 0; }}
 /* Themes such as Colloid ring a focused flat button; only a keyboard focus has a ring here. */
 {base} .asb-row-panel .asb-panel-action:focus:not(:focus-visible) {{ outline: none; }}
 {base} .asb-row-panel .asb-panel-action:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
-{base} .asb-row-panel .asb-panel-error {{ margin: 8px 8px 0; font-size: {11 * scale:g}px; }}
+{base} .asb-row-panel .asb-panel-error {{ margin: {zoomed(8, self.board_zoom)}px {zoomed(8, self.board_zoom)}px 0; font-size: {11 * scale:g}px; }}
 {base} .asb-row-panel .asb-panel-caption {{ font-size: {11 * scale:g}px; color: alpha(@window_fg_color, .72); opacity: 1; }}
-{base} .asb-row-panel button.asb-panel-captioned {{ padding-top: 5px; padding-bottom: 5px; }}
+{base} .asb-row-panel button.asb-panel-captioned {{ padding-top: {zoomed(5, self.board_zoom)}px; padding-bottom: {zoomed(5, self.board_zoom)}px; }}
 {base} .asb-row-panel button.asb-copy-off:hover, {base} .asb-row-panel button.asb-copy-off:active {{ background: none; }}
 {base} .asb-row-panel button.asb-action-pending:not(.asb-panel-off) > * {{ opacity: .5; }}
 {base} .asb-row-panel button.asb-action-pending:hover, {base} .asb-row-panel button.asb-action-pending:active {{ background: none; }}
@@ -7285,6 +7329,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         (quiet_title, title_fraction), (quiet_caption, caption_fraction) = quiet_tones(palette, highlight, bool(colors))
         if colors:
             panel = row_panel_colors(colors, quiet_caption)
+            ink = colors["text"]
             css += f"""
 {scope} popover.asb-row-panel > contents {{ background: {panel['surface']}; border-color: {panel['edge']};
     box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
@@ -7322,6 +7367,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         opencode_quiet = provider_tone("muted" if colors else "text", caption_fraction, .6)
         opencode_limited = provider_tone("text", .4, .6)
         corner_floor = provider_tone("text", 0, 1)
+        # The OpenCode icon of the row panel Open row: 60% of the row icon tone, 3:1 on the panel and, on an open row, its hover tint.
+        def panel_opencode(fraction, surfaces):
+            tone = mix_color(panel["surface"], ink, fraction * .6)
+            for surface in surfaces:
+                tone = contrast_floor(tone, ink, surface, 3)
+            return tone
+        panel_floor_fraction = panel["floor"][1]
+        opencode_panel = panel_opencode(1, (panel["surface"], mix_color(panel["surface"], ink, .07)))
+        opencode_panel_off = panel_opencode(panel_floor_fraction, (panel["surface"],))
+        # The OpenCode tooltip mark: .6 of the .65 mark opacity, or the weakest opacity with 3:1 on the libadwaita tooltip
+        # (80% #000006 over the board, with white or the custom text). shortcut: assumes the libadwaita tooltip style; read the theme if one differs.
+        tip_surface, tip_ink = mix_color(palette["background"], "#000006", .8), colors["text"] if colors else "#ffffff"
+        tip_opencode = next((percent / 100 for percent in range(39, 66) if contrast(mix_color(tip_surface, tip_ink, percent / 100), tip_surface) >= 3), .65)
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
         quiet = [base + " .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
         parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-mute-time", " .asb-where",
@@ -7390,6 +7448,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-limited:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_limited}; opacity: 1; }}
 {base} .asb-session:not(.asb-message-lit) .asb-provider.asb-opencode {{ color: {opencode_bright}; opacity: 1; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider.asb-opencode {{ color: {opencode_limited}; opacity: 1; }}
+{base} .asb-row-panel button.asb-panel-action image.asb-opencode {{ color: {opencode_panel}; }}
+{base} .asb-row-panel button.asb-panel-where:disabled image.asb-opencode {{ color: {opencode_panel_off}; }}
+.asb-tooltip .asb-provider.asb-opencode {{ opacity: {tip_opencode:g}; }}
 {base} .asb-session:not(.asb-dismissed) .asb-drawer-button.asb-corner-off,
 {base} .asb-session:not(.asb-dismissed) .asb-drawer-button.asb-corner-off * {{ color: {corner_floor}; background: none;
     opacity: 1; filter: none; -gtk-icon-filter: none; }}
@@ -7418,6 +7479,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-key-focus:not(.asb-dismissed) .asb-mute-on:not(:hover):not(:focus-visible) {{ background: alpha({text}, .12); color: {text}; }}
 {base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-discard-button:not(.asb-discard-offer) .asb-discard,
 {base} .asb-key-focus:not(.asb-dismissed) .asb-discard-button:not(.asb-discard-offer) .asb-discard {{ border-color: {text}; }}
+/* The unavailable ring of a remote card: the floor tone of an off corner control, with no plate or hover tint. */
+{base} .asb-session .asb-read-button.asb-corner-off, {base} .asb-session .asb-read-button.asb-corner-off:hover,
+{base} .asb-session.asb-hovered:not(.asb-dismissed) .asb-read-button.asb-corner-off:not(:hover):not(:focus-visible),
+{base} .asb-key-focus:not(.asb-dismissed) .asb-read-button.asb-corner-off:not(:hover):not(:focus-visible) {{ background: none; filter: none; }}
+{base} .asb-session .asb-read-button.asb-corner-off .asb-discard-cue {{ color: {corner_floor}; opacity: 1; filter: none; }}
 """
         for quiet_row in (*quiet, view_only, view_only_rest):
             css += f"{quiet_row}:not(.asb-message-lit) .asb-provider.asb-claude {{ color: {claude_quiet}; opacity: 1; }}\n"
@@ -9593,14 +9659,22 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             image.set_size_request(size, size)
         return image
 
+    def zoom_spacing(self, box, px):
+        """A row panel box gap: px at zoom 100, in whole px at the board zoom."""
+        box.asb_spacing_px = px
+        box.set_spacing(zoomed(px, getattr(self, "board_zoom", 100)))
+        return box
+
     def zoom_widget_icons(self, root):
-        """Size each zoom_icon image under root at the board zoom."""
+        """Size each zoom_icon image and zoom_spacing gap under root at the board zoom."""
         widgets = [root]
         while widgets:
             widget = widgets.pop()
             px = getattr(widget, "asb_icon_px", None)
             if px is not None:
                 self.zoom_icon(widget, px)
+            if getattr(widget, "asb_spacing_px", None) is not None:
+                self.zoom_spacing(widget, widget.asb_spacing_px)
             child = widget.get_first_child()
             while child is not None:
                 widgets.append(child)
@@ -9963,6 +10037,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         indent = zoomed(14, getattr(self, "board_zoom", 100)) + 7
         set_icon(mark, provider_icon(row.get("provider")))
         mark.add_css_class("asb-provider")
+        if provider_icon(row.get("provider")) == "asb-opencode-symbolic":
+            mark.add_css_class("asb-opencode")
         path.append(mark)
         path_label = text(model["path"], "asb-tooltip-path")
         path_label.add_css_class("asb-tooltip-muted")
@@ -10164,7 +10240,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             where_icon = self.zoom_icon(Gtk.Image(visible=False, valign=Gtk.Align.CENTER), 11)
             where_icon.add_css_class("asb-where-icon")
             where_icon.add_css_class("dim-label")
-            where = WhereCaption()
+            where = WhereCaption(widget.asb_age_label)
             where.add_css_class("caption")
             where.add_css_class("asb-where")
             where.add_css_class("dim-label")
@@ -10176,6 +10252,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
             icon_box.append(where_icon)
             widget.asb_where_box.prepend(icon_box)
+            # The free width of the line comes first, so the where box fills the line and the caption knows the room it has.
+            # The 4 px gaps move to margins, so the empty space adds no gap of its own; a hidden age takes its gap with it.
+            where.space = FreeSpace(where)
+            widget.asb_where_box.prepend(where.space)
+            widget.asb_where_box.set_spacing(0)
+            icon_box.set_margin_end(4)
+            widget.asb_age_label.set_margin_start(4)
+            widget.asb_where_box.set_halign(Gtk.Align.FILL)
             widget.asb_where_icon, widget.asb_where_label = where_icon, where
         elif name == "feedback" and widget.asb_feedback is None:
             feedback = Gtk.Box(spacing=6)
@@ -10425,6 +10509,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if widget.asb_where_label:
             widget.asb_where_label.set_label((where + " ·" if comfortable else "· " + where) if where else "")
             widget.asb_where_label.set_visible(bool(where))
+            if comfortable:
+                widget.asb_where_label.show_age(widget.asb_where_label.age_short)
         tone = view_only_tone(row)
         (widget.add_css_class if tone else widget.remove_css_class)("asb-view-only-quiet")
         (widget.add_css_class if tone == "rest" else widget.remove_css_class)("asb-view-only-rest")
@@ -10725,15 +10811,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if discard and widget.asb_read_timer:
             self.clear_read_feedback(widget)
         confirmed = bool(widget.asb_read_timer)
+        # A remote card has no Discard: its Read slot shows the unarmed ring as an unavailable control that says why.
+        remote_off = bool(row.get("remote")) and row.get("state") in ("working", "idle") and not indicator \
+            and not mute_active(row, now_ms) and not confirmed
         passive = bool(indicator) and not unread and not discard and not confirmed
-        read.set_visible(bool(indicator) or discard or confirmed)
+        read.set_visible(bool(indicator) or discard or confirmed or remote_off)
         read.set_focusable(not passive)
         (read.add_css_class if passive else read.remove_css_class)("asb-passive-indicator")
         # A "?" or "!" disc has no plate at rest; the card hover or key focus shows it.
         disc = indicator in ("question", "alert") and not passive and not discard and not confirmed
         (read.add_css_class if disc else read.remove_css_class)("asb-read-disc")
-        (read.add_css_class if discard else read.remove_css_class)("asb-discard-button")
-        (read.add_css_class if discard and not row.get("discardResult") else read.remove_css_class)("asb-discard-offer")
+        (read.add_css_class if discard or remote_off else read.remove_css_class)("asb-discard-button")
+        (read.add_css_class if discard and not row.get("discardResult") or remote_off else read.remove_css_class)("asb-discard-offer")
+        (read.add_css_class if remote_off else read.remove_css_class)("asb-corner-off")
         action = "win.keep-result" if row.get("discardResult") else "win.discard-result"
         read.asb_action = (action if discard else "win.mark-read") if (unread or discard) and not pending else None
         if read.asb_action == "win.mark-read":
@@ -10762,6 +10852,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         question_note = question_wait_note(row)
         if question_note:
             read_text = "Mark read. " + question_note
+        read_name = read_text
+        if remote_off:
+            read_name = "Mark next result read" if idle else "Mark read when done"
+            read_text = read_name + ". " + REMOTE_RELATIVE_CAPTION
+        elif question_note:
+            read_name = "Mark read"
         controls = [(read, read_text, (unread or discard) and not pending), (pin, "Unpin in ASB" if pinned else "Pin in ASB", not pending)]
         if drawer:
             tucked = bool(row.get("drawer"))
@@ -10786,17 +10882,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 controls[-1] = (drawer, PANEL_GONE_TEXT, False)
         for button, text, enabled in controls:
             if button is not drawer:
-                button.set_sensitive(True)
+                button.set_sensitive(not (button is read and remote_off))
             (button.add_css_class if pending else button.remove_css_class)("asb-action-pending")
             # GTK queries the tooltip again at each set, which is slow for a card under the pointer.
             if button.get_tooltip_text() != text:
                 button.set_tooltip_text(text)
             # The unavailable drawer keeps its control name; its tooltip and description say why it is off.
-            name = drawer_name if button is drawer else "Mark read" if button is read and question_note else text
+            name = drawer_name if button is drawer else read_name if button is read else text
             button.update_property([Gtk.AccessibleProperty.LABEL], [name + ": " + row.get("title", "Untitled session")])
             if button is read:
-                if question_note:
-                    button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [question_note])
+                if remote_off or question_note:
+                    button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [REMOTE_RELATIVE_CAPTION if remote_off else question_note])
                 else:
                     button.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
             button.update_state([Gtk.AccessibleState.BUSY, Gtk.AccessibleState.DISABLED], [pending, not enabled])
@@ -11032,12 +11128,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             working_time.set_label(" · " + compact_time if compact_time else "")
             working_time.set_visible(bool(compact_time))
         if self.view == "comfortable":
-            widget.asb_age_label.set_label("" if countdown else duration or row_meta(row, now_ms).split(" · ")[1])
+            age = "" if countdown else duration or row_meta(row, now_ms).split(" · ")[1]
             widget.asb_age_label.set_visible(not countdown)
             where = row_where(row)[1]
             if where and widget.asb_where_label:
                 # The separator goes with the age, so a limited view-only card shows only the machine or CLI.
                 widget.asb_where_label.set_label(where if countdown else where + " ·")
+            widget.asb_age_label.set_label(age)
+            if getattr(widget, "asb_where_label", None):
+                widget.asb_where_label.set_age(age)
         shown = row.get("unread")
         action = "Open" if row.get("canOpen") else "Session"
         manual = " Marked as unread in ASB." if shown and row.get("manualUnread") else ""
@@ -11150,7 +11249,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_pages.add_named(main, "main")
         def action_row(icon, handler, *data, parent=main, role=Gtk.AccessibleRole.BUTTON):
             # One flat button per slot: an update changes its icon and label, so the focus stays on the slot.
-            content = Gtk.Box(spacing=10)
+            content = self.zoom_spacing(Gtk.Box(), 10)
             button = Gtk.Button(child=content, accessible_role=role)
             button.asb_icon, button.asb_label = self.zoom_icon(Gtk.Image(), 14), Gtk.Label(xalign=0, hexpand=True)
             set_icon(button.asb_icon, icon)
@@ -11180,7 +11279,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 set_panel_label(button, text)
             button.asb_label.add_css_class("asb-panel-label")
             # The caption or the reason goes under the label.
-            words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, hexpand=True, valign=Gtk.Align.CENTER)
+            words = self.zoom_spacing(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER), 1)
             button.get_child().remove(button.asb_label)
             words.append(button.asb_label)
             button.asb_caption = PanelCaption()
@@ -11201,7 +11300,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 button.asb_hint = label(CARD_ACTION_KEYS[slot], "asb-panel-caption")
                 button.asb_hint.add_css_class("asb-panel-key")
                 # Line 1 holds the label and the hint on one baseline, so a caption under them runs to the row end.
-                parent, line = button.asb_label.get_parent(), Gtk.Box(spacing=10, hexpand=True, valign=Gtk.Align.CENTER)
+                parent, line = button.asb_label.get_parent(), self.zoom_spacing(Gtk.Box(hexpand=True, valign=Gtk.Align.CENTER), 10)
                 parent.insert_child_after(line, button.asb_label)
                 parent.remove(button.asb_label)
                 for part in (button.asb_label, button.asb_hint):
@@ -11213,7 +11312,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # Mute, its time tag 8 px after the label, a free gap, then the hint at the row end as on the other rows.
         # A centered line centers the label and hint baselines on the taller tag.
         line = mute_button.asb_label.get_parent()
-        line.set_spacing(8)
+        self.zoom_spacing(line, 8)
         mute_button.asb_label.set_hexpand(False)
         line.insert_child_after(panel.asb_mute_tag, mute_button.asb_label)
         line.insert_child_after(Gtk.Box(hexpand=True), panel.asb_mute_tag)
@@ -11392,11 +11491,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         ok, point = widget.compute_point(self, Graphene.Point().init(x, y))
         if not ok:
             return
-        # A popover measures 0 before it maps; its child plus the 8px padding and the 1px ring on each side is the size.
-        child = panel.get_child()
+        # A popover measures 0 before it maps; its child plus the zoomed 8px padding and the 1px ring on each side is the size.
+        child, frame = panel.get_child(), 2 * zoomed(8, self.board_zoom) + 2
         width = child.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
-        height = child.measure(Gtk.Orientation.VERTICAL, width)[1] + 18
-        width += 18
+        height = child.measure(Gtk.Orientation.VERTICAL, width)[1] + frame
+        width += frame
         px, py, side = panel_place(point.x, point.y, width, height, self.get_width(), self.get_height())
         ok, local = self.compute_point(widget, Graphene.Point().init(px, py))
         rectangle = Gdk.Rectangle()
@@ -11461,7 +11560,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (panel.asb_open.remove_css_class if row.get("canOpen") else panel.asb_open.add_css_class)("asb-panel-where")
             set_panel_label(panel.asb_open, ("Open in " if row.get("canOpen") else "Opens only in ") + model["app"])
             panel.asb_open.set_sensitive(bool(row.get("canOpen")) and row["id"] not in self.opening)
-        set_icon(panel.asb_open.asb_icon, provider_icon(row.get("provider")))
+        open_icon = provider_icon(row.get("provider"))
+        set_icon(panel.asb_open.asb_icon, open_icon)
+        (panel.asb_open.asb_icon.add_css_class if open_icon == "asb-opencode-symbolic" else panel.asb_open.asb_icon.remove_css_class)("asb-opencode")
         panel.asb_open.asb_caption.set_label(open_caption)
         panel.asb_open.asb_caption.set_visible(bool(open_caption))
         (panel.asb_open.add_css_class if open_caption else panel.asb_open.remove_css_class)("asb-panel-captioned")

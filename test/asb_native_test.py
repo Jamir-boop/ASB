@@ -9514,7 +9514,11 @@ class WidgetCheck(unittest.TestCase):
                     self.assertTrue(button.has_css_class("asb-panel-where"))
                     for part in (button.asb_icon, button.asb_label, button.asb_caption):
                         color = part.get_color()
-                        self.assertEqual((asb.hex_color(color), round(color.alpha, 3)), (floor, 1), part)
+                        if part is button.asb_icon and identity == "opencode":
+                            # The OpenCode icon has 60% of the floor tone, with 3:1 on the panel (test_opencode_panel_icon_...).
+                            self.assertEqual(asb.hex_color(color), self.opencode_panel_tone(window, palette, False), part)
+                        else:
+                            self.assertEqual((asb.hex_color(color), round(color.alpha, 3)), (floor, 1), part)
                         self.assertEqual(part.get_opacity(), 1)
                     self.assertGreaterEqual(asb.contrast(floor, surface), 4.5)
                     window.context_menu.popdown(); self.drain(.1)
@@ -9554,6 +9558,120 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(window.context_menu.asb_open.asb_label.get_label(), "Open in Codex")
         window.context_menu.popdown(); self.drain(.1)
         window.opening.discard("opens")
+
+    @staticmethod
+    def opencode_panel_tone(window, palette, opens):
+        """The OpenCode Open row icon: 60% of the row icon tone over the panel, with 3:1 on the panel (and its hover tint)."""
+        if palette:
+            panel, ink = asb.row_panel_colors(palette, palette["muted"]), palette["text"]
+        else:
+            surface, ink = window.popover_colors()
+            panel = asb.row_panel_colors({**window.native_colors(), "text": ink}, "#000000", surface)
+        tone = asb.mix_color(panel["surface"], ink, (1 if opens else panel["floor"][1]) * .6)
+        for surface in (panel["surface"], asb.mix_color(panel["surface"], ink, .07)) if opens else (panel["surface"],):
+            tone = asb.contrast_floor(tone, ink, surface, 3)
+        return tone
+
+    def test_opencode_panel_icon_and_tooltip_mark_use_sixty_percent_in_every_look(self):
+        rows = [self.card_row(provider + ("-off" if off else ""), provider=provider, providerLabel=provider.capitalize(), canOpen=not off)
+                for provider in ("opencode", "claude", "codex") for off in (False, True)]
+        window = self.card_board(rows)
+        user = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
+        navy = {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}
+        for palette in (user, navy, None):
+            window.set_palette(palette); self.settle(window)
+            colors = palette or window.native_colors()
+            if palette:
+                panel, ink = asb.row_panel_colors(palette, palette["muted"]), palette["text"]
+            else:
+                surface, ink = window.popover_colors()
+                panel = asb.row_panel_colors({**colors, "text": ink}, "#000000", surface)
+            for row in rows:
+                identity, opens = row["id"], row["canOpen"]
+                with self.subTest(palette=palette, row=identity):
+                    window.show_context(window.card_for(identity)); self.drain(.2)
+                    icon = window.context_menu.asb_open.asb_icon
+                    got = asb.hex_color(icon.get_color())
+                    if row["provider"] == "opencode":
+                        expected = self.opencode_panel_tone(window, palette, opens)
+                        self.assertEqual(got, expected)
+                        self.assertEqual(round(icon.get_color().alpha, 3), 1)
+                        self.assertGreaterEqual(asb.contrast(expected, panel["surface"]), 3)
+                        if opens:
+                            self.assertGreaterEqual(asb.contrast(expected, asb.mix_color(panel["surface"], ink, .07)), 3)
+                    else:
+                        # Codex and Claude keep the row tone: the text of a row that opens, the floor of a row that cannot.
+                        self.assertEqual(got, ink if opens else panel["floor"][0])
+                    self.assertEqual(icon.get_opacity(), 1)
+                    window.context_menu.popdown(); self.drain(.1)
+                    # The card tooltip mark: .65, and .39 for OpenCode, or the weakest opacity with 3:1 on the tooltip.
+                    tooltip = window.tooltip_content(row, asb.tooltip_model(row, NOW, "/example"))
+                    # GTK parents the tooltip window under the board, so the content takes the board CSS there.
+                    window.tools.append(tooltip); self.drain(.2)
+                    mark = next(w for w in descendants(tooltip) if w.has_css_class("asb-provider"))
+                    tip_surface = asb.mix_color(colors["background"], "#000006", .8)
+                    tip_ink = palette["text"] if palette else "#ffffff"
+                    if row["provider"] == "opencode":
+                        opacity = next(p / 100 for p in range(39, 66) if asb.contrast(asb.mix_color(tip_surface, tip_ink, p / 100), tip_surface) >= 3)
+                        self.assertGreaterEqual(asb.contrast(asb.mix_color(tip_surface, tip_ink, opacity), tip_surface), 3)
+                    else:
+                        opacity = .65
+                    # GTK applies the CSS opacity when it draws the mark: the rendered alpha of the full-ink mark.
+                    self.assertAlmostEqual(self.ink(mark) / 255, opacity, delta=.01)
+                    window.tools.remove(tooltip); self.drain(.1)
+        # The card marks do not change (test_opencode_card_mark_uses_sixty_percent_with_floor_in_both_views).
+
+    def test_row_panel_gaps_and_padding_scale_with_the_board_zoom(self):
+        window = self.card_board([self.card_row("a", unread=True, pending=True), self.card_row("b")])
+        window.set_default_size(1004, 640); self.settle(window)
+        card = window.focus_widgets["a"]
+        def check(panel, zoom):
+            z = lambda px: asb.zoomed(px, zoom)
+            css = self.board_css(window)
+            self.assertIn(f"popover.asb-row-panel > contents {{ padding: {z(8)}px; border: 1px solid", css)
+            self.assertIn(f".asb-panel-title {{ font-size:", css)
+            self.assertIn(f"font-weight: bold; margin: {z(4)}px {z(8)}px {z(8)}px; }}", css)
+            self.assertIn(f".asb-panel-action {{ min-height: {z(30)}px; padding: 0 {z(8)}px; border-radius: 5px;", css)
+            self.assertIn(f".asb-row-panel separator {{ margin: {z(4)}px 0; }}", css)
+            self.assertIn(f".asb-row-panel .asb-panel-error {{ margin: {z(8)}px {z(8)}px 0;", css)
+            self.assertIn(f"button.asb-panel-captioned {{ padding-top: {z(5)}px; padding-bottom: {z(5)}px; }}", css)
+            # The 12 px radius and the 1 px border stay.
+            self.assertIn("border-radius: 12px;", css)
+            messages = panel.asb_messages
+            self.assertEqual(messages.get_child().get_spacing(), z(10))
+            self.assertEqual(messages.asb_label.get_parent().get_spacing(), z(1))
+            read = panel.asb_actions["read"]
+            self.assertEqual(read.asb_label.get_parent().get_spacing(), z(10))
+            self.assertEqual(panel.asb_actions["mute"].asb_label.get_parent().get_spacing(), z(8))
+            for button in panel.asb_times.values():
+                self.assertEqual(button.get_child().get_spacing(), z(10))
+            # Rendered: the icon starts after the row padding, the label after the icon gap, the title after the contents padding.
+            root = panel.get_child().get_child()
+            self.assertEqual(round(messages.get_child().compute_bounds(root)[1].origin.x), z(8))
+            icon = messages.asb_icon.compute_bounds(root)[1]
+            label = messages.asb_label.compute_bounds(root)[1]
+            self.assertEqual(round(label.origin.x - icon.origin.x - icon.size.width), z(10))
+            title = panel.asb_title.compute_bounds(root)[1]
+            self.assertEqual((round(title.origin.x), round(title.origin.y)), (z(8), z(4)))
+            # The captioned row: its padding above the label, the 1 px gap scaled under it.
+            button = messages.compute_bounds(root)[1]
+            words = messages.asb_label.get_parent().compute_bounds(root)[1]
+            self.assertGreaterEqual(round(words.origin.y - button.origin.y), z(5))
+            # The panel still fits its labels.
+            for button in (panel.asb_open, messages, read):
+                self.assertFalse(button.asb_label.get_layout().is_ellipsized(), button.asb_label.get_text())
+        for zoom in (80, 100, 150, 200):
+            with self.subTest(zoom=zoom):
+                window.set_board_zoom(zoom); self.drain(.3); window.check_geometry(); self.settle(window)
+                window.show_context(card); self.drain(.4)
+                panel = window.context_menu
+                check(panel, zoom)
+                # A zoom change with the panel open updates the gaps.
+                other = 200 if zoom != 200 else 80
+                window.set_board_zoom(other); self.drain(.4); self.settle(window)
+                check(panel, other)
+                panel.popdown(); self.drain(.2)
+        window.set_board_zoom(100); self.drain(.3)
 
     def test_no_open_toast_has_the_row_panel_surface_in_custom_colors_and_keeps_its_size_at_every_zoom(self):
         window = self.card_board([self.card_row("cli", canOpen=False, surface="cli"), self.card_row("b")])
@@ -10935,31 +11053,164 @@ class WidgetCheck(unittest.TestCase):
     def test_cut_remote_caption_keeps_its_separator_whole(self):
         settings = asb.Gtk.Settings.get_default()
         self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        hour = time.time() * 1000 - 65 * 60_000
         window = self.card_board([self.card_row("remote", title="Check the nightly backup", remote=True, machineName="studio",
-                                                machineId="m-studio", canOpen=False, updatedAtMs=time.time() * 1000 - 65 * 60_000),
+                                                machineId="m-studio", canOpen=False, updatedAtMs=hour),
+                                  self.card_row("long", title="Rotate the build logs", remote=True, machineName="buildserver",
+                                                machineId="m-build", canOpen=False, updatedAtMs=hour),
                                   self.card_row("b")])
-        card = window.focus_widgets["remote"]
+        def footer(card):
+            where = card.asb_where_label
+            return where.get_layout().get_text(), where.get_layout().is_ellipsized(), card.asb_age_label.get_text()
+        def columns(width):
+            window.width_control.set_value(width); window.set_default_size(8 + 5 * width + 4 * 12, 620)
+            self.settle(window); self.drain(.3); self.settle(window)
+        card, long_card = window.focus_widgets["remote"], window.focus_widgets["long"]
         where = card.asb_where_label
-        # Five 170 px columns: at 1.5 the footer line has no room for all of "studio ·".
+        # Five 170 px columns: at 1.5 the footer line has no room for "studio · 1h ago"; the age drops " ago" first.
         for dpi, scale in ((147456, 1.5), (98304, 1.0)):
             with self.subTest(scale=scale):
                 settings.set_property("gtk-xft-dpi", dpi); self.drain(.5)
-                window.width_control.set_value(170); window.set_default_size(8 + 5 * 170 + 4 * 12, 620); self.settle(window); self.drain(.3)
-                shown = where.get_layout().get_text()
+                columns(170)
                 self.assertEqual(where.get_text(), "studio ·")
-                self.assertFalse(where.get_layout().is_ellipsized(), shown)
+                self.assertEqual(footer(card), ("studio ·", False, "1h" if scale == 1.5 else "1h ago"))
                 self.assertLessEqual(where.get_layout().get_pixel_size()[0], where.get_width())
-                full = where.create_pango_layout("studio ·").get_pixel_size()[0]
-                if scale == 1.5:
-                    self.assertGreater(full, where.get_width())
-                    # A cut name, "…" right after its last visible character, then the whole separator.
-                    self.assertTrue(shown.endswith("… ·") and "studio".startswith(shown[:-3]) and shown[:-3], shown)
-                    self.assertNotIn("studio…", shown)
-                else:
-                    self.assertEqual(shown, "studio ·")
                 self.assertIs(where.get_next_sibling(), card.asb_age_label)
-                self.assertEqual(card.asb_age_label.get_text(), "1h ago")
                 self.assertIn("On studio.", card.asb_accessible_label)
+                # The tooltip keeps the whole age.
+                self.assertIn("Idle · 1h ago", asb.tooltip_model(card.asb_thread, time.time() * 1000, "/example")["state_text"])
+        # The narrowest column at 1.5: the short age, and the name still cuts with "…" right after its last visible character.
+        settings.set_property("gtk-xft-dpi", 147456); self.drain(.5)
+        columns(160)
+        shown, cut, age = footer(long_card)
+        self.assertEqual(age, "1h")
+        self.assertTrue(shown.endswith("… ·") and "buildserver".startswith(shown[:-3]) and shown[:-3], shown)
+        self.assertGreater(long_card.asb_where_label.create_pango_layout("buildserver ·").get_pixel_size()[0], long_card.asb_where_label.get_width())
+        # A wide column again: " ago" comes back, with the whole names.
+        columns(320)
+        self.assertEqual(footer(card), ("studio ·", False, "1h ago"))
+        self.assertEqual(footer(long_card), ("buildserver ·", False, "1h ago"))
+        columns(170)
+        self.assertEqual(footer(card), ("studio ·", False, "1h"))
+        # The sweep: a whole name has the 4 px box gap before the age text in both forms, a cut name no wider gap than its cut
+        # leftover; the form is stable over three settles, and " ago" goes only while the whole name and whole age do not fit.
+        where, age = card.asb_where_label, card.asb_age_label
+        def gap():
+            text = where.get_layout().get_pixel_size()[0]
+            box = age.compute_bounds(card)[1]
+            start = box.origin.x + (box.size.width - age.get_layout().get_pixel_size()[0]) * age.get_xalign()
+            return start - (where.compute_bounds(card)[1].origin.x + text)
+        for width in range(160, 262, 6):
+            with self.subTest(width=width):
+                columns(width)
+                shown = footer(card)
+                for _ in range(3):
+                    self.settle(window)
+                    self.assertEqual(footer(card), shown)
+                if shown[0] == "studio ·":
+                    self.assertAlmostEqual(gap(), 4, delta=1)
+                else:
+                    self.assertTrue(shown[0].endswith("… ·") and shown[2] == "1h", shown)
+                    self.assertLessEqual(gap(), 11)
+                if shown[2] == "1h":
+                    # The whole age has no room: the free width is under the " ago" width.
+                    ago = age.create_pango_layout("1h ago").get_pixel_size()[0] - age.create_pango_layout("1h").get_pixel_size()[0]
+                    self.assertLess(where.space.get_width(), ago)
+        settings.set_property("gtk-xft-dpi", 98304); self.drain(.5); self.settle(window)
+        self.assertEqual(footer(card), ("studio ·", False, "1h ago"))
+
+    def test_cut_remote_caption_of_a_limited_card_ends_at_the_footer_line_end(self):
+        # A limited remote card hides the age: its caption `studio` ends at the end of the footer line, with no gap after it.
+        window = self.card_board([self.card_row("limited", title="Sort the photo archive", remote=True, machineName="studio",
+                                                machineId="m-studio", canOpen=False, updatedAtMs=time.time() * 1000 - 65 * 60_000,
+                                                lastOutcome="limit", limitResetsAtMs=int(time.time() * 1000) + 3600_000),
+                                  self.card_row("b")])
+        window.set_default_size(8 + 2 * 260 + 12, 620); window.width_control.set_value(260); self.settle(window); self.drain(.3)
+        card = window.focus_widgets["limited"]
+        self.assertFalse(card.asb_age_label.get_visible())
+        caption = card.asb_where_label
+        self.assertEqual(caption.get_layout().get_text(), "studio")
+        line = card.asb_footer_line.compute_bounds(card)[1]
+        right = caption.compute_bounds(card)[1]
+        self.assertAlmostEqual(right.origin.x + right.size.width, line.origin.x + line.size.width, delta=1)
+        # The empty free space is no screen reader node.
+        self.assertEqual(caption.space.get_accessible_role(), asb.Gtk.AccessibleRole.PRESENTATION)
+
+    def test_remote_card_read_slot_shows_an_unavailable_discard_ring(self):
+        remote = dict(remote=True, machineName="studio", machineId="m-studio", canOpen=False)
+        window = self.card_board([self.card_row("idle", title="Check the nightly backup", **remote),
+                                  self.card_row("work", title="Rotate the build logs", state="working", workingSinceMs=NOW - 5000, **remote),
+                                  self.card_row("muted", title="Sort the photo archive", muted=True, **remote),
+                                  self.card_row("local")])
+        window.set_default_size(8 + 2 * 260 + 12, 620); window.width_control.set_value(260); self.settle(window)
+        for identity, name in (("idle", "Mark next result read"), ("work", "Mark read when done")):
+            card = window.focus_widgets[identity]
+            read = card.asb_read_button
+            for palette in (None, CUSTOM):
+                with self.subTest(identity=identity, palette=palette):
+                    window.set_palette(palette); window.set_focus(None); self.hover_card(window, card, False); self.settle(window)
+                    # At rest the ring does not show, as the unarmed ring of a local card.
+                    self.assertTrue(read.get_visible())
+                    self.assertEqual(self.ink(read), 0)
+                    self.hover_card(window, card, True); self.settle(window)
+                    self.assertTrue(read.has_css_class("asb-corner-off") and read.has_css_class("asb-discard-offer"))
+                    self.assertFalse(read.get_sensitive())
+                    self.assertFalse(read.get_focusable() and read.get_sensitive())
+                    self.assertIsNone(read.asb_action)
+                    self.assertGreater(self.ink(read), 0)
+                    self.assertEqual(read.get_tooltip_text(), name + ". " + asb.REMOTE_RELATIVE_CAPTION)
+                    self.assert_accessible_label(read, name + ": " + card.asb_thread["title"])
+                    self.assert_accessible_label(read, "Only for a session on this machine.", asb.Gtk.AccessibleProperty.DESCRIPTION)
+                    self.assert_accessible_disabled(read, True)
+                    # The floor tone of an off corner control, on the card and on the hover surface; no plate or hover tint.
+                    colors = palette or window.native_colors()
+                    highlight = asb.highlight_color(colors) if palette else asb.mix_color(colors["background"], colors["text"], .07)
+                    expected = colors["background"]
+                    for surface in (colors["background"], highlight):
+                        expected = asb.contrast_floor(expected, colors["text"], surface, 3)
+                    rgba = asb.Gdk.RGBA(); rgba.parse(expected)
+                    cue = next(w for w in descendants(read) if w.has_css_class("asb-discard-cue"))
+                    self.assertTrue(cue.get_color().equal(rgba), cue.get_color().to_string())
+                    for flags in (asb.Gtk.StateFlags.NORMAL, asb.Gtk.StateFlags.PRELIGHT):
+                        read.set_state_flags(flags, False); self.settle(window)
+                        pixels = self.rgba(read)
+                        self.assertEqual(pixels[12][2][3], 0)
+                        # The drawn ring ink is the floor tone.
+                        top = max(pixels[8], key=lambda pixel: pixel[3])
+                        self.assertGreater(top[3], 200)
+                        for got, want in zip(top[:3], (rgba.red, rgba.green, rgba.blue)):
+                            self.assertAlmostEqual(got, want * 255, delta=2)
+                    read.unset_state_flags(asb.Gtk.StateFlags.PRELIGHT)
+                    with patch.object(window, "activate_action") as action:
+                        read.emit("clicked")
+                        action.assert_not_called()
+                    # Key focus on the card shows the ring; Tab skips it.
+                    self.hover_card(window, card, False); window.set_focus_visible(True); card.grab_focus(); self.settle(window)
+                    self.assertGreater(self.ink(read), 0)
+                    window.set_focus(None); self.settle(window)
+            # Mute, Copy, and Pin keep their x; a dot brings back the live Read button, and Alt+W stays a no-op.
+            self.hover_card(window, card, True); self.settle(window)
+            controls = (card.asb_mute_button, card.asb_copy_button, card.asb_pin_button)
+            before = [control.compute_bounds(card)[1].origin.x for control in controls]
+            with patch.object(window, "activate_action") as action:
+                self.assertTrue(window.card_key(asb.Gdk.KEY_w, asb.CARD_KEY_ALT, identity))
+                action.assert_not_called()
+            window.update_session_row(card, {**card.asb_thread, "unread": True, "pending": True, "completionAttention": True,
+                                             "pendingSource": "observed-completion"})
+            self.settle(window)
+            self.assertTrue(read.get_visible() and read.get_sensitive())
+            self.assertFalse(read.has_css_class("asb-corner-off") or read.has_css_class("asb-discard-button"))
+            self.assertEqual(read.asb_action, "win.mark-read")
+            self.assertEqual(before, [control.compute_bounds(card)[1].origin.x for control in controls])
+            self.hover_card(window, card, False); self.settle(window)
+        # A muted remote card shows no ring, and a local Idle card keeps its live Discard offer.
+        muted, local = window.focus_widgets["muted"], window.focus_widgets["local"]
+        self.hover_card(window, muted, True); self.settle(window)
+        self.assertFalse(muted.asb_read_button.get_visible())
+        self.hover_card(window, muted, False); self.hover_card(window, local, True); self.settle(window)
+        self.assertTrue(local.asb_read_button.get_sensitive() and local.asb_read_button.has_css_class("asb-discard-offer"))
+        self.assertFalse(local.asb_read_button.has_css_class("asb-corner-off"))
+        self.assertEqual(local.asb_read_button.asb_action, "win.discard-result")
 
     def test_round_four_corner_colors_focus_and_dot_plate(self):
         settings = asb.Gtk.Settings.get_default()
