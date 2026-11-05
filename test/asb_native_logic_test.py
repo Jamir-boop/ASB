@@ -3292,6 +3292,8 @@ class DataChecks(unittest.TestCase):
             visible = True
             def prepend(self, child):
                 self.insert(child, 0)
+            def insert_child_after(self, child, sibling):
+                self.insert(child, self.children.index(sibling) + 1 if sibling else 0)
             def set_visible(self, value):
                 self.visible = value
             def set_child(self, child):
@@ -3307,9 +3309,10 @@ class DataChecks(unittest.TestCase):
         window.toolbar_center, window.toolbar_end, window.search_row = Control(), Control(), Control()
         window.search, window.search_button, window.app_mark, window.toolbar_scroll = Control(), Control(), Control(), Control()
         window.preferences_refresh_row, window.refresh_button = Control(), Control()
-        window.menu_button, window.window_controls = Control(), Control()
+        window.menu_button, window.window_controls, window.zoom_badge = Control(), Control(), Control()
         window.toolbar_center.append(window.search_button)
         window.toolbar_center.append(window.toolbar_scroll)
+        window.toolbar_end.append(window.zoom_badge)
         window.toolbar_end.append(window.menu_button)
         window.toolbar_end.append(window.window_controls)
         window.preferences_refresh_row.append(window.refresh_button)
@@ -3323,7 +3326,8 @@ class DataChecks(unittest.TestCase):
         window.update_toolbar_presentation()
         self.assertIs(window.search.get_parent(), window.search_row)
         self.assertIs(window.refresh_button.get_parent(), window.toolbar_end)
-        self.assertEqual(window.toolbar_end.children[:2], [window.refresh_button, window.menu_button])
+        # Refresh goes after the zoom badge, which stays the first toolbar end button.
+        self.assertEqual(window.toolbar_end.children[:3], [window.zoom_badge, window.refresh_button, window.menu_button])
         self.assertTrue(window.search_button.visible)
         with patch.object(window.toolbar_end, "remove", wraps=window.toolbar_end.remove) as remove:
             window.update_toolbar_presentation()
@@ -6249,7 +6253,7 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertTrue(all(size.is_integer() for size in sizes[1.0]))
         for scale in (1.25, 1.5):
             scaled = [new for old, new in zip(sizes[1.0], sizes[scale]) if new != old]
-            self.assertEqual(len(scaled), 15)
+            self.assertEqual(len(scaled), 16)  # With the zoom badge label, which follows the text scale as the Filters pill does.
             self.assertTrue(all(new == old * scale or new == old for old, new in zip(sizes[1.0], sizes[scale])))
         for scale, card, state in ((1.0, "13px", "11px"), (1.25, "16.25px", "13.75px"), (1.5, "19.5px", "16.5px")):
             self.assertIn(f"border-radius: 3px; font-size: {card}; }}", css[scale])
@@ -6458,7 +6462,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIs(window.session_row({"id": "a"}), widget)
             widget.set_has_tooltip.assert_called_once_with(True)
             widget.connect.assert_called_once_with("query-tooltip", window.query_row_tooltip)
-            self.assertEqual(len(widget.asb_handlers), 7)
+            self.assertEqual(len(widget.asb_handlers), 8)
             widget.add_css_class.assert_any_call("asb-unhovered")
             controllers[2].connect.assert_called_once_with("notify::contains-pointer", window.row_hover, "a")
             self.assertIsNone(widget.asb_tooltip_content)
@@ -6468,7 +6472,7 @@ class NativeLogicChecks(unittest.TestCase):
             self.assertIsNone(widget.asb_tooltip_content)
             self.assertIsNone(widget.asb_tooltip_key)
             widget.disconnect.assert_called_once_with(77)
-            self.assertEqual(widget.remove_controller.call_count, 7)
+            self.assertEqual(widget.remove_controller.call_count, 8)
             self.assertTrue(all(call.args[0] is not widget for call in widget.remove_controller.call_args_list))
             self.assertIsNone(widget.asb_tooltip_handler)
             widget.set_tooltip_text.assert_not_called()
@@ -6776,7 +6780,7 @@ class NativeLogicChecks(unittest.TestCase):
         window = object.__new__(Window)
         window.closed, window.board_zoom, window.view, window.column_width, window.hover_colors = False, 100, "comfortable", 240, None
         window.focused_id = "a"
-        for name in ("cancel_scroll", "set_palette", "render", "queue_geometry", "save_width"):
+        for name in ("cancel_scroll", "set_palette", "render", "queue_geometry", "save_width", "show_zoom_badge"):
             setattr(window, name, Mock())
         window.focus_key = lambda: None
         # A card height that the last zoom grew does not stay; the pocket follows the zoomed text (here 2 px for each line).
@@ -6789,6 +6793,7 @@ class NativeLogicChecks(unittest.TestCase):
         window.render.assert_called_once_with("a", reveal_focus=True)
         window.queue_geometry.assert_called_once_with()
         window.save_width.assert_called_once_with()
+        window.show_zoom_badge.assert_called_once_with(True)
         self.assertFalse(window.set_board_zoom(150))
         self.assertEqual(window.render.call_count, 1)
         with self.assertRaises(ValueError):

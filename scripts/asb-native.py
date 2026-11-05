@@ -1728,6 +1728,18 @@ def row_where(row):
     return None, ""
 
 
+def no_open_title(row):
+    """The toast title that says why ASB does not open a card: the first rule that applies."""
+    if row.get("remote"):
+        machine = row.get("machineName") or "another machine"
+        return f"Runs on {machine}. Open it on {machine}."
+    if row.get("surface") == "cli":
+        return "Runs in a terminal. ASB does not open CLI sessions."
+    if row.get("provider") == "opencode":
+        return "OpenCode cannot open one session from a link."
+    return "ASB has no direct link to this session."
+
+
 def view_only_tone(row):
     """The Grey tone of a view-only row with no attention: "quiet" keeps the Working color, "rest" also dims the state."""
     if (not is_view_only(row) or row.get("unread") or row.get("questionAttention") or row.get("pending")
@@ -6341,6 +6353,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
     text_scale, card_heights, text_scale_signal = 1.0, (ROW_HEIGHT, COMFORTABLE_ROW_HEIGHT), None
     pocket_bottom, board_zoom, zoom_frame = POCKET_BOTTOM, 100, None
+    zoom_badge_timer = no_open_toast = None
     caption_probe = caption_probe_css = caption_probe_rule = caption_size = context_menu = None
     copy_kind = "relative"
     mute_for = "30m"
@@ -6671,6 +6684,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.refresh_button.add_css_class("asb-toolbar-button")
         self.refresh_button.set_label("Refresh sessions")
         self.preferences_refresh_row.append(self.refresh_button)
+        # The zoom badge shows the level while it is not 100%; a click resets it (show_zoom_badge).
+        self.zoom_badge = Gtk.Button(label="100%", tooltip_text="Reset zoom to 100% (Ctrl+0)", valign=Gtk.Align.START, visible=False)
+        self.zoom_badge.add_css_class("asb-toolbar-button")
+        self.zoom_badge.add_css_class("asb-zoom-badge")
+        self.zoom_badge.connect("clicked", lambda *_args: self.set_board_zoom(100))
+        self.toolbar_end.append(self.zoom_badge)
+        self.show_zoom_badge(False)
         self.toolbar_end.append(menu)
         self.window_controls = Gtk.WindowControls(side=Gtk.PackType.END, decoration_layout=":close")
         self.toolbar_end.append(self.window_controls)
@@ -6761,7 +6781,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         scrollbar_press = Gtk.GestureClick(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         scrollbar_press.connect("pressed", self.hide_numbers)
         self.scroll.get_hscrollbar().add_controller(scrollbar_press)
-        body.append(self.scroll)
+        # The no-open toast shows at the bottom center of the board (show_no_open_toast).
+        self.toast_overlay = Adw.ToastOverlay(child=self.scroll)
+        body.append(self.toast_overlay)
         wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES,
                                           propagation_phase=Gtk.PropagationPhase.CAPTURE)
         wheel.connect("scroll", self.scroll_horizontal)
@@ -6945,6 +6967,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} menubutton.asb-toolbar-button > button,
 {base} .asb-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
 {base} menubutton.asb-toolbar-button {{ min-height: 0; min-width: 0; padding: 0; }}
+{base} .asb-toolbar-button.asb-zoom-badge {{ padding: 2px 8px; border-radius: 99px; font-size: {12 * scale:g}px; font-weight: 600;
+    font-feature-settings: "tnum"; }}
+{base} .asb-toolbar-button.asb-zoom-badge.asb-zoom-ring {{ box-shadow: inset 0 0 0 2px @accent_color; }}
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: {11 * scale:g}px; }}
 {caption}
@@ -7179,6 +7204,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     box-shadow: 0 2px 8px alpha(black, .35), 0 8px 24px alpha(black, .3); }}
 {scope} .asb-row-panel .asb-panel-caption, {scope} .asb-row-panel .dim-label {{ color: {panel['muted']}; }}
 {scope} .asb-row-panel separator {{ background: {panel['separator']}; }}
+{scope} toast {{ background: {panel['surface']}; color: {colors['text']}; border: 1px solid {panel['edge']}; border-radius: 12px; }}
+{scope} toast button:focus-visible {{ outline-color: {colors['accent']}; }}
+{scope} .asb-toolbar-button.asb-zoom-badge.asb-zoom-ring {{ box-shadow: inset 0 0 0 2px {colors['accent']}; }}
 """
         else:
             surface, ink = self.popover_colors()
@@ -7786,7 +7814,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.refresh_button.get_parent().remove(self.refresh_button)
             if wide:
                 self.refresh_button.set_icon_name("view-refresh-symbolic")
-                self.toolbar_end.prepend(self.refresh_button)
+                self.toolbar_end.insert_child_after(self.refresh_button, self.zoom_badge)
             else:
                 self.refresh_button.set_label("Refresh sessions")
                 self.preferences_refresh_row.append(self.refresh_button)
@@ -7914,6 +7942,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.cancel_scroll()
         focused = self.focus_key() or self.focused_id
         self.board_zoom = zoom
+        self.show_zoom_badge(True)
         # The card heights and the pocket at the new zoom: a height that the last zoom measured does not stay.
         self.card_heights = self.measure_card_heights()
         self.pocket_bottom = self.measure_pocket_bottom()
@@ -7937,6 +7966,34 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # An open row panel fits its labels again once its rows have the new text size.
             GLib.idle_add(lambda: self.fit_row_panel(panel, panel.get_child().get_child(), zoomed(260, zoom)) if panel.get_visible() else None)
         return True
+
+    def show_zoom_badge(self, changed):
+        """The toolbar badge shows the zoom level while it is not 100%. A change rings it for 400 ms; a reset to 100% shows
+        100% with the ring for 1.5 s, then hides it. A new change starts its own time again."""
+        zoom, badge = self.board_zoom, self.zoom_badge
+        badge.set_label(f"{zoom}%")
+        badge.update_property([Gtk.AccessibleProperty.LABEL], [f"Zoom {zoom}%. Reset to 100%"])
+        if self.zoom_badge_timer:
+            GLib.source_remove(self.zoom_badge_timer)
+            self.zoom_badge_timer = None
+        if not changed:
+            badge.set_visible(zoom != 100)
+            return
+        badge.set_visible(True)
+        badge.add_css_class("asb-zoom-ring")
+        self.zoom_badge_timer = GLib.timeout_add(1500 if zoom == 100 else 400, self.rest_zoom_badge)
+        if hasattr(badge, "announce"):
+            badge.announce(f"Zoom {zoom}%", Gtk.AccessibleAnnouncementPriority.MEDIUM)
+
+    def rest_zoom_badge(self):
+        self.zoom_badge_timer = None
+        self.zoom_badge.remove_css_class("asb-zoom-ring")
+        if self.board_zoom == 100:
+            # A keyboard reset on the badge keeps the focus in the toolbar.
+            if self.zoom_badge.has_focus():
+                self.menu_button.grab_focus()
+            self.zoom_badge.set_visible(False)
+        return False
 
     def save_width(self):
         try:
@@ -9670,6 +9727,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 (Gtk.EventControllerFocus(), (("enter", self.row_focus),)),
                 (Gtk.EventControllerMotion(), (("notify::contains-pointer", self.row_hover),)),
                 (Gtk.GestureClick(button=3), (("released", self.row_context),)),
+                (Gtk.GestureClick(button=1), (("released", self.row_no_open_click),)),
                 (Gtk.DragSource(actions=Gdk.DragAction.MOVE), (("prepare", self.pin_drag_prepare),
                                                           ("drag-end", self.pin_drag_end))),
                 (Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE), (("drop", self.pin_drop),))):
@@ -10029,6 +10087,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget = self.focus_widgets.get(identity)
         if widget:
             self.show_context(widget, x, y, gesture)
+
+    def row_no_open_click(self, gesture, count, _x, _y, _identity):
+        """A primary click on the body of a card that ASB cannot open says why (open_row); a card button claims its own click."""
+        widget = gesture.get_widget()
+        if count == 1 and not widget.get_activatable() and not (self.context_menu and self.context_menu.get_visible()):
+            self.open_row(None, widget)
 
     def row_long_press(self, gesture, x, y, identity):
         widget = self.focus_widgets.get(identity)
@@ -10919,6 +10983,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 if focus.get_sensitive() and getattr(focus, "asb_action", None):
                     focus.activate()
                 return True
+            # GTK activates only an activatable card; a card that ASB cannot open says why.
+            widget = self.card_for(identity)
+            if widget is not None and focus is widget and not widget.get_activatable():
+                self.open_row(None, widget)
+                return True
         if key == Gdk.KEY_Menu or (key == Gdk.KEY_F10 and _state & Gdk.ModifierType.SHIFT_MASK):
             self.show_context(self.card_for(identity))
             return True
@@ -11807,7 +11876,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 return
         # A real click on a card button does not reach the row (the button has no action name to lose, so GTK keeps its claim).
         # A click on the card body while a card action is in flight does, so the busy guard stays.
-        if not row.get("canOpen") or row["id"] in self.opening or row["id"] in self.session_actions:
+        if row["id"] in self.opening or row["id"] in self.session_actions:
+            return
+        if not row.get("canOpen"):
+            self.show_no_open_toast(row)
             return
         self.opening.add(row["id"])
         self.open_errors.pop(row["id"], None)
@@ -11826,6 +11898,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     self.refresh(queue=True)
             return False
         request_async(self.base, "/api/threads/" + quote(row["id"], safe="") + "/open", finished, GLib.idle_add, "POST")
+
+    def show_no_open_toast(self, row):
+        """Say why a card does not open, with Show messages for its session. A new toast first dismisses the shown one."""
+        if self.no_open_toast:
+            self.no_open_toast.dismiss()
+        identity, title = row["id"], " ".join((row.get("title") or "Untitled session").split())
+        toast = Adw.Toast(title=GLib.markup_escape_text(no_open_title(row)), button_label="Show messages", timeout=4)
+        toast.connect("button-clicked", lambda _toast: self.get_application().show_activity("messages", seat=identity, title=title))
+        toast.connect("dismissed", lambda shown: setattr(self, "no_open_toast", None) if self.no_open_toast is shown else None)
+        self.no_open_toast = toast
+        self.toast_overlay.add_toast(toast)
 
     def on_close(self, *_args):
         if self.closed:
@@ -11851,7 +11934,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.list_body.clear_flights()
         self.events.close()
         self.cancel_side_fill()
-        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim", "heap_trim", "order_hold_timer"):
+        for name in ("timer", "clock_timer", "geometry_idle", "notice_timer", "row_cache_trim", "heap_trim", "order_hold_timer",
+                     "zoom_badge_timer"):
             source = getattr(self, name)
             if source:
                 GLib.source_remove(source)

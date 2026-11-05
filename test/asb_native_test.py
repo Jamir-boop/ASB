@@ -8491,6 +8491,8 @@ class WidgetCheck(unittest.TestCase):
         window = self.card_board([self.card_row("a", unread=True, pending=True)])
         window.set_default_size(900, 600)
         window.states = {"idle"}; window.render()
+        # The zoom badge shows at 200%; at 100% it shows as after a reset, so the toolbar has the same parts at both zooms.
+        window.zoom_badge.set_visible(True)
         window.open_search(); self.settle(window)
         chrome = [window.tools, *descendants(window.tools), window.search, *descendants(window.search)]
         def sizes(widgets):
@@ -8994,6 +8996,210 @@ class WidgetCheck(unittest.TestCase):
             self.assertFalse(press(key))
         self.assertEqual(window.board_zoom, 100)
         window.close_filters_popover(); self.drain(.2)
+
+    def test_zoom_badge_shows_the_level_rings_on_each_change_and_hides_after_a_reset(self):
+        window = self.card_board([self.card_row("a"), self.card_row("b")])
+        window.set_default_size(900, 600); window.check_geometry(); self.settle(window)
+        badge, control = window.zoom_badge, asb.Gdk.ModifierType.CONTROL_MASK
+        press = lambda key: window.window_key(None, key, 0, control)
+        ringed = lambda: badge.has_css_class("asb-zoom-ring")
+        announced = []
+        if hasattr(badge, "announce"):
+            patcher = patch.object(badge, "announce", lambda text, priority: announced.append((text, priority)))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # At 100% the badge hides; it is the first toolbar end button, left of Refresh, with the toolbar button look.
+        self.assertFalse(badge.get_visible())
+        self.assertIs(badge.get_parent(), window.toolbar_end)
+        self.assertIsNone(badge.get_prev_sibling())
+        self.assertIs(badge.get_next_sibling(), window.refresh_button)
+        self.assertTrue(badge.has_css_class("asb-toolbar-button"))
+        self.assertEqual(badge.get_tooltip_text(), "Reset zoom to 100% (Ctrl+0)")
+        def shown(label, ring):
+            self.assertEqual((badge.get_visible(), badge.get_label(), ringed()), (True, label, ring))
+            self.assert_accessible_label(badge, f"Zoom {label}. Reset to 100%")
+        # Ctrl+plus shows 110% with the ring, which goes after 400 ms; a new step in that time starts the 400 ms again.
+        self.assertTrue(press(asb.Gdk.KEY_plus)); shown("110%", True)
+        self.drain(.25); shown("110%", True)
+        self.assertTrue(press(asb.Gdk.KEY_plus)); shown("125%", True)
+        self.drain(.25); shown("125%", True)
+        self.drain(.3); shown("125%", False)
+        if hasattr(badge, "announce"):
+            self.assertEqual(announced, [("Zoom 110%", asb.Gtk.AccessibleAnnouncementPriority.MEDIUM),
+                                         ("Zoom 125%", asb.Gtk.AccessibleAnnouncementPriority.MEDIUM)])
+        # A click resets to 100%: 100% with the ring for 1.5 s, then the badge hides.
+        badge.emit("clicked")
+        self.assertEqual(window.board_zoom, 100)
+        shown("100%", True)
+        self.settle(window)
+        reset_size = (badge.get_width(), badge.get_height(), badge.get_pango_context().get_font_description().get_size())
+        self.drain(1.0); shown("100%", True)
+        self.drain(.6); self.assertFalse(badge.get_visible()); self.assertFalse(ringed())
+        # Ctrl+0 the same; a step within the 1.5 s cancels the hide.
+        self.assertTrue(press(asb.Gdk.KEY_minus)); self.drain(.5); shown("90%", False)
+        self.assertTrue(press(asb.Gdk.KEY_0)); shown("100%", True)
+        self.drain(.8)
+        self.assertTrue(press(asb.Gdk.KEY_plus)); shown("110%", True)
+        self.drain(1.0); shown("110%", False)
+        self.assertTrue(press(asb.Gdk.KEY_0)); self.drain(1.7); self.assertFalse(badge.get_visible())
+        # Enter or Space on the badge activates it as a click.
+        window.set_board_zoom(150); badge.activate(); self.drain(.4)
+        self.assertEqual(window.board_zoom, 100); shown("100%", True)
+        # The badge keeps its size and font at 200%, as the other toolbar buttons do.
+        window.set_board_zoom(200); self.settle(window)
+        shown("200%", True)
+        self.assertEqual((badge.get_width(), badge.get_height(), badge.get_pango_context().get_font_description().get_size()), reset_size)
+        # It never covers the window controls and still shows at the narrowest toolbar.
+        for width in (900, 400, 300, 160):
+            with self.subTest(width=width):
+                window.set_default_size(width, 600); window.check_geometry(); self.settle(window)
+                self.assertTrue(badge.get_mapped() and badge.get_width() > 0)
+                badge_box, controls_box = badge.compute_bounds(window)[1], window.window_controls.compute_bounds(window)[1]
+                self.assertLessEqual(badge_box.origin.x + badge_box.size.width, controls_box.origin.x)
+                self.assertLessEqual(controls_box.origin.x + controls_box.size.width, window.get_width())
+                self.assertGreaterEqual(badge_box.origin.x, 0)
+
+    def test_zoom_badge_shows_a_saved_zoom_at_start_with_no_ring(self):
+        for target, name, value in ((asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None),
+                                    (asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                    (asb, "request_async", lambda *args: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with tempfile.TemporaryDirectory(prefix="asb-zoom-badge-") as temporary:
+            layout = Path(temporary) / "layout.json"
+            asb.write_layout(layout, 240, "compact", zoom=125)
+            window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", {"generatedAtMs": NOW, "providers": [], "threads": [self.card_row("a")]},
+                                           theme_path=False, layout_path=layout)
+            self.addCleanup(window.close)
+            window.present(); self.drain(.3)
+            badge = window.zoom_badge
+            self.assertEqual((badge.get_visible(), badge.get_label(), badge.has_css_class("asb-zoom-ring"), window.zoom_badge_timer),
+                             (True, "125%", False, None))
+            self.assert_accessible_label(badge, "Zoom 125%. Reset to 100%")
+
+    def test_no_open_toast_says_why_a_card_does_not_open_and_offers_show_messages(self):
+        asb.gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+        def row(identity, **extra):
+            return self.card_row(identity, **{"title": "Check the " + identity, "canOpen": False, **extra})
+        rows = [row("remote", remote=True, machineName="studio", surface="app"), row("nameless", remote=True, surface="cli"),
+                row("cli", surface="cli", provider="claude-desktop-code", providerLabel="Claude Code CLI"),
+                row("opencode", provider="opencode", providerLabel="OpenCode"), row("other"), self.card_row("opens")]
+        titles = {"remote": "Runs on studio. Open it on studio.", "nameless": "Runs on another machine. Open it on another machine.",
+                  "cli": "Runs in a terminal. ASB does not open CLI sessions.", "opencode": "OpenCode cannot open one session from a link.",
+                  "other": "ASB has no direct link to this session."}
+        window = self.card_board(rows)
+        requests, activity = [], []
+        for target, name, value in ((asb, "request_async", lambda *args: requests.append(args)),
+                                    (self.application, "show_activity", lambda *args, **kwargs: activity.append((args, kwargs)))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window.set_default_size(1400, 600); window.check_geometry(); self.settle(window)
+        for card in window.focus_widgets.values():
+            window.ensure_card_controls(card)
+        self.settle(window)
+        def xdo(*args):
+            return subprocess.run(["xdotool", *map(str, args)], check=True, capture_output=True, text=True).stdout
+        x, y = (line.split("=")[1] for line in xdo("getmouselocation", "--shell").splitlines()[:2])
+        self.addCleanup(xdo, "mousemove", x, y)
+        xid = GdkX11.X11Surface.get_xid(window.get_surface())
+        def click(widget, button=1):
+            found, bounds = widget.compute_bounds(window)
+            self.assertTrue(found)
+            left, top = window.get_surface_transform()
+            xdo("mousemove", "--window", xid, int(bounds.origin.x + bounds.size.width / 2 + left), int(bounds.origin.y + bounds.size.height / 2 + top))
+            self.drain(.3)
+            xdo("click", button)
+            self.drain(.4)
+        dismissed = []
+        def toast(identity):
+            shown = window.no_open_toast
+            self.assertIsNotNone(shown)
+            self.assertEqual((shown.get_title(), shown.get_button_label(), shown.get_timeout()), (titles[identity], "Show messages", 4))
+            shown.connect("dismissed", lambda item: dismissed.append(item))
+            return shown
+        for identity in titles:
+            with self.subTest(identity=identity):
+                card = window.focus_widgets[identity]
+                self.assertFalse(card.get_activatable())
+                # A card that cannot open has no number key (Ctrl+1 to Ctrl+9 number only cards that open).
+                window.update_number_keys()
+                self.assertNotIn(identity, window.number_keys)
+                def key(keyval):
+                    card.grab_focus(); self.drain(.1)
+                    return window.row_key(None, keyval, 0, 0, identity)
+                triggers = [("click", lambda: click(card.asb_title_label)), ("enter", lambda: key(asb.Gdk.KEY_Return)),
+                            ("space", lambda: key(asb.Gdk.KEY_space)), ("keypad enter", lambda: key(asb.Gdk.KEY_KP_Enter))]
+                previous = None
+                for name, trigger in triggers:
+                    del requests[:]
+                    trigger(); self.drain(.1)
+                    shown = toast(identity)
+                    # A new toast first dismisses the shown one, so toasts never queue.
+                    self.assertIsNot(shown, previous, name)
+                    if previous is not None:
+                        self.assertIn(previous, dismissed, name)
+                    previous = shown
+                    self.assertEqual((requests, window.opening), ([], set()), name)
+                # Show messages opens Messages for that session, as the row panel row does.
+                del activity[:]
+                shown.emit("button-clicked")
+                self.assertEqual(activity, [(("messages",), {"seat": identity, "title": "Check the " + identity})])
+                shown.dismiss(); self.drain(.6)
+                self.assertIsNone(window.no_open_toast)
+        # A card button, a right-click (the row panel), and a card with an action in flight show no toast.
+        card = window.focus_widgets["cli"]
+        del requests[:]
+        click(card.asb_pin_button)
+        self.assertEqual([request[1] for request in requests], ["/api/threads/cli/pin"])
+        requests[-1][2](None, "Cannot change this session."); self.drain(.3)
+        self.assertIsNone(window.no_open_toast)
+        click(card.asb_title_label, 3); self.drain(.3)
+        self.assertTrue(window.context_menu and window.context_menu.get_visible())
+        self.assertIsNone(window.no_open_toast)
+        window.context_menu.popdown(); self.drain(.3)
+        window.session_actions.add("cli")
+        click(card.asb_title_label)
+        self.assertIsNone(window.no_open_toast)
+        window.session_actions.discard("cli")
+        # A card that opens still opens and shows no toast.
+        del requests[:]
+        click(window.focus_widgets["opens"].asb_title_label)
+        self.assertEqual([request[1] for request in requests], ["/api/threads/opens/open"])
+        self.assertIsNone(window.no_open_toast)
+        requests[-1][2]({"opened": True}, None); self.drain(.2)
+
+    def test_no_open_toast_has_the_row_panel_surface_in_custom_colors_and_keeps_its_size_at_every_zoom(self):
+        window = self.card_board([self.card_row("cli", canOpen=False, surface="cli"), self.card_row("b")])
+        window.set_default_size(900, 600); window.check_geometry(); self.settle(window)
+        def toast_widget():
+            found = [widget for widget in descendants(window.toast_overlay) if widget.get_css_name() == "toast" and widget.get_mapped()]
+            self.assertEqual(len(found), 1)
+            return found[0]
+        def size(widget):
+            return (widget.get_width(), widget.get_height(), widget.get_pango_context().get_font_description().get_size())
+        window.open_row(None, window.focus_widgets["cli"]); self.settle(window); self.drain(.4)
+        before = size(toast_widget())
+        window.set_board_zoom(200); self.settle(window); self.drain(.3)
+        self.assertEqual(size(toast_widget()), before)
+        window.set_board_zoom(100); self.settle(window)
+        window.set_palette(CUSTOM); self.settle(window)
+        window.open_row(None, window.focus_widgets["cli"]); self.settle(window); self.drain(.6)
+        custom = toast_widget()
+        panel = asb.row_panel_colors(CUSTOM, CUSTOM["muted"])
+        middle = self.rgba(custom)[custom.get_height() // 2]
+        def near(pixel, color):
+            # The renderer rounds the edge, which the Adwaita toast shadow line also tints, by a few steps.
+            self.assertLessEqual(max(abs(pixel[i] - int(color[1 + 2 * i:3 + 2 * i], 16)) for i in range(3)), 3, (pixel, color))
+        # The 1 px edge at the start of the middle line, then the row panel surface.
+        near(middle[0], panel["edge"])
+        self.assertEqual("#%02x%02x%02x" % middle[3][:3], panel["surface"])
+        self.assertEqual(asb.SwitchboardWindow.hex_color(custom.get_color()), CUSTOM["text"])
+        before = size(custom)
+        window.set_board_zoom(200); self.settle(window); self.drain(.3)
+        self.assertEqual(size(toast_widget()), before)
 
     def folder_draws(self, folder):
         """The text that the folder line draws now, and the right end of its ink in the folder."""
