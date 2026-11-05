@@ -10456,19 +10456,22 @@ class WidgetCheck(unittest.TestCase):
                 window.close()
 
     def pocket_start(self, title, card, first):
-        """The longest whole-word start of title line 1 whose "…" ends at or left of the pocket fade, or "…" alone; None when
-        all of line 1 ends at or left of the fade."""
+        """The longest whole-word start of title line 1 whose "…" ends at or left of the pocket fade, else its longest start in
+        whole glyphs with "…" (asb.ellipsis_cut); None when all of line 1 ends at or left of the fade."""
         pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
         measure = first.copy(); measure.set_width(-1); measure.set_ellipsize(asb.Pango.EllipsizeMode.NONE)
         if measure.get_size()[0] / asb.Pango.SCALE <= pocket_x:
             return None
-        shown = "…"
+        shown = None
         words = first.get_text().split(" ")
         for n in range(1, len(words)):
             measure.set_text(" ".join(words[:n]) + "…", -1)
             if measure.get_size()[0] / asb.Pango.SCALE <= pocket_x:
                 shown = " ".join(words[:n]) + "…"
-        return shown
+        def width(value):
+            measure.set_text(value, -1)
+            return measure.get_size()[0] / asb.Pango.SCALE
+        return shown or asb.ellipsis_cut(first.get_text(), pocket_x, width)
 
     def snapshot_title(self, title):
         snapshot = Mock()
@@ -10481,7 +10484,9 @@ class WidgetCheck(unittest.TestCase):
             with self.subTest(font=font):
                 window = self.card_board([self.card_row("a", title="Draft the upgrade guide for teams"),
                                           self.card_row("short", title="Notes"),
-                                          self.card_row("long", title="Supercalifragilisticexpialidocious and a word")]
+                                          self.card_row("long", title="Supercalifragilisticexpialidocious and a word"),
+                                          self.card_row("one", title="data-sync-nightly-runner-v2", cwd="/example/ops-tools",
+                                                        projectName="ops-tools", state="unknown", unread=True)]
                                          + [self.card_row(str(i)) for i in range(13)], CUSTOM, font)
                 card = window.focus_widgets["a"]
                 title = card.asb_title_label
@@ -10512,15 +10517,35 @@ class WidgetCheck(unittest.TestCase):
                 self.hover_card(window, card, True); self.settle(window)
                 self.assertEqual(self.snapshot_title(card.asb_title_label)[0].get_text(), "Notes")
                 self.hover_card(window, card, False)
-                # The first word does not fit with the "…": "…" alone.
-                card = window.focus_widgets["long"]
-                title = card.asb_title_label
-                self.hover_card(window, card, True); self.settle(window)
-                first = title.title_layouts(title.get_width())[0]
-                measure = first.copy(); measure.set_width(-1); measure.set_ellipsize(asb.Pango.EllipsizeMode.NONE)
-                measure.set_text(first.get_text().split(" ")[0] + "…", -1)
-                self.assertGreater(measure.get_size()[0] / asb.Pango.SCALE, card.asb_actions.compute_bounds(title)[1].origin.x)
-                self.assertEqual(self.snapshot_title(title)[0].get_text(), "…")
+                # The first word does not fit with the "…": its longest start in whole glyphs that fits with the "…", not "…" alone.
+                for key, modes in (("long", ("hover",)), ("one", ("hover", "focus"))):
+                    card = window.focus_widgets[key]
+                    title = card.asb_title_label
+                    line_one = title.title_layouts(title.get_width())[0].get_text()
+                    for mode in modes:
+                        if mode == "hover":
+                            self.hover_card(window, card, True)
+                        else:
+                            self.hover_card(window, card, False)
+                            window.set_focus_visible(True); card.grab_focus()
+                        self.settle(window)
+                        first = title.title_layouts(title.get_width())[0]
+                        self.assertEqual(first.get_text(), line_one)
+                        pocket_x = card.asb_actions.compute_bounds(title)[1].origin.x
+                        measure = first.copy(); measure.set_width(-1); measure.set_ellipsize(asb.Pango.EllipsizeMode.NONE)
+                        def width(value):
+                            measure.set_text(value, -1)
+                            return measure.get_size()[0] / asb.Pango.SCALE
+                        word = line_one.split(" ")[0]
+                        self.assertGreater(width(word + "…"), pocket_x, (key, mode))
+                        shown = self.snapshot_title(title)[0].get_text()
+                        self.assertTrue(shown.endswith("…") and shown != "…" and not shown[-2].isspace(), (key, mode, shown))
+                        self.assertTrue(word.startswith(shown[:-1]), (key, mode, shown))
+                        self.assertLessEqual(width(shown), pocket_x, (key, mode, shown))
+                        self.assertGreater(width(word[:len(shown)] + "…"), pocket_x, (key, mode, shown))
+                    window.set_focus(None); self.hover_card(window, card, False); self.settle(window)
+                    self.assertEqual(self.snapshot_title(title)[0].get_text(), line_one)
+                self.assertEqual(window.focus_widgets["one"].asb_title_label.get_text(), "data-sync-nightly-runner-v2")
                 window.close(); self.drain(.1)
 
     def test_cut_remote_caption_keeps_its_separator_whole(self):

@@ -52,8 +52,7 @@ private const val REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
 
 internal fun liveTitle(threads: List<Thread>): String {
     val rows = threads.filter { !it.archived }
-    val sessions = if (rows.size == 1) "1 session" else "${rows.size} sessions"
-    return "${rows.count { it.pending }} pending · ${rows.count { it.state == "working" }} working · $sessions"
+    return "${rows.count { it.pending }} pending · ${rows.count { it.state == "working" }} working"
 }
 
 internal fun liveLines(threads: List<Thread>): List<String> {

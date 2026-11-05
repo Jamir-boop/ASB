@@ -22,10 +22,10 @@ class LiveNotificationTest {
     private fun row(id: String, state: String = "idle", pending: Boolean = false, archived: Boolean = false, title: String = "Task $id") =
         Thread(id = id, state = state, pending = pending, archived = archived, title = title)
 
-    @Test fun titleCountsUnarchivedRowsWithTheCorrectNoun() {
-        assertEquals("0 pending · 0 working · 0 sessions", liveTitle(emptyList()))
-        assertEquals("1 pending · 1 working · 1 session", liveTitle(listOf(row("a", "working", pending = true))))
-        assertEquals("1 pending · 1 working · 2 sessions", liveTitle(listOf(
+    @Test fun titleCountsUnarchivedPendingAndWorkingRowsWithNoTotal() {
+        assertEquals("0 pending · 0 working", liveTitle(emptyList()))
+        assertEquals("1 pending · 1 working", liveTitle(listOf(row("a", "working", pending = true))))
+        assertEquals("1 pending · 1 working", liveTitle(listOf(
             row("a", "working"), row("b", pending = true),
             row("c", "working", pending = true, archived = true),
         )))

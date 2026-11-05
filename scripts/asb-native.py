@@ -3413,7 +3413,8 @@ class CardTitle(Gtk.Widget):
 
     def pocket_line(self, first):
         """Line 1 before an untagged, visible pocket that it reaches: a copy of the layout with the longest whole-word start whose
-        "…" ends at or left of the fade, or "…" alone; None when line 1 ends left of the fade. Line breaks stay unchanged."""
+        "…" ends at or left of the fade; when not even the first word fits, the longest start in whole glyphs (the folder rule).
+        None when line 1 ends left of the fade. Line breaks stay unchanged."""
         pocket_bounds = pocket_fade(self)
         if pocket_bounds is None:
             return None
@@ -3426,7 +3427,7 @@ class CardTitle(Gtk.Widget):
             return measure.get_size()[0] / Pango.SCALE <= pocket_bounds.origin.x
         if fits(text):
             return None
-        shown = "…"
+        shown = None
         words = text.split(" ")
         for count in range(1, len(words)):
             start = " ".join(words[:count]).rstrip()
@@ -3434,6 +3435,11 @@ class CardTitle(Gtk.Widget):
                 break
             if start:
                 shown = start + "…"
+        if shown is None:
+            def width(value):
+                measure.set_text(value, -1)
+                return measure.get_size()[0] / Pango.SCALE
+            shown = ellipsis_cut(text, pocket_bounds.origin.x, width)
         measure.set_text(shown, -1)
         return measure
 
