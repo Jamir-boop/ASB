@@ -39,7 +39,7 @@ export const RUNTIME_FILES = [
   'src/session-targets.mjs',
   'src/reader-positions.mjs',
   'src/memory-trim.mjs',
-  'src/bridge-coverage.mjs',
+  'src/bridge-coverage.mjs', 'src/build.txt',
   'src/activity-messages.mjs', 'src/claude-messages.mjs',
   'src/activity-usage.mjs', 'src/usage-aggregation.mjs', 'src/usage-claude.mjs', 'src/usage-codex.mjs', 'src/usage-opencode.mjs',
   'src/usage-antigravity.mjs', 'src/usage-grok.mjs', 'src/usage-pi.mjs',

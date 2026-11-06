@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Preferences > Machines now shows each machine's ASB version and build, compared with this machine, and the ASB Bridge version of its profiles. An **Outdated** tag marks an older ASB version or build, a Bridge profile that needs an update, or this machine when an online member is newer. Unknown versions and builds stay explicit.
+
 - A screen reader now reads the reason of the toast that says why a card does not open, once, when the toast shows (GTK 4.14 and later). Before, it heard only that a toast with a **Show messages** button appeared.
 - A wrapped toast reason or row panel caption now starts each sentence on a new line when that fits its line limit, and a one-word last line of a sentence takes the word above it (`Runs in a terminal.` / `ASB does not open` / `CLI sessions.`). A wide board still shows the reason on one line.
 - In the row panel, the Open row of a session that ASB cannot open now says **Opens only in <app>**, with the caption **ASB cannot open OpenCode sessions.** or **ASB cannot open this session.** The toast keeps its words.

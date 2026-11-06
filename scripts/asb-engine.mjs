@@ -21,6 +21,15 @@ import { ASB_APP_ID } from './asb-icon.mjs';
 import { findRunningService, prepareInstanceRuntime, protectWindowsFolder, publishInstanceRuntime,
   removeInstanceRuntime, requestInstance, writeQuitMarker } from './asb-instance.mjs';
 
+export function readAsbBuild(file = new URL('../src/build.txt', import.meta.url)) {
+  try {
+    const text = readFileSync(file, 'utf8');
+    const match = /^([0-9a-f]{40}) ([0-9]{1,12})\n?$/.exec(text);
+    if (match && match[0] === text) return { asbBuild: match[1], asbBuildAtMs: Number(match[2]) * 1000 };
+  } catch { /* A checkout or an old install can have no build. */ }
+  return { asbBuild: '', asbBuildAtMs: 0 };
+}
+
 const execFileAsync = promisify(execFileCallback);
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BRIDGE_SCRIPT = fileURLToPath(new URL('./asb-bridge.mjs', import.meta.url));
@@ -135,7 +144,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   let quitRequested = false;
   const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   // Decision B: the group reads the gateway and the server lazily, so it is made first.
-  const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion,
+  const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion, ...readAsbBuild(),
     onChange: () => { server.invalidateDashboard('peer-sessions', { hard: false }); relay.check(); } });
   const relay = createRelaySupervisor({ group, port, sourceToken, env, platform, bindTarget: (request) => server.bindMemberTarget(request) });
   const gateway = createPhoneGateway({ localPort: port, asbVersion,

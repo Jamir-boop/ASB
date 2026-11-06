@@ -4445,6 +4445,58 @@ class BridgeHelperChecks(unittest.TestCase):
             {**machine, "apps": [{**app, "sourceId": "later"}]}]}), {"a": app})
         self.assertEqual(asb.bridge_self_apps({"api": 1, "machines": []}), {})
 
+    def test_machine_asb_lines_compare_versions_and_builds(self):
+        own = {"isSelf": True, "online": True, "asbVersion": "1.15.0", "asbBuild": "a" * 40, "asbBuildAtMs": 2000}
+        self.assertEqual(asb.machine_asb_line(own, own), "ASB 1.15.0 · aaaaaaa")
+        self.assertEqual(asb.machine_asb_line({**own, "asbBuild": ""}, own), "ASB 1.15.0")
+        for online, text in ((True, "ASB: not known yet"), (False, "ASB: not known while offline")):
+            self.assertEqual(asb.machine_asb_line({"online": online}, own), text)
+        member = {**own, "isSelf": False}
+        for change, relation in (({}, "same as this machine"),
+                ({"asbVersion": "1.14.9"}, "older than this machine"),
+                ({"asbVersion": "1.15.1"}, "newer than this machine"),
+                ({"asbVersion": "1.9.0"}, "older than this machine"),
+                ({"asbVersion": "2.0.0"}, "newer than this machine"),
+                ({"asbVersion": "1.15.0-rc.1"}, "older than this machine"),
+                ({"asbVersion": "1.15.0+local"}, "same as this machine"),
+                ({"asbBuild": "b" * 40, "asbBuildAtMs": 1000}, "older build than this machine"),
+                ({"asbBuild": "b" * 40, "asbBuildAtMs": 3000}, "newer build than this machine"),
+                ({"asbBuild": "b" * 40}, "other build than this machine"),
+                ({"asbBuild": ""}, "same version as this machine")):
+            item = {**member, **change}
+            with self.subTest(change=change):
+                prefix = "ASB " + item["asbVersion"] + (" · " + item["asbBuild"][:7] if item["asbBuild"] else "")
+                self.assertEqual(asb.machine_asb_line(item, own), prefix + " · " + relation)
+        self.assertEqual(asb.machine_asb_relation(member, {**own, "asbVersion": "1.15.0-rc.1"}), "newer than this machine")
+        self.assertEqual(asb.machine_asb_relation(member, {**own, "asbBuild": ""}), "same version as this machine")
+        self.assertEqual(asb.machine_asb_relation(member, {}), "")
+
+    def test_machine_outdated_only_for_older_asb_or_bridge_update(self):
+        own = {"isSelf": True, "asbVersion": "1.15.0", "asbBuild": "a" * 40, "asbBuildAtMs": 2000}
+        for change, outdated in (({}, False), ({"asbVersion": "1.14.0"}, True),
+                ({"asbBuild": "b" * 40, "asbBuildAtMs": 1000}, True),
+                ({"asbVersion": "1.16.0"}, False), ({"asbBuild": ""}, False),
+                ({"asbBuild": "b" * 40}, False), ({"asbVersion": ""}, False)):
+            member = {**own, "isSelf": False, **change}
+            self.assertEqual(asb.machine_outdated(member, own, [], None), outdated)
+        for change in ({"asbVersion": "1.16.0"}, {"asbBuild": "b" * 40, "asbBuildAtMs": 3000}):
+            newer = {**own, "isSelf": False, **change}
+            self.assertTrue(asb.machine_outdated(own, own, [{**newer, "online": True}], None))
+            self.assertFalse(asb.machine_outdated(own, own, [{**newer, "online": False}], None))
+        for state in (*asb.MACHINE_BRIDGE_PHRASES, "unknown"):
+            for machine in (own, {**own, "isSelf": False}):
+                self.assertEqual(asb.machine_outdated(machine, own, [], {"apps": [{"state": state}]}), state == "update")
+
+    def test_machine_bridge_versions_show_expected_and_different_installed_versions(self):
+        apps = [{"label": "Codex", "state": "ready", "version": "0.8.1"},
+                {"label": "ChatGPT Personal", "state": "ready", "version": None},
+                {"label": "OpenCode", "state": "update", "version": "0.8.0"}]
+        self.assertEqual(asb.machine_bridge_line({"state": "ok", "expectedVersion": "0.8.1", "apps": apps}),
+                         "Bridge 0.8.1: Codex ready · ChatGPT Personal ready · OpenCode 0.8.0 old version")
+        for expected in ({}, {"expectedVersion": ""}):
+            self.assertEqual(asb.machine_bridge_line({"state": "ok", "apps": apps, **expected}),
+                             "Bridge: Codex 0.8.1 ready · ChatGPT Personal ready · OpenCode 0.8.0 old version")
+
     def test_machine_bridge_line_covers_every_branch_and_phrase(self):
         for machine, text in (({"state": "offline"}, "Bridge: not checked while offline"),
                 ({"state": "old"}, "Bridge: unknown, needs ASB 1.12+"),
@@ -4912,7 +4964,7 @@ class MachineBridgeChecks(unittest.TestCase):
         editor = self.editor()
         del editor.render
         editor.bridge = self.bridge()
-        for name in ("self_row", "off", "phones", "others_heading", "others", "empty", "alone", "leave_button", "join_open", "body"):
+        for name in ("self_row", "self_outdated", "off", "phones", "others_heading", "others", "empty", "alone", "leave_button", "join_open", "body"):
             setattr(editor, name, Mock())
         editor.join_box = Mock(get_visible=Mock(return_value=False))
         editor.render_others, editor.rows_shown = Mock(), None
@@ -4920,7 +4972,7 @@ class MachineBridgeChecks(unittest.TestCase):
         studio = {"machineId": "studio-id", "name": "studio", "isSelf": False, "online": False, "lastOkAtMs": 0, "addresses": []}
         group = {"self": own, "members": [{**own, "isSelf": True}, studio], "groupId": "group", "networkEnabled": True, "phones": []}
         editor.render(group)
-        editor.self_row.set_subtitle.assert_called_with("ID atlas-id\nBridge: Codex ready")
+        editor.self_row.set_subtitle.assert_called_with("ID atlas-id\nASB: not known yet\nBridge: Codex ready")
         rows = editor.render_others.call_args.args[1]
         self.assertTrue(rows[0][2].endswith("\nBridge: not checked while offline"))
         editor.rows_shown = rows

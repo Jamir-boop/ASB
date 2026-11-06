@@ -1638,27 +1638,63 @@ class WidgetCheck(unittest.TestCase):
         preferences.stack.set_visible_child_name("machines"); self.drain(.1)
         editor = preferences.machines_editor
         self.assertEqual([route for route, _callback in requests], ["/api/group", "/api/bridge"])
-        own = {"machineId": "3f9a2c71e0b4d58a", "name": "atlas"}
+        own = {"machineId": "a" * 16, "name": "studio", "asbVersion": "1.15.0",
+               "asbBuild": "a" * 40, "asbBuildAtMs": 2000}
         laptop = {"machineId": "8c41e9d27b3a05f6", "name": "laptop", "online": True, "lastOkAtMs": NOW, "isSelf": False,
                   "addresses": [{"kind": "lan", "address": "192.168.1.24"}]}
         studio = {"machineId": "51b7f0aa3c8e2d9b", "name": "studio", "online": False, "lastOkAtMs": 0, "isSelf": False,
                   "addresses": []}
+        laptop.update(asbVersion="1.15.0", asbBuild="b" * 40, asbBuildAtMs=1000)
+        office = {**own, "machineId": "c" * 16, "name": "office", "isSelf": False, "online": True, "addresses": []}
         group = {"groupId": "7d2e91c4b06fa358", "self": own, "networkEnabled": True, "phones": [],
-                 "members": [{**own, "isSelf": True, "online": True, "lastOkAtMs": NOW, "addresses": []}, laptop, studio]}
+                 "members": [{**own, "isSelf": True, "online": True, "lastOkAtMs": NOW, "addresses": []}, laptop, studio, office]}
         requests[0][1](copy.deepcopy(group), None); self.drain(.05)
         bridge = {"api": 1, "machines": [
-            {"machineId": own["machineId"], "name": "atlas", "isSelf": True, "state": "ok",
+            {"machineId": own["machineId"], "name": "atlas", "isSelf": True, "state": "ok", "expectedVersion": "0.8.1",
              "apps": [{"sourceId": "codex", "label": "Codex", "state": "ready"},
                       {"sourceId": "personal", "label": "Codex Personal", "state": "hooks"},
-                      {"sourceId": "opencode", "label": "OpenCode", "state": "update"}]},
+                      {"sourceId": "opencode", "label": "OpenCode", "state": "ready"}]},
             {"machineId": laptop["machineId"], "name": "laptop", "isSelf": False, "state": "old", "live": 2, "apps": []},
             {"machineId": studio["machineId"], "name": "studio", "isSelf": False, "state": "offline", "apps": []}]}
         requests[1][1](bridge, None); self.drain(.05)
         self.assertEqual(editor.self_row.get_subtitle(),
-                         "ID 3f9a2c71\nBridge: Codex ready · Codex Personal hooks not trusted · OpenCode old version")
+                         "ID aaaaaaaa\nASB 1.15.0 · aaaaaaa\nBridge 0.8.1: Codex ready · Codex Personal hooks not trusted · OpenCode ready")
         subtitles = [row.get_subtitle() for row in board_listed(editor.others)]
         self.assertTrue(subtitles[0].endswith("\nBridge: unknown, needs ASB 1.12+ · 2 live"))
         self.assertTrue(subtitles[1].endswith("\nBridge: not checked while offline"))
+
+        rows = board_listed(editor.others)
+        self.assertIn("ASB 1.15.0 · bbbbbbb · older build than this machine", rows[0].get_subtitle())
+        self.assertIn("ASB: not known while offline", rows[1].get_subtitle())
+        self.assertIn("ASB 1.15.0 · aaaaaaa · same as this machine", rows[2].get_subtitle())
+        def tags(row):
+            return [widget for widget in descendants(row) if isinstance(widget, asb.Gtk.Label) and widget.get_label() == "Outdated" and widget.get_visible()]
+        self.assertEqual([len(tags(row)) for row in rows], [1, 0, 0])
+        self.assertFalse(editor.self_outdated.get_visible())
+        tag = tags(rows[0])[0]
+        self.assertTrue(tag.has_css_class("warning"))
+        self.assertTrue(tag.has_css_class("caption-heading"))
+        self.assertEqual(tag.get_valign(), asb.Gtk.Align.CENTER)
+        self.assertEqual(tag.get_accessible_role(), asb.Gtk.AccessibleRole.LABEL)
+        self.assert_accessible_label(tag, "Outdated")
+        editor.remove_buttons[0].grab_focus()
+        editor.render(copy.deepcopy(group)); self.drain(.05)
+        self.assertIs(board_listed(editor.others)[0], rows[0])
+        self.assertTrue(editor.remove_buttons[0].has_focus())
+        group["members"][1].update(asbBuild=own["asbBuild"], asbBuildAtMs=own["asbBuildAtMs"])
+        editor.render(copy.deepcopy(group)); self.drain(.05)
+        updated = board_listed(editor.others)[0]
+        self.assertIn("same as this machine", updated.get_subtitle())
+        self.assertEqual(tags(updated), [])
+        # A tag-only change must also update a row, without changing its ASB or Bridge line.
+        editor.bridge["machines"][1]["apps"] = [{"sourceId": "codex", "label": "Codex", "state": "update"}]
+        before = updated.get_subtitle()
+        editor.render(copy.deepcopy(group)); self.drain(.05)
+        self.assertEqual(board_listed(editor.others)[0].get_subtitle(), before)
+        self.assertEqual(len(tags(board_listed(editor.others)[0])), 1)
+        editor.bridge["machines"][0]["apps"][0]["state"] = "update"
+        editor.render(copy.deepcopy(group)); self.drain(.05)
+        self.assertTrue(editor.self_outdated.get_visible())
 
     def test_profile_rows_keep_focus_and_a_running_save_keeps_the_dialog(self):
         requests = []
@@ -2297,7 +2333,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(editor.body.get_visible())
         self.assertFalse(editor.retry.get_visible())
         self.assertFalse(editor.message.get_visible())
-        self.assertEqual((editor.self_row.get_title(), editor.self_row.get_subtitle()), ("atlas", "ID 3f9a2c71"))
+        self.assertEqual((editor.self_row.get_title(), editor.self_row.get_subtitle()), ("atlas", "ID 3f9a2c71\nASB: not known yet"))
         self.assertEqual([widget.get_visible() for widget in (editor.off, editor.alone, editor.others_heading, editor.others,
                                                               editor.phones, editor.join_open, editor.leave_button)],
                          [False, True, False, False, False, True, False])
@@ -2319,8 +2355,8 @@ class WidgetCheck(unittest.TestCase):
         rows = [editor.others.get_row_at_index(index) for index in range(2)]
         self.assertIsNone(editor.others.get_row_at_index(2))
         self.assertEqual([(row.get_title(), row.get_subtitle(), row.has_css_class("dim-label")) for row in rows],
-                         [("laptop", "Online · ID 8c41e9d2\n192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)", False),
-                          ("studio", "Offline · ID 51b7f0aa\n10.147.20.77 (ZeroTier)", True)])
+                         [("laptop", "Online · ID 8c41e9d2\n192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)\nASB: not known yet", False),
+                          ("studio", "Offline · ID 51b7f0aa\n10.147.20.77 (ZeroTier)\nASB: not known while offline", True)])
         self.assertEqual(editor.phones.get_label(),
                          "Phones in the group: Pixel 8. A phone paired on one machine works with all of them.")
         self.assert_accessible_label(editor.remove_buttons[1], "Remove studio")
@@ -2336,7 +2372,7 @@ class WidgetCheck(unittest.TestCase):
         reply({**grouped, "members": [grouped["members"][0], {**laptop, "online": False, "lastOkAtMs": int(time.time() * 1000)}, studio]})
         row = editor.others.get_row_at_index(0)
         self.assertEqual(row.get_subtitle(), "Offline · last seen Just now · ID 8c41e9d2\n"
-                                             "192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)")
+                                             "192.168.1.24 (Home network) · 10.147.20.31 (ZeroTier)\nASB: not known while offline")
         self.assertTrue(row.has_css_class("dim-label"))
         editor.poll()
         self.assertEqual(routes()[-1], "/api/group")

@@ -744,3 +744,28 @@ test('the hello of the member sets its ASB version in memory; a bad value sets a
   }
   poller.stop();
 });
+
+test('hello keeps valid builds in memory and clears invalid or missing build fields', async () => {
+  let body = { machineId: B.machineId, asbBuild: 'a'.repeat(40), asbBuildAtMs: 1762344344000 };
+  const timers = fakeTimers();
+  const poller = createPeerPoller({ member: { ...B, certFingerprint: 'b'.repeat(64), addresses: [], port: 4630 },
+    tls: async () => ({}), timers, validAddresses: () => false,
+    request: async ({ path: route }) => route === '/peer/v1/hello' ? { status: 200, body } : { status: 500, body: {} } });
+  poller.start();
+  for (let round = 0; round < 5; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  const actual = () => [poller.state.member.asbBuild, poller.state.member.asbBuildAtMs];
+  assert.deepEqual(actual(), ['a'.repeat(40), 1762344344000]);
+  body = { machineId: 'other-machine' };
+  await timers.fire(60_000);
+  assert.deepEqual(actual(), ['a'.repeat(40), 1762344344000]);
+  for (const [build, time] of [[undefined, undefined], ['A'.repeat(40), -1], ['a'.repeat(39), 1.5],
+    ['a'.repeat(41), Number.MAX_SAFE_INTEGER + 1], [42, '1'], ['a'.repeat(40) + '\n', 0], ['not-a-build', null]]) {
+    body = { machineId: B.machineId, asbBuild: build, asbBuildAtMs: time };
+    await timers.fire(60_000);
+    assert.deepEqual(actual(), ['', 0]);
+  }
+  body = { machineId: B.machineId, asbBuild: 'b'.repeat(40), asbBuildAtMs: Number.MAX_SAFE_INTEGER };
+  await timers.fire(60_000);
+  assert.deepEqual(actual(), ['b'.repeat(40), Number.MAX_SAFE_INTEGER]);
+  poller.stop();
+});

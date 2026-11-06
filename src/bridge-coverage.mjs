@@ -129,11 +129,11 @@ export function createBridgeCoverage({ runCli, readSources, readThreads, machine
     clearTimeout(timer);
   };
   const memberValue = (reply, member) => {
-    const empty = { checkedAtMs: null, apps: [], live: null };
+    const empty = { checkedAtMs: null, expectedVersion: '', apps: [], live: null };
     if (reply?.status === 200) {
       if (!validReport(reply.body)) return { ...empty, state: 'error', error: `${member.name} sent a bridge state that ASB cannot read.` };
       if (reply.body.error) return { ...empty, state: 'error', checkedAtMs: reply.body.checkedAtMs, error: `ASB on ${member.name} cannot check ASB Bridge.` };
-      return { ...empty, state: 'ok', checkedAtMs: reply.body.checkedAtMs, apps: reply.body.apps.map(wellFormed) };
+      return { ...empty, state: 'ok', expectedVersion: reply.body.expectedVersion, checkedAtMs: reply.body.checkedAtMs, apps: reply.body.apps.map(wellFormed) };
     }
     if (reply?.status === 404) {
       let live = null;
@@ -155,7 +155,7 @@ export function createBridgeCoverage({ runCli, readSources, readThreads, machine
     return inflight.get(member.machineId);
   };
   const machineObject = (member, value, checking) => ({ machineId: member.machineId, name: member.name, isSelf: false, online: member.online,
-    lastOkAtMs: member.lastOkAtMs, asbVersion: member.asbVersion, state: value.state, checking, checkedAtMs: value.checkedAtMs, apps: value.apps,
+    lastOkAtMs: member.lastOkAtMs, asbVersion: member.asbVersion, expectedVersion: value.expectedVersion || '', state: value.state, checking, checkedAtMs: value.checkedAtMs, apps: value.apps,
     live: value.live, ...(value.error ? { error: value.error } : {}) });
   return {
     local,
@@ -172,7 +172,7 @@ export function createBridgeCoverage({ runCli, readSources, readThreads, machine
       await within([local({ force }), ...requests], waitMs);
       const { machineId, name, asbVersion } = machine();
       const state = !result ? 'checking' : result.error ? 'error' : 'ok';
-      const self = { machineId, name, isSelf: true, online: true, lastOkAtMs: now(), asbVersion, state, checking: Boolean(running),
+      const self = { machineId, name, isSelf: true, online: true, lastOkAtMs: now(), asbVersion, expectedVersion: result?.expectedVersion || '', state, checking: Boolean(running),
         checkedAtMs: result?.checkedAtMs ?? null, apps: result?.apps || [], live: null, ...(state === 'error' ? { error: result.error } : {}) };
       const others = members.map((member) => {
         if (member.online === false) return machineObject(member, { state: 'offline', checkedAtMs: null, apps: [], live: null }, false);

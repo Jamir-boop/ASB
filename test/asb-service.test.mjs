@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setImmediate as turn } from 'node:timers/promises';
 import { autostartEntry, autostartMode, findRunningService, main as serviceMain, readServiceRuntime, serviceUnit } from '../scripts/asb-service.mjs';
-import { engineLogPath, shouldStartTray, startEngine, trayLauncher } from '../scripts/asb-engine.mjs';
+import { engineLogPath, readAsbBuild, shouldStartTray, startEngine, trayLauncher } from '../scripts/asb-engine.mjs';
 const engineUrl = new URL('../scripts/asb-engine.mjs', import.meta.url).href;
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
@@ -1082,4 +1082,21 @@ test('the engine has daily usage backups in its config folder, and asb usage bac
   assert.match(await readFile(new URL('../src/switchboard.mjs', import.meta.url), 'utf8'), /members: group \? \(\) => group\.activity\('all'\) : null/);
   child.kill('SIGTERM');
   assert.equal((await child.closed)[0], 0, child.errors);
+});
+
+test('the engine reads an exported build and safely ignores a checkout, bad data, or a missing file', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-build-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, 'build.txt');
+  const empty = { asbBuild: '', asbBuildAtMs: 0 };
+  assert.deepEqual(readAsbBuild(file), empty);
+  for (const text of ['$Format:%H %ct$\n', 'bad\n', `${'A'.repeat(40)} 123\n`, `${'a'.repeat(40)} 1234567890123\n`, `${'a'.repeat(40)} 123\n\n`]) {
+    await writeFile(file, text);
+    assert.deepEqual(readAsbBuild(file), empty, text);
+  }
+  for (const ending of ['', '\n']) {
+    await writeFile(file, `${'a'.repeat(40)} 1762344344${ending}`);
+    assert.deepEqual(readAsbBuild(file), { asbBuild: 'a'.repeat(40), asbBuildAtMs: 1762344344000 });
+  }
+  assert.deepEqual(readAsbBuild(home), empty);
 });

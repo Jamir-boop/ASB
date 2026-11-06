@@ -402,7 +402,11 @@ export function createPeerPoller({ member, tls, validAddresses, request = peerRe
       const reply = await call(`/peer/v1/hello${await helloQuery()}`);
       const value = reply.body;
       // The ASB version stays in memory only, like the addresses.
-      if (reply.status === 200 && value?.machineId === state.member.machineId) state.member.asbVersion = validVersion(value.asbVersion) ? value.asbVersion : '';
+      if (reply.status === 200 && value?.machineId === state.member.machineId) {
+        state.member.asbVersion = validVersion(value.asbVersion) ? value.asbVersion : '';
+        state.member.asbBuild = typeof value.asbBuild === 'string' && value.asbBuild.length === 40 && /^[0-9a-f]{40}$/.test(value.asbBuild) ? value.asbBuild : '';
+        state.member.asbBuildAtMs = Number.isSafeInteger(value.asbBuildAtMs) && value.asbBuildAtMs > 0 ? value.asbBuildAtMs : 0;
+      }
       // The addresses stay in memory only, until the saved entry of the member changes.
       if (reply.status === 200 && value?.machineId === state.member.machineId && validAddresses(value.addresses) && Number.isInteger(value.port)
         && value.port >= 1024 && value.port <= 65535) {

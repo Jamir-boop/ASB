@@ -112,7 +112,7 @@ test('two engines join one group and show each other\'s sessions as remote cards
 
   // Not in a group yet; invite and join through the loopback API.
   const empty = await a.api('/api/group');
-  assert.deepEqual(empty.body, { groupId: '', self: { machineId: a.machineId, name: 'engine-a' }, networkEnabled: true, members: [], phones: [] });
+  assert.deepEqual(empty.body, { groupId: '', self: { machineId: a.machineId, name: 'engine-a', asbVersion: 'test', asbBuild: '', asbBuildAtMs: 0 }, networkEnabled: true, members: [], phones: [] });
   assert.equal((await a.api('/api/group/invite', { method: 'POST', body: { extra: 1 } })).status, 400);
   const invite = await a.api('/api/group/invite', { method: 'POST', body: {} });
   assert.equal(invite.status, 200);

@@ -181,7 +181,7 @@ const reply = (status, body) => ({ status, body });
 
 // Decision A: one object owns group.json, the invite, the join and leave flows, the pollers, and the gateway peer callbacks.
 // The gateway and the server are read lazily (decision B).
-export function createMachineGroup({ file = groupPath(), gateway, server = () => null, asbVersion = '', now = Date.now,
+export function createMachineGroup({ file = groupPath(), gateway, server = () => null, asbVersion = '', asbBuild = '', asbBuildAtMs = 0, now = Date.now,
   log = (line) => console.error(line), addressOk = validPeerAddress, onChange = () => {}, request = peerRequest,
   hostName = localMachineName(), timers } = {}) {
   let group = null;
@@ -311,14 +311,16 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
   }
 
   function status(networkEnabled, identity) {
-    if (!group) return { groupId: '', self: { machineId: identity, name: suggestName(hostName, []) }, networkEnabled, members: [], phones: [] };
-    return { groupId: group.groupId, self: { ...group.self }, networkEnabled,
+    if (!group) return { groupId: '', self: { machineId: identity, name: suggestName(hostName, []), asbVersion, asbBuild, asbBuildAtMs }, networkEnabled, members: [], phones: [] };
+    return { groupId: group.groupId, self: { ...group.self, asbVersion, asbBuild, asbBuildAtMs }, networkEnabled,
       members: activeMembers(group).map((member) => {
         const state = pollers.get(member.machineId)?.state;
         const isSelf = member.machineId === group.self.machineId;
         return { machineId: member.machineId, name: member.name, online: isSelf || Boolean(state?.online),
           lastOkAtMs: isSelf ? now() : state?.lastOkAtMs || 0, addresses: (state?.member.addresses || member.addresses).map((item) => ({ ...item })), isSelf,
-          asbVersion: isSelf ? asbVersion : state?.member.asbVersion || '' };
+          asbVersion: isSelf ? asbVersion : state?.member.asbVersion || '',
+          asbBuild: isSelf ? asbBuild : state?.member.asbBuild || '',
+          asbBuildAtMs: isSelf ? asbBuildAtMs : state?.member.asbBuildAtMs || 0 };
       }),
       phones: activePhones(group).map(({ deviceId, name }) => ({ deviceId, name })) };
   }
@@ -481,7 +483,7 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
         addresses: (pollers.get(member.machineId)?.state?.member.addresses || member.addresses).map((item) => ({ ...item })) })) : [],
       hello: async () => {
         const status = await gateway().status();
-        return { api: 1, machineId: group.self.machineId, name: group.self.name, groupId: group.groupId, asbVersion,
+        return { api: 1, machineId: group.self.machineId, name: group.self.name, groupId: group.groupId, asbVersion, asbBuild, asbBuildAtMs,
           addresses: status.listening, port: status.port };
       },
       // The hello query of a member: its current addresses and port, saved in its own active entry only.

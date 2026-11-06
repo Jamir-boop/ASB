@@ -396,3 +396,43 @@ test('a member that was offline at an activity check is asked again 30 s later',
   assert.deepEqual(asked, ['/peer/v1/activity?period=all']);
   await machine.stop();
 });
+
+test('group status and hello carry ASB builds, with empty builds before a member hello', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-group-build-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, 'group.json');
+  const own = { asbVersion: '1.15.0', asbBuild: 'a'.repeat(40), asbBuildAtMs: 2000 };
+  const remote = { asbVersion: '1.15.0', asbBuild: 'b'.repeat(40), asbBuildAtMs: 1000 };
+  const gateway = { credentials: async () => ({ key: '', cert: '', fingerprint: 'a'.repeat(64) }), identity: async () => id('a'),
+    status: async () => ({ running: true, listening: [], port: 4630 }), devices: async () => [] };
+  await saveGroup(file, group({ self: { machineId: id('a'), name: 'studio' }, members: [member('a', 'studio'), member('b', 'office')] }));
+  let reply;
+  const pending = new Promise((resolve) => { reply = resolve; });
+  const machine = createMachineGroup({ file, gateway: () => gateway, ...own, log: () => {},
+    timers: { setTimeout: () => ({ unref() {} }), clearTimeout: () => {} },
+    request: async ({ path: route }) => route.startsWith('/peer/v1/hello') ? pending : { status: 503, body: null } });
+  t.after(() => machine.stop());
+  await machine.start();
+  const fields = ({ asbVersion, asbBuild, asbBuildAtMs }) => ({ asbVersion, asbBuild, asbBuildAtMs });
+  const before = await machine.status();
+  assert.deepEqual(before.members.map(fields), [own, { asbVersion: '', asbBuild: '', asbBuildAtMs: 0 }]);
+  assert.deepEqual(fields(before.self), own);
+  assert.deepEqual(fields(await machine.peer.hello()), own);
+  reply({ status: 200, body: { machineId: id('b'), ...remote } });
+  for (let round = 0; round < 5; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual((await machine.status()).members.map(fields), [own, remote]);
+  const saved = (await loadGroup(file)).group;
+  assert.equal(Object.hasOwn(saved.members[1], 'asbBuild'), false);
+});
+
+test('an ungrouped machine reports its own build without adding members', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-alone-build-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const build = { asbVersion: '1.15.0', asbBuild: 'a'.repeat(40), asbBuildAtMs: 2000 };
+  const machine = createMachineGroup({ file: path.join(home, 'group.json'), ...build, hostName: 'studio', log: () => {},
+    gateway: () => ({ identity: async () => id('a'), status: async () => ({ running: false }) }) });
+  t.after(() => machine.stop());
+  const status = await machine.status();
+  assert.deepEqual(status.self, { machineId: id('a'), name: 'studio', ...build });
+  assert.deepEqual(status.members, []);
+});

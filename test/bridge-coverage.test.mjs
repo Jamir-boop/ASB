@@ -189,7 +189,7 @@ test('the check runs the CLI once per ttl, again with force, and once for parall
   assert.equal(s.calls.length, 3);
   const reply = await s.coverage.status();
   assert.deepEqual(reply, { api: 1, expectedVersion: '1.2.0', machines: [{ machineId: 'm1', name: 'Desk', isSelf: true, online: true,
-    lastOkAtMs: reply.machines[0].lastOkAtMs, asbVersion: '1.12.0', state: 'ok', checking: false, checkedAtMs: a.checkedAtMs, apps: a.apps, live: null }] });
+    lastOkAtMs: reply.machines[0].lastOkAtMs, asbVersion: '1.12.0', expectedVersion: '1.2.0', state: 'ok', checking: false, checkedAtMs: a.checkedAtMs, apps: a.apps, live: null }] });
   assert.equal(s.calls.length, 3);
   await s.coverage.status({ force: true });
   assert.equal(s.calls.length, 4);
@@ -389,9 +389,9 @@ test('status adds offline and ok members after this machine, in group order', as
   const s = service(t, { group });
   const reply = await s.coverage.status();
   assert.deepEqual(reply.machines.map((item) => [item.machineId, item.isSelf, item.state]), [['m1', true, 'ok'], ['off', false, 'offline'], ['lap', false, 'ok']]);
-  assert.deepEqual(reply.machines[1], { machineId: 'off', name: 'Off', isSelf: false, online: false, lastOkAtMs: 500, asbVersion: '1.11.0',
+  assert.deepEqual(reply.machines[1], { machineId: 'off', name: 'Off', isSelf: false, online: false, lastOkAtMs: 500, asbVersion: '1.11.0', expectedVersion: '',
     state: 'offline', checking: false, checkedAtMs: null, apps: [], live: null });
-  assert.deepEqual(reply.machines[2], { machineId: 'lap', name: 'Lap', isSelf: false, online: true, lastOkAtMs: 500, asbVersion: '1.11.0',
+  assert.deepEqual(reply.machines[2], { machineId: 'lap', name: 'Lap', isSelf: false, online: true, lastOkAtMs: 500, asbVersion: '1.11.0', expectedVersion: '1.2.0',
     state: 'ok', checking: false, checkedAtMs: 900, apps: [{ ...memberApp, label: 'Codex �', canInstall: false }], live: null });
   assert.deepEqual(Object.keys(reply.machines[2]), Object.keys(reply.machines[0]));
   assert.deepEqual(group.calls, [['lap', '/peer/v1/bridge', { timeoutMs: 4000 }]]);
@@ -415,7 +415,7 @@ test('member replies map to error, old, checking, and error texts', async (t) =>
   assert.deepEqual([lap.state, lap.error, lap.checkedAtMs, lap.apps], ['error', 'ASB on Lap cannot check ASB Bridge.', 900, []]);
   const relay = { remotePeers: () => ({ peers: [{ machineId: 'lap' }, { machineId: 'lap' }, { machineId: 'other' }] }) };
   const old = service(t, { relay, group: fakeGroup([member('lap', 'Lap')], () => ({ status: 404, body: { error: 'Route is not available.' } })) });
-  assert.deepEqual(await machineOf(old, 'lap'), { machineId: 'lap', name: 'Lap', isSelf: false, online: true, lastOkAtMs: 500, asbVersion: '1.11.0',
+  assert.deepEqual(await machineOf(old, 'lap'), { machineId: 'lap', name: 'Lap', isSelf: false, online: true, lastOkAtMs: 500, asbVersion: '1.11.0', expectedVersion: '',
     state: 'old', checking: false, checkedAtMs: null, apps: [], live: 2 });
   const noRelay = service(t, { group: fakeGroup([member('lap', 'Lap')], () => ({ status: 404, body: {} })) });
   assert.equal((await machineOf(noRelay, 'lap')).live, null);
@@ -486,4 +486,22 @@ test('report waits at most reportWaitMs, not waitMs, and gives 200 after a slow 
   assert.equal(later.status, 200);
   assert.equal(later.body.apps.length, 4);
   assert.equal(s.calls.length, 1);
+});
+
+test('each bridge machine has its own expectedVersion, cleared when offline, old, checking, or error', async (t) => {
+  let reply = { status: 200, body: memberBody({ expectedVersion: '0.8.0' }) };
+  const group = fakeGroup([member('studio', 'studio')], () => reply);
+  const s = service(t, { group });
+  const status = await s.coverage.status();
+  assert.equal(status.machines[0].expectedVersion, status.expectedVersion);
+  assert.equal(status.machines[1].expectedVersion, '0.8.0');
+  assert.equal((await s.coverage.status()).machines[1].expectedVersion, '0.8.0');
+  group.members[0].online = false;
+  assert.equal((await machineOf(s, 'studio')).expectedVersion, '');
+  group.members[0].online = true;
+  for (const response of [{ status: 404 }, { status: 503 }, { status: 500 }, { status: 200, body: {} },
+    { status: 200, body: memberBody({ error: 'check' }) }]) {
+    reply = response;
+    assert.equal((await machineOf(s, 'studio', { force: true })).expectedVersion, '');
+  }
 });

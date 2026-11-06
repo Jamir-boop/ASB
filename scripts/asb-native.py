@@ -158,7 +158,13 @@ def machine_bridge_line(machine):
         return "Bridge: checking…" if state == "checking" or machine.get("checking") is True else "Bridge: no app profiles"
     if all(app["state"] == "missing" for app in apps):
         return "Bridge: not installed"
-    return "Bridge: " + " · ".join(f"{app['label']} {MACHINE_BRIDGE_PHRASES.get(app['state'], 'unknown')}" for app in apps)
+    expected = machine.get("expectedVersion", "")
+    parts = []
+    for app in apps:
+        version = app.get("version")
+        installed = f" {version}" if version and version != expected else ""
+        parts.append(f"{app['label']}{installed} {MACHINE_BRIDGE_PHRASES.get(app['state'], 'unknown')}")
+    return (f"Bridge {expected}: " if expected else "Bridge: ") + " · ".join(parts)
 
 
 def profile_subtitle(source):
@@ -1976,6 +1982,44 @@ def machine_addresses_text(member):
 def machine_member_subtitle(member, now_ms=None):
     return "\n".join(filter(None, (f"{machine_status_text(member, now_ms)} · ID {member['machineId'][:8]}",
                                     machine_addresses_text(member))))
+
+
+def machine_asb_relation(member, own):
+    def version_key(value):
+        match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", value or "")
+        return (*map(int, match.group(1, 2, 3)), match[4] is None) if match else None
+    current, baseline = version_key(member.get("asbVersion")), version_key(own.get("asbVersion"))
+    if current is None or baseline is None:
+        return ""
+    if current != baseline:
+        return ("older" if current < baseline else "newer") + " than this machine"
+    build, own_build = member.get("asbBuild"), own.get("asbBuild")
+    if not build or not own_build:
+        return "same version as this machine"
+    if build == own_build:
+        return "same as this machine"
+    at, own_at = member.get("asbBuildAtMs", 0), own.get("asbBuildAtMs", 0)
+    return ("older" if at < own_at else "newer" if at > own_at else "other") + " build than this machine"
+
+
+def machine_asb_line(member, own):
+    version = member.get("asbVersion", "")
+    if not version:
+        return "ASB: not known while offline" if member.get("online") is False else "ASB: not known yet"
+    line = "ASB " + version
+    if member.get("asbBuild"):
+        line += " · " + member["asbBuild"][:7]
+    relation = "" if member.get("isSelf") else machine_asb_relation(member, own)
+    return line + (" · " + relation if relation else "")
+
+
+def machine_outdated(member, own, members, bridge):
+    if any(app.get("state") == "update" for app in (bridge or {}).get("apps", [])):
+        return True
+    if member.get("isSelf"):
+        return any(other.get("online") and not other.get("isSelf") and machine_asb_relation(other, own)
+                   in ("newer than this machine", "newer build than this machine") for other in members)
+    return machine_asb_relation(member, own) in ("older than this machine", "older build than this machine")
 
 
 def machine_phones_text(phones):
@@ -5559,6 +5603,8 @@ class MachinesEditor(Gtk.Box):
         self.body.append(label("This machine", "heading"))
         self.self_row = Adw.ActionRow(use_markup=False)
         self.self_row.set_subtitle_lines(0)
+        self.self_outdated = self.outdated_label()
+        self.self_row.add_suffix(self.self_outdated)
         self.body.append(self.boxed(self.self_row))
         self.others_heading = label("Other machines", "heading")
         self.others = self.boxed()
@@ -5727,11 +5773,13 @@ class MachinesEditor(Gtk.Box):
             self.others.remove(child)
             child = self.others.get_first_child()
         self.remove_buttons = []
-        for member, (_identity, name, subtitle, _online) in zip(others, rows):
+        for member, (_identity, name, subtitle, _online, outdated) in zip(others, rows):
             row = Adw.ActionRow(title=name, subtitle=subtitle, use_markup=False)
             row.set_subtitle_lines(0)
             if not member.get("online"):
                 row.add_css_class("dim-label")
+            if outdated:
+                row.add_suffix(self.outdated_label())
             remove = Gtk.Button(label="Remove", halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
             remove.update_property([Gtk.AccessibleProperty.LABEL], ["Remove " + member["name"]])
             remove.connect("clicked", lambda _button, item=member: self.confirm_remove(item))
@@ -5741,13 +5789,16 @@ class MachinesEditor(Gtk.Box):
 
     def render(self, group):
         self.group, self.view, self.loaded = group, machines_view(group), True
-        own = group["self"]
+        members = group.get("members", [])
+        own = next((member for member in members if member.get("isSelf")), {**group["self"], "isSelf": True})
         self.self_row.set_title(own["name"])
-        self.self_row.set_subtitle("ID " + own["machineId"][:8] + self.bridge_suffix(is_self=True))
+        self.self_row.set_subtitle("ID " + own["machineId"][:8] + "\n" + machine_asb_line(own, own) + self.bridge_suffix(is_self=True))
+        self.self_outdated.set_visible(machine_outdated(own, own, members, self.bridge_machine(is_self=True)))
         self.off.set_visible(self.view["off"])
         grouped, others = self.view["grouped"], self.view["others"]
         now_ms = time.time() * 1000
-        rows = [(member["machineId"], member["name"], machine_member_subtitle(member, now_ms) + self.bridge_suffix(member["machineId"]), bool(member.get("online")))
+        rows = [(member["machineId"], member["name"], machine_member_subtitle(member, now_ms) + "\n" + machine_asb_line(member, own) + self.bridge_suffix(member["machineId"]),
+                 bool(member.get("online")), machine_outdated(member, own, members, self.bridge_machine(member["machineId"])))
                 for member in others]
         # A poll every 5 s must not make the same rows again: that drops the keyboard focus of a Remove button.
         if rows != self.rows_shown:
@@ -5763,10 +5814,17 @@ class MachinesEditor(Gtk.Box):
             self.close_join()
         self.body.set_visible(True)
 
-    def bridge_suffix(self, identity="", is_self=False):
+    @staticmethod
+    def outdated_label():
+        return Gtk.Label(label="Outdated", css_classes=["warning", "caption-heading"], valign=Gtk.Align.CENTER)
+
+    def bridge_machine(self, identity="", is_self=False):
         machines = self.bridge["machines"] if self.bridge is not None else []
-        machine = next((machine for machine in machines
-                        if (machine["isSelf"] if is_self else machine.get("machineId") == identity)), None)
+        return next((machine for machine in machines
+                     if (machine["isSelf"] if is_self else machine.get("machineId") == identity)), None)
+
+    def bridge_suffix(self, identity="", is_self=False):
+        machine = self.bridge_machine(identity, is_self)
         return "\n" + machine_bridge_line(machine) if machine is not None else ""
 
     def request_bridge(self):

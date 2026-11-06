@@ -769,3 +769,16 @@ test('panel uninstall keeps linked folders and their outside empty icons folder'
   assert.ok((await lstat(panelFolder(options))).isSymbolicLink());
   assert.ok(await panelRecord(options));
 });
+
+test('build metadata is shipped and git archives substitute its commit and time', async (t) => {
+  assert.ok(RUNTIME_FILES.includes('src/build.txt'));
+  assert.equal(await readFile(new URL('../src/build.txt', import.meta.url), 'utf8'), '$Format:%H %ct$\n');
+  assert.ok((await readFile(new URL('../.gitattributes', import.meta.url), 'utf8')).split('\n').includes('src/build.txt export-subst'));
+  const cwd = fileURLToPath(new URL('..', import.meta.url));
+  try { execFileSync('git', ['rev-parse', '--git-dir'], { cwd, stdio: 'pipe' }); }
+  catch { t.skip('Git archive check skipped outside a git checkout.'); return; }
+  const archive = execFileSync('git', ['archive', 'HEAD', 'src/build.txt'], { cwd });
+  const text = execFileSync('tar', ['-xOf', '-', 'src/build.txt'], { input: archive, encoding: 'utf8' });
+  assert.match(text, /^[0-9a-f]{40} [0-9]{1,12}\n$/);
+  assert.equal(text.trim(), execFileSync('git', ['log', '-1', '--format=%H %ct'], { cwd, encoding: 'utf8' }).trim());
+});
