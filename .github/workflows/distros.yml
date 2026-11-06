@@ -1,9 +1,9 @@
 name: Distros
 
 on:
+  # ASB has one user for now: CI runs only on a version tag and by hand (Actions > Run workflow).
   push:
-    branches:
-      - '**'
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:

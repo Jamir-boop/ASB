@@ -1,11 +1,10 @@
 name: Bridge
 
 on:
+  # ASB has one user for now: CI runs only on a version tag and by hand (Actions > Run workflow).
   push:
-    branches: [main]
-    paths: ['bridge/**', '.agents/**', '.github/workflows/bridge.yml']
-  pull_request:
-    paths: ['bridge/**', '.agents/**', '.github/workflows/bridge.yml']
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
