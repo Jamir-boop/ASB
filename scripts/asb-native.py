@@ -13332,9 +13332,10 @@ class RoundTable(Gtk.Overlay):
         return [seat_id for seat_id in dict.fromkeys(seats) if seat_id in self.pins]
 
     def place_labels(self):
-        """Each seat label takes the first free place (inward, under, over, left, or right of its pin) with its whole text, then with
-        the text cut to 10, then to 7 characters; else it hides. The chosen seats place first, then by message count, then the
-        newest, then circle order. A free place stays 2 px inside the table, off the center disc and the machine band, and touches no
+        """Each seat label takes the first free place (inward, under, over, left, or right of its pin, then under-right, under-left,
+        over-right, or over-left) with its whole text, then with the text cut to 10, then to 7 characters; else it hides. The chosen
+        seats place first, then the seats lit by an open thread or by the keyboard focus (the partners of the focused seat), then the
+        others; within each group by message count, then the newest, then circle order. A free place stays 2 px inside the table, off the center disc and the machine band, and touches no
         other label (6 px times the text scale wider at each side), pin, machine label, not-sent end, or the key line."""
         geometry, scale = self.geometry, self.window.text_scale
         disc = geometry["S"] >= 480
@@ -13343,7 +13344,7 @@ class RoundTable(Gtk.Overlay):
         def hit(a, b):
             return a[0] < b[2] - .5 and b[0] < a[2] - .5 and a[1] < b[3] - .5 and b[1] < a[3] - .5
 
-        def near(box):
+        def near(box, cx=cx, cy=cy):
             near_x, near_y = min(max(cx, box[0]), box[2]), min(max(cy, box[1]), box[3])
             return math.hypot(near_x - cx, near_y - cy)
 
@@ -13355,18 +13356,20 @@ class RoundTable(Gtk.Overlay):
             # The machine band, from 2 px inside it to 2 px outside it.
             far = max(math.hypot(x - cx, y - cy) for x in (box[0], box[2]) for y in (box[1], box[3]))
             return near(box) < geometry["Ro"] + 2 and far > geometry["Ri"] - 2
-        pins, opened = [], self.open_lit()[1]
+        (open_chords, opened), pins, rings = self.open_lit(), [], []
         for seat_id in self.pins:
             x, y = table_point(geometry, geometry["Rp"], geometry["seat"][seat_id])
             # An open pin's accent ring reaches 21.75 px, and its focus ring 25.75 px.
             reach = 16 + self.pin_ring(seat_id, opened)
             pins.append((x - reach, y - reach, x + reach, y + reach))
+            rings.append((x, y, reach))
         self.layout_key(pins)
         machines = [(item["x"] - 1, item["y"], item["x"] + item["w"] + 1, item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
         # Each not-sent end with its stroke and the 3 px halo of a label.
         ends = [(x - r, y - r, x + r, y + r) for chord in self.chords for points in chord["fails"] for x, y in points
                 for r in (chord["end_width"] / 2 + 3,)]
-        blocked = pins + machines + ends + ([self.key["box"]] if self.key and self.key["shown"] else [])
+        # Labels test the round pins as circles, so a diagonal place 3 px off the rim is free.
+        blocked = machines + ends + ([self.key["box"]] if self.key and self.key["shown"] else [])
         room = 6 * scale
         chosen = self.chosen_seats()
         counts, activity = self.view["counts"], self.view["activity"]
@@ -13375,19 +13378,23 @@ class RoundTable(Gtk.Overlay):
         def messages(seat_id):
             count = counts.get(seat_id, {"sent": 0, "received": 0})
             return count["sent"] + count["received"]
-        order = sorted(self.pins, key=lambda seat_id: (chosen.index(seat_id) if seat_id in chosen else len(chosen), -messages(seat_id),
-                                                       -activity.get(seat_id, 0), circle[seat_id]))
+        # The pins and partners of an open thread, and the partners of the focused seat; pointer hover never moves a label.
+        focus = self.hover["focus"]
+        lit = opened | {seat_id for key in self.chord_keys if key in open_chords or focus in key for seat_id in key}
+        order = sorted(self.pins, key=lambda seat_id: (chosen.index(seat_id) if seat_id in chosen else len(chosen), seat_id not in lit,
+                                                       -messages(seat_id), -activity.get(seat_id, 0), circle[seat_id]))
         placed, self.labels = [], {}
         for seat_id in order:
             pin, found = self.pins[seat_id], None
             angle = geometry["seat"][seat_id]
             # A chosen seat shows only its whole text.
             for text in range(1 if seat_id in chosen else len(pin["texts"])):
-                for place in range(5):
+                for place in range(9):
                     x, y = self.label_place_with(pin, angle, geometry, text, place, scale, self.pin_ring(seat_id, opened))
                     box = (x - 1, y, x + pin["texts"][text]["w"] + 1, y + pin["texts"][text]["h"])
                     inside = box[0] >= 2 and box[1] >= 2 and box[2] <= geometry["W"] - 2 and box[3] <= geometry["H"] - 2
                     if (inside and not (disc and center(box)) and not band(box) and not any(hit(other, box) for other in blocked)
+                            and all(near(box, x, y) > reach - .5 for x, y, reach in rings)
                             and not any(hit((other[0] - room, other[1], other[2] + room, other[3]), box) for other in placed)):
                         found = (text, place, box)
                         break
@@ -13818,14 +13825,18 @@ class RoundTable(Gtk.Overlay):
     @staticmethod
     def label_place_with(pin, angle, geometry, text=0, place=0, scale=1, ring=0):
         """The top left of a seat label: inward from the pin (place 0), or 3 px under (1), over (2), left of (3), or right of (4) the
-        32 px pin and its rings. text is the index in pin["texts"]; ring is how far the rings reach past the pin (pin_ring)."""
+        32 px pin and its rings, or under-right (5), under-left (6), over-right (7), or over-left (8) of it, with the label corner
+        nearest the pin at 45 degrees and the same gap. text is the index in pin["texts"]; ring is how far the rings reach past the
+        pin (pin_ring)."""
         width, height = pin["texts"][text]["w"], pin["texts"][text]["h"]
         if place == 0:
             x, y = table_point(geometry, geometry["Rp"] - seat_label_offset(angle, width / 2, scale) - ring, angle)
             return x - width / 2, y - height / 2
         x, y = table_point(geometry, geometry["Rp"], angle)
         gap = 16 + ring + 3 * scale
-        return ((x - width / 2, y + gap), (x - width / 2, y - gap - height), (x - gap - width, y - height / 2), (x + gap, y - height / 2))[place - 1]
+        side = gap * math.sqrt(.5)
+        return ((x - width / 2, y + gap), (x - width / 2, y - gap - height), (x - gap - width, y - height / 2), (x + gap, y - height / 2),
+                (x + side, y + side), (x - side - width, y + side), (x + side, y - side - height), (x - side - width, y - side - height))[place - 1]
 
     def snapshot_chord(self, snapshot, chord, fade, tone, palette, gray, part="all"):
         """A chord in the neutral gray, the accent over a 1 px casing in the window color (lit), or 35% toward the window (dim).

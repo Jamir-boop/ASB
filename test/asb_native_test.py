@@ -18129,6 +18129,70 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     self.assertFalse(math.hypot(near_x - geometry["cx"], near_y - geometry["cy"]) < geometry["Ro"] + 2 and max(corners) > geometry["Ri"] - 2, a)
                 window.close(); self.drain(.05)
 
+    def test_RoundTable_seat_labels_take_diagonal_places_and_lit_seats_place_first(self):
+        window = self.window(period="7d")
+        table = window.table
+        geometry, scale = table.geometry, window.text_scale
+        seat = next(iter(table.pins))
+        pin, angle = table.pins[seat], geometry["seat"][seat]
+        x, y = asb.table_point(geometry, geometry["Rp"], angle)
+        width, height = pin["texts"][0]["w"], pin["texts"][0]["h"]
+        for ring in (0, 6):
+            gap = 16 + ring + 3 * scale
+            # The label corner nearest the pin is at 45 degrees, gap px from the pin center.
+            for place, (sx, sy) in zip(range(5, 9), ((1, 1), (-1, 1), (1, -1), (-1, -1))):
+                left, top = table.label_place_with(pin, angle, geometry, 0, place, scale, ring)
+                corner = (left if sx > 0 else left + width, top if sy > 0 else top + height)
+                self.assertAlmostEqual(corner[0] - x, sx * gap * math.sqrt(.5), places=6)
+                self.assertAlmostEqual(corner[1] - y, sy * gap * math.sqrt(.5), places=6)
+        window.close(); self.drain(.05)
+
+        def order():
+            seats = {id(pin): seat for seat, pin in table.pins.items()}
+            calls = []
+            with patch.object(table, "label_place_with", wraps=table.label_place_with) as place:
+                table.place_labels()
+            for call in place.call_args_list:
+                if seats[id(call.args[0])] not in calls:
+                    calls.append(seats[id(call.args[0])])
+            return calls
+        for font in ("Cascadia Code NF 11", "Cantarell 11"):
+            with self.subTest(font=font):
+                asb.Gtk.Settings.get_default().set_property("gtk-font-name", font)
+                window = self.window(period="7d")
+                table = window.table
+                geometry = table.geometry
+                for seat in ("ui-polish", "parser-review", "render-farm", "sync-check"):
+                    self.assertEqual((table.labels[seat]["shown"], table.labels[seat]["text"]), (True, 0), seat)
+                ends = [(x, y, chord["end_width"] / 2) for chord in table.chords for points in chord["fails"] for x, y in points]
+                for seat, label in table.labels.items():
+                    if not label["shown"]:
+                        continue
+                    box, cx, cy = label["box"], geometry["cx"], geometry["cy"]
+                    near = math.hypot(min(max(cx, box[0]), box[2]) - cx, min(max(cy, box[1]), box[3]) - cy)
+                    far = max(math.hypot(x - cx, y - cy) for x in (box[0], box[2]) for y in (box[1], box[3]))
+                    self.assertGreaterEqual(near, geometry["Rc"], seat)
+                    self.assertFalse(near < geometry["Ro"] and far > geometry["Ri"], seat)
+                    for x, y, r in ends:
+                        self.assertFalse(box[0] - r < x < box[2] + r and box[1] - r < y < box[3] + r, seat)
+                rest = order()
+                # Pointer hover never moves a label.
+                table.hover["seat"] = "docs"
+                self.assertEqual(order(), rest)
+                table.hover["seat"] = None
+                partners = {seat for key in table.chord_keys if "docs" in key for seat in key} - {"docs"}
+                for opened in ("thread", "focus"):
+                    if opened == "thread":
+                        window.open_thread("session", "docs"); self.drain(.2)
+                    else:
+                        window.close_thread(); self.drain(.2)
+                        table.hover["focus"] = "docs"
+                    calls = order()
+                    self.assertEqual(calls[0], "docs")
+                    self.assertEqual(set(calls[1:1 + len(partners)]), partners, opened)
+                table.hover["focus"] = None
+                window.close(); self.drain(.05)
+
     def test_RoundTable_seat_focus_lights_its_partners_and_dims_other_labels(self):
         window = self.window()
         table = window.table
