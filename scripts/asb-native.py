@@ -12881,7 +12881,10 @@ def activity_layout(widget, text, size, weight=Pango.Weight.NORMAL, mono=False):
     layout = widget.create_pango_layout(text)
     font = widget.get_pango_context().get_font_description().copy()
     if mono:
-        font.set_family("monospace")
+        # Figures: tabular numerals in the UI font, as the .asb-mono CSS.
+        attributes = Pango.AttrList()
+        attributes.insert(Pango.attr_font_features_new("tnum=1"))
+        layout.set_attributes(attributes)
     font.set_absolute_size(size * Pango.SCALE)
     font.set_weight(weight)
     layout.set_font_description(font)

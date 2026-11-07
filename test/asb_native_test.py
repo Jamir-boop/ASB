@@ -14968,6 +14968,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         rule = window.css.to_string().split(".asb-mono {")[1].split("}")[0]
         self.assertIn('font-feature-settings: "tnum"', rule)
         self.assertNotIn("font-family", rule)
+        # Drawn figures (the ring total, the chart tooltip values) too: the UI font family with tnum.
+        layout = asb.activity_layout(window.round, "$7,218.47", 26, asb.Pango.Weight.SEMIBOLD, True)
+        self.assertEqual(layout.get_font_description().get_family(), window.round.get_pango_context().get_font_description().get_family())
+        self.assertIn("tnum=1", layout.get_attributes().to_string())
         self.assert_no_new_warnings()
 
 
