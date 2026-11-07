@@ -134,6 +134,15 @@ fun formatTime(ms: Long): String = TIME.format(local(ms))
 
 fun formatDate(ms: Long): String = DATE.format(local(ms))
 
+private val WEEKDAY = DateTimeFormatter.ofPattern("EEE", Locale.US)
+
+/** Port of message_time: the clock in 24 hours and for today, the weekday and the clock within 6 days, else the date and the clock. */
+fun messageTime(ms: Long, nowMs: Long, period: String): String {
+    val days = ChronoUnit.DAYS.between(local(ms).toLocalDate(), local(nowMs).toLocalDate())
+    if (period == "24h" || days <= 0) return formatTime(ms)
+    return "${if (days <= 6) WEEKDAY.format(local(ms)) else formatDate(ms)} ${formatTime(ms)}"
+}
+
 /** Today, Yesterday, or the date, by local calendar day. */
 fun dayText(ms: Long, nowMs: Long): String = when (ChronoUnit.DAYS.between(local(ms).toLocalDate(), local(nowMs).toLocalDate())) {
     0L -> "Today"
@@ -157,6 +166,9 @@ fun bucketLabel(startMs: Long, unit: String, last: Boolean, short: Boolean, firs
 
 data class AxisLabel(val index: Int, val text: String)
 
+// The current bucket is not complete.
+private const val SO_FAR = " · so far"
+
 /**
  * The x labels of the Usage chart (contract 8, X labels): candidates from [chartLabelShown], each centered under its bar
  * and kept inside [width]; from the last bar to the first, a label is shown only when it ends [gap] before the label to its
@@ -171,8 +183,9 @@ fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Fl
         val start = starts.getOrElse(i) { 0L }
         val last = i == n - 1
         val w = measure(if (unit == "month" && !last) bucketLabel(start, unit, last = false, short = true, first = true)
-            else bucketLabel(start, unit, last, short = true))
-        val cx = centers[i].coerceIn(w / 2, maxOf(w / 2, width - w / 2))
+            else bucketLabel(start, unit, last, short = true) + if (last) SO_FAR else "")
+        // The last label ends at the right edge of the chart.
+        val cx = if (last) width - w / 2 else centers[i].coerceIn(w / 2, maxOf(w / 2, width - w / 2))
         if (last || cx + w / 2 <= nextLeft - gap) {
             shown += i
             nextLeft = cx - w / 2
@@ -182,7 +195,7 @@ fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Fl
     return shown.reversed().map { i ->
         val start = starts.getOrElse(i) { 0L }
         val last = i == n - 1
-        if (unit != "month" || last) return@map AxisLabel(i, bucketLabel(start, unit, last, short = true))
+        if (unit != "month" || last) return@map AxisLabel(i, bucketLabel(start, unit, last, short = true) + if (last) SO_FAR else "")
         val y = monthOf(start).year
         AxisLabel(i, bucketLabel(start, unit, last = false, short = true, first = y != year)).also { year = y }
     }
@@ -214,9 +227,9 @@ fun scanText(scan: UsageScan): String = when {
     else -> "Reading usage: ${formatCount(scan.scannedFiles.toLong())} of ${formatCount(scan.files.toLong())} files"
 }
 
-/** The Usage machine row line: Local, Connected, Offline, or Offline · last report Oct 25, 14:30. */
+/** The Usage machine row line: Local, Connected, Offline, or Offline · seen Oct 25, 14:30. */
 fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine).let { report ->
-    if (report.isEmpty()) machineStateText(machine) else "Offline · last report" + report.removePrefix("Last report")
+    if (report.isEmpty()) machineStateText(machine) else "Offline · seen" + report.removePrefix("Last report")
 }
 
 /** The Compact state text: the reset countdown, or the state word and the Working time in whole minutes. */

@@ -243,6 +243,15 @@ fun edgeColor(base: String, color: String, fraction: Double, surfaces: List<Stri
     return color
 }
 
+// Port of contrast_floor: the weakest mix of ink into color with the minimum contrast on the surface.
+fun contrastFloor(color: String, ink: String, surface: String, minimum: Double = 4.5): String {
+    for (percent in 0..100) {
+        val value = mixColor(color, ink, percent / 100.0)
+        if (contrast(value, surface) >= minimum) return value
+    }
+    return ink
+}
+
 // Text keeps 4.5:1: the first mix of color toward text that has it on every surface.
 fun readableColor(color: String, text: String, surfaces: List<String>): String {
     for (percent in 0..100) {

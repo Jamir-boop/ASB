@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
@@ -24,8 +26,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
@@ -75,11 +79,9 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import local.asb.companion.data.APP_COLORS
 import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.Metric
 import local.asb.companion.data.RoundArc
-import local.asb.companion.data.TOKEN_COLORS
 import local.asb.companion.data.TypeShare
 import local.asb.companion.data.USAGE_PERIODS
 import local.asb.companion.data.UsageRow
@@ -94,7 +96,8 @@ import local.asb.companion.data.machineHue
 import local.asb.companion.data.makerRows
 import local.asb.companion.data.machineRows
 import local.asb.companion.data.modelRows
-import local.asb.companion.data.niceStep
+import local.asb.companion.data.usageAxis
+import local.asb.companion.data.usageRingNote
 import local.asb.companion.data.periodLabel
 import local.asb.companion.data.periodShortLabel
 import local.asb.companion.data.roundArcs
@@ -183,7 +186,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 when {
                     current == null && error != null -> ActivityError(error.orEmpty(), colors) { attempt++ }
                     current == null -> ActivityLoading()
-                    current.records.isEmpty() -> ActivityEmpty(if (period == "all") "No usage yet" else "No usage in ${periodLabel(period)}", colors)
+                    current.records.isEmpty() -> UsageEmpty(period, colors) { period = "all" }
                     else -> {
                         error?.let { Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
                         val totals = remember(current, offSet) { usageTotals(current, offSet) }
@@ -192,6 +195,17 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun UsageEmpty(period: String, colors: ActivityColors, onAllTime: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(48.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(if (period == "all") "No usage yet" else "No usage in ${periodLabel(period)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            color = colors.text, textAlign = TextAlign.Center)
+        Text("Usage shows here after an agent app runs.", fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.Center)
+        if (period != "all") Button(onClick = onAllTime) { Text("Show all time") }
     }
 }
 
@@ -210,7 +224,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
                 val segments = row.segments.filter { it.second > 0 }
                 Row(Modifier.fillMaxWidth(row.share.toFloat().coerceIn(0f, 1f)).height(10.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
                     for ((app, value) in segments) Box(Modifier.weight(value.toFloat()).height(10.dp)
-                        .background(hexColor(APP_COLORS.getValue(app)), RoundedCornerShape(2.dp)))
+                        .background(appColor(app, colors), RoundedCornerShape(2.dp)))
                 }
             }) {
                 MachineDot(hues[row.key] ?: colors.text, machineOffline(machine))
@@ -223,7 +237,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         for (row in appRows(totals, metric)) {
             UsageRowView(row, metric, colors, sub = null, bar = {
                 Box(Modifier.fillMaxWidth(row.share.toFloat().coerceIn(0f, 1f)).height(10.dp)
-                    .background(hexColor(APP_COLORS.getValue(row.key)), RoundedCornerShape(2.dp)))
+                    .background(appColor(row.key, colors), RoundedCornerShape(2.dp)))
             }) {
                 Icon(painterResource(appMark(row.key)), contentDescription = null, tint = colors.text, modifier = Modifier.size(14.dp))
                 Text(appLabel(row.key), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text,
@@ -235,7 +249,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         for (row in makerRows(totals, metric)) {
             UsageRowView(row, metric, colors, sub = null, bar = {
                 Box(Modifier.fillMaxWidth(row.share.toFloat().coerceIn(0f, 1f)).height(10.dp)
-                    .background(hexColor("#8c929a"), RoundedCornerShape(2.dp)))
+                    .background(colors.accent, RoundedCornerShape(2.dp)))
             }) {
                 Text(row.key, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -253,7 +267,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
             Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 for (figure in pair) Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
                     Text(figure.label, fontSize = 12.sp, color = colors.muted)
-                    Text(figure.tokens?.let(::formatTokens) ?: formatCost(figure.cost ?: 0.0), fontSize = 20.sp, fontFamily = Mono,
+                    Text(figure.tokens?.let(::formatTokens) ?: formatCost(figure.cost ?: 0.0), fontSize = 20.sp, style = figures,
                         color = colors.text)
                 }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -279,7 +293,7 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
                 sub?.let { Text(it, fontSize = 11.sp, color = colors.muted, maxLines = 2, overflow = TextOverflow.Ellipsis) }
             }
             Box(Modifier.weight(1f).height(10.dp).background(colors.track, RoundedCornerShape(2.dp))) { bar() }
-            Text(if (row.unpriced) formatCost(null) else formatValue(row.value, metric), fontSize = 13.sp, fontFamily = Mono,
+            Text(if (row.unpriced) formatCost(null) else formatValue(row.value, metric), fontSize = 13.sp, style = figures,
                 color = if (row.unpriced) colors.muted else colors.text, textAlign = TextAlign.End,
                 maxLines = 1, modifier = Modifier.width(84.dp))
             Text(if (row.unpriced) "" else formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
@@ -289,6 +303,7 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric, colors: ActivityColors) {
     val arcs = remember(reply, totals, metric) { roundArcs(reply, totals, metric) }
@@ -298,8 +313,13 @@ private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     val total = if (metric == Metric.COST) totals.cost else totals.tokens.toDouble()
     val value = tapped?.let { formatValue(it.value, metric) } ?: formatValue(total, metric)
     val sub = tapped?.let(arcLabel) ?: if (metric == Metric.COST) "at API prices" else "processed tokens"
+    // The third center line, only when nothing is tapped.
+    val note = if (tapped != null) "" else usageRingNote(!reply.scan.complete, totals.machineIds.size, reply.machines.size,
+        metric == Metric.COST, totals.unpricedTokens, totals.unpricedModels.size)
+    val arcColor = { arc: RoundArc -> if (arc.app == "") colors.other else hexColor(arc.color) }
     val measurer = rememberTextMeasurer()
-    val summary = (listOf("$value $sub") + arcs.map { "${arcLabel(it)}: ${formatValue(it.value, metric)}" }).joinToString(", ")
+    val summary = (listOf(listOf(value, sub, note).filter { it.isNotEmpty() }.joinToString(" ")) +
+        arcs.map { "${arcLabel(it)}: ${formatValue(it.value, metric)}" }).joinToString(", ")
     BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         val side = min(320f, maxWidth.value).dp
         Canvas(Modifier.size(side).semantics { contentDescription = summary }.pointerInput(arcs) {
@@ -318,14 +338,36 @@ private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             for (arc in arcs) {
                 val mid = Math.toRadians((arc.a0 + arc.a1) / 2)
                 val shift = if (arc == tapped) Offset((4 * cos(mid)).toFloat(), (4 * sin(mid)).toFloat()) * k else Offset.Zero
-                drawPath(sectorPath(c + shift, arc.r0 * k, arc.r1 * k, arc.a0.toFloat(), arc.a1.toFloat()), hexColor(arc.color))
+                drawPath(sectorPath(c + shift, arc.r0 * k, arc.r1 * k, arc.a0.toFloat(), arc.a1.toFloat()), arcColor(arc))
             }
-            val big = measurer.measure(value, TextStyle(color = colors.text, fontSize = 26.sp, fontFamily = Mono, fontWeight = FontWeight.Bold),
+            val big = measurer.measure(value, TextStyle(color = colors.text, fontSize = 26.sp, fontFeatureSettings = "tnum", fontWeight = FontWeight.Bold),
                 maxLines = 1)
+            val room = androidx.compose.ui.unit.Constraints(maxWidth = (170 * k * density).toInt().coerceAtLeast(1))
             val small = measurer.measure(sub, TextStyle(color = colors.muted, fontSize = 12.sp), maxLines = 1,
-                overflow = TextOverflow.Ellipsis, constraints = androidx.compose.ui.unit.Constraints(maxWidth = (170 * k * density).toInt().coerceAtLeast(1)))
-            drawText(big, topLeft = Offset(c.x - big.size.width / 2f, c.y - 6 * k * density - big.size.height / 2f))
-            drawText(small, topLeft = Offset(c.x - small.size.width / 2f, c.y + 18 * k * density - small.size.height / 2f))
+                overflow = TextOverflow.Ellipsis, constraints = room)
+            val extra = note.takeIf { it.isNotEmpty() }?.let {
+                measurer.measure(it, TextStyle(color = colors.muted, fontSize = 11.sp, textAlign = TextAlign.Center), maxLines = 2,
+                    overflow = TextOverflow.Ellipsis, constraints = room)
+            }
+            // A note moves the value and its label up by half of its height and 4 dp; it starts 4 dp under the label.
+            val lift = extra?.let { (it.size.height + 4 * density) / 2 } ?: 0f
+            drawText(big, topLeft = Offset(c.x - big.size.width / 2f, c.y - 6 * k * density - lift - big.size.height / 2f))
+            val labelTop = c.y + 18 * k * density - lift - small.size.height / 2f
+            drawText(small, topLeft = Offset(c.x - small.size.width / 2f, labelTop))
+            extra?.let { drawText(it, topLeft = Offset(c.x - it.size.width / 2f, labelTop + small.size.height + 4 * density)) }
+        }
+    }
+    // One key per app of the outer ring, in ring order.
+    val keys = arcs.mapNotNull { it.app }.distinct()
+    if (keys.isNotEmpty()) {
+        FlowRow(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (app in keys) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(8.dp).background(appColor(app, colors), CircleShape))
+                    Text(appLabel(app), fontSize = 12.sp, color = colors.text, maxLines = 1)
+                }
+            }
         }
     }
 }
@@ -338,7 +380,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     val series = chartSeries(totals, byMachine)
     val bars = remember(totals, byMachine, metric) { chartBars(totals, byMachine, metric) }
     val names = remember(reply) { reply.machines.associate { it.machineId to it.name } }
-    val seriesColor = { id: String -> if (byMachine) hues[id] ?: colors.text else hexColor(APP_COLORS.getValue(id)) }
+    val seriesColor = { id: String -> if (byMachine) hues[id] ?: colors.text else appColor(id, colors) }
     val seriesLabel = { id: String -> if (byMachine) names[id].orEmpty() else appLabel(id) }
     var tapped by remember(bars) { mutableStateOf<Int?>(null) }
     val measurer = rememberTextMeasurer()
@@ -349,8 +391,9 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     ChoiceRow(listOf("app" to "By app", "machine" to "By machine"), if (byMachine) "machine" else "app") { onSplit(it == "machine") }
     Spacer(Modifier.height(12.dp))
     val sums = bars.map { it.sum() }
-    val step = niceStep((sums.maxOrNull() ?: 0.0) / 3)
-    val yMax = step * 3
+    val (step, lines) = usageAxis(sums.maxOrNull() ?: 0.0)
+    // The top of the plot is the top line.
+    val yMax = step * lines
     var width by remember { mutableIntStateOf(0) }
     Box(Modifier.fillMaxWidth().height(242.dp).onSizeChanged { width = it.width }) {
         val n = bars.size
@@ -371,7 +414,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             val left = 48 * dp
             val y = { v: Double -> plotB - (plotB - plotT) * (v / yMax).toFloat() }
             val axis = TextStyle(color = colors.muted, fontSize = 11.sp)
-            for (k in 1..3) {
+            for (k in 1..lines) {
                 val gy = y(step * k)
                 drawLine(colors.rule, Offset(left, gy), Offset(size.width, gy), 1 * dp, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3 * dp, 3 * dp)))
                 val layout = measurer.measure(axisLabel(step * k, metric), axis, maxLines = 1)
@@ -401,7 +444,9 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             val centers = List(n) { left + it * (bw + gap) + bw / 2 }
             for (label in axisLabels(starts, unit, centers, size.width, 4 * dp) { measurer.measure(it, axis, maxLines = 1).size.width.toFloat() }) {
                 val layout = measurer.measure(label.text, axis, maxLines = 1)
-                val cx = centers[label.index].coerceIn(layout.size.width / 2f, size.width - layout.size.width / 2f)
+                val w = layout.size.width.toFloat()
+                // The last label ends at the right edge of the chart.
+                val cx = if (label.index == n - 1) size.width - w / 2 else centers[label.index].coerceIn(w / 2, size.width - w / 2)
                 drawText(layout, topLeft = Offset(cx - layout.size.width / 2f, plotB + 15 * dp - layout.size.height / 2f))
             }
         }
@@ -438,7 +483,7 @@ private fun TipRow(label: String, value: String, swatch: Color?, colors: Activit
         swatch?.let { Box(Modifier.size(8.dp).background(it, RoundedCornerShape(2.dp))) }
         Text(label, fontSize = 12.sp, color = colors.text, maxLines = 1)
         Spacer(Modifier.weight(1f))
-        Text(value, fontSize = 12.sp, fontFamily = Mono, color = colors.text, maxLines = 1, modifier = Modifier.padding(start = 12.dp))
+        Text(value, fontSize = 12.sp, style = figures, color = colors.text, maxLines = 1, modifier = Modifier.padding(start = 12.dp))
     }
 }
 
@@ -450,16 +495,16 @@ private fun TypeBlock(title: String, shares: List<TypeShare>, format: (Double) -
         contentDescription = shown.joinToString(", ") { "${it.label} ${format(it.value)}" }
     }, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
         for (share in shown) Box(Modifier.weight(share.value.toFloat()).height(10.dp)
-            .background(hexColor(TOKEN_COLORS.getValue(share.key)), RoundedCornerShape(2.dp)))
+            .background(colors.tokens.getValue(share.key), RoundedCornerShape(2.dp)))
     }
     Spacer(Modifier.height(10.dp))
     for (share in shares) {
         Row(Modifier.fillMaxWidth().height(22.dp).semantics(mergeDescendants = true) {}, horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(8.dp).background(hexColor(TOKEN_COLORS.getValue(share.key)), RoundedCornerShape(2.dp)))
+            Box(Modifier.size(8.dp).background(colors.tokens.getValue(share.key), RoundedCornerShape(2.dp)))
             Text(share.label, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text(format(share.value), fontSize = 12.sp, fontFamily = Mono, color = colors.text, maxLines = 1)
-            Text(formatShare(share.share), fontSize = 12.sp, fontFamily = Mono, color = colors.muted, textAlign = TextAlign.End,
+            Text(format(share.value), fontSize = 12.sp, style = figures, color = colors.text, maxLines = 1)
+            Text(formatShare(share.share), fontSize = 12.sp, style = figures, color = colors.muted, textAlign = TextAlign.End,
                 maxLines = 1, modifier = Modifier.width(52.dp))
         }
     }
@@ -479,15 +524,15 @@ private fun ModelsTable(totals: UsageTotals, metric: Metric, colors: ActivityCol
         key(row.model, row.app) {
             Row(Modifier.fillMaxWidth().height(34.dp).semantics(mergeDescendants = true) {},
                 horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(row.model, fontSize = 12.sp, fontFamily = Mono, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                Text(row.model, fontSize = 12.sp, style = figures, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f))
                 Box(Modifier.width(32.dp)) {
                     Icon(painterResource(appMark(row.app)), contentDescription = appLabel(row.app), tint = colors.text, modifier = Modifier.size(14.dp))
                 }
-                Text(formatCost(row.cost), fontSize = 12.sp, fontFamily = if (row.cost == null) null else Mono,
+                Text(formatCost(row.cost), fontSize = 12.sp, style = figures,
                     color = if (row.cost == null) colors.muted else colors.text, textAlign = TextAlign.End, maxLines = 1,
                     modifier = Modifier.width(80.dp))
-                Text(formatTokens(row.tokens), fontSize = 12.sp, fontFamily = Mono, color = colors.text, textAlign = TextAlign.End,
+                Text(formatTokens(row.tokens), fontSize = 12.sp, style = figures, color = colors.text, textAlign = TextAlign.End,
                     maxLines = 1, modifier = Modifier.width(64.dp))
             }
             HorizontalDivider(thickness = 1.dp, color = colors.rule)

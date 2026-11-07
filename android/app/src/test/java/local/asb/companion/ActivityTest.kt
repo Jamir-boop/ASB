@@ -304,8 +304,8 @@ class ActivityTest {
         assertEquals(listOf("codex", "claude"), m1Apps.map { it.app })
         assertEquals(machineArcs[0].a1 - machineArcs[0].a0 - .6, m1Apps.sumOf { it.a1 - it.a0 }, 1e-6)
         assertTrue(arcs.all { it.a1 - it.a0 >= .5 })
-        assertEquals(listOf(92f, 114f), listOf(machineArcs[0].r0, machineArcs[0].r1))
-        assertEquals(listOf(118f, 146f), listOf(m1Apps[0].r0, m1Apps[0].r1))
+        assertEquals(listOf(109f, 131f), listOf(machineArcs[0].r0, machineArcs[0].r1))
+        assertEquals(listOf(134f, 146f), listOf(m1Apps[0].r0, m1Apps[0].r1))
         assertEquals(3, roundArcs(usage, totals, Metric.TOKENS).count { it.app == null })
     }
 

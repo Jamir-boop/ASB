@@ -38,10 +38,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import local.asb.companion.R
+import androidx.compose.ui.graphics.toArgb
+import local.asb.companion.data.APP_COLORS
 import local.asb.companion.data.Palette
 import local.asb.companion.data.contrast
+import local.asb.companion.data.contrastFloor
 import local.asb.companion.data.edgeColor
 import local.asb.companion.data.mixColor
+import local.asb.companion.data.usageTokenRamp
 
 val LocalPalette = staticCompositionLocalOf { Palette() }
 
@@ -60,7 +64,18 @@ val SafeTopBarInsets: WindowInsets
 
 fun hexColor(value: String): Color = Color(0xff000000L or value.substring(1).toLong(16))
 
+internal fun Color.hex(): String = "#" + Integer.toHexString(toArgb() and 0xffffff).padStart(6, '0')
+
+/** [color] mixed [fraction] of the way from [base], as mixColor (no alpha). */
+internal fun mixToward(base: Color, color: Color, fraction: Double): Color = hexColor(mixColor(base.hex(), color.hex(), fraction))
+
+// Other and Unknown (#5d6268) move toward the text until they have 3:1 on the background.
+internal fun quietFloor(palette: Palette): Color = hexColor(contrastFloor(APP_COLORS.getValue(""), palette.text, palette.background, 3.0))
+
 internal fun activityColorsOf(palette: Palette): ActivityColors = ActivityColors(
+    other = quietFloor(palette),
+    unknown = quietFloor(palette),
+    tokens = usageTokenRamp(palette.accent, palette.background).mapValues { hexColor(it.value) },
     background = hexColor(palette.background),
     track = hexColor(mixColor(palette.background, palette.text, .17)),
     edge = hexColor(edgeColor(palette.background, palette.text, .36, listOf(palette.background))),

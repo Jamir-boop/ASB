@@ -1,9 +1,14 @@
 package local.asb.companion.data
 
+import kotlin.math.atan2
+import kotlin.math.cbrt
+import kotlin.math.cos
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
+import kotlin.math.sin
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonElement
@@ -127,7 +132,24 @@ val APP_COLORS = mapOf("codex" to "#c9ccd1", "claude" to "#d97757", "opencode" t
 val STATUS_COLORS = mapOf("accepted" to "#c9ccd1", "written" to "#8c929a", "held" to "#e0b45a",
     "not-sent" to "#f5a090", "unknown" to "#5d6268")
 val TOKEN_TYPES = listOf("cacheRead" to "Cache read", "cacheWrite" to "Cache write", "uncached" to "Uncached input", "output" to "Output")
-val TOKEN_COLORS = mapOf("cacheRead" to "#4b5058", "cacheWrite" to "#6b7179", "uncached" to "#959ba3", "output" to "#e4e6e8")
+
+/** The status meanings (PC MESSAGE_STATUS_TIPS); Not sent ends before the thread, which the phone does not have. */
+val STATUS_TIPS = mapOf(
+    "accepted" to "The receiving session took the message.",
+    "written" to "ASB wrote the message to the receiver. No receipt came back.",
+    "held" to "The receiver holds the message until its receive setting accepts it.",
+    "not-sent" to "ASB did not send the message.",
+    "unknown" to "The message can have gone out, but ASB has no proof.",
+)
+
+/** Port of chord_gray: the weakest mix of text into the background, from 40%, with 3:1 on the background and every fill. */
+fun chordGray(background: String, text: String, fills: List<String>): String {
+    for (percent in 40..100) {
+        val value = mixColor(background, text, percent / 100.0)
+        if ((listOf(background) + fills).all { contrast(value, it) >= 3 }) return value
+    }
+    return text
+}
 
 fun periodLabel(period: String): String = when (period) {
     "24h" -> "24 hours"
@@ -489,7 +511,7 @@ fun unpricedNote(totals: UsageTotals, formatTokens: (Long) -> String): String? {
 data class RoundArc(val machineId: String, val app: String?, val value: Double, val r0: Float, val r1: Float,
     val a0: Double, val a1: Double, val color: String)
 
-/** Inner ring machines (r 92 to 114), outer ring apps (118 to 146) inside each machine's range; arcs below 0.5° are skipped. */
+/** Inner ring machines (r 109 to 131), outer ring apps (134 to 146) inside each machine's range; arcs below 0.5° are skipped. */
 fun roundArcs(reply: ActivityUsage, totals: UsageTotals, metric: Metric): List<RoundArc> {
     val hues = reply.machines.mapIndexed { index, machine -> machine.machineId to machineHue(index) }.toMap()
     val shown = totals.machineIds.filter { totals.byMachine[it].orZero().value(metric) > 0 }
@@ -501,14 +523,14 @@ fun roundArcs(reply: ActivityUsage, totals: UsageTotals, metric: Metric): List<R
     for (id in shown) {
         val machineValue = totals.byMachine.getValue(id).value(metric)
         val span = if (total > 0) available * machineValue / total else 0.0
-        if (span >= .5) arcs += RoundArc(id, null, machineValue, 92f, 114f, a0, a0 + span, hues[id] ?: machineHue(0))
+        if (span >= .5) arcs += RoundArc(id, null, machineValue, 109f, 131f, a0, a0 + span, hues[id] ?: machineHue(0))
         val apps = totals.apps.filter { totals.byMachineApp[id]?.get(it).orZero().value(metric) > 0 }
         val appAvailable = span - .6 * max(0, apps.size - 1)
         var b0 = a0
         for (app in apps) {
             val value = totals.byMachineApp.getValue(id).getValue(app).value(metric)
             val appSpan = appAvailable * value / machineValue
-            if (appSpan >= .5) arcs += RoundArc(id, app, value, 118f, 146f, b0, b0 + appSpan, APP_COLORS.getValue(app))
+            if (appSpan >= .5) arcs += RoundArc(id, app, value, 134f, 146f, b0, b0 + appSpan, APP_COLORS.getValue(app))
             b0 += appSpan + .6
         }
         a0 += span + gap
@@ -531,6 +553,72 @@ fun niceStep(x: Double): Double {
     val p = 10.0.pow(floor(log10(x)))
     for (m in listOf(1.0, 2.0, 2.5, 5.0, 10.0)) if (m * p >= x - 1e-12) return m * p
     return 10 * p
+}
+
+/** Port of usage_axis: the gridline step (the smallest round step whose fourth line reaches [maxValue]) and 3 or 4 lines. */
+fun usageAxis(maxValue: Double): Pair<Double, Int> {
+    val step = niceStep(maxValue / 4)
+    return step to if (step * 3 >= maxValue - 1e-9) 3 else 4
+}
+
+/** Port of usage_ring_note: so far, 2 of 3 machines, and 1 model unpriced (Cost only), joined by " · ". */
+fun usageRingNote(scanning: Boolean, shown: Int, total: Int, cost: Boolean, unpricedTokens: Long, unpricedModels: Int): String {
+    val parts = mutableListOf<String>()
+    if (scanning) parts += "so far"
+    if (shown < total) parts += "$shown of $total machines"
+    if (cost && unpricedTokens > 0) parts += "$unpricedModels model${if (unpricedModels == 1) "" else "s"} unpriced"
+    return parts.joinToString(" · ")
+}
+
+/** Port of oklab: Björn Ottosson's OKLab (L, a, b) of an sRGB hex color. */
+internal fun oklab(color: String): Triple<Double, Double, Double> {
+    val (r, g, b) = listOf(1, 3, 5).map {
+        val channel = color.substring(it, it + 2).toInt(16) / 255.0
+        if (channel <= .04045) channel / 12.92 else ((channel + .055) / 1.055).pow(2.4)
+    }
+    val l = cbrt(.4122214708 * r + .5363325363 * g + .0514459929 * b)
+    val m = cbrt(.2119034982 * r + .6806995451 * g + .1073969566 * b)
+    val s = cbrt(.0883024619 * r + .2817188376 * g + .6299787005 * b)
+    return Triple(.2104542553 * l + .7936177850 * m - .0040720468 * s, 1.9779984951 * l - 2.4285922050 * m + .4505937099 * s,
+        .0259040371 * l + .7827717662 * m - .8086757660 * s)
+}
+
+/** Port of oklch_color: the sRGB hex color of an OKLCH color, the chroma lowered in steps of 0.002 until it is inside sRGB. */
+internal fun oklchColor(lightness: Double, startChroma: Double, hue: Double): String {
+    var chroma = startChroma
+    var channels = emptyList<Double>()
+    while (true) {
+        val a = chroma * cos(Math.toRadians(hue))
+        val b = chroma * sin(Math.toRadians(hue))
+        val l = (lightness + .3963377774 * a + .2158037573 * b).pow(3)
+        val m = (lightness - .1055613458 * a - .0638541728 * b).pow(3)
+        val s = (lightness - .0894841775 * a - 1.2914855480 * b).pow(3)
+        channels = listOf(4.0767416621 * l - 3.3077115913 * m + .2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - .3413193965 * s,
+            -.0041960863 * l - .7034186147 * m + 1.7076147010 * s)
+        if (chroma <= 0 || channels.all { it in -.0001..1.0001 }) break
+        chroma = max(0.0, chroma - .002)
+    }
+    return "#" + channels.joinToString("") {
+        val c = it.coerceIn(0.0, 1.0)
+        val v = if (c <= .0031308) 12.92 * c else 1.055 * c.pow(1 / 2.4) - .055
+        Math.rint(v * 255).toInt().coerceIn(0, 255).toString(16).padStart(2, '0')
+    }
+}
+
+/** Port of usage_token_ramp: the token type colors, a ramp of the accent in OKLCH; cache read gets lighter until it has 3:1. */
+fun usageTokenRamp(accent: String, background: String): Map<String, String> {
+    val (lightness, a, b) = oklab(accent)
+    val chroma = hypot(a, b)
+    val hue = (Math.toDegrees(atan2(b, a)) % 360 + 360) % 360
+    val steps = listOf(.50 to .45, .62 to .60, .74 to .80, lightness to 1.0)
+    val ramp = TOKEN_TYPES.map { it.first }.zip(steps).associate { (key, step) -> key to oklchColor(step.first, chroma * step.second, hue) }
+        .toMutableMap()
+    var step = .50
+    while (contrast(ramp.getValue("cacheRead"), background) < 3 && step < 1) {
+        step += .005
+        ramp["cacheRead"] = oklchColor(step, chroma * .45, hue)
+    }
+    return ramp
 }
 
 /** Chart label intervals by bucket unit and count, counted from the last bar. */
