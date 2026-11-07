@@ -1354,7 +1354,8 @@ def contrast_floor(color, ink, surface, minimum=4.5):
 def accent_guard(color, accent, window):
     """Separate a fixed data color from a similar accent, changing only OKLCH lightness before sRGB gamut mapping.
     Two triggers: a similar chromatic hue with low contrast (target 2:1 on the accent), or an OKLab distance under 0.09 at any
-    chroma and hue (target a distance of 0.09 or more); both targets also need 3:1 on the window."""
+    chroma and hue (target a distance of 0.09 or more); both targets also need 3:1 on the window. Lightness first moves away from
+    the accent lightness; the first passing color the other way wins only when its chroma is more than 0.01 higher."""
     lightness, a, b = oklab(color)
     accent_lab = oklab(accent)
     accent_lightness, aa, ab = accent_lab
@@ -1365,8 +1366,7 @@ def accent_guard(color, accent, window):
     near = math.dist((lightness, a, b), accent_lab) < .09
     if not similar and not near:
         return color
-    direction = -1 if lightness <= accent_lightness else 1
-    for sign in (direction, -direction):
+    def first(sign):
         step = lightness
         while 0 < step < 1:
             step = max(0, min(1, step + sign * .005))
@@ -1374,7 +1374,13 @@ def accent_guard(color, accent, window):
             if (contrast(candidate, window) >= 3 and (not similar or contrast(candidate, accent) >= 2)
                     and (not near or math.dist(oklab(candidate), accent_lab) >= .09)):
                 return candidate
-    return color
+        return None
+    direction = -1 if lightness <= accent_lightness else 1
+    away, other = first(direction), first(-direction)
+    # The other direction wins only with clearly more chroma after gamut mapping, so an error color does not turn near-white.
+    if away and other and math.hypot(*oklab(other)[1:]) > math.hypot(*oklab(away)[1:]) + .01:
+        return other
+    return away or other or color
 
 
 def row_panel_colors(colors, caption, surface=None):
@@ -2243,7 +2249,7 @@ def activity_palette(colors):
             "text": text, "dim": colors["muted"], "accent": accent, "light": mix_color(accent, "#ffffff", .35), "warn": "#e0b45a", "bad": "#f5a090"}
 
 
-ACTIVITY_NO_ENGINE = "The ASB engine does not answer. Start it in a terminal:"
+ACTIVITY_NO_ENGINE = "The ASB engine does not answer.\nStart it in a terminal:"
 ACTIVITY_ENGINE_COMMAND = "asb engine start"
 
 
@@ -12682,7 +12688,8 @@ class ActivityWindow(Adw.Window):
             if error:
                 self.etags.pop(route, None)
                 if self.data is None:
-                    text, _line, reason = error.partition("\n") if error.startswith(ACTIVITY_NO_ENGINE + "\n") else (error, "", "")
+                    engine = error.startswith(ACTIVITY_NO_ENGINE + "\n")
+                    text, reason = (ACTIVITY_NO_ENGINE, error[len(ACTIVITY_NO_ENGINE) + 1:]) if engine else (error, "")
                     self.error_label.set_label(text)
                     self.error_command.set_visible(text == ACTIVITY_NO_ENGINE)
                     self.error_reason.set_label(reason)
@@ -13995,15 +14002,6 @@ class MessagesWindow(ActivityWindow):
                 self.render_center()
             for widget in (self.table.canvas, self.share):
                 widget.queue_draw()
-
-    def state_controls(self, *_args):
-        """While the error page or the empty page shows, the metric toggles and the machine filter are insensitive, so the page
-        has one accent (its button)."""
-        page = self.stack.get_visible_child_name()
-        state = page == "error" or (page == "data" and self.empty.get_visible())
-        for button in self.metric_buttons.values():
-            button.set_sensitive(not state)
-        self.machine_filter.set_sensitive(not state)
 
     def breakpoint_condition(self, name):
         return Adw.BreakpointCondition.parse(f"max-width: {round({'narrow': 899, 'small': 639}[name] * self.text_scale)}px")
@@ -16531,7 +16529,6 @@ class UsageWindow(ActivityWindow):
                 if row.get_prev_sibling() is not previous:
                     box.reorder_child_after(row, previous)
                 previous = row
-
 
     @staticmethod
     def children_of(widget):

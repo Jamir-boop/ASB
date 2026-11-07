@@ -325,8 +325,8 @@ class ActivityHelperChecks(unittest.TestCase):
         moved = {"blue": {}, "teal": {},
                  "green": {"machine:1": "#5ba36b"},
                  "yellow": {"app:grok": "#979201", "status:held": "#b18727", "machine:3": "#b78440"},
-                 "orange": {"status:held": "#efc269", "status:not-sent": "#fefcfb", "machine:3": "#a4722d"},
-                 "red": {"app:claude": "#b75939", "status:not-sent": "#feece8", "machine:4": "#aa5c7c"},
+                 "orange": {"status:held": "#efc269", "status:not-sent": "#b56658", "machine:3": "#a4722d"},
+                 "red": {"app:claude": "#b75939", "status:not-sent": "#ad5f51", "machine:4": "#aa5c7c"},
                  "pink": {"machine:4": "#bb6b8b"},
                  "purple": {"machine:4": "#c06f90"},
                  "slate": {"app:codex": "#b0b3b7", "status:accepted": "#b0b3b7"}}

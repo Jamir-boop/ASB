@@ -15658,7 +15658,7 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertEqual(str(caught.exception), asb.ACTIVITY_NO_ENGINE + "\n" + reason)
                 window = self.probe([caught.exception])
                 window.refresh()
-                self.assertEqual(window.error_label.get_label(), "The ASB engine does not answer. Start it in a terminal:")
+                self.assertEqual(window.error_label.get_label(), "The ASB engine does not answer.\nStart it in a terminal:")
                 # The start command stands alone on a selectable line as a chip, before the reason and Try again.
                 command = window.error_command
                 self.assertEqual((command.get_label(), command.get_visible(), command.get_selectable()), ("asb engine start", True, True))
