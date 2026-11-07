@@ -13365,11 +13365,11 @@ class RoundTable(Gtk.Overlay):
             rings.append((x, y, reach))
         self.layout_key(pins)
         machines = [(item["x"] - 1, item["y"], item["x"] + item["w"] + 1, item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
-        # Each not-sent end with its stroke and the 3 px halo of a label.
-        ends = [(x - r, y - r, x + r, y + r) for chord in self.chords for points in chord["fails"] for x, y in points
-                for r in (chord["end_width"] / 2 + 3,)]
-        # Labels test the round pins as circles, so a diagonal place 3 px off the rim is free.
-        blocked = machines + ends + ([self.key["box"]] if self.key and self.key["shown"] else [])
+        # Each point of a not-sent end with its stroke and 1 px more (the .5 cancels the slack of the ring test), so a label can sit
+        # next to an end in a crowded seat.
+        rings += [(x, y, chord["end_width"] / 2 + 1 + .5) for chord in self.chords for points in chord["fails"] for x, y in points]
+        # Labels test the round pins and the end points as circles, so a diagonal place 3 px off a rim is free.
+        blocked = machines + ([self.key["box"]] if self.key and self.key["shown"] else [])
         room = 6 * scale
         chosen = self.chosen_seats()
         counts, activity = self.view["counts"], self.view["activity"]

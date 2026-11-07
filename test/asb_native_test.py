@@ -17037,8 +17037,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             with self.subTest(width=width):
                 window.set_default_size(width, 800)
                 self.wait_for(lambda: window.table.get_width() == width and window.narrow_scroll.get_visible())
-                self.drain(.05)
-                # A small table adds the room of its reader under the square.
+                # A small table adds the room of its reader under the square; the reader room settles over a few frames.
+                self.wait_for(lambda: window.table.get_height() == width + window.table.reader_extra)
                 self.assertEqual(window.table.get_height(), width + window.table.reader_extra)
                 self.assertEqual(window.table.reader_extra > 0, width < 496)
                 self.assertEqual(window.table.small, width < 496)
@@ -17954,13 +17954,13 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     self.assertGreater(strokes.index(dashes[0]), max(index for index, stroke in enumerate(strokes) if stroke in casings))
                     if tone == "lit":
                         self.assertEqual(strokes[-len(chord["fails"]) - 1][1], palette["accent"])
-            # No seat label or its 3 px halo covers a drawn end.
+            # Every seat label box keeps 1 px from a drawn end.
             for label in (item for item in table.labels.values() if item["shown"]):
                 box = label["box"]
                 for chord in mixed:
                     radius = chord["end_width"] / 2
                     for x, y in (point for points in chord["fails"] for point in points):
-                        self.assertFalse(box[0] - 3 < x + radius and x - radius < box[2] + 3 and box[1] - 3 < y + radius and y - radius < box[3] + 3)
+                        self.assertGreaterEqual(math.hypot(x - min(max(x, box[0]), box[2]), y - min(max(y, box[1]), box[3])) - radius, 1 - 1e-9)
             # The key sample: a gray line, then the 3 px dashed end over its window casing.
             item = next(item for item in table.key["items"] if item["kind"] == "mixed")
             snapshot = Mock()
@@ -18191,6 +18191,31 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     self.assertEqual(calls[0], "docs")
                     self.assertEqual(set(calls[1:1 + len(partners)]), partners, opened)
                 table.hover["focus"] = None
+                window.close(); self.drain(.05)
+
+    def test_RoundTable_a_crowded_partner_label_sits_1_px_from_a_not_sent_end(self):
+        now = self.sample["nowMs"]
+        self.extra = [["m-shot-1", "docs", "release-plan", now - 3000, "not-sent", "", "Check the release steps in the guide."],
+                      ["m-shot-2", "unknown:laptop", "docs", now - 2000, "not-sent", "Machine offline", None, "beta-helper", ""],
+                      ["m-shot-3", "docs", "ui-polish", now - 1000, "accepted", "", None]]
+        for font in ("Cascadia Code NF 11", "Cantarell 11"):
+            with self.subTest(font=font):
+                asb.Gtk.Settings.get_default().set_property("gtk-font-name", font)
+                window = self.window(period="7d")
+                window.show_session("docs", "docs")
+                self.drain(.6)
+                table = window.table
+                for seat in ("release-plan", "ui-polish"):
+                    self.assertTrue(table.labels[seat]["shown"], seat)
+                ends = [(x, y, chord["end_width"] / 2) for chord in table.chords for points in chord["fails"] for x, y in points]
+                self.assertTrue(ends)
+                for seat, label in table.labels.items():
+                    if label["shown"]:
+                        box = label["box"]
+                        for x, y, r in ends:
+                            # The gap between the label box and the edge of the end stroke.
+                            gap = math.hypot(x - min(max(x, box[0]), box[2]), y - min(max(y, box[1]), box[3])) - r
+                            self.assertGreaterEqual(gap, 1 - 1e-9, seat)
                 window.close(); self.drain(.05)
 
     def test_RoundTable_seat_focus_lights_its_partners_and_dims_other_labels(self):
