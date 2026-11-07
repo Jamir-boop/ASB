@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Drawn for ASB, no outside source: a speech bubble (assets/icons/asb-messages-symbolic.svg). Tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="14dp"
+    android:height="14dp"
+    android:viewportWidth="14"
+    android:viewportHeight="14">
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M3 1h8a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 3v-3H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2zM3 3v5h8V3z" />
+</vector>

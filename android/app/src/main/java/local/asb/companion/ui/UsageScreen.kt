@@ -58,6 +58,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -78,6 +79,7 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import local.asb.companion.R
 import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.Metric
 import local.asb.companion.data.RoundArc
@@ -126,6 +128,10 @@ private fun axisLabel(value: Double, metric: Metric): String {
     }
 }
 
+/** The app split of a Machines row for TalkBack, as the bar segments show it: `Codex $2,112.17, Claude Code $4,854.00`. */
+internal fun appSplit(row: UsageRow, metric: Metric): String =
+    row.segments.filter { it.second > 0 }.joinToString(", ") { (app, value) -> "${appLabel(app)} ${formatValue(value, metric)}" }
+
 @Composable
 fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
@@ -153,23 +159,25 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 val current = reply
                 val machineIds = current?.machines?.map { it.machineId }.orEmpty()
                 val offSet = off.toSet().intersect(machineIds.toSet())
+                // The error page and the empty page disable the metric choice and the machine chips.
+                val statePage = (current == null && error != null) || current?.records?.isEmpty() == true
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ChoiceRow(USAGE_PERIODS.map { it to periodShortLabel(it) }, period,
                         descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }) { period = it }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name,
-                            Modifier.width(168.dp)) { metric = Metric.valueOf(it) }
+                            Modifier.width(168.dp), enabled = !statePage) { metric = Metric.valueOf(it) }
                         if (current != null) {
                             val onCount = machineIds.count { it !in offSet }
                             Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 current.machines.forEachIndexed { index, machine ->
                                     val on = machine.machineId !in offSet
-                                    Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !(on && onCount == 1),
+                                    Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !statePage && !(on && onCount == 1),
                                         role = Role.Switch) { off = toggleMachine(machineIds, offSet, machine.machineId).toList() },
                                         contentAlignment = Alignment.Center) {
-                                        MachineChip(machine, colors.hue(index), colors, Modifier.alpha(if (on) 1f else .5f),
+                                        MachineChip(machine, colors.hue(index), colors, Modifier.alpha(if (on && !statePage) 1f else .5f),
                                             strike = !on)
                                     }
                                 }
@@ -200,10 +208,9 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
 private fun UsageEmpty(period: String, colors: ActivityColors, onAllTime: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(48.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(if (period == "all") "No usage yet" else "No usage in the last ${periodLabel(period)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-            color = colors.text, textAlign = TextAlign.Center)
-        Text("Usage shows here after an agent app runs.", fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.Center)
-        if (period != "all") AccentButton("Show all time", colors, onClick = onAllTime)
+        EmptyBlock(R.drawable.ic_usage, if (period == "all") "No usage yet" else "No usage in the last ${periodLabel(period)}",
+            "Usage shows here after an agent app runs.", colors)
+        if (period != "all") AccentButton("Show all time", colors, Modifier.padding(top = 4.dp), onClick = onAllTime)
     }
 }
 
@@ -218,7 +225,9 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         SectionTitle("Machines", colors)
         for (row in machineRows(totals, metric)) {
             val machine = machines[row.key]
-            UsageRowView(row, metric, colors, sub = machine?.let(::machineStateLine), bar = {
+            UsageRowView(row, metric, colors, sub = machine?.let(::machineStateLine),
+                spoken = listOf(machine?.name.orEmpty(), machine?.let(::machineStateLine).orEmpty(), formatValue(row.value, metric),
+                    formatShare(row.share), appSplit(row, metric)).filter { it.isNotEmpty() }.joinToString(", "), bar = {
                 val segments = row.segments.filter { it.second > 0 }
                 Row(Modifier.fillMaxWidth(row.share.toFloat().coerceIn(0f, 1f)).height(10.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
                     for ((app, value) in segments) Box(Modifier.weight(value.toFloat()).height(10.dp)
@@ -282,13 +291,15 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
 
 @Composable
 private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, sub: String?, bar: @Composable () -> Unit,
-    name: @Composable () -> Unit) {
+    spoken: String? = null, name: @Composable () -> Unit) {
     Column {
-        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 6.dp).semantics(mergeDescendants = true) {},
+        // A Machines row adds its app split to what TalkBack reads.
+        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 6.dp)
+            .then(if (spoken != null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier.semantics(mergeDescendants = true) {}),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.width(112.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { name() }
-                sub?.let { Text(it, fontSize = 11.sp, color = colors.muted, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                sub?.let { FactsText(it, TextStyle(fontSize = 11.sp, color = colors.muted)) }
             }
             Box(Modifier.weight(1f).height(10.dp).background(colors.track, RoundedCornerShape(2.dp))) { bar() }
             Text(if (row.unpriced) formatCost(null) else formatValue(row.value, metric), fontSize = 13.sp, style = figures,
@@ -298,6 +309,19 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
                 modifier = Modifier.width(44.dp))
         }
         HorizontalDivider(thickness = 1.dp, color = colors.rule)
+    }
+}
+
+/** A machine state that breaks only between its facts ([factLines]) and never ellipsizes. */
+@Composable
+private fun FactsText(line: String, style: TextStyle) {
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints {
+        val width = constraints.maxWidth.toFloat()
+        val text = remember(line, width, style) {
+            factLines(line, width) { measurer.measure(it, style, maxLines = 1, softWrap = false).size.width.toFloat() }.joinToString("\n")
+        }
+        Text(text, style = style)
     }
 }
 
@@ -456,7 +480,9 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             val gap = (if (n >= 90) 1 else 2) * dp
             val bw = (width - left - gap * (n - 1)) / n
             val x = left + i * (bw + gap)
-            val tipLeft = (if (x + bw + 8 * dp + tipSize.width > width) x - tipSize.width - 8 * dp else x + bw + 8 * dp)
+            // Right of the bar when it is not one of the last two and has more room on its right, else left; inside the chart.
+            val right = i < n - 2 && width - (x + bw) > x - left
+            val tipLeft = (if (right) x + bw + 8 * dp else x - tipSize.width - 8 * dp)
                 .coerceIn(0f, (width - tipSize.width).toFloat().coerceAtLeast(0f))
             // Centered on the bar top, inside the 242 dp chart.
             val barTop = 220 * dp - (212 * dp) * (sums[i] / yMax).toFloat()
@@ -464,22 +490,24 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             Column(Modifier.offset { IntOffset(tipLeft.roundToInt(), tipTop.roundToInt()) }.onSizeChanged { tipSize = it }
                 .widthIn(min = 150.dp).background(colors.background, RoundedCornerShape(4.dp)).border(1.dp, colors.edge, RoundedCornerShape(4.dp))
                 .padding(horizontal = 10.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
-                Text(bucketLabel(starts.getOrElse(i) { 0L }, unit, i == n - 1, short = false), fontSize = 12.sp,
+                Text(tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1), fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
-                series.forEachIndexed { s, id ->
-                    TipRow(seriesLabel(id), formatValue(bars[i][s], metric), seriesColor(id), colors)
-                }
+                TipRow("Total", formatValue(sums[i], metric), colors.accent, colors)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp), thickness = 1.dp, color = colors.rule)
-                TipRow("Total", formatValue(sums[i], metric), null, colors)
+                // The series high to low by their value in this bucket; a stable sort keeps the series order for ties.
+                for (s in tipOrder(bars[i])) TipRow(seriesLabel(series[s]), formatValue(bars[i][s], metric), seriesColor(series[s]), colors)
             }
         }
     }
 }
 
+/** The tooltip series order: the series indexes high to low by [values]; ties keep the series order. */
+internal fun tipOrder(values: List<Double>): List<Int> = values.indices.sortedByDescending { values[it] }
+
 @Composable
-private fun TipRow(label: String, value: String, swatch: Color?, colors: ActivityColors) {
+private fun TipRow(label: String, value: String, swatch: Color, colors: ActivityColors) {
     Row(Modifier.height(18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        swatch?.let { Box(Modifier.size(8.dp).background(it, RoundedCornerShape(2.dp))) }
+        Box(Modifier.size(8.dp).background(swatch, RoundedCornerShape(2.dp)))
         Text(label, fontSize = 12.sp, color = colors.text, maxLines = 1)
         Spacer(Modifier.weight(1f))
         Text(value, fontSize = 12.sp, style = figures, color = colors.text, maxLines = 1, modifier = Modifier.padding(start = 12.dp))

@@ -50,6 +50,9 @@ data class ActivityMessage(
     val status: String = "unknown",
     val reason: String = "",
     val local: Boolean = false,
+    /** The session names of an unknown end (`unknown:<machine>`), from the message. */
+    val fromLabel: String = "",
+    val toLabel: String = "",
 )
 
 @Serializable
@@ -188,10 +191,63 @@ fun statusLabel(status: String): String = when (status) {
 
 fun statusKey(status: String): String = if (status in STATUS_ORDER) status else "unknown"
 
+/** Port of message_status_label: the status name; a not-sent message adds its reason (Not sent · Machine offline). */
+fun messageStatusLabel(message: ActivityMessage): String =
+    if (statusKey(message.status) == "not-sent" && message.reason.isNotEmpty()) "Not sent · ${message.reason}" else statusLabel(message.status)
+
 /** The hue of the machine at [index] in machine order; the list repeats. */
 fun machineHue(index: Int): String = MACHINE_HUES[index.coerceAtLeast(0) % MACHINE_HUES.size]
 
 // ---------- Messages ----------
+
+const val UNLISTED = "Unlisted sessions"
+
+/** Port of unlisted_name: the name of a seat of sessions that are not cards: its one label, the count of its labels, or Unlisted sessions. */
+fun unlistedName(labels: List<String>): String = when (labels.size) {
+    0 -> UNLISTED
+    1 -> labels[0]
+    else -> "${labels.size} unlisted sessions"
+}
+
+/**
+ * The name of each seat: an `unknown:` seat is named from the fromLabel and toLabel of its messages ([unlistedName]); another
+ * seat by its title, or Unlisted sessions.
+ */
+fun seatTitles(reply: ActivityMessages): Map<String, String> = reply.seats.associate { seat ->
+    seat.id to if (seat.id.startsWith("unknown:")) {
+        unlistedName(reply.messages.flatMap { m -> listOf(m.from to m.fromLabel, m.to to m.toLabel) }
+            .filter { it.first == seat.id && it.second.isNotEmpty() }.map { it.second }.distinct())
+    } else seat.title.ifEmpty { UNLISTED }
+}
+
+/** One Busiest pairs row: [a] first on the circle, [n] messages both ways, [bad] not sent, [last] the newest message time. */
+data class BusyPair(val a: String, val b: String, val n: Int, val bad: Int, val last: Long) {
+    val key: String get() = "$a|$b"
+}
+
+/**
+ * Port of messages_view busiest: the 5 pairs with the most messages (both directions, seated or not, a session to itself not
+ * counted), high to low; a tie goes to the newer newest message, then to circle order.
+ */
+fun busiestPairs(reply: ActivityMessages, limit: Int = 5): List<BusyPair> {
+    val position = circleOrder(reply).mapIndexed { i, seat -> seat.id to i }.toMap()
+    val rank = { id: String -> position[id] ?: position.size }
+    val pairs = LinkedHashMap<Pair<String, String>, BusyPair>()
+    for (m in reply.messages) {
+        if (m.from == m.to) continue
+        val (a, b) = listOf(m.from, m.to).sortedWith(compareBy({ rank(it) }, { it })).let { it[0] to it[1] }
+        val old = pairs[a to b] ?: BusyPair(a, b, 0, 0, m.atMs)
+        pairs[a to b] = old.copy(n = old.n + 1, bad = old.bad + if (statusKey(m.status) == "not-sent") 1 else 0, last = max(old.last, m.atMs))
+    }
+    return pairs.values.sortedWith(compareBy({ -it.n }, { -it.last }, { rank(it.a) }, { rank(it.b) })).take(limit)
+}
+
+/** The not-sent messages each seat sent or received. */
+fun notSentCounts(messages: List<ActivityMessage>): Map<String, Int> {
+    val counts = HashMap<String, Int>()
+    for (m in messages) if (statusKey(m.status) == "not-sent") for (id in listOf(m.from, m.to).distinct()) counts[id] = (counts[id] ?: 0) + 1
+    return counts
+}
 
 /** Seats in circle order: machines in reply order, then seat `order`; a seat of an unlisted machine goes last. */
 fun circleOrder(reply: ActivityMessages): List<Seat> {

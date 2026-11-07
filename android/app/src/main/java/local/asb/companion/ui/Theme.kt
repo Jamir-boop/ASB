@@ -43,6 +43,7 @@ import local.asb.companion.data.APP_COLORS
 import local.asb.companion.data.MACHINE_HUES
 import local.asb.companion.data.STATUS_COLORS
 import local.asb.companion.data.accentGuard
+import local.asb.companion.data.statusTextOn
 import local.asb.companion.data.Palette
 import local.asb.companion.data.contrast
 import local.asb.companion.data.contrastFloor
@@ -78,9 +79,12 @@ internal fun activityColorsOf(palette: Palette): ActivityColors {
     val floor = contrastFloor(APP_COLORS.getValue(""), palette.text, palette.background, 3.0)
     val guard = { color: String -> hexColor(accentGuard(color, palette.accent, palette.background)) }
     val status = STATUS_COLORS.mapValues { (key, color) -> guard(if (key == "unknown") floor else color) }
+    val statusText = status + mapOf("accepted" to guard(palette.muted), "written" to guard("#959ba3"))
     return ActivityColors(
         status = status,
-        statusText = status + mapOf("accepted" to guard(palette.muted), "written" to guard("#959ba3")),
+        statusText = statusText,
+        // Status words drawn as text: 4.5:1 on the background (the PC status_text_on).
+        statusWords = statusText.mapValues { hexColor(statusTextOn(it.value.hex(), palette.background, palette.text)) },
         apps = APP_COLORS.mapValues { (key, color) -> guard(if (key == "") floor else color) },
         hues = MACHINE_HUES.map(guard),
         tokens = usageTokenRamp(palette.accent, palette.background).mapValues { hexColor(it.value) },

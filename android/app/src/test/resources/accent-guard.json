@@ -1,0 +1,1730 @@
+[
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "app",
+  "key": "",
+  "color": "#5d6268",
+  "guarded": "#5d6268"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#928d05"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#ac8220"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#5d6268",
+  "guarded": "#5d6268"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#b27f3b"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#ffb900",
+  "background": "#000000",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "app",
+  "key": "",
+  "color": "#5f646a",
+  "guarded": "#5f646a"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#5f646a",
+  "guarded": "#5f646a"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#7cc4ff",
+  "background": "#10141c",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#81d0ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#7bdff4",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#5ba36b"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#8de698",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#979201"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#b18727"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#b78440"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#ffc057",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#efc269"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#b56658"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#a4722d"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#ff9c5b",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#b75939"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#ad5f51"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#aa5c7c"
+ },
+ {
+  "accent": "#ff888c",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#bb6b8b"
+ },
+ {
+  "accent": "#ffa0d8",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#c9ccd1"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#c06f90"
+ },
+ {
+  "accent": "#fba7ff",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "app",
+  "key": "codex",
+  "color": "#c9ccd1",
+  "guarded": "#b0b3b7"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "app",
+  "key": "claude",
+  "color": "#d97757",
+  "guarded": "#d97757"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "app",
+  "key": "opencode",
+  "color": "#7d848c",
+  "guarded": "#7d848c"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "app",
+  "key": "",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "app",
+  "key": "antigravity",
+  "color": "#4f8fe0",
+  "guarded": "#4f8fe0"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "app",
+  "key": "grok",
+  "color": "#e8e46a",
+  "guarded": "#e8e46a"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "app",
+  "key": "pi",
+  "color": "#c678dd",
+  "guarded": "#c678dd"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "status",
+  "key": "accepted",
+  "color": "#c9ccd1",
+  "guarded": "#b0b3b7"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "status",
+  "key": "written",
+  "color": "#8c929a",
+  "guarded": "#8c929a"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "status",
+  "key": "held",
+  "color": "#e0b45a",
+  "guarded": "#e0b45a"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "status",
+  "key": "not-sent",
+  "color": "#f5a090",
+  "guarded": "#f5a090"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "status",
+  "key": "unknown",
+  "color": "#686d73",
+  "guarded": "#686d73"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "0",
+  "color": "#a28caa",
+  "guarded": "#a28caa"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "1",
+  "color": "#7cc48a",
+  "guarded": "#7cc48a"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "2",
+  "color": "#5fb3b3",
+  "guarded": "#5fb3b3"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "3",
+  "color": "#d6a15e",
+  "guarded": "#d6a15e"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "4",
+  "color": "#e38fb0",
+  "guarded": "#e38fb0"
+ },
+ {
+  "accent": "#bbd1e5",
+  "background": "#222226",
+  "kind": "hue",
+  "key": "5",
+  "color": "#b4b86c",
+  "guarded": "#b4b86c"
+ }
+]

@@ -274,7 +274,8 @@ class FormatTest {
         val starts = months("2025-12", 12)
         val labels = axisLabels(starts, "month", centers(12), 332f, 4f, measure)
         assertGaps(labels, centers(12), 332f)
-        assertEquals("This month · so far", labels.last().text)
+        // The last tick names its bucket (`so far` is in the tooltip).
+        assertTrue(labels.last().text, labels.last().text.startsWith("Nov"))
         assertEquals(11, labels.last().index)
         assertTrue(labels.first().text, labels.first().text.matches(Regex("[A-Z][a-z]{2} 20[0-9]{2}")))
     }
@@ -283,32 +284,30 @@ class FormatTest {
         val starts = months("2025-04", 20)
         val labels = axisLabels(starts, "month", centers(20), 332f, 4f, measure)
         assertGaps(labels, centers(20), 332f)
-        assertEquals(listOf("May 2025", "Nov", "This month · so far"), labels.map { it.text })
-        val shown = labels.dropLast(1)
+        assertEquals(listOf("May 2025", "Nov", "May 2026", "Nov"), labels.map { it.text })
+        val shown = labels
         assertTrue(shown.first().text.endsWith(" 2025"))
         val years = shown.map { java.time.Instant.ofEpochMilli(starts[it.index]).atZone(java.time.ZoneOffset.UTC).year }
         for (k in shown.indices) {
             val firstOfYear = k == 0 || years[k] != years[k - 1]
             assertEquals(shown[k].text, firstOfYear, shown[k].text.contains(" "))
         }
-        // No month name repeats without a year that tells the two apart.
-        assertEquals(labels.size, labels.map { it.text }.toSet().size)
     }
 
     @Test fun oneBarAndAWideMonthAxis() = utc {
-        assertEquals(listOf("This month · so far"), axisLabels(months("2026-11", 1), "month", centers(1), 332f, 4f, measure).map { it.text })
+        assertEquals(listOf("Nov 2026"), axisLabels(months("2026-11", 1), "month", centers(1), 332f, 4f, measure).map { it.text })
         val wide = axisLabels(months("2025-12", 12), "month", centers(12, 1000f), 1000f, 4f, measure)
-        assertEquals(listOf("Dec 2025", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "This month · so far"),
+        assertEquals(listOf("Dec 2025", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov"),
             wide.map { it.text })
         assertGaps(wide, centers(12, 1000f), 1000f)
     }
 
     @Test fun dayAndHourAxisLabelsKeepTheirTexts() = utc {
         val days = List(30) { at("2026-10-01T00:00:00Z") + it * 86_400_000L }
-        assertEquals(listOf("Oct 5", "Oct 10", "Oct 15", "Oct 20", "Oct 25", "Today · so far"),
+        assertEquals(listOf("Oct 5", "Oct 10", "Oct 15", "Oct 20", "Oct 25", "Oct 30"),
             axisLabels(days, "day", centers(30, 1000f), 1000f, 4f, measure).map { it.text })
         val hours = List(24) { at("2026-10-24T00:00:00Z") + it * 3_600_000L }
-        assertEquals(listOf("02:00", "05:00", "08:00", "11:00", "14:00", "17:00", "20:00", "Now · so far"),
+        assertEquals(listOf("02:00", "05:00", "08:00", "11:00", "14:00", "17:00", "20:00", "23:00"),
             axisLabels(hours, "hour", centers(24, 1000f), 1000f, 4f, measure).map { it.text })
         // The gap rule applies to them too on a narrow chart.
         assertGaps(axisLabels(days, "day", centers(30), 332f, 4f, measure), centers(30), 332f)
@@ -322,7 +321,7 @@ class FormatTest {
             val november = at("2026-10-31T23:00:00Z")
             assertEquals("Nov", bucketLabel(november, "month", last = false, short = true))
             assertEquals("November 2026", bucketLabel(november, "month", last = false, short = false))
-            assertEquals(listOf("Nov 2026", "This month · so far"), axisLabels(listOf(november, at("2026-11-30T23:00:00Z")), "month",
+            assertEquals(listOf("Nov 2026", "Dec"), axisLabels(listOf(november, at("2026-11-30T23:00:00Z")), "month",
                 centers(2, 1000f), 1000f, 4f, measure).map { it.text })
         } finally {
             TimeZone.setDefault(zone)

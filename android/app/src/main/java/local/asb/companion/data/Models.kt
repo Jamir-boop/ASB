@@ -253,27 +253,61 @@ fun contrastFloor(color: String, ink: String, surface: String, minimum: Double =
 }
 
 /**
- * Port of accent_guard: a data color near the accent in hue (both with OKLCH chroma 0.04 or more, hues less than 30° apart) and
- * under 1.5:1 on it moves only its OKLCH lightness, away from the accent lightness in 0.005 steps, until it has 2:1 on the accent
- * and 3:1 on the background; at 0 or 1 it tries the other way, and with no such lightness it stays [color].
+ * Port of accent_guard: a data color changes only its OKLCH lightness, in 0.005 steps, when it is similar to the accent (both with
+ * chroma 0.04 or more, hues less than 30° apart, under 1.5:1; target 2:1 on the accent) or near it (OKLab distance under 0.09 at
+ * any chroma and hue; target 0.09 or more). Both targets also need 3:1 on the background. It takes the first passing color away
+ * from the accent lightness; the first passing color the other way wins only when its chroma is more than 0.01 higher. With no
+ * passing color it stays [color].
  */
 fun accentGuard(color: String, accent: String, background: String): String {
     val (lightness, a, b) = oklab(color)
-    val (accentLightness, aa, ab) = oklab(accent)
+    val accentLab = oklab(accent)
+    val (accentLightness, aa, ab) = accentLab
     val chroma = Math.hypot(a, b)
     val hue = degrees360(Math.toDegrees(Math.atan2(b, a)))
     val distance = Math.abs(degrees360(hue - degrees360(Math.toDegrees(Math.atan2(ab, aa))) + 180) - 180)
-    if (chroma < .04 || Math.hypot(aa, ab) < .04 || distance >= 30 || contrast(color, accent) >= 1.5) return color
-    val direction = if (lightness <= accentLightness) -1 else 1
-    for (sign in listOf(direction, -direction)) {
+    val similar = chroma >= .04 && Math.hypot(aa, ab) >= .04 && distance < 30 && contrast(color, accent) < 1.5
+    val near = labDistance(oklab(color), accentLab) < .09
+    if (!similar && !near) return color
+    fun first(sign: Int): String? {
         var step = lightness
         while (step > 0 && step < 1) {
             step = (step + sign * .005).coerceIn(0.0, 1.0)
             val candidate = oklchColor(step, chroma, hue)
-            if (contrast(candidate, accent) >= 2 && contrast(candidate, background) >= 3) return candidate
+            if (contrast(candidate, background) >= 3 && (!similar || contrast(candidate, accent) >= 2) &&
+                (!near || labDistance(oklab(candidate), accentLab) >= .09)) return candidate
         }
+        return null
     }
-    return color
+    val direction = if (lightness <= accentLightness) -1 else 1
+    val away = first(direction)
+    val other = first(-direction)
+    // The other direction wins only with clearly more chroma after gamut mapping, so an error color does not turn near-white.
+    if (away != null && other != null && labChroma(other) > labChroma(away) + .01) return other
+    return away ?: other ?: color
+}
+
+private fun labDistance(x: Triple<Double, Double, Double>, y: Triple<Double, Double, Double>): Double =
+    Math.sqrt((x.first - y.first).let { it * it } + (x.second - y.second).let { it * it } + (x.third - y.third).let { it * it })
+
+private fun labChroma(color: String): Double = oklab(color).let { Math.hypot(it.second, it.third) }
+
+/**
+ * Port of status_text_on: a status word color with 4.5:1 on [surface]. Below that, its OKLCH lightness moves away from the
+ * surface lightness in 0.005 steps with the same hue and chroma; at 0 or 1 it is [text].
+ */
+fun statusTextOn(color: String, surface: String, text: String): String {
+    if (contrast(color, surface) >= 4.5) return color
+    var (value, a, b) = oklab(color)
+    val chroma = Math.hypot(a, b)
+    val hue = degrees360(Math.toDegrees(Math.atan2(b, a)))
+    val step = if (value >= oklab(surface).first) .005 else -.005
+    while (value > 0 && value < 1) {
+        value = (value + step).coerceIn(0.0, 1.0)
+        val candidate = oklchColor(value, chroma, hue)
+        if (contrast(candidate, surface) >= 4.5) return candidate
+    }
+    return text
 }
 
 // Python's x % 360 for a double.

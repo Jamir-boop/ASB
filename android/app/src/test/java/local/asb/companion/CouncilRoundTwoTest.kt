@@ -19,7 +19,6 @@ import local.asb.companion.ui.LabelTable
 import local.asb.companion.ui.SeatLabelInput
 import local.asb.companion.ui.activityColorsOf
 import local.asb.companion.ui.hex
-import local.asb.companion.ui.notSentEndShare
 import local.asb.companion.ui.placeSeatLabels
 import local.asb.companion.ui.seatLabelPlace
 import local.asb.companion.ui.seatLabelTexts
@@ -84,14 +83,6 @@ class CouncilRoundTwoTest {
         assertEquals("so\u00a0far · 2\u00a0of\u00a03\u00a0machines · 1\u00a0model\u00a0unpriced", usageRingNote(true, 2, 3, true, 10, 1))
         assertEquals("3\u00a0models\u00a0unpriced", usageRingNote(false, 3, 3, true, 10, 3))
         assertEquals("", usageRingNote(false, 3, 3, false, 10, 1))
-    }
-
-    @Test fun notSentEndIsTheLastFifteenPercentAndAtLeast24Dp() {
-        assertEquals(.15f, notSentEndShare(400f, 1f), 1e-6f)
-        assertEquals(.24f, notSentEndShare(100f, 1f), 1e-6f)
-        assertEquals(.24f, notSentEndShare(200f, 2f), 1e-6f)
-        assertEquals(1f, notSentEndShare(20f, 1f), 1e-6f)
-        assertEquals(1f, notSentEndShare(0f, 1f), 1e-6f)
     }
 
     @Test fun seatLabelTextsCutTo24Then10Then7() {

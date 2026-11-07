@@ -166,13 +166,15 @@ fun bucketLabel(startMs: Long, unit: String, last: Boolean, short: Boolean, firs
 
 data class AxisLabel(val index: Int, val text: String)
 
-// The current bucket is not complete.
-private const val SO_FAR = " · so far"
+/** The tooltip title of a chart bucket: the long name; the current bucket is not complete (`October 2026 · so far`). */
+fun tooltipTitle(startMs: Long, unit: String, last: Boolean): String =
+    bucketLabel(startMs, unit, last, short = false) + if (last) " · so far" else ""
 
 /**
- * The x labels of the Usage chart (contract 8, X labels): candidates from [chartLabelShown], each centered under its bar
+ * The x labels of the Usage chart (port of usage_axis_labels): candidates from [chartLabelShown], each centered under its bar
  * and kept inside [width]; from the last bar to the first, a label is shown only when it ends [gap] before the label to its
- * right. Month labels are measured with the year, then show it on the leftmost label and where the year changes.
+ * right. Each label names its bucket, the last one too. Month labels are measured with the year, then show it on the leftmost
+ * label and where the year changes.
  */
 fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Float, gap: Float, measure: (String) -> Float): List<AxisLabel> {
     val n = centers.size
@@ -182,8 +184,7 @@ fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Fl
         if (!chartLabelShown(n, unit, i)) continue
         val start = starts.getOrElse(i) { 0L }
         val last = i == n - 1
-        val w = measure(if (unit == "month" && !last) bucketLabel(start, unit, last = false, short = true, first = true)
-            else bucketLabel(start, unit, last, short = true) + if (last) SO_FAR else "")
+        val w = measure(bucketLabel(start, unit, last = false, short = true, first = true))
         // The last label ends at the right edge of the chart.
         val cx = if (last) width - w / 2 else centers[i].coerceIn(w / 2, maxOf(w / 2, width - w / 2))
         if (last || cx + w / 2 <= nextLeft - gap) {
@@ -194,8 +195,7 @@ fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Fl
     var year: Int? = null
     return shown.reversed().map { i ->
         val start = starts.getOrElse(i) { 0L }
-        val last = i == n - 1
-        if (unit != "month" || last) return@map AxisLabel(i, bucketLabel(start, unit, last, short = true) + if (last) SO_FAR else "")
+        if (unit != "month") return@map AxisLabel(i, bucketLabel(start, unit, last = false, short = true))
         val y = monthOf(start).year
         AxisLabel(i, bucketLabel(start, unit, last = false, short = true, first = y != year)).also { year = y }
     }
@@ -230,6 +230,18 @@ fun scanText(scan: UsageScan): String = when {
 /** The Usage machine row line: Local, Connected, Offline, or Offline · seen Oct 25, 14:30. */
 fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine).let { report ->
     if (report.isEmpty()) machineStateText(machine) else "Offline · seen" + report.removePrefix("Last report")
+}
+
+/**
+ * Port of facts_lines: the lines of [line] (facts joined by ` · `) in at most [width]. A line breaks only between two facts and
+ * drops the ` · ` there; the words of a fact keep no-break spaces, so only a fact wider than [width] breaks inside.
+ */
+fun factLines(line: String, width: Float, measure: (String) -> Float): List<String> {
+    val lines = mutableListOf<String>()
+    for (fact in line.split(" · ").map { it.replace(' ', '\u00a0') }) {
+        if (lines.isNotEmpty() && measure("${lines.last()} · $fact") <= width) lines[lines.size - 1] += " · $fact" else lines += fact
+    }
+    return lines
 }
 
 /** The Compact state text: the reset countdown, or the state word and the Working time in whole minutes. */
