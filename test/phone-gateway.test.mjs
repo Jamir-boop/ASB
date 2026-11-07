@@ -435,7 +435,7 @@ gatewayTest('the activity routes proxy only a valid period, ask for messages wit
     assert.equal((await request(route)).status, 401, route);
     assert.equal((await request(route, { method: 'POST', token, body: {} })).status, 405, route);
   }
-  for (const route of ['/phone/v1/activity/thread?period=7d&seat=x', '/phone/v1/activity/thread', '/phone/v1/activity', '/api/activity/thread?period=7d&seat=x',
+  for (const route of ['/phone/v1/activity/thread?period=7d&seat=x', '/phone/v1/activity/thread?period=7d&seat=x&limit=120', '/phone/v1/activity/thread', '/phone/v1/activity', '/api/activity/thread?period=7d&seat=x',
     '/api/activity/messages?period=7d', '/phone/v1/activity/messages/x']) {
     assert.equal((await request(route, { token })).status, 404, route);
   }

@@ -218,7 +218,7 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual([asb.ACTIVITY_APP_ICONS[app] for app in ("antigravity", "grok", "pi")], ["asb-terminal-symbolic"] * 3)
         self.assertEqual(asb.ACTIVITY_STATUSES, ("accepted", "written", "held", "not-sent", "unknown"))
         self.assertEqual([asb.ACTIVITY_STATUS_LABELS[key] for key in asb.ACTIVITY_STATUSES],
-                         ["Accepted", "Socket written", "Held", "Not sent", "Unknown"])
+                         ["Accepted", "No receipt", "On hold", "Not sent", "Status unknown"])
         self.assertEqual(set(asb.ACTIVITY_STATUS_COLORS), set(asb.ACTIVITY_STATUSES))
         self.assertEqual(set(asb.ACTIVITY_STATUS_ICONS), set(asb.ACTIVITY_STATUSES))
         self.assertEqual(set(asb.ACTIVITY_APP_ICONS), set(asb.ACTIVITY_APP_LABELS))
@@ -288,6 +288,24 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual((black["divider"], black["rule"]), ("#212121", "#212121"))
         self.assertEqual(asb.activity_palette(dict(colors, divider="#1c1c1c"))["divider"], "#2d2d2d")
 
+    def test_accent_guard_changes_only_similar_chromatic_colors(self):
+        for color, accent, window, expected in (("#e0b45a", "#ffb900", "#000000", "#ac8220"),
+                                                 ("#d6a15e", "#ffb900", "#000000", "#b27f3b"),
+                                                 ("#f5a090", "#e8794f", "#222226", "#feccc2"),
+                                                 ("#d97757", "#e8794f", "#222226", "#ffcdbd")):
+            result = asb.accent_guard(color, accent, window)
+            self.assertEqual(result, expected)
+            self.assertGreaterEqual(asb.contrast(result, accent), 2)
+            self.assertGreaterEqual(asb.contrast(result, window), 3)
+        colors = list(asb.ACTIVITY_STATUS_COLORS.values()) + list(asb.MACHINE_HUES)
+        for accent, window in (("#81d0ff", "#222226"), ("#7cc4ff", "#10141c")):
+            self.assertEqual([asb.accent_guard(color, accent, window) for color in colors], colors)
+        self.assertEqual(asb.accent_guard("#888888", "#ffb900", "#000000"), "#888888")
+        self.assertEqual(asb.accent_guard("#ffb900", "#888888", "#000000"), "#ffb900")
+        # When neither direction can meet both floors, retain the original color.
+        with patch.dict(asb.accent_guard.__globals__, contrast=lambda *_: 1):
+            self.assertEqual(asb.accent_guard("#ffb900", "#ffb900", "#000000"), "#ffb900")
+
     def test_chord_gray_and_the_unknown_status_floor(self):
         # The weakest text mix from 40% with 3:1 on the window and every sector fill.
         fills = [asb.mix_color("#000000", hue, .05) for hue in asb.MACHINE_HUES[:3]]
@@ -311,7 +329,7 @@ class ActivityHelperChecks(unittest.TestCase):
         # Where the color has 3:1 already, it stays.
         self.assertEqual(asb.message_status_colors(dict(palette, win="#000000"))["unknown"], "#5d6268")
         self.assertEqual({key: value for key, value in colors.items() if key != "unknown"},
-                         {key: value for key, value in asb.ACTIVITY_STATUS_COLORS.items() if key != "unknown"})
+                         {key: asb.accent_guard(value, palette["accent"], palette["win"]) for key, value in asb.ACTIVITY_STATUS_COLORS.items() if key != "unknown"})
 
     def test_message_time(self):
         now = self.utc(2026, 10, 26, 16, 40)
@@ -10811,7 +10829,7 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.message_status_label({"status": "not-sent", "reason": ""}), "Not sent")
         self.assertEqual(asb.message_status_label({"status": "not-sent"}), "Not sent")
         self.assertEqual([asb.message_status_label({"status": status, "reason": "Refused"}) for status in ("accepted", "written", "held", "unknown", "odd")],
-                         ["Accepted", "Socket written", "Held", "Unknown", "Unknown"])
+                         ["Accepted", "No receipt", "On hold", "Status unknown", "Status unknown"])
         self.assertEqual(asb.message_text({"text": "One\nTwo"}), "One\nTwo")
         self.assertEqual(asb.message_text({"text": ""}), "")
         self.assertIsNone(asb.message_text({"text": None}))

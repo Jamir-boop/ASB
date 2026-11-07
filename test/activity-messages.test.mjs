@@ -218,6 +218,22 @@ test('a thread has the newest 60 messages oldest first, the total, local text wi
   assert.deepEqual(seat.messages.slice(-2).map(({ from, to, text }) => [from, to, text]),
     [[Y, CLAUDE_ROW, 'To Claude.'], [`unknown:${B.machineId}`, Y, null]]);
   assert.deepEqual(await service({ group }).thread('7d', { seat: `unknown:${'f'.repeat(16)}` }), { total: 0, messages: [] });
+  // A limit gives the newest limit messages, oldest first.
+  const older = await service({ group }).thread('7d', { a: Y, b: X, limit: 62 });
+  assert.deepEqual([older.total, older.messages.length, older.messages[0].text, older.messages.at(-2).text], [65, 62, 'Message 3.', 'Message 63.']);
+  assert.equal((await service({ group }).thread('7d', { a: Y, b: X, limit: 120 })).messages.length, 65);
+});
+
+test('thread limit 120 returns exactly the newest 120 messages in oldest-first order', async (t) => {
+  const { bridge, service } = await home(t);
+  await bridge('codex', X, Array.from({ length: 150 }, (_, index) => ({ id: msg(8000 + index), peer: Y,
+    direction: 'out', status: 'delivered', atMs: nowMs - (150 - index) * 60_000, text: `Message ${index}.` })));
+  const activity = service();
+  const recent = await activity.thread('7d', { seat: Y });
+  assert.deepEqual([recent.total, recent.messages.length, recent.messages[0].id], [150, 60, msg(8090)]);
+  const older = await activity.thread('7d', { seat: Y, limit: 120 });
+  assert.deepEqual([older.total, older.messages.length, older.messages[0].id, older.messages.at(-1).id], [150, 120, msg(8030), msg(8149)]);
+  assert.deepEqual(older.messages.map((item) => item.text), Array.from({ length: 120 }, (_, index) => `Message ${index + 30}.`));
 });
 
 test('the group merge: one record per ID with the receiver status, offline members keep their last records, and member replies include bounded text', async (t) => {
@@ -702,5 +718,21 @@ test('the thread route takes exactly one status of written, held, not-sent, or u
     const response = await fetch(`${base}/api/activity/thread?period=7d&${query}`);
     assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid session.' }], query);
   }
+  assert.equal(calls.length, 4);
+});
+
+test('the thread route takes an optional limit from 1 to 600', async (t) => {
+  const calls = [];
+  const activityMessages = { report: async () => ({}), thread: async (period, query) => { calls.push(query); return { total: 0, messages: [] }; } };
+  const base = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), activityMessages }));
+  for (const query of ['seat=x', 'seat=x&limit=120', 'limit=1&a=x&b=y', 'status=held&limit=600']) {
+    assert.equal((await fetch(`${base}/api/activity/thread?period=7d&${query}`)).status, 200, query);
+  }
+  assert.deepEqual(calls, [{ seat: 'x' }, { seat: 'x', limit: 120 }, { a: 'x', b: 'y', limit: 1 }, { status: 'held', limit: 600 }]);
+  for (const limit of ['0', '601', 'many', '', '12.5', '060', '-1', '120&limit=120']) {
+    const response = await fetch(`${base}/api/activity/thread?period=7d&seat=x&limit=${limit}`);
+    assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid query.' }], limit);
+  }
+  assert.equal((await fetch(`${base}/api/activity/thread?period=7d&limit=60`)).status, 400);
   assert.equal(calls.length, 4);
 });

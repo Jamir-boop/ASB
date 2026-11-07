@@ -273,13 +273,13 @@ export function createActivityMessages({ readSources = async () => [], dashboard
           ? { ...item, fromLabel, toLabel } : item)), truncated: kept.length < messages.length };
     },
 
-    // One pair, one session, or one status group: the newest 60 messages oldest first, the total, and the text of each.
-    async thread(period, { a, b, seat, status } = {}) {
+    // One pair, one session, or one status group: the newest limit messages (default 60) oldest first, the total, and the text of each.
+    async thread(period, { a, b, seat, status, limit = THREAD_SIZE } = {}) {
       const { messages } = await merged(period);
       const all = messages.filter((item) => status !== undefined ? item.status === status
         : seat !== undefined ? item.from === seat || item.to === seat
           : (item.from === a && item.to === b) || (item.from === b && item.to === a));
-      const shown = all.slice(-THREAD_SIZE);
+      const shown = all.slice(-limit);
       const texts = await textsFor(shown);
       return { total: all.length, messages: shown.map(({ id, from, to, atMs, status, reason, fromLabel, toLabel }) =>
         ({ id, from, to, atMs, status, reason, fromLabel, toLabel, text: texts.get(id) ?? null })) };

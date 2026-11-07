@@ -231,7 +231,7 @@ export function createAsbServer({
       }
       let query = null;
       if (activityRoute === 'thread') {
-        const names = [...new Set(params.keys())].filter((name) => name !== 'period').sort().join(',');
+        const names = [...new Set(params.keys())].filter((name) => name !== 'period' && name !== 'limit').sort().join(',');
         const seat = (name) => params.getAll(name).length === 1 && SEAT.test(params.get(name));
         // A status thread: the messages of one status group that the ledger legend opens.
         const status = names === 'status' && params.getAll('status').length === 1 && ['written', 'held', 'not-sent', 'unknown'].includes(params.get('status'));
@@ -240,6 +240,15 @@ export function createAsbServer({
         if (!query) {
           sendJson(response, 400, { error: 'Invalid session.' });
           return;
+        }
+        // An older page of the thread: the newest 1 to 600 messages (default 60).
+        if (params.has('limit')) {
+          const limit = params.getAll('limit').length === 1 && /^[1-9][0-9]{0,2}$/.test(params.get('limit')) ? Number(params.get('limit')) : 0;
+          if (!limit || limit > 600) {
+            sendJson(response, 400, { error: 'Invalid query.' });
+            return;
+          }
+          query.limit = limit;
         }
       }
       // Read-only: the bridge databases, the cached rows, and the member replies.
