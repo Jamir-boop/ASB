@@ -13181,8 +13181,8 @@ class RoundTable(Gtk.Overlay):
         return need
 
     def chosen_seats(self):
-        """The seats whose labels place first and always show whole: the focused or hovered seat, the seat of an open session thread,
-        and the two seats of an open or hovered chord."""
+        """The seats whose labels place first and always show whole: the focused seat, the two seats of the focused chord, the seat of an
+        open session thread, and the two seats of an open pair thread. Pointer hover does not move labels."""
         thread = self.window.thread if self.window.thread and self.window.thread["kind"] != "status" else None
         seats = [self.hover["focus"], *(self.hover["chord_focus"] or ()), thread["key"] if thread and thread["kind"] == "session" else None,
                  *(thread["key"] if thread and thread["kind"] == "pair" else ())]
