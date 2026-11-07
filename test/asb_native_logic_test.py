@@ -214,7 +214,6 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(asb.USAGE_APPS, ("codex", "claude", "opencode", "antigravity", "grok", "pi"))
         self.assertEqual(asb.ACTIVITY_APP_LABELS, {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other",
                                                   "antigravity": "Antigravity", "grok": "Grok", "pi": "Pi"})
-        self.assertEqual(asb.USAGE_MAKER_COLOR, "#8c929a")
         self.assertEqual(asb.USAGE_OTHER_MAKER, "Other")
         self.assertEqual([asb.ACTIVITY_APP_ICONS[app] for app in ("antigravity", "grok", "pi")], ["asb-terminal-symbolic"] * 3)
         self.assertEqual(asb.ACTIVITY_STATUSES, ("accepted", "written", "held", "not-sent", "unknown"))
@@ -224,7 +223,6 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(set(asb.ACTIVITY_STATUS_ICONS), set(asb.ACTIVITY_STATUSES))
         self.assertEqual(set(asb.ACTIVITY_APP_ICONS), set(asb.ACTIVITY_APP_LABELS))
         self.assertEqual(asb.ACTIVITY_APP_COLORS["claude"], "#d97757")
-        self.assertEqual(asb.ACTIVITY_TOKEN_COLORS, {"cacheRead": "#4b5058", "cacheWrite": "#6b7179", "uncached": "#959ba3", "output": "#e4e6e8"})
         self.assertEqual(asb.USAGE_PERIODS[-2:], (("90d", "90 days"), ("all", "All time")))
         self.assertEqual(asb.MESSAGE_PERIODS, (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days")))
 
@@ -1028,7 +1026,7 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual([(machine["name"], asb.format_cost(machine["value"]), asb.format_share(machine["share"]), machine["state"])
                           for machine in view["machines"]],
                          [("Desk", "$1,473.15", "62.9%", "Local"), ("Laptop", "$622.85", "26.6%", "Connected"),
-                          ("Studio", "$247.49", "10.6%", "Offline · last report Oct 25, 14:30")])
+                          ("Studio", "$247.49", "10.6%", "Offline · seen Oct 25, 14:30")])
         self.assertEqual([(app["label"], asb.format_cost(app["value"])) for app in view["apps"]],
                          [("Codex", "$689.81"), ("Claude Code", "$1,573.32"), ("OpenCode", "$80.37")])
         self.assertEqual([(model["model"], model["app"], model["machines"]) for model in view["models"]], [
@@ -1065,10 +1063,10 @@ class UsageLogicChecks(unittest.TestCase):
 
     @staticmethod
     def axis(unit, starts, chart_width):
-        """The axis labels as UsageChart.do_snapshot places them, with a fake font of 7 px per character."""
+        """The axis labels as UsageChart.do_snapshot places them, with a fake font of 7 px per character: the points run from
+        the left inset (48 px) to the right edge."""
         count = len(starts)
-        slot = (chart_width - asb.UsageChart.LEFT) / count
-        centers = [asb.UsageChart.LEFT + (index + .5) * slot for index in range(count)]
+        centers = [48 + index * (chart_width - 48) / (count - 1) for index in range(count)] if count > 1 else [(48 + chart_width) / 2]
         buckets = {"unit": unit, "startsMs": starts}
         step = asb.UsageChart.label_step(SimpleNamespace(buckets=buckets, bars=[{}] * count))
         return asb.usage_axis_labels(buckets, centers, chart_width, step, lambda text: 7 * len(text))
@@ -1084,7 +1082,7 @@ class UsageLogicChecks(unittest.TestCase):
         for _index, text, left in labels:
             self.assertGreaterEqual(left, 0)
             self.assertLessEqual(left + 7 * len(text), chart_width)
-        self.assertEqual(labels[-1][:2], (len(starts) - 1, "This month"))
+        self.assertEqual(labels[-1][:2], (len(starts) - 1, "This month · so far"))
         year = None
         for index, text, _left in labels[:-1]:
             at = datetime.fromtimestamp(starts[index] / 1000, timezone.utc)
@@ -1100,15 +1098,20 @@ class UsageLogicChecks(unittest.TestCase):
         twenty = self.months(2025, 4, 20)
         labels = self.axis("month", twenty, 452)
         self.assert_axis_rules(labels, twenty, 452)
-        self.assertEqual([text for _index, text, _left in labels], ["May 2025", "Aug", "Nov", "Feb 2026", "May", "This month"])
-        self.assertEqual([index for index, _text, _left in labels], [1, 4, 7, 10, 13, 19])
-        self.assertEqual([text for _index, text, _left in self.axis("month", twenty[:1], 452)], ["This month"])
-        labels = self.axis("month", twelve, 1000)
-        self.assert_axis_rules(labels, twelve, 1000)
+        self.assertEqual([text for _index, text, _left in labels], ["May 2025", "Aug", "Nov", "Feb 2026", "This month · so far"])
+        self.assertEqual([index for index, _text, _left in labels], [1, 4, 7, 10, 19])
+        # One point sits in the middle of the plot, with its label centered under it.
+        one = self.axis("month", twenty[:1], 452)
+        self.assertEqual([text for _index, text, _left in one], ["This month · so far"])
+        self.assertEqual(one[0][2] + 7 * len(one[0][1]) / 2, (48 + 452) / 2)
+        labels = self.axis("month", twelve, 1900)
+        self.assert_axis_rules(labels, twelve, 1900)
         self.assertEqual([text for _index, text, _left in labels],
-                         ["Nov 2025", "Dec", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "This month"])
+                         ["Nov 2025", "Dec", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "This month · so far"])
         self.assertEqual([text for _index, text, _left in labels], [asb.bucket_label({"unit": "month", "startsMs": twelve}, index)
-                                                                    for index in range(12)])
+                                                                    + (" · so far" if index == 11 else "") for index in range(12)])
+        # The first label starts at its point and the last ends at its point.
+        self.assertEqual((labels[0][2], labels[-1][2] + 7 * len(labels[-1][1])), (48, 1900))
 
     def test_hour_and_day_axis_labels_do_not_change(self):
         for unit, starts, every in (("hour", [int(datetime(2026, 10, 26, 0, tzinfo=timezone.utc).timestamp() * 1000) + hour * 3_600_000
@@ -1117,9 +1120,13 @@ class UsageLogicChecks(unittest.TestCase):
                                              for day in range(30)], 5)):
             with self.subTest(unit=unit):
                 buckets = {"unit": unit, "startsMs": starts}
-                labels = self.axis(unit, starts, 852)
+                labels = self.axis(unit, starts, 900)
+                # The last label names the current bucket, so far.
                 self.assertEqual([(index, text) for index, text, _left in labels],
-                                 [(index, asb.bucket_label(buckets, index)) for index in range(len(starts)) if (len(starts) - 1 - index) % every == 0])
+                                 [(index, asb.bucket_label(buckets, index) + (" · so far" if index == len(starts) - 1 else ""))
+                                  for index in range(len(starts)) if (len(starts) - 1 - index) % every == 0])
+                self.assertEqual(labels[-1][1], "Now · so far" if unit == "hour" else "Today · so far")
+                self.assertEqual(labels[-1][2] + 7 * len(labels[-1][1]), 900)
 
     def test_all_fixture_keeps_the_90_day_totals_in_utc_months(self):
         reply, days = self.REPLIES["all"], self.REPLIES["90d"]
@@ -1253,29 +1260,75 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual(asb.usage_scan_text({"complete": False, "files": 0, "scannedFiles": 0}), "Reading usage")
 
     def test_axis(self):
+        # The smallest round step whose fourth line reaches the largest value; 3 lines when the third reaches it.
         for maximum, metric, expected in ((150, "cost", (50, ["$50", "$100", "$150"])), (0, "cost", (1, ["$1", "$2", "$3"])),
-                                          (7.2, "cost", (2.5, ["$2.5", "$5", "$7.5"])), (4500, "cost", (2000, ["$2,000", "$4,000", "$6,000"])),
+                                          (7.2, "cost", (2, ["$2", "$4", "$6", "$8"])), (4500, "cost", (2000, ["$2,000", "$4,000", "$6,000"])),
+                                          (1650, "cost", (500, ["$500", "$1,000", "$1,500", "$2,000"])),
+                                          (9, "cost", (2.5, ["$2.5", "$5", "$7.5", "$10"])),
                                           (13.5e6, "tokens", (5e6, ["5M", "10M", "15M"])), (4.5e9, "tokens", (2e9, ["2B", "4B", "6B"])),
-                                          (7.5e5, "tokens", (2.5e5, ["250K", "500K", "750K"])), (2400, "tokens", (1000, ["1K", "2K", "3K"])),
+                                          (7.5e5, "tokens", (2e5, ["200K", "400K", "600K", "800K"])), (2400, "tokens", (1000, ["1K", "2K", "3K"])),
                                           (12, "tokens", (5, ["5", "10", "15"]))):
             with self.subTest(maximum=maximum, metric=metric):
                 step, labels = asb.usage_axis(maximum, metric)
                 self.assertAlmostEqual(step, expected[0])
                 self.assertEqual(labels, expected[1])
-                self.assertGreaterEqual(step * 3, maximum)
+                self.assertGreaterEqual(step * len(labels), maximum)
+                self.assertEqual(len(labels), 3 if step * 3 >= maximum else 4)
+
+    def test_token_ramp_of_the_accent(self):
+        for accent, window, expected in (("#ffb900", "#000000", ["#7a5e2b", "#a67f35", "#d7a131", "#ffb900"]),
+                                         ("#81d0ff", "#222226", ["#527083", "#628ca6", "#77b3d8", "#81d0ff"]),
+                                         ("#7cc4ff", "#10141c", ["#4b677e", "#648bac", "#7ab1df", "#7cc4ff"])):
+            with self.subTest(accent=accent):
+                ramp = asb.usage_token_ramp(accent, window)
+                self.assertEqual(list(ramp), list(asb.USAGE_PARTS))
+                self.assertEqual(list(ramp.values()), expected)
+                self.assertGreaterEqual(asb.contrast(ramp["cacheRead"], window), 3)
+        # A dark accent on a dark window: the cache read step gets lighter until it has 3:1.
+        ramp = asb.usage_token_ramp("#3060c0", "#101820")
+        self.assertGreaterEqual(asb.contrast(ramp["cacheRead"], "#101820"), 3)
+        _lightness, a, b = asb.oklab("#3060c0")
+        first = asb.oklch_color(.50, asb.math.hypot(a, b) * .45, asb.math.degrees(asb.math.atan2(b, a)) % 360)
+        self.assertLess(asb.contrast(first, "#101820"), 3)
+        self.assertNotEqual(ramp["cacheRead"], first)
+
+    def test_end_label_tops(self):
+        # Far apart: each label keeps the y of its line.
+        self.assertEqual(asb.usage_end_label_tops([20, 60, 100], 10, 0, 140), [15, 55, 95])
+        # Close: they move apart with a 2 px gap, in the order of their lines, and stay inside the plot.
+        tops = asb.usage_end_label_tops([50, 52, 49], 10, 0, 140)
+        boxes = sorted((top, top + 10) for top in tops)
+        self.assertTrue(all(after - bottom >= 2 for (_top, bottom), (after, _bottom) in zip(boxes, boxes[1:])))
+        self.assertEqual(sorted(range(3), key=lambda index: tops[index]), [2, 0, 1])
+        # At the bottom edge they move up; at the top edge they move down.
+        self.assertEqual(asb.usage_end_label_tops([140, 140], 10, 0, 140), [118, 130])
+        self.assertEqual(asb.usage_end_label_tops([0, 0], 10, 0, 140), [0, 12])
+        self.assertEqual(asb.usage_end_label_tops([], 10, 0, 140), [])
+
+    def test_ring_note(self):
+        view = self.view()
+        self.assertEqual(asb.usage_ring_note(view, False, 3, 3), "1 model unpriced")
+        self.assertEqual(asb.usage_ring_note(view, True, 2, 3), "so far · 2 of 3 machines · 1 model unpriced")
+        self.assertEqual(asb.usage_ring_note(self.view(metric="tokens"), True, 3, 3), "so far")
+        self.assertEqual(asb.usage_ring_note(self.view(on={"laptop"}), False, 1, 3), "1 of 3 machines")
+        reply = copy.deepcopy(self.REPLIES["30d"])
+        for record in reply["records"]:
+            if record["model"] in ("gpt-6.1-mini", "claude-haiku-5-5"):
+                record["cost"] = None
+        self.assertEqual(asb.usage_ring_note(self.view(reply=reply), False, 3, 3), "3 models unpriced")
 
     def test_round_arcs(self):
         view, machines = self.view(), self.REPLIES["30d"]["machines"]
         arcs = asb.usage_round_arcs(view, machines, "cost")
         rings = [arc for arc in arcs if arc["kind"] == "machine"]
         self.assertEqual([(arc["id"], arc["r0"], arc["r1"], arc["color"]) for arc in rings],
-                         [("desk", 92, 114, "#a28caa"), ("laptop", 92, 114, "#7cc48a"), ("studio", 92, 114, "#5fb3b3")])
+                         [("desk", 109, 131, "#a28caa"), ("laptop", 109, 131, "#7cc48a"), ("studio", 109, 131, "#5fb3b3")])
         self.assertEqual(rings[0]["a0"], -90)
         self.assertAlmostEqual(sum(arc["a1"] - arc["a0"] for arc in rings), 360 - 3 * 1.5)
         self.assertAlmostEqual(rings[1]["a0"] - rings[0]["a1"], 1.5)
         self.assertAlmostEqual((rings[0]["a1"] - rings[0]["a0"]) / (360 - 4.5), view["machines"][0]["value"] / view["total"])
         apps = [arc for arc in arcs if arc["kind"] == "app"]
-        self.assertEqual({(arc["r0"], arc["r1"]) for arc in apps}, {(118, 146)})
+        self.assertEqual({(arc["r0"], arc["r1"]) for arc in apps}, {(134, 146)})
         self.assertIn("Claude Code on Laptop", [arc["label"] for arc in apps])
         for ring in rings:
             inside = [arc for arc in apps if arc["id"].startswith(ring["id"] + "/")]
