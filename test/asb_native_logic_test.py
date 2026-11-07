@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import io
 import itertools
 import json
+import math
 import os
 import random
 import re
@@ -284,6 +285,45 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(asb.activity_palette(colors), {
             "win": "#101010", "rule": "#2d2d2d", "track": "#363636", "divider": "#404040", "popup": "#616161",
             "text": "#f0f0f0", "dim": "#a0a0a0", "accent": "#3080c0", "light": "#78acd6", "warn": "#e0b45a", "bad": "#f5a090"})
+        # A divider under 1.3:1 against the window (#030303 on #000000) draws with the rule color.
+        black = asb.activity_palette({"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"})
+        self.assertEqual((black["divider"], black["rule"]), ("#212121", "#212121"))
+        self.assertEqual(asb.activity_palette(dict(colors, divider="#1c1c1c"))["divider"], "#2d2d2d")
+
+    def test_chord_gray_and_the_unknown_status_floor(self):
+        # The weakest text mix from 40% with 3:1 on the window and every sector fill.
+        fills = [asb.mix_color("#000000", hue, .05) for hue in asb.MACHINE_HUES[:3]]
+        gray = asb.chord_gray("#000000", "#ffffff", fills)
+        self.assertEqual(gray, asb.mix_color("#000000", "#ffffff", .40))
+        surfaces = ["#fafafa"] + [asb.mix_color("#fafafa", hue, .05) for hue in asb.MACHINE_HUES[:3]]
+        light = asb.chord_gray("#fafafa", "#202020", surfaces[1:])
+        percent = next(step for step in range(40, 101) if asb.mix_color("#fafafa", "#202020", step / 100) == light)
+        self.assertGreater(percent, 40)
+        self.assertTrue(all(asb.contrast(light, surface) >= 3 for surface in surfaces))
+        weaker = asb.mix_color("#fafafa", "#202020", (percent - 1) / 100)
+        self.assertFalse(all(asb.contrast(weaker, surface) >= 3 for surface in surfaces))
+        self.assertEqual(asb.chord_gray("#808080", "#808080", []), "#808080")
+        palette = asb.activity_palette({"background": "#242424", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#404040"})
+        colors = asb.message_status_colors(palette)
+        self.assertLess(asb.contrast("#5d6268", "#242424"), 3)
+        self.assertGreaterEqual(asb.contrast(colors["unknown"], "#242424"), 3)
+        self.assertEqual(colors["unknown"], asb.contrast_floor("#5d6268", "#ffffff", "#242424", 3))
+        self.assertEqual(asb.message_status_text_color(palette, "unknown"), colors["unknown"])
+        self.assertEqual(asb.message_status_text_color(palette, "accepted"), palette["dim"])
+        # Where the color has 3:1 already, it stays.
+        self.assertEqual(asb.message_status_colors(dict(palette, win="#000000"))["unknown"], "#5d6268")
+        self.assertEqual({key: value for key, value in colors.items() if key != "unknown"},
+                         {key: value for key, value in asb.ACTIVITY_STATUS_COLORS.items() if key != "unknown"})
+
+    def test_message_time(self):
+        now = self.utc(2026, 10, 26, 16, 40)
+        self.assertEqual(asb.message_time(self.utc(2026, 10, 26, 16, 28), now, "24h"), "16:28")
+        self.assertEqual(asb.message_time(self.utc(2026, 10, 25, 23, 5), now, "24h"), "23:05")
+        for period in ("7d", "30d"):
+            self.assertEqual(asb.message_time(self.utc(2026, 10, 26, 9, 12), now, period), "09:12")
+            self.assertEqual(asb.message_time(self.utc(2026, 10, 26, 9, 12) - 86_400_000, now, period), "Sun 09:12")
+            self.assertEqual(asb.message_time(self.utc(2026, 10, 20, 9, 12), now, period), "Tue 09:12")
+            self.assertEqual(asb.message_time(self.utc(2026, 10, 19, 9, 12), now, period), "Oct 19 09:12")
 
 
 class ProfileSyncChecks(unittest.TestCase):
@@ -10631,6 +10671,18 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertAlmostEqual(shape["mach"]["laptop"]["start"], shape["mach"]["desk"]["end"] + 6)
         self.assertEqual(asb.seat_label_offset(-90, 40), 30)
         self.assertAlmostEqual(asb.seat_label_offset(0, 40), 60)
+        # Large Text keeps the same room for a taller label.
+        self.assertEqual(asb.seat_label_offset(-90, 40, 1.5), 45)
+        self.assertAlmostEqual(asb.seat_label_offset(-60, 10, 1.5), 27 * 1.5 / math.sin(math.radians(60)))
+        # A smaller ring for the machine labels, and equal machine arcs with no seats.
+        smaller = asb.table_geometry(628, 583, view["seated"], view["seats"], view["machines"], 20)
+        self.assertEqual((smaller["Ro"], smaller["Ri"]), (207.5, 197.5))
+        empty = asb.table_geometry(628, 583, [], {}, view["machines"])
+        arc = (360 - 6 * len(view["machines"])) / len(view["machines"])
+        self.assertEqual(len(empty["mach"]), len(view["machines"]))
+        self.assertAlmostEqual(empty["mach"][view["machines"][0]["machineId"]]["mid"], -90)
+        self.assertTrue(all(abs(item["end"] - item["start"] - arc) < 1e-9 for item in empty["mach"].values()))
+        self.assertEqual(empty["seat"], {})
         self.assertEqual(asb.seat_label_text("x" * 24), "x" * 24)
         self.assertEqual(asb.seat_label_text("x" * 25), "x" * 24 + "…")
 
@@ -10652,10 +10704,17 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.message_thread(records, {}, "session", "gone")["counts"], "Sent 0  Received 0")
         self.assertEqual(asb.message_thread(records, {}, "session", "gone")["route"], "This session")
         out, back = next(record for record in mine if record["from"] == "parser-review"), next(record for record in mine if record["to"] == "parser-review")
-        self.assertEqual(asb.message_block(header, out, seats), (False, "→ " + out["to"]))
-        self.assertEqual(asb.message_block(header, back, seats), (True, "← " + back["from"]))
+        self.assertEqual(asb.message_block(header, out, seats), (False, "To " + out["to"]))
+        self.assertEqual(asb.message_block(header, back, seats), (True, "From " + back["from"]))
         pair_header = asb.message_thread(records, seats, "pair", ("release-plan", "parser-review"))
         self.assertEqual(asb.message_block(pair_header, pair[0], seats), (pair[0]["from"] == "release-plan", pair[0]["from"]))
+        # A status thread: the status label, its count, and blocks that name both ends at the left.
+        failed = [record for record in records if record["status"] == "not-sent"]
+        status = asb.message_thread(records, seats, "status", "not-sent")
+        self.assertEqual((status["route"], status["counts"], status["total"]), ("Not sent", f"{len(failed)} messages", len(failed)))
+        self.assertEqual(asb.message_thread(records[:0], seats, "status", "held")["counts"], "0 messages")
+        self.assertEqual(asb.message_thread([dict(failed[0])], seats, "status", "not-sent")["counts"], "1 message")
+        self.assertEqual(asb.message_block(status, failed[0], seats), (True, f"{failed[0]['from']} → {failed[0]['to']}"))
 
     def test_unknown_ends_show_the_name_from_the_message(self):
         seats = {"docs": {"id": "docs", "title": "docs"}, "unknown:m2": {"id": "unknown:m2", "title": "Other sessions"}}
@@ -10668,8 +10727,8 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.message_end_title(dict(record, toLabel="not-this"), "to", seats), "docs")
         self.assertEqual(asb.message_end_title({"from": "gone", "to": "docs"}, "from", seats), "Other sessions")
         session = {"kind": "session", "key": "docs"}
-        self.assertEqual(asb.message_block(session, record, seats), (True, "← beta-helper"))
-        self.assertEqual(asb.message_block(session, {"from": "docs", "to": "unknown:m2", "toLabel": "gamma-helper"}, seats), (False, "→ gamma-helper"))
+        self.assertEqual(asb.message_block(session, record, seats), (True, "From beta-helper"))
+        self.assertEqual(asb.message_block(session, {"from": "docs", "to": "unknown:m2", "toLabel": "gamma-helper"}, seats), (False, "To gamma-helper"))
         self.assertEqual(asb.message_block({"kind": "pair", "key": ("unknown:m2", "docs")}, record, seats), (True, "beta-helper"))
 
     def test_a_not_sent_message_shows_its_reason_and_text_may_be_missing(self):

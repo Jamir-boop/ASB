@@ -233,8 +233,10 @@ export function createAsbServer({
       if (activityRoute === 'thread') {
         const names = [...new Set(params.keys())].filter((name) => name !== 'period').sort().join(',');
         const seat = (name) => params.getAll(name).length === 1 && SEAT.test(params.get(name));
+        // A status thread: the messages of one status group that the ledger legend opens.
+        const status = names === 'status' && params.getAll('status').length === 1 && ['written', 'held', 'not-sent', 'unknown'].includes(params.get('status'));
         query = names === 'seat' && seat('seat') ? { seat: params.get('seat') } : names === 'a,b' && seat('a') && seat('b')
-          ? { a: params.get('a'), b: params.get('b') } : null;
+          ? { a: params.get('a'), b: params.get('b') } : status ? { status: params.get('status') } : null;
         if (!query) {
           sendJson(response, 400, { error: 'Invalid session.' });
           return;

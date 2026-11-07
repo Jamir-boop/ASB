@@ -671,3 +671,36 @@ test('without a change counter every Messages request still reads local records 
   await activity.memberReply('24h');
   assert.ok(calls.records >= first.records + 2 && calls.queries > first.queries && calls.texts > first.texts);
 });
+
+test('a status thread has the messages of one status group, in the reply shape of a session thread', async (t) => {
+  const { bridge, service } = await home(t);
+  await bridge('codex', X, [
+    { id: msg(600), peer: Y, direction: 'out', status: 'delivered', atMs: nowMs - 40_000, text: 'Taken.' },
+    { id: msg(601), peer: Y, direction: 'out', status: 'not-sent', atMs: nowMs - 30_000, text: 'Not sent text.' },
+    { id: msg(602), peer: Y, direction: 'out', status: 'refused', atMs: nowMs - 20_000, text: 'Refused text.' },
+    { id: msg(603), peer: Y, direction: 'out', status: 'held', atMs: nowMs - 10_000, text: 'Held text.' }]);
+  const failed = await service().thread('7d', { status: 'not-sent' });
+  assert.equal(failed.total, 2);
+  assert.deepEqual(failed.messages.map(({ id, from, to, status, reason, text }) => [id, from, to, status, reason, text]),
+    [[msg(601), X, Y, 'not-sent', 'Not sent', 'Not sent text.'], [msg(602), X, Y, 'not-sent', 'Refused', 'Refused text.']]);
+  assert.deepEqual(Object.keys(failed.messages[0]), ['id', 'from', 'to', 'atMs', 'status', 'reason', 'fromLabel', 'toLabel', 'text']);
+  assert.deepEqual((await service().thread('7d', { status: 'held' })).messages.map((item) => item.id), [msg(603)]);
+  assert.deepEqual(await service().thread('7d', { status: 'unknown' }), { total: 0, messages: [] });
+});
+
+test('the thread route takes exactly one status of written, held, not-sent, or unknown', async (t) => {
+  const calls = [];
+  const activityMessages = { report: async () => ({}), thread: async (period, query) => { calls.push([period, query]); return { total: 0, messages: [] }; } };
+  const base = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), activityMessages }));
+  for (const status of ['written', 'held', 'not-sent', 'unknown']) {
+    const response = await fetch(`${base}/api/activity/thread?period=24h&status=${status}`);
+    assert.deepEqual([response.status, await response.json(), response.headers.get('cache-control')], [200, { total: 0, messages: [] }, 'no-store'], status);
+  }
+  assert.deepEqual(calls, [['24h', { status: 'written' }], ['24h', { status: 'held' }], ['24h', { status: 'not-sent' }], ['24h', { status: 'unknown' }]]);
+  for (const query of ['status=accepted', 'status=', 'status=Held', 'status=held&status=held', 'status=held&seat=x', 'status=held&a=x&b=y',
+    'status=held&text=0']) {
+    const response = await fetch(`${base}/api/activity/thread?period=7d&${query}`);
+    assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid session.' }], query);
+  }
+  assert.equal(calls.length, 4);
+});
