@@ -13082,7 +13082,7 @@ class RoundTable(Gtk.Overlay):
             else:
                 pair = self.view["pairs"][key[1]]
                 text = f"{self.title(pair['a'])} and {self.title(pair['b'])}: {format_count(pair['n'])} message{'' if pair['n'] == 1 else 's'}"
-                proxy.set_tooltip_text(f"{self.title(pair['a'])} ⇄ {self.title(pair['b'])}\n→ {pair['ab']}  ← {pair['ba']}")
+                proxy.set_tooltip_text(f"{self.title(pair['a'])} ⇄ {self.title(pair['b'])}\n→ {format_count(pair['ab'])}  ← {format_count(pair['ba'])}")
             proxy.update_property([Gtk.AccessibleProperty.LABEL], [text])
         self.proxy_order = [self.proxies[key] for key in wanted]
 
@@ -13184,9 +13184,8 @@ class RoundTable(Gtk.Overlay):
         """The seats whose labels place first and always show whole: the focused or hovered seat, the seat of an open session thread,
         and the two seats of an open or hovered chord."""
         thread = self.window.thread if self.window.thread and self.window.thread["kind"] != "status" else None
-        chord = self.hover["chord"] or self.hover["chord_focus"]
-        seats = [self.hover["focus"], self.hover["seat"], thread["key"] if thread and thread["kind"] == "session" else None,
-                 *(chord or ()), *(thread["key"] if thread and thread["kind"] == "pair" else ())]
+        seats = [self.hover["focus"], *(self.hover["chord_focus"] or ()), thread["key"] if thread and thread["kind"] == "session" else None,
+                 *(thread["key"] if thread and thread["kind"] == "pair" else ())]
         return [seat_id for seat_id in dict.fromkeys(seats) if seat_id in self.pins]
 
     def place_labels(self):
@@ -13204,10 +13203,12 @@ class RoundTable(Gtk.Overlay):
             # A label on the center disc would cover the center text.
             near_x, near_y = min(max(geometry["cx"], box[0]), box[2]), min(max(geometry["cy"], box[1]), box[3])
             return math.hypot(near_x - geometry["cx"], near_y - geometry["cy"]) < geometry["Rc"] + 2
-        pins = []
+        pins, opened = [], self.open_lit()[1]
         for seat_id in self.pins:
             x, y = table_point(geometry, geometry["Rp"], geometry["seat"][seat_id])
-            pins.append((x - 16, y - 16, x + 16, y + 16))
+            # An open pin's accent ring reaches 21.75 px.
+            reach = 22 if seat_id in opened else 16
+            pins.append((x - reach, y - reach, x + reach, y + reach))
         self.layout_key(pins)
         machines = [(item["x"] - 1, item["y"], item["x"] + item["w"] + 1, item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
         blocked = pins + machines + ([self.key["box"]] if self.key and self.key["shown"] else [])
@@ -13227,7 +13228,7 @@ class RoundTable(Gtk.Overlay):
             # A chosen seat shows only its whole text.
             for text in range(1 if seat_id in chosen else len(pin["texts"])):
                 for place in range(5):
-                    x, y = self.label_place_with(pin, angle, geometry, text, place, scale)
+                    x, y = self.label_place_with(pin, angle, geometry, text, place, scale, seat_id in opened)
                     box = (x - 1, y, x + pin["texts"][text]["w"] + 1, y + pin["texts"][text]["h"])
                     inside = box[0] >= 2 and box[1] >= 2 and box[2] <= geometry["W"] - 2 and box[3] <= geometry["H"] - 2
                     if inside and not (disc and center(box)) and not any(hit(other, box) for other in placed + blocked):
@@ -13237,7 +13238,7 @@ class RoundTable(Gtk.Overlay):
                     break
             if found is None and seat_id in chosen:
                 # No free place: the chosen seat shows its whole label inward, and the other labels avoid it.
-                x, y = self.label_place_with(pin, angle, geometry, 0, 0, scale)
+                x, y = self.label_place_with(pin, angle, geometry, 0, 0, scale, seat_id in opened)
                 found = (0, 0, (x - 1, y, x + pin["w"] + 1, y + pin["h"]))
             if found:
                 placed.append(found[2])
@@ -13348,13 +13349,11 @@ class RoundTable(Gtk.Overlay):
         seat, chord = self.hit(x, y)
         if (seat, chord) != (self.hover["seat"], self.hover["chord"]):
             self.hover["seat"], self.hover["chord"] = seat, chord
-            self.place_labels()
             self.changed()
 
     def pointer_left(self, *_args):
         if self.hover["seat"] or self.hover["chord"]:
             self.hover["seat"] = self.hover["chord"] = None
-            self.place_labels()
             self.changed()
 
     def clicked(self, _gesture, _count, x, y):
@@ -13570,7 +13569,8 @@ class RoundTable(Gtk.Overlay):
                 # The hovered or focused seat shows its whole label.
                 text, place = (0, label["place"] if label["shown"] else 0) if seat_id == shown else (label["text"], label["place"])
                 pin = self.pins[seat_id]
-                self.snapshot_label(snapshot, pin["texts"][text]["layout"], *self.label_place_with(pin, angle, geometry, text, place, scale),
+                self.snapshot_label(snapshot, pin["texts"][text]["layout"], *self.label_place_with(pin, angle, geometry, text, place, scale,
+                                                                                                  seat_id in self.open_lit()[1]),
                                     enter.get(seat_id, 1), palette)
         for seat_id, angle in seats.items():
             self.snapshot_pin(snapshot, self.pins[seat_id], *table_point(geometry, geometry["Rp"], angle), seat_id, lit, enter.get(seat_id, 1), now, palette)
@@ -13630,15 +13630,15 @@ class RoundTable(Gtk.Overlay):
             snapshot_layout(snapshot, item["layout"], item["tx"], middle - item["h"] / 2, dim)
 
     @staticmethod
-    def label_place_with(pin, angle, geometry, text=0, place=0, scale=1):
+    def label_place_with(pin, angle, geometry, text=0, place=0, scale=1, opened=False):
         """The top left of a seat label: inward from the pin (place 0), or 3 px under (1), over (2), left of (3), or right of (4) the
         32 px pin. text is the index in pin["texts"]."""
         width, height = pin["texts"][text]["w"], pin["texts"][text]["h"]
         if place == 0:
-            x, y = table_point(geometry, geometry["Rp"] - seat_label_offset(angle, width / 2, scale), angle)
+            x, y = table_point(geometry, geometry["Rp"] - seat_label_offset(angle, width / 2, scale) - (6 if opened else 0), angle)
             return x - width / 2, y - height / 2
         x, y = table_point(geometry, geometry["Rp"], angle)
-        gap = 16 + 3 * scale
+        gap = (22 if opened else 16) + 3 * scale
         return ((x - width / 2, y + gap), (x - width / 2, y - gap - height), (x - gap - width, y - height / 2), (x + gap, y - height / 2))[place - 1]
 
     def snapshot_chord(self, snapshot, chord, fade, tone, palette, gray, part="all"):
@@ -13698,9 +13698,10 @@ class RoundTable(Gtk.Overlay):
         snapshot_circle(snapshot, x, y, 16, rgba(win))
         sending = seat_id is not None and self.send_until.get(seat_id, 0) > now >= self.send_until[seat_id] - 160_000
         if opened:
-            # The open pin: a 2 px window-colored gap and a 3 px accent ring outside the 32 px pin.
-            snapshot_circle(snapshot, x, y, 21, rgba(win))
-            snapshot_stroke(snapshot, circle_path(x, y, 19.5), 3, rgba(palette["accent"]))
+            # The open pin keeps its rest ring, then a 2 px window-colored gap and a 3 px accent ring (18.75 to 21.75 px).
+            snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(pin["hue"]), [4, 3] if pin["offline"] else None)
+            snapshot_stroke(snapshot, circle_path(x, y, 17.75), 2, rgba(win))
+            snapshot_stroke(snapshot, circle_path(x, y, 20.25), 3, rgba(palette["accent"]))
         elif chosen:
             snapshot_stroke(snapshot, circle_path(x, y, 16), 2, rgba(palette["accent"]))
         else:
@@ -14685,7 +14686,7 @@ class MessagesWindow(ActivityWindow):
         sender = (seats.get(record["from"]) or {}).get("machineId")
         block.add_css_class(f"asb-msg-bg-{machine_index.get(sender, 0) % len(MACHINE_HUES)}")
         top = Gtk.Box(spacing=round(6 * self.text_scale))
-        name_label = Gtk.Label(label=who, xalign=0)
+        name_label = Gtk.Label(label=who, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
         name_label.set_attributes(no_hyphens(name_label.get_attributes()))
         name_label.add_css_class("asb-msg-who")
         if not run:

@@ -4348,7 +4348,7 @@ class WidgetCheck(unittest.TestCase):
                         self.assertEqual(card.get_child().get_orientation(), asb.Gtk.Orientation.HORIZONTAL)
                         self.assertTrue(title.get_single_line_mode())
                     if output:
-                        window.search.grab_focus(); self.drain(.2); adjustment.set_value(80); self.drain(.2)
+                        window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / f"view-{mode}-{width}.png")
                         window.focus_widgets[focused].grab_focus()
                         position = adjustment.get_value()
@@ -4367,7 +4367,7 @@ class WidgetCheck(unittest.TestCase):
                         column = column.get_next_sibling()
                     self.assertEqual(asb.read_layout(layout_path)["view"], "comfortable")
                     if output:
-                        window.search.grab_focus(); self.drain(.2); adjustment.set_value(80); self.drain(.2)
+                        window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
                     self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
@@ -4385,7 +4385,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(window.column_width, 240)
                 if output and width == 680:
                     window.search.grab_focus(); self.drain(.2)
-                    adjustment.set_value(80); self.drain(.2)
+                    adjustment.set_value(0); self.drain(.2)
                     self.capture(window, Path(output) / "view-comfortable-active-pills.png")
                 window.clear_search(); window.clear_filters(); self.drain()
                 with patch.object(asb, "request_async") as request:
@@ -4411,7 +4411,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertTrue(window.has_css_class("asb-custom"))
                 if output and width == 1040:
                     window.search.grab_focus(); self.drain(.2)
-                    adjustment.set_value(80); self.drain(.2)
+                    adjustment.set_value(0); self.drain(.2)
                     self.capture(window, Path(output) / "view-comfortable-custom.png")
                 window.set_palette(None)
                 same = copy.deepcopy(dashboard); same["generatedAtMs"] += 30_000
@@ -17264,7 +17264,6 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 window = self.window(size, period="24h")
                 table = window.table
                 shown = [seat for seat, item in table.labels.items() if item["shown"]]
-                print("LABELS", font, size, window.text_scale, len(shown), "of", len(table.pins), shown)
                 self.assertGreater(len(shown), 0)
                 if size[0] == 968 and scale_dpi == 98304:
                     self.assertTrue({"parser-review", "render-farm"} <= set(shown))
@@ -17301,6 +17300,52 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((table.labels[seat]["shown"], table.labels[seat]["text"], table.labels[seat]["place"]), (True, 0, 0))
         self.assertEqual(sum(item["shown"] for item in table.labels.values()), 1)
         table.layout_table()
+
+    def test_long_sender_wraps_inside_the_thread_column(self):
+        self.sample = copy.deepcopy(self.sample)
+        title = "Implement the council round three fixes for the Usage window today"
+        for seat in self.sample["seats"]:
+            if seat["id"] == "docs":
+                seat["title"] = title
+        window = self.window(period="7d")
+        window.show_session("release-plan"); self.drain(.8)
+        column = window.thread_list.compute_bounds(window)[1]
+        self.assertEqual(column.get_width(), 339)
+        for block in window.thread_blocks.values():
+            bounds = block.compute_bounds(window)[1]
+            self.assertLessEqual(bounds.get_x() + bounds.get_width(), column.get_x() + column.get_width() + .5)
+        sender = next(label for block in window.thread_blocks.values() for label in self.tree(block)
+                      if isinstance(label, asb.Gtk.Label) and label.get_label() == "From " + title)
+        self.assertTrue(sender.get_wrap())
+        self.assertEqual(sender.get_ellipsize(), asb.Pango.EllipsizeMode.NONE)
+        self.assertGreaterEqual(sender.get_layout().get_line_count(), 2)
+        self.assertFalse(sender.get_layout().is_ellipsized())
+
+    def test_RoundTable_open_pin_rings_keep_labels_clear(self):
+        for size in ((968, 760), (480, 760)):
+            window = self.window(size, period="7d")
+            pairs = window.view["pairs"]
+            window.open_thread("pair", max(pairs, key=lambda key: pairs[key]["n"])); self.drain(.6)
+            table = window.table
+            for seat in table.open_lit()[1]:
+                x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"][seat])
+                ring = (x - 22, y - 22, x + 22, y + 22)
+                for other, label in table.labels.items():
+                    if label["shown"] and other != seat:
+                        box = label["box"]
+                        self.assertFalse(box[0] < ring[2] and ring[0] < box[2] and box[1] < ring[3] and ring[1] < box[3], (size, seat, other))
+            window.close(); self.drain(.05)
+
+    def test_RoundTable_pointer_hover_keeps_label_places(self):
+        window = self.window((480, 760), period="24h")
+        table = window.table
+        before = copy.deepcopy(table.labels)
+        for chord in table.chords:
+            for point in chord["table"][0][8:-8:8]:
+                table.pointer_moved(None, *point)
+                self.assertEqual(table.labels, before)
+        table.pointer_left()
+        self.assertEqual(table.labels, before)
 
     def test_RoundTable_open_threads_keep_the_seated_list_and_every_angle(self):
         for extra in ([], [["m-shot-1", "docs", "release-plan", self.sample["nowMs"] - 3000, "not-sent", "", "Check the guide."],
@@ -17447,16 +17492,16 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual({table.chord_tone(chord, state, lit) for chord in table.chords if chord["key"] not in lit[0]}, {"dim"})
         proxy = table.proxies[("chord", another)]
         counts = window.view["pairs"][another]
-        self.assertEqual(proxy.get_tooltip_text(), f"{table.title(counts['a'])} ⇄ {table.title(counts['b'])}\n→ {counts['ab']}  ← {counts['ba']}")
-        # An open pin gets the outer ring (radii 18 to 21) and an opaque gap, while a hover pin keeps the 2 px ring.
+        self.assertEqual(proxy.get_tooltip_text(), f"{table.title(counts['a'])} ⇄ {table.title(counts['b'])}\n→ {asb.format_count(counts['ab'])}  ← {asb.format_count(counts['ba'])}")
+        # An open pin keeps its hue ring and adds a 2 px window gap and a 3 px accent ring (18.75 to 21.75).
         seat = pair[0]
         snapshot = Mock()
         table.icons[table.pins[seat]["app"]] = Mock()
-        table.snapshot_pin(snapshot, table.pins[seat], 100, 100, seat, lit, 1, 0, window.palette)
-        ring = snapshot.append_stroke.call_args_list[0]
-        self.assertEqual(ring.args[1].get_line_width(), 3)
-        self.assertEqual(asb.hex_color(ring.args[2]), window.palette["accent"])
-        self.assertEqual(snapshot.append_fill.call_args_list[-1].args[0].get_bounds()[1].get_width(), 42)
+        with patch.object(asb, "circle_path", wraps=asb.circle_path) as paths:
+            table.snapshot_pin(snapshot, table.pins[seat], 100, 100, seat, lit, 1, 0, window.palette)
+        strokes = [(call.args[1].get_line_width(), asb.hex_color(call.args[2])) for call in snapshot.append_stroke.call_args_list[:3]]
+        self.assertEqual(strokes, [(1.5, table.pins[seat]["hue"]), (2, window.palette["win"]), (3, window.palette["accent"])])
+        self.assertEqual([call.args[2] for call in paths.call_args_list[:3]], [16, 17.75, 20.25])
         self.assertIn(f"border-bottom: 2px solid {window.palette['accent']}", window.palette_css(window.palette))
         window.open_thread("status", "written"); self.drain(.2)
         table.hover["chord"] = None
