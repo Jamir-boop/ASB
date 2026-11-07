@@ -306,6 +306,16 @@ class ActivityHelperChecks(unittest.TestCase):
         with patch.dict(asb.accent_guard.__globals__, contrast=lambda *_: 1):
             self.assertEqual(asb.accent_guard("#ffb900", "#ffb900", "#000000"), "#ffb900")
 
+    def test_accent_guard_on_usage_app_colors_and_machine_hues(self):
+        guarded = lambda colors, accent, window: {key: asb.accent_guard(value, accent, window) for key, value in colors.items()}
+        apps, hues = dict(asb.ACTIVITY_APP_COLORS), dict(enumerate(asb.MACHINE_HUES))
+        # The user palette moves only Grok and machine 4.
+        self.assertEqual(guarded(apps, "#ffb900", "#000000"), dict(apps, grok="#928d05"))
+        self.assertEqual(guarded(hues, "#ffb900", "#000000"), {**hues, 3: "#b27f3b"})
+        for accent, window in (("#81d0ff", "#222226"), ("#7cc4ff", "#10141c")):
+            self.assertEqual(guarded(apps, accent, window), apps)
+            self.assertEqual(guarded(hues, accent, window), hues)
+
     def test_chord_gray_and_the_unknown_status_floor(self):
         # The weakest text mix from 40% with 3:1 on the window and every sector fill.
         fills = [asb.mix_color("#000000", hue, .05) for hue in asb.MACHINE_HUES[:3]]

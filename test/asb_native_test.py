@@ -14876,6 +14876,48 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIn("background-color: rgb(217,119,87);", window.css.to_string().split(".asb-usage-app-claude {")[1].split("}")[0])
         self.assert_no_new_warnings()
 
+    def test_the_accent_guard_reaches_usage_machine_and_app_colors(self):
+        black = {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"}
+        replies = copy.deepcopy(self.REPLIES)
+        for reply in replies.values():
+            reply["machines"].append({"machineId": "den", "name": "Den", "self": False, "state": "online", "lastReportAtMs": 1793032800000})
+            template = reply["records"][0]
+            reply["records"] += [dict(copy.deepcopy(template), machineId="den"), dict(copy.deepcopy(template), app="grok", model="grok-4", maker="xAI")]
+        window = self.window(replies)
+
+        def colors():
+            arcs = {arc["id"]: arc["color"] for arc in window.round.arcs}
+            rules = window.css.to_string()
+            window.set_split("machine")
+            machines = {key: color for key, _label, color in window.chart.series}
+            window.set_split("app")
+            apps = {key: color for key, _label, color in window.chart.series}
+            row = next(row for row in self.children(window.machine_rows) if row.asb_machine == "den")
+            return {"arc": arcs["den"], "series": machines["den"], "dot": row.asb_dot.has_css_class("asb-activity-hue-3"),
+                    "hue": rules.split(".asb-activity-hue-3 {")[1].split("}")[0],
+                    "app arc": arcs["desk/grok"], "app series": apps["grok"], "app key": rules.split(".asb-usage-app-grok {")[1].split("}")[0]}
+        native = colors()
+        window.set_palette(black)
+        self.drain(.1)
+        guarded = colors()
+        self.assertEqual({key: guarded[key] for key in ("arc", "series", "dot", "app arc", "app series")},
+                         {"arc": "#b27f3b", "series": "#b27f3b", "dot": True, "app arc": "#928d05", "app series": "#928d05"})
+        self.assertIn("background-color: rgb(178,127,59);", guarded["hue"])
+        self.assertIn("background-color: rgb(146,141,5);", guarded["app key"])
+        self.assertTrue(any(arc["kind"] == "app" and arc["color"] == "#928d05" for arc in window.round.arcs))
+        # The models key and dots take the guarded hue through the same class.
+        self.assertTrue(any(child.has_css_class("asb-activity-hue-3") for child in descendants(window.model_keys)))
+        self.assertTrue(any(child.has_css_class("asb-activity-hue-3") for child in descendants(window.models)))
+        # Back to the GNOME palette and to the custom one: the open window redraws each time.
+        window.set_palette(None)
+        self.drain(.1)
+        self.assertEqual(colors(), native)
+        self.assertNotEqual(native["arc"], "#b27f3b")
+        window.set_palette(black)
+        self.drain(.1)
+        self.assertEqual(colors(), guarded)
+        self.assert_no_new_warnings()
+
     def test_show_all_in_the_machines_fold_and_the_filter_popover(self):
         window = self.window()
         self.assertFalse(window.fold_show_all.get_visible() or window.filter_show_all.get_visible())
@@ -17522,7 +17564,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(asb.message_status_text_color(window.palette, "held"), "#ac8220")
         css = window.palette_css(window.palette)
         self.assertIn(".asb-msg-bg-3 { background: alpha(#b27f3b, 0.22); }", css)
-        self.assertIn(".asb-msg-dot.asb-activity-hue-3 { background: #b27f3b; }", css)
+        self.assertNotIn(".asb-msg-dot.asb-activity-hue-", css)
+        # The base rule draws the Messages dots in the guarded hue.
+        self.assertIn("background-color: rgb(178,127,59);", window.css.to_string().split(".asb-activity-hue-3 {")[1].split("}")[0])
         self.assertEqual(window.legend_rows["held"].get_child().get_first_child().get_next_sibling().get_label(), "On hold")
         window.open_thread("status", "held"); self.drain(.3)
         self.assertEqual(window.thread_route.get_label(), "On hold · 24 hours")

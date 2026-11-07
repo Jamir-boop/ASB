@@ -12750,9 +12750,9 @@ class ActivityWindow(Adw.Window):
         scope, s = ".asb-activity" + self.css_scope, self.text_scale
         self.error_icon.set_pixel_size(round(64 * s))
         ring = palette["accent"] if colors else "@accent_color"
-        hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {hue}; }}\n"
-                       f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {hue}; min-width: 4px; min-height: 4px; }}\n"
-                       for index, hue in enumerate(MACHINE_HUES))
+        hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {self.machine_hue(index)}; }}\n"
+                       f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {self.machine_hue(index)}; min-width: 4px; min-height: 4px; }}\n"
+                       for index in range(len(MACHINE_HUES)))
         self.css.load_from_string(hues + f"""
 {scope} {{ background: {palette['win']}; color: {palette['text']}; }}
 {scope}.asb-custom .top-bar {{ background: {palette['win']}; color: {palette['text']}; box-shadow: none; }}
@@ -12792,6 +12792,10 @@ class ActivityWindow(Adw.Window):
         if offline:
             dot.add_css_class("asb-activity-hollow")
         return dot
+
+    def machine_hue(self, index):
+        """The machine hue, moved in lightness when it is too close to the accent."""
+        return accent_guard(machine_hue(index), self.palette["accent"], self.palette["win"])
 
     def palette_css(self, palette):
         """Extra rules of a subclass, scoped with self.css_scope; they load with the rules above."""
@@ -13891,9 +13895,6 @@ class MessagesWindow(ActivityWindow):
         keys.connect("key-pressed", self.window_key)
         self.add_controller(keys)
 
-    def machine_hue(self, index):
-        return accent_guard(machine_hue(index), self.palette["accent"], self.palette["win"])
-
     def palette_css(self, palette):
         scope, scale = self.css_scope, self.text_scale
 
@@ -13903,8 +13904,6 @@ class MessagesWindow(ActivityWindow):
         # On a black or near-black window a 14% tint hardly shows: the blocks take 22% there.
         tint = .22 if luminance(palette["win"]) < .01 else .14
         hues = "".join(f"{scope} .asb-msg-bg-{index} {{ background: alpha({self.machine_hue(index)}, {tint}); }}\n"
-                       f"{scope} .asb-msg-dot.asb-activity-hue-{index} {{ background: {self.machine_hue(index)}; }}\n"
-                       f"{scope} .asb-msg-dot.asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border-color: {self.machine_hue(index)}; }}\n"
                        for index in range(len(MACHINE_HUES)))
         colors = message_status_colors(palette)
         statuses = "".join(f"{scope} .asb-msg-sw-{status} {{ background: {colors[status]}; }}\n"
@@ -15940,9 +15939,10 @@ class UsageWindow(ActivityWindow):
         return dot
 
     def app_color(self, app):
-        """The app data color; Other has 3:1 or more on the window."""
+        """The app data color; Other has 3:1 or more on the window. A color too close to the accent moves in lightness."""
         color = ACTIVITY_APP_COLORS[app]
-        return contrast_floor(color, self.palette["text"], self.palette["win"], 3) if app == "" else color
+        color = contrast_floor(color, self.palette["text"], self.palette["win"], 3) if app == "" else color
+        return accent_guard(color, self.palette["accent"], self.palette["win"])
 
     @staticmethod
     def mark(app):
@@ -16111,7 +16111,7 @@ class UsageWindow(ActivityWindow):
         view = usage_view(data, on, self.metric)
         cost = self.metric == "cost"
         show = format_cost if cost else format_tokens
-        arcs = [dict(arc, color=self.app_color(arc["id"].split("/", 1)[1])) if arc["kind"] == "app" else arc
+        arcs = [dict(arc, color=self.app_color(arc["id"].split("/", 1)[1]) if arc["kind"] == "app" else self.machine_hue(MACHINE_HUES.index(arc["color"])))
                 for arc in usage_round_arcs(view, data["machines"], self.metric)]
         machines = {machine["id"]: machine for machine in view["machines"]}
         for arc in arcs:
@@ -16141,7 +16141,7 @@ class UsageWindow(ActivityWindow):
             shown = {row["id"] for row in view["apps"]}
             series = [(app, ACTIVITY_APP_LABELS[app], self.app_color(app)) for app in USAGE_APPS + ("",) if app in ACTIVITY_APPS or app in shown]
         else:
-            series = [(machine["id"], machine["name"], machine["hue"]) for machine in view["machines"]]
+            series = [(machine["id"], machine["name"], self.machine_hue(MACHINE_HUES.index(machine["hue"]))) for machine in view["machines"]]
         key = (self.period, self.metric, self.split, frozenset(self.machines_on()))
         self.chart.set_data(series, [bar[self.split] for bar in view["bars"]], view["buckets"], show, self.metric,
                             self.chart_key is not None and key != self.chart_key)
