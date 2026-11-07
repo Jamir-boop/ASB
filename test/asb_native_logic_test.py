@@ -1128,6 +1128,22 @@ class UsageLogicChecks(unittest.TestCase):
                 self.assertEqual(labels[-1][1], "Now · so far" if unit == "hour" else "Today · so far")
                 self.assertEqual(labels[-1][2] + 7 * len(labels[-1][1]), 900)
 
+    def test_narrow_axis_keeps_both_ends_when_they_fit(self):
+        self.assertEqual(asb.usage_axis_labels({"unit": "day", "startsMs": []}, [], 400, 1, len, ends=True), [])
+        for unit, count, step in (("hour", 24, 3), ("day", 30, 5), ("month", 20, 3)):
+            starts = self.months(2025, 4, count) if unit == "month" else list(range(count))
+            buckets = {"unit": unit, "startsMs": starts}
+            for width in (100, 200, 400):
+                centers = [48 + index * (width - 48) / (count - 1) for index in range(count)]
+                labels = asb.usage_axis_labels(buckets, centers, width, step, lambda text: 7 * len(text), ends=True)
+                self.assertEqual(labels[-1][0], count - 1)
+                for (_index, text, left), (_next, _text, right) in zip(labels, labels[1:]):
+                    self.assertLessEqual(left + 7 * len(text), right - 4)
+                if width == 400:
+                    self.assertEqual(labels[0][0], 0)
+                elif width == 100:
+                    self.assertEqual(len(labels), 1)
+
     def test_all_fixture_keeps_the_90_day_totals_in_utc_months(self):
         reply, days = self.REPLIES["all"], self.REPLIES["90d"]
         self.assertEqual(reply["period"], "all")
@@ -1276,19 +1292,24 @@ class UsageLogicChecks(unittest.TestCase):
                 self.assertEqual(len(labels), 3 if step * 3 >= maximum else 4)
 
     def test_token_ramp_of_the_accent(self):
-        for accent, window, expected in (("#ffb900", "#000000", ["#7a5e2b", "#a67f35", "#d7a131", "#ffb900"]),
-                                         ("#81d0ff", "#222226", ["#527083", "#628ca6", "#77b3d8", "#81d0ff"]),
-                                         ("#7cc4ff", "#10141c", ["#4b677e", "#648bac", "#7ab1df", "#7cc4ff"])):
+        for accent, window, expected in (("#ffb900", "#000000", ["#6e572b", "#9c762b", "#cd9723", "#ffb900"]),
+                                         ("#81d0ff", "#222226", ["#557081", "#648fa9", "#73afd3", "#81d0ff"]),
+                                         ("#7cc4ff", "#10141c", ["#4c657a", "#5c83a4", "#6ca3d1", "#7cc4ff"])):
             with self.subTest(accent=accent):
                 ramp = asb.usage_token_ramp(accent, window)
                 self.assertEqual(list(ramp), list(asb.USAGE_PARTS))
                 self.assertEqual(list(ramp.values()), expected)
                 self.assertGreaterEqual(asb.contrast(ramp["cacheRead"], window), 3)
+                for first, second in zip(expected, expected[1:]):
+                    self.assertGreaterEqual(asb.math.dist(asb.oklab(first), asb.oklab(second)), .09)
+                lightnesses = [asb.oklab(color)[0] for color in expected]
+                steps = [second - first for first, second in zip(lightnesses, lightnesses[1:])]
+                self.assertLess(max(steps) - min(steps), .004)
         # A dark accent on a dark window: the cache read step gets lighter until it has 3:1.
         ramp = asb.usage_token_ramp("#3060c0", "#101820")
         self.assertGreaterEqual(asb.contrast(ramp["cacheRead"], "#101820"), 3)
         _lightness, a, b = asb.oklab("#3060c0")
-        first = asb.oklch_color(.50, asb.math.hypot(a, b) * .45, asb.math.degrees(asb.math.atan2(b, a)) % 360)
+        first = asb.oklch_color(.30, asb.math.hypot(a, b) * .40, asb.math.degrees(asb.math.atan2(b, a)) % 360)
         self.assertLess(asb.contrast(first, "#101820"), 3)
         self.assertNotEqual(ramp["cacheRead"], first)
 
@@ -1307,15 +1328,15 @@ class UsageLogicChecks(unittest.TestCase):
 
     def test_ring_note(self):
         view = self.view()
-        self.assertEqual(asb.usage_ring_note(view, False, 3, 3), "1 model unpriced")
-        self.assertEqual(asb.usage_ring_note(view, True, 2, 3), "so far · 2 of 3 machines · 1 model unpriced")
-        self.assertEqual(asb.usage_ring_note(self.view(metric="tokens"), True, 3, 3), "so far")
-        self.assertEqual(asb.usage_ring_note(self.view(on={"laptop"}), False, 1, 3), "1 of 3 machines")
+        self.assertEqual(asb.usage_ring_note(view, False, 3, 3), "1\u00a0model\u00a0unpriced")
+        self.assertEqual(asb.usage_ring_note(view, True, 2, 3), "so\u00a0far · 2\u00a0of\u00a03\u00a0machines · 1\u00a0model\u00a0unpriced")
+        self.assertEqual(asb.usage_ring_note(self.view(metric="tokens"), True, 3, 3), "so\u00a0far")
+        self.assertEqual(asb.usage_ring_note(self.view(on={"laptop"}), False, 1, 3), "1\u00a0of\u00a03\u00a0machines")
         reply = copy.deepcopy(self.REPLIES["30d"])
         for record in reply["records"]:
             if record["model"] in ("gpt-6.1-mini", "claude-haiku-5-5"):
                 record["cost"] = None
-        self.assertEqual(asb.usage_ring_note(self.view(reply=reply), False, 3, 3), "3 models unpriced")
+        self.assertEqual(asb.usage_ring_note(self.view(reply=reply), False, 3, 3), "3\u00a0models\u00a0unpriced")
 
     def test_round_arcs(self):
         view, machines = self.view(), self.REPLIES["30d"]["machines"]

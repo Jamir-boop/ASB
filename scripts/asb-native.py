@@ -2166,10 +2166,11 @@ def bucket_label(buckets, index):
     return format_clock(starts[index]) if hourly else format_day(starts[index])
 
 
-def usage_axis_labels(buckets, centers, chart_width, step, measure):
+def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False):
     """The x labels of the chart as (index, text, left x): every step-th point from the last, kept inside the chart, skipped when
     it would end less than 4 px before the label to its right. The first label starts at its point, the last ends at its point
-    and says `· so far`, and the others are centered. Month labels name the year where it changes."""
+    and says `· so far`, and the others are centered. Month labels name the year where it changes. With ends (the narrow
+    chart), the first point keeps its label too when it fits beside the last one; labels between them make room for it."""
     starts, last, month = buckets["startsMs"], len(centers) - 1, buckets["unit"] == "month"
 
     def text(index, year):
@@ -2193,6 +2194,12 @@ def usage_axis_labels(buckets, centers, chart_width, step, measure):
         if limit is None or left + width <= limit - 4:
             shown.insert(0, index)
             limit = left
+    if ends and last > 0 and shown[0] != 0:
+        end = place(0, measure(text(0, True))) + measure(text(0, True))
+        if end <= place(last, measure(text(last, True))) - 4:
+            while place(shown[0], measure(text(shown[0], True))) < end + 4:
+                shown.pop(0)
+            shown.insert(0, 0)
     labels, year = [], None
     for index in shown:
         at = datetime.fromtimestamp(starts[index] / 1000).year
@@ -2209,6 +2216,9 @@ def activity_palette(colors):
     return {"win": background, "rule": rule, "track": mix_color(background, text, .17),
             "divider": colors["divider"] if contrast(colors["divider"], background) >= 1.3 else rule, "popup": edge_color(background, text, .36, (background,)),
             "text": text, "dim": colors["muted"], "accent": accent, "light": mix_color(accent, "#ffffff", .35), "warn": "#e0b45a", "bad": "#f5a090"}
+
+
+ACTIVITY_NO_ENGINE = "The ASB engine does not answer. Start it with asb engine start, then try again."
 
 
 def request_json(base, route, method="GET", body=None, etag=None, headers=None):
@@ -2278,6 +2288,11 @@ def request_json(base, route, method="GET", body=None, etag=None, headers=None):
                 # An engine from before the activity routes answers 404.
                 if isinstance(error, HTTPError) and error.code == 404:
                     detail = "This ASB engine has no activity data. Update ASB, then try again."
+                elif not isinstance(error, HTTPError) and isinstance(error, OSError):
+                    # No HTTP response: the second line is the system reason, which the error page shows dim under the text.
+                    reason = error.reason if isinstance(error, URLError) else error
+                    reason = getattr(reason, "strerror", None) or str(reason)
+                    detail = f"{ACTIVITY_NO_ENGINE}\n{reason}"
                 raise RuntimeError(detail or "Cannot load the activity. Check that ASB is running, then try again.") from error
             if usage_route and isinstance(error, HTTPError) and error.code == 404:
                 # An engine from before the usage backups answers 404.
@@ -3018,29 +3033,31 @@ def oklch_color(lightness_value, chroma, hue):
 
 
 def usage_token_ramp(accent, window):
-    """The token type colors: a ramp of the accent in OKLCH (cache read, cache write, uncached input, output). The cache read
-    step gets lighter until it has 3:1 on the window."""
+    """The token type colors: a ramp of the accent in OKLCH (cache read, cache write, uncached input, output) in even lightness
+    steps from the floor to the accent. The floor is the lowest lightness from 0.30 up (0.005 steps) at which the cache read
+    color has 3:1 on the window; the output step is the accent itself."""
     lightness_value, a, b = oklab(accent)
     chroma, hue = math.hypot(a, b), math.degrees(math.atan2(b, a)) % 360
-    ramp = {part: oklch_color(step, chroma * share, hue)
-            for part, step, share in zip(USAGE_PARTS, (.50, .62, .74, lightness_value), (.45, .60, .80, 1))}
-    step = .50
-    while contrast(ramp["cacheRead"], window) < 3 and step < 1:
-        step += .005
-        ramp["cacheRead"] = oklch_color(step, chroma * .45, hue)
+    floor = .30
+    while contrast(oklch_color(floor, chroma * .40, hue), window) < 3 and floor < 1:
+        floor = round(floor + .005, 3)
+    ramp = {part: oklch_color(floor + index * (lightness_value - floor) / 3, chroma * share, hue)
+            for index, (part, share) in enumerate(zip(USAGE_PARTS[:3], (.40, .60, .80)))}
+    ramp["output"] = accent
     return ramp
 
 
 def usage_ring_note(view, scanning, shown, total):
     """The third center line of the ring: `so far` while a scan runs, `2 of 3 machines` while some machines are off,
-    and `1 model unpriced` in Cost when the view has unpriced tokens, joined by ` · `."""
+    and `1 model unpriced` in Cost when the view has unpriced tokens, joined by ` · `. The words of a part are joined with
+    no-break spaces, so the line breaks only at ` · `."""
     parts = ["so far"] if scanning else []
     if shown < total:
         parts.append(f"{shown} of {total} machines")
     if view["metric"] == "cost" and view["unpriced_tokens"] > 0:
         count = len(view["unpriced_models"])
         parts.append(f"{count} model{'' if count == 1 else 's'} unpriced")
-    return " · ".join(parts)
+    return " · ".join(part.replace(" ", "\u00a0") for part in parts)
 
 
 def usage_unpriced_note(view):
@@ -12531,7 +12548,7 @@ class ActivityWindow(Adw.Window):
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.NONE, hexpand=True, vexpand=True)
         self.stack.add_named(Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER), "loading")
         error = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
-        self.error_icon = Gtk.Image(icon_name="network-offline-symbolic", pixel_size=48)
+        self.error_icon = Gtk.Image(icon_name="computer-fail-symbolic", pixel_size=64)
         self.error_icon.add_css_class("asb-dim")
         error.append(self.error_icon)
         self.error_title = Gtk.Label(label=f"Cannot load {self.TITLE.lower()}", wrap=True, justify=Gtk.Justification.CENTER)
@@ -12541,8 +12558,15 @@ class ActivityWindow(Adw.Window):
         self.error_label.add_css_class("asb-dim")
         self.error_label.add_css_class("asb-error-text")
         error.append(Adw.Clamp(maximum_size=360, child=self.error_label))
+        # The system reason when the engine does not answer (for example Connection refused).
+        self.error_reason = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, selectable=True, visible=False)
+        self.error_reason.add_css_class("asb-dim")
+        self.error_reason.add_css_class("asb-error-reason")
+        self.error_reason_clamp = Adw.Clamp(maximum_size=360, child=self.error_reason, visible=False)
+        error.append(self.error_reason_clamp)
         self.retry_button = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
         self.retry_button.add_css_class("suggested-action")
+        self.retry_button.add_css_class("pill")
         self.retry_button.connect("clicked", lambda *_: self.refresh())
         error.append(self.retry_button)
         self.stack.add_named(error, "error")
@@ -12614,7 +12638,11 @@ class ActivityWindow(Adw.Window):
             if error:
                 self.etags.pop(route, None)
                 if self.data is None:
-                    self.error_label.set_label(error)
+                    text, _line, reason = error.partition("\n") if error.startswith(ACTIVITY_NO_ENGINE + "\n") else (error, "", "")
+                    self.error_label.set_label(text)
+                    self.error_reason.set_label(reason)
+                    self.error_reason.set_visible(bool(reason))
+                    self.error_reason_clamp.set_visible(bool(reason))
                     self.stack.set_visible_child_name("error")
             elif self.fetch is None and data is None:
                 self.data["nowMs"] = self.clock()
@@ -12698,6 +12726,7 @@ class ActivityWindow(Adw.Window):
             # GNOME draws its dividers with the borders role, about 15 % text; the divider of native_colors is 30 %.
             palette["divider"] = palette["rule"]
         scope, s = ".asb-activity" + self.css_scope, self.text_scale
+        self.error_icon.set_pixel_size(round(64 * s))
         ring = palette["accent"] if colors else "@accent_color"
         hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {hue}; }}\n"
                        f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {hue}; min-width: 4px; min-height: 4px; }}\n"
@@ -12706,14 +12735,13 @@ class ActivityWindow(Adw.Window):
 {scope} {{ background: {palette['win']}; color: {palette['text']}; }}
 {scope}.asb-custom .top-bar {{ background: {palette['win']}; color: {palette['text']}; box-shadow: none; }}
 {scope}.asb-custom .linked > button {{ background: alpha({palette['text']}, .08); color: {palette['text']}; }}
-{scope}.asb-custom .linked > button:hover {{ background: alpha({palette['text']}, .14); }}
-{scope} .linked > button:checked {{ background: @accent_bg_color; color: @accent_fg_color; }}
-{scope}.asb-custom .linked > button:checked {{ background: {palette['accent']}; color: {palette['win']}; }}
+{scope}.asb-custom .linked > button:hover:not(:checked) {{ background: alpha({palette['text']}, .14); }}
+{scope} .linked > button:checked {{ background: {palette['accent']}; color: {palette['win']}; }}
 {scope}.asb-custom :focus-visible {{ outline-color: {palette['accent']}; }}
 {scope} button:focus-visible, {scope} checkbutton:focus-visible,
 {scope} expander-widget:focus-visible > box > title {{ outline: 2px solid {ring}; outline-offset: 1px; }}
 {scope} checkbutton:focus-visible > check {{ outline: none; }}
-{scope}.asb-custom button.suggested-action {{ background: {palette['accent']}; color: {palette['win']}; }}
+{scope} button.suggested-action {{ background: {palette['accent']}; color: {palette['win']}; }}
 {scope} .asb-activity-toolbar {{ background: {palette['win']}; }}
 {scope} .asb-activity-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
 {scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
@@ -12721,8 +12749,9 @@ class ActivityWindow(Adw.Window):
 {scope} .asb-dim {{ color: {palette['dim']}; }}
 {scope} .asb-mono {{ font-feature-settings: "tnum"; }}
 {scope} .asb-paths-note {{ font-size: {12 * s:g}px; }}
-{scope} .asb-error-title {{ font-size: {15 * s:g}px; font-weight: 600; }}
+{scope} .asb-error-title {{ font-size: {20 * s:g}px; font-weight: 700; }}
 {scope} .asb-error-text {{ font-size: {13 * s:g}px; }}
+{scope} .asb-error-reason {{ font-size: {12 * s:g}px; }}
 {scope} .asb-activity-dot {{ min-width: 7px; min-height: 7px; border-radius: 50%; }}
 """ + self.palette_css(palette))
         self.queue_draw()
@@ -14692,14 +14721,37 @@ def usage_rect(snapshot, x, y, width, height, color, radius=0):
 
 
 class UsageBar(Gtk.Widget):
-    """A share bar: an optional track, and stacked segments (radius 2, 1 px gaps) over a fraction of the width."""
+    """A share bar: an optional track, and stacked segments (radius 2, 1 px gaps) over a fraction of the width. A segment
+    (value, color, tip) has a tooltip."""
     def __init__(self, height, track=None, width=-1):
         super().__init__(height_request=height, width_request=width, valign=Gtk.Align.CENTER, hexpand=width < 0)
-        self.track, self.segments, self.fraction = track, [], 1
+        self.track, self.segments, self.fraction, self.tips = track, [], 1, []
+        self.connect("query-tooltip", self.query_tooltip)
 
     def set_segments(self, segments, fraction=1):
-        self.segments, self.fraction = [(value, color) for value, color in segments if value > 0], max(0, min(1, fraction))
+        shown = [segment for segment in segments if segment[0] > 0]
+        self.segments, self.fraction = [(value, color) for value, color, *_tip in shown], max(0, min(1, fraction))
+        self.tips = [tip[0] if tip else None for _value, _color, *tip in shown]
+        self.set_has_tooltip(any(self.tips))
         self.queue_draw()
+
+    def segment_at(self, x):
+        """The index of the segment under x, or None."""
+        total = sum(value for value, _color in self.segments)
+        room, left = self.get_width() * self.fraction - (len(self.segments) - 1), 0
+        for index, (value, _color) in enumerate(self.segments):
+            size = room * value / total if total else 0
+            if left <= x < left + size:
+                return index
+            left += size + 1
+        return None
+
+    def query_tooltip(self, _widget, x, _y, _keyboard, tooltip):
+        index = self.segment_at(x)
+        if index is None or not self.tips[index]:
+            return False
+        tooltip.set_text(self.tips[index])
+        return True
 
     def do_snapshot(self, snapshot):
         width, height = self.get_width(), self.get_height()
@@ -14728,15 +14780,19 @@ class UsageRound(Gtk.Widget):
     SIZE = 320  # The frame of usage_round_arcs.
     HOLE = 109  # The inner radius of the rings in usage_round_arcs.
 
+    OUTER = 146  # The outer radius of the apps band in usage_round_arcs.
+
     def __init__(self):
         super().__init__(accessible_role=Gtk.AccessibleRole.IMG, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
-        self.size = self.SIZE
-        self.set_size_request(self.size, self.size)
+        # fill: the stacked layouts, where the frame follows the width of the column, up to limit; origin is the left of the frame.
+        self.size = self.limit = self.SIZE
+        self.fill, self.origin = False, 0
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Usage by machine and app"])
         self.arcs, self.total_text, self.sub_text, self.note_text, self.format = [], "", "", "", str
         self.text_scale = 1
         self.hover, self.raised = None, 0
         self.pointer = None
+        self.connect("query-tooltip", self.query_tooltip)
         motion = Gtk.EventControllerMotion()
         motion.connect("motion", self.pointer_motion)
         motion.connect("leave", self.pointer_leave)
@@ -14760,10 +14816,48 @@ class UsageRound(Gtk.Widget):
         self.queue_draw()
 
     def set_size(self, size):
-        if size != self.size:
-            self.size = size
-            self.set_size_request(size, size)
+        """A fixed frame of size px."""
+        if self.fill or size != self.size:
+            self.fill, self.limit, self.size = False, size, size
+            self.queue_resize()
+
+    def set_fill(self, limit):
+        """The stacked layouts: the frame follows the column width, up to limit, with 16 px outside the outer ring on each side."""
+        if not self.fill or limit != self.limit:
+            self.fill, self.limit = True, limit
+            self.queue_resize()
+
+    def frame_for(self, width):
+        if not self.fill:
+            return self.size
+        return max(0, min(self.limit, (width - 32) / 2 * self.SIZE / self.OUTER)) if width >= 0 else self.limit
+
+    def outer_radius(self):
+        return self.size * self.OUTER / self.SIZE
+
+    def do_get_request_mode(self):
+        return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH if self.fill else Gtk.SizeRequestMode.CONSTANT_SIZE
+
+    def do_measure(self, orientation, for_size):
+        if self.fill and orientation == Gtk.Orientation.HORIZONTAL:
+            return 0, math.ceil(self.limit), -1, -1
+        size = math.ceil(self.frame_for(for_size))
+        return size, size, -1, -1
+
+    def do_size_allocate(self, width, height, _baseline):
+        size = min(self.frame_for(width), height) if self.fill else self.size
+        origin = (width - size) / 2 if self.fill else 0
+        if (size, origin) != (self.size, self.origin):
+            self.size, self.origin = size, origin
             self.queue_draw()
+
+    def query_tooltip(self, _widget, x, y, _keyboard, tooltip):
+        # Over a segment: its machine (and app), the value, and its share; else the price line of the window.
+        arc = self.arc_at(x, y)
+        if arc is None or not arc.get("tip"):
+            return False
+        tooltip.set_text(arc["tip"])
+        return True
 
     def center(self):
         """The center lines: the hovered arc, else the total."""
@@ -14772,8 +14866,10 @@ class UsageRound(Gtk.Widget):
         return self.total_text, self.sub_text
 
     def arc_at(self, x, y):
+        if not self.size:
+            return None
         scale = self.SIZE / self.size
-        x, y = x * scale, y * scale
+        x, y = (x - self.origin) * scale, y * scale
         half = self.SIZE / 2
         radius = math.hypot(x - half, y - half)
         angle = math.degrees(math.atan2(y - half, x - half))
@@ -14810,7 +14906,7 @@ class UsageRound(Gtk.Widget):
         if note:
             extra = activity_layout(self, note, 11 * s)
             extra.set_alignment(Pango.Alignment.CENTER)
-            extra.set_wrap(Pango.WrapMode.WORD_CHAR)
+            extra.set_wrap(Pango.WrapMode.WORD)
             extra.set_ellipsize(Pango.EllipsizeMode.END)
             extra.set_height(-2)
             for _pass in range(2):
@@ -14820,7 +14916,7 @@ class UsageRound(Gtk.Widget):
                 lift = (height + 4 * s) / 2
                 below = 18 * s - lift + 4 * s + height
                 note_room = 2 * math.sqrt(max(0, radius * radius - below * below)) - 16
-        size = round(26 * scale * s)
+        size = round(26 * s)
         while True:
             layout = activity_layout(self, value, size, Pango.Weight.SEMIBOLD, True)
             # The value is as wide as the inner circle at its top edge, less 8 px on each side.
@@ -14841,6 +14937,8 @@ class UsageRound(Gtk.Widget):
             return
         half = self.SIZE / 2
         snapshot.save()
+        snapshot.translate(Graphene.Point().init(self.origin, 0))
+        snapshot.save()
         snapshot.scale(self.size / self.SIZE, self.size / self.SIZE)
         for arc in self.arcs:
             raised = arc is self.hover and self.raised
@@ -14855,6 +14953,7 @@ class UsageRound(Gtk.Widget):
         snapshot.restore()
         for layout, x, y, color in self.center_layouts():
             snapshot_layout(snapshot, layout, x, y, color)
+        snapshot.restore()
 
 
 def monotone_tangents(points):
@@ -14905,10 +15004,14 @@ class UsageChart(Gtk.Widget):
     follow the measured text at the GNOME text scale."""
     TOP, PLOT = 8, 136  # The plot runs from TOP to BOTTOM = TOP + PLOT.
     TOTAL = "asb-total"  # The key of the Total line.
+    LABEL = "Usage over time"
+    KEY_WIDTH = 520  # Under this width (times the text scale) the end labels are a key under the plot.
+    HEADERS = {"hour": "This hour so far", "day": "Today so far", "month": "This month so far"}
 
     def __init__(self):
-        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, hexpand=True)
-        self.update_property([Gtk.AccessibleProperty.LABEL], ["Usage over time"])
+        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, hexpand=True, focusable=True)
+        self.update_property([Gtk.AccessibleProperty.LABEL], [self.LABEL])
+        self.narrow, self.dots, self.key_values = False, None, {}
         self.series, self.bars, self.buckets, self.sums = [], [], {"unit": "day", "startsMs": []}, []
         self.step, self.axis, self.format = 1, [], str
         self.targets, self.starts, self.progress = {}, {}, 1
@@ -14922,8 +15025,26 @@ class UsageChart(Gtk.Widget):
         motion.connect("motion", self.pointer_motion)
         motion.connect("leave", self.pointer_leave)
         self.add_controller(motion)
+        # From the keyboard: Left and Right move the cursor one bucket, Home and End go to the first and the last bucket.
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.key_pressed)
+        self.add_controller(keys)
+        focus = Gtk.EventControllerFocus()
+        focus.connect("leave", lambda *_: self.pointer is None and self.set_hover(None))
+        self.add_controller(focus)
         self.animation = Adw.TimedAnimation.new(self, 0, 1, 220, Adw.CallbackAnimationTarget.new(self.advance))
         self.animation.set_easing(Adw.Easing.LINEAR)
+
+    def key_pressed(self, _controller, keyval, _code, _state):
+        last = len(self.bars) - 1
+        steps = {Gdk.KEY_Left: -1, Gdk.KEY_KP_Left: -1, Gdk.KEY_Right: 1, Gdk.KEY_KP_Right: 1}
+        ends = {Gdk.KEY_Home: 0, Gdk.KEY_KP_Home: 0, Gdk.KEY_End: last, Gdk.KEY_KP_End: last}
+        if last < 0 or (keyval not in steps and keyval not in ends):
+            return False
+        # The first arrow shows the cursor on the current bucket.
+        index = ends[keyval] if keyval in ends else last if self.hover is None else self.hover + steps[keyval]
+        self.set_hover(max(0, min(last, index)))
+        return True
 
     def pointer_motion(self, _controller, x, y):
         self.pointer = (x, y)
@@ -14946,23 +15067,62 @@ class UsageChart(Gtk.Widget):
         self.HEIGHT = self.BOTTOM + 6 + self.label_height + 4
         self.set_size_request(-1, self.HEIGHT)
         self.measure_insets()
+        self.queue_resize()
+
+    def gap(self):
+        """The room between the end ring of a line (radius 3) and its end label."""
+        return 3 + 6 * self.text_scale
+
+    def header(self):
+        """The dim line over the end labels or the key: the current bucket."""
+        return self.HEADERS[self.buckets["unit"]]
 
     def measure_insets(self):
-        """The left inset holds the widest gridline label and 8 px; the right inset holds the widest end label
-        (a 7 px dot, 5 px, the series name and its last value) and 8 px. The Total has the first end label."""
+        """The left inset holds the widest gridline label and 8 px; the right inset holds the gap after the end ring, the widest
+        end label (the series name and its last value) or the bucket header, and 8 px. The Total has the first end label. A narrow
+        chart has its end labels in a key under the plot, and the plot takes the full width (the end ring stays whole)."""
         self.LEFT = math.ceil(max((self.text(label).get_pixel_extents()[1].width for label in self.axis), default=0)) + 8
         labels = {key: label for key, label, _color in self.series}
-        self.end_texts = {}
+        self.end_texts, self.key_values = {}, {}
         if self.bars and self.order:
             self.end_texts[self.TOTAL] = f"Total {self.format(self.sums[-1])}"
             self.end_texts.update((key, f"{labels[key]} {self.format(self.bars[-1].get(key, 0))}") for key in self.order)
+            self.key_values[self.TOTAL] = ("Total", self.format(self.sums[-1]))
+            self.key_values.update((key, (labels[key], self.format(self.bars[-1].get(key, 0)))) for key in self.order)
         widths = [self.text(text).get_pixel_extents()[1].width for text in self.end_texts.values()]
-        self.RIGHT = math.ceil(7 + 5 + max(widths) + 8) if widths else 0
+        if widths:
+            widths.append(self.text(self.header()).get_pixel_extents()[1].width)
+        self.RIGHT = (4 if self.narrow else math.ceil(self.gap() + max(widths) + 8)) if widths else 0
         self.paths_key, self.tip = None, None if self.hover is None else self.tip_box(self.hover)
         self.queue_draw()
 
+    def key_top(self):
+        """The top of the bucket header over the key of a narrow chart, under the tick labels."""
+        return self.HEIGHT + 8
+
+    def height_for(self, width):
+        if self.end_texts and 0 <= width < self.KEY_WIDTH * self.text_scale:
+            return math.ceil(self.key_top() + self.label_height + 4 + (len(self.end_texts) + 1) // 2 * self.row_height())
+        return self.HEIGHT
+
+    def do_get_request_mode(self):
+        return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH
+
+    def do_measure(self, orientation, for_size):
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            return 0, 0, -1, -1
+        height = self.height_for(for_size)
+        return height, height, -1, -1
+
+    def do_size_allocate(self, width, _height, _baseline):
+        narrow = width < self.KEY_WIDTH * self.text_scale
+        if narrow != self.narrow:
+            self.narrow = narrow
+            self.measure_insets()
+
     def set_data(self, series, bars, buckets, format_value, metric, animate):
         """series: (id, label, color); bars: per bucket, the value of each series id."""
+        cursor = self.hover if self.has_focus() else None
         shown = {(index, key): self.value_y(index, key) for index, key in self.targets} \
             if buckets["startsMs"] == self.buckets["startsMs"] else None
         self.series, self.bars, self.buckets, self.format = series, bars, buckets, format_value
@@ -14979,12 +15139,16 @@ class UsageChart(Gtk.Widget):
         self.order = sorted((key for key in totals if totals[key] > 0), key=lambda key: -totals[key])
         self.hover = None
         self.measure_insets()
+        # The key of a narrow chart has a line for each two series.
+        self.queue_resize()
         self.animation.reset()
         self.progress = 0 if animate else 1
         if animate:
             self.animation.play()
         if self.pointer is not None:
             self.set_hover(self.bar_at(*self.pointer))
+        elif cursor is not None and self.bars:
+            self.set_hover(min(cursor, len(self.bars) - 1))
         self.queue_draw()
 
     def value_y(self, index, key):
@@ -15006,16 +15170,27 @@ class UsageChart(Gtk.Widget):
         return [self.LEFT + index * (right - self.LEFT) / (count - 1) for index in range(count)]
 
     def end_labels(self):
-        """The end labels as (key, text, left, top, width, height): at the right end of each drawn series, at the y of its last
-        point where they can, moved apart so that no two overlap."""
+        """The end labels as (key, text, left, top, width, height): 6 px (times the text scale) after the end ring of each drawn
+        series, at the y of its last point where they can, moved apart so that no two overlap, under the bucket header.
+        A narrow chart has a key in place of them."""
         keys = list(self.end_texts)
-        if not keys:
+        if not keys or self.narrow:
             return []
         last = len(self.bars) - 1
-        tops = usage_end_label_tops([self.value_y(last, key) for key in keys], self.label_height, self.TOP, self.BOTTOM)
-        left = self.plot_right() + 8
-        return [(key, self.end_texts[key], left, top, 12 + self.text(self.end_texts[key]).get_pixel_extents()[1].width, self.label_height)
+        tops = usage_end_label_tops([self.value_y(last, key) for key in keys], self.label_height,
+                                    max(self.TOP, self.label_height + 4), self.BOTTOM)
+        left = self.centers()[-1] + self.gap()
+        return [(key, self.end_texts[key], left, top, self.text(self.end_texts[key]).get_pixel_extents()[1].width, self.label_height)
                 for key, top in zip(keys, tops)]
+
+    def key_entries(self):
+        """The key of a narrow chart as (key, name, value, left, top, width): in end label order, two columns of equal width,
+        18 px rows (times the text scale) under the bucket header."""
+        if not self.narrow:
+            return []
+        width, row, top = self.get_width() / 2, self.row_height(), self.key_top() + self.label_height + 4
+        return [(key, name, value, (index % 2) * width, top + (index // 2) * row, width)
+                for index, (key, (name, value)) in enumerate(self.key_values.items())]
 
     def bar_at(self, x, y):
         """The nearest point by x, for any pointer over the plot."""
@@ -15028,7 +15203,10 @@ class UsageChart(Gtk.Widget):
         if index == self.hover:
             return
         self.hover = index
-        self.tip = None if index is None else self.tip_box(index)
+        self.tip = tip = None if index is None else self.tip_box(index)
+        # The screen reader reads the tooltip of the cursor.
+        self.update_property([Gtk.AccessibleProperty.LABEL], [self.LABEL if tip is None else ", ".join(
+            [f"{tip['title']}: Total {tip['total_text']}"] + [f"{label} {text}" for label, text in tip["rows"]])])
         self.queue_draw()
 
     def tip_box(self, index):
@@ -15040,14 +15218,14 @@ class UsageChart(Gtk.Widget):
         names = [self.text("Total", 12)] + [self.text(label, 12) for label, _text, _color in rows]
         values = [self.text(self.format(self.sums[index]), 12, mono=True)] + [self.text(text, 12, mono=True) for _label, text, _color in rows]
         size = lambda layout: layout.get_pixel_extents()[1]
-        line = max(size(name).width + 8 + 12 + size(value).width + (16 if position else 0)
+        line = max(size(name).width + 8 + 12 + size(value).width + (16 * self.text_scale if position else 0)
                    for position, (name, value) in enumerate(zip(names, values)))
         box_width = max(150, 22 + max(line, size(title).width))
         box_height = 2 + 16 + size(title).height + 4 + self.row_height() * (len(rows) + 1) + 9
         x = self.centers()[index]
         left = x + 12 if x + 12 + box_width <= self.get_width() else x - 12 - box_width
         left = max(0, min(left, self.get_width() - box_width))
-        top = max(0, min(self.y(self.sums[index]) - box_height / 2, self.HEIGHT - box_height))
+        top = max(0, min(self.y(self.sums[index]) - box_height / 2, max(self.HEIGHT, self.get_height()) - box_height))
         return {"index": index, "title": self.full_label(index), "rows": [(label, text) for label, text, _color in rows], "total": self.sums[index],
                 "total_text": self.format(self.sums[index]), "bounds": (left, top, box_width, box_height), "layouts": (title, names, values),
                 "colors": [color for _label, _text, color in rows]}
@@ -15079,13 +15257,13 @@ class UsageChart(Gtk.Widget):
     def series_paths(self):
         """(key, color, line, area) per drawn line in drawing order. Only the Total has an area. The line ends before the segment
         into the current bucket: self.current has (key, color, dashed last segment, hollow last point) per line. One bucket gives
-        (key, color, None, 3 px dot). Built again only when the data, the width, the accent, or the animation progress changes:
-        a hover uses these paths."""
+        (key, color, None, 3 px hollow point). With 12 buckets or fewer, self.dots has a filled 3 px dot at each complete bucket of the
+        Total. Built again only when the data, the width, the accent, or the animation progress changes: a hover uses these paths."""
         colors = self.colors()
         key = (self.get_width(), self.progress, self.LEFT, self.RIGHT, colors[self.TOTAL])
         if key == self.paths_key:
             return self.paths
-        self.paths_key, self.paths, self.current, self.path_builds = key, [], [], self.path_builds + 1
+        self.paths_key, self.paths, self.current, self.path_builds, self.dots = key, [], [], self.path_builds + 1, None
         centers = self.centers()
         for series in self.lines():
             color = alpha_color(colors[series])
@@ -15107,6 +15285,11 @@ class UsageChart(Gtk.Widget):
             dash.move_to(*start)
             dash.cubic_to(*first, *second, *end)
             ring.add_circle(Graphene.Point().init(*end), 3)
+            if series == self.TOTAL and len(points) <= 12:
+                dots = Gsk.PathBuilder.new()
+                for point in points[:-1]:
+                    dots.add_circle(Graphene.Point().init(*point), 3)
+                self.dots = dots.to_path()
             self.paths.append((series, color, line.to_path(), area.to_path() if series == self.TOTAL else None))
             self.current.append((series, color, dash.to_path(), ring.to_path()))
         return self.paths
@@ -15126,11 +15309,20 @@ class UsageChart(Gtk.Widget):
         paths = self.series_paths()
         for _key, color, line, area in paths:
             if line is None:
-                snapshot.append_fill(area, Gsk.FillRule.WINDING, color)
+                snapshot.append_fill(area, Gsk.FillRule.WINDING, alpha_color(palette["win"]))
+                snapshot_stroke(snapshot, area, 1.5, color)
             elif area is not None:
-                area_color = color.copy()
-                area_color.alpha *= .10
-                snapshot.append_fill(area, Gsk.FillRule.WINDING, area_color)
+                # The Total area: 16 % of the accent at the plot top to nothing at the baseline.
+                stops = []
+                for offset, alpha in ((0, .16), (1, 0)):
+                    stop, stop_color = Gsk.ColorStop(), color.copy()
+                    stop_color.alpha *= alpha
+                    stop.offset, stop.color = offset, stop_color
+                    stops.append(stop)
+                snapshot.push_fill(area, Gsk.FillRule.WINDING)
+                snapshot.append_linear_gradient(Graphene.Rect().init(0, self.TOP, chart_width, self.BOTTOM - self.TOP),
+                                                Graphene.Point().init(0, self.TOP), Graphene.Point().init(0, self.BOTTOM), stops)
+                snapshot.pop()
         # The series are 1.5 px lines and the Total a 2 px line; the current bucket is a dashed segment into a hollow last point.
         strokes, dashes = {}, {}
         for width in (1.5, 2):
@@ -15150,23 +15342,57 @@ class UsageChart(Gtk.Widget):
                 snapshot.append_stroke(line, strokes[width], color)
             dash, ring = current[key]
             snapshot.append_stroke(dash, dashes[width], color)
+            if key == self.TOTAL and self.dots is not None:
+                snapshot.append_fill(self.dots, Gsk.FillRule.WINDING, color)
             snapshot.append_fill(ring, Gsk.FillRule.WINDING, background)
             snapshot.append_stroke(ring, ring_stroke, color)
-        colors = self.colors()
-        for key, label, left, top, _width, height in self.end_labels():
-            usage_rect(snapshot, left, top + (height - 7) / 2, 7, 7, alpha_color(colors[key]), 3.5)
-            snapshot_layout(snapshot, self.text(label), left + 12, top, text)
+        self.snapshot_labels(snapshot, dim, text)
         layouts = {}
 
         def measure(label):
             layouts.setdefault(label, self.text(label))
             return layouts[label].get_pixel_extents()[1].width
         centers = self.centers()
-        for _index, label, left in usage_axis_labels(self.buckets, centers, chart_width, self.label_step(), measure):
+        for _index, label, left in usage_axis_labels(self.buckets, centers, chart_width, self.label_step(), measure, self.narrow):
             snapshot_layout(snapshot, layouts[label], left, self.BOTTOM + 6, dim)
         if self.tip:
             usage_rect(snapshot, math.floor(centers[self.tip["index"]]), self.TOP, 1, self.BOTTOM - self.TOP, dim)
             self.snapshot_tip(snapshot, palette, text, rule)
+
+    def snapshot_labels(self, snapshot, dim, text):
+        """The bucket header and the end labels (with their leaders), or the key of a narrow chart."""
+        colors, right, last = self.colors(), self.centers()[-1], len(self.bars) - 1
+        labels, entries, header = self.end_labels(), self.key_entries(), self.text(self.header())
+        header_width = header.get_pixel_extents()[1].width
+        if labels:
+            # Right-aligned over the end label column, 4 px above the first label.
+            top = min(top for _key, _label, _left, top, _width, _height in labels)
+            width = max(header_width, max(width for _key, _label, _left, _top, width, _height in labels))
+            snapshot_layout(snapshot, header, labels[0][2] + width - header_width, top - 4 - self.label_height, dim)
+        elif entries:
+            snapshot_layout(snapshot, header, self.get_width() - header_width, self.key_top(), dim)
+        leader = Gsk.Stroke.new(1)
+        for key, label, left, top, _width, height in labels:
+            # A label that moved more than 3 px from its line end has a leader in the line color from the end ring.
+            end, middle = self.value_y(last, key), top + height / 2
+            if abs(middle - end) > 3:
+                builder = Gsk.PathBuilder.new()
+                builder.move_to(right + 3.75, end)
+                builder.line_to(left - 2, middle)
+                snapshot.append_stroke(builder.to_path(), leader, alpha_color(colors[key]))
+            snapshot_layout(snapshot, self.text(label), left, top, text)
+        s, row = self.text_scale, self.row_height()
+        for key, name, value, left, top, width in entries:
+            middle = top + (row - self.label_height) / 2
+            usage_rect(snapshot, left, top + (row - 8 * s) / 2, 8 * s, 8 * s, alpha_color(colors[key]), 4 * s)
+            figure = self.text(value, mono=True)
+            figure_width = figure.get_pixel_extents()[1].width
+            end = left + width - (12 if left == 0 else 0)
+            snapshot_layout(snapshot, figure, end - figure_width, middle, text)
+            title = self.text(name)
+            title.set_width(int(max(1, end - figure_width - 8 - (left + 14 * s)) * Pango.SCALE))
+            title.set_ellipsize(Pango.EllipsizeMode.END)
+            snapshot_layout(snapshot, title, left + 14 * s, middle, text)
 
     def snapshot_tip(self, snapshot, palette, text, rule):
         tip = self.tip
@@ -15184,8 +15410,9 @@ class UsageChart(Gtk.Widget):
         right, row = left + box_width - 11, self.row_height()
         for position, (name, value) in enumerate(zip(names, values)):
             if position:
-                usage_rect(snapshot, left + 11, y + (row - 8) / 2, 8, 8, alpha_color(tip["colors"][position - 1]), 2)
-                start = left + 11 + 16
+                square = 8 * self.text_scale
+                usage_rect(snapshot, left + 11, y + (row - square) / 2, square, square, alpha_color(tip["colors"][position - 1]), 2)
+                start = left + 11 + 16 * self.text_scale
             else:
                 start = left + 11
             for layout, at in ((name, start), (value, right - value.get_pixel_extents()[1].width)):
@@ -15196,6 +15423,9 @@ class UsageChart(Gtk.Widget):
                 usage_rect(snapshot, left + 11, y + 4, box_width - 22, 1, rule)
                 y += 9
 
+
+
+UsageChart.set_css_name("asb-usage-chart")
 
 class UsageWindow(ActivityWindow):
     """The Usage window: cost and tokens by machine, app, model, and time, as the approved preview's window mode."""
@@ -15210,6 +15440,7 @@ class UsageWindow(ActivityWindow):
     def __init__(self, application, base, fetch=None, clock=None):
         self.metric, self.split, self.machines_off, self.chip_key, self.chart_key, self.view = "cost", "app", set(), None, None, None
         self.narrow = self.small = False
+        self.fold_states, self.setting_folds = {}, False
         super().__init__(application, base, fetch, clock)
         shortcuts = Gtk.ShortcutController()
         shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"),
@@ -15260,10 +15491,17 @@ class UsageWindow(ActivityWindow):
         self.scroll.set_child(Adw.Clamp(maximum_size=1240, tightening_threshold=1240, child=self.content))
         self.empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, vexpand=True, valign=Gtk.Align.CENTER,
                              halign=Gtk.Align.CENTER, visible=False)
-        self.empty_title = self.text("", ("asb-error-title",), 0.5)
+        self.empty_icon = Gtk.Image(icon_name="x-office-spreadsheet-symbolic", pixel_size=round(64 * self.text_scale))
+        self.empty_icon.add_css_class("asb-dim")
+        self.empty.append(self.empty_icon)
+        self.empty_title = self.text("", ("asb-error-title",), 0.5, wrap=True, justify=Gtk.Justification.CENTER)
         self.empty.append(self.empty_title)
-        self.empty.append(self.text("Usage shows here after an agent app runs.", ("asb-dim", "asb-error-text"), 0.5))
+        self.empty_hint = self.text("Usage shows here after an agent app runs.", ("asb-dim", "asb-error-text"), 0.5,
+                                    wrap=True, justify=Gtk.Justification.CENTER)
+        self.empty.append(Adw.Clamp(maximum_size=360, child=self.empty_hint))
         self.empty_all_time = Gtk.Button(label="Show all time", halign=Gtk.Align.CENTER)
+        self.empty_all_time.add_css_class("suggested-action")
+        self.empty_all_time.add_css_class("pill")
         self.empty_all_time.connect("clicked", lambda *_: self.set_period("all"))
         self.empty.append(self.empty_all_time)
         self.data_page.append(self.scroll)
@@ -15294,7 +15532,8 @@ class UsageWindow(ActivityWindow):
                 title.append(heading)
                 self.fold_show_all = self.show_all_button()
                 title.append(self.fold_show_all)
-            fold = Gtk.Expander(label_widget=title, child=rows, expanded=name == "machine", margin_top=0 if name == "machine" else 10)
+            fold = Gtk.Expander(label_widget=title, child=rows, expanded=name != "maker", margin_top=0 if name == "machine" else 10)
+            fold.connect("notify::expanded", self.fold_changed, name)
             fold.add_css_class("asb-usage-fold")
             setattr(self, f"{name}_fold", fold)
             setattr(self, f"{name}_rows", rows)
@@ -15323,8 +15562,9 @@ class UsageWindow(ActivityWindow):
         self.content.append(chart_section)
 
         totals = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        totals.append(self.heading("Totals"))
-        self.figures = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2, max_children_per_line=5,
+        self.totals_heading = self.heading("Totals")
+        totals.append(self.totals_heading)
+        self.figures = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=2, max_children_per_line=3,
                                    column_spacing=16, row_spacing=16)
         self.figures.add_css_class("asb-usage-figures")
         totals.append(self.figures)
@@ -15334,6 +15574,10 @@ class UsageWindow(ActivityWindow):
 
         models = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         models.append(self.heading("Models"))
+        self.model_keys = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=4, max_children_per_line=12,
+                                      halign=Gtk.Align.START, margin_bottom=8)
+        self.model_keys.add_css_class("asb-usage-keys")
+        models.append(self.model_keys)
         self.models = Gtk.Grid()
         models.append(self.models)
         self.content.append(models)
@@ -15367,7 +15611,7 @@ class UsageWindow(ActivityWindow):
         scope, rule, s = self.css_scope, palette["rule"], self.text_scale
         swatches = "".join(f"{scope} .asb-usage-type-{part} {{ background: {color}; }}\n" for part, color in usage_token_ramp(palette["accent"], palette["win"]).items())
         keys = "".join(f"{scope} .asb-usage-app-{app or 'other'} {{ background: {self.app_color(app)}; }}\n" for app in ACTIVITY_APP_COLORS)
-        check = f"{scope}.asb-custom .asb-usage-check check:checked {{ background: {palette['accent']}; border-color: {palette['accent']}; color: {palette['win']}; }}\n"
+        check = f"{scope} .asb-usage-check check:checked {{ background: {palette['accent']}; border-color: {palette['accent']}; color: {palette['win']}; }}\n"
         return f"""
 {scope} .asb-usage-filtered image {{ color: {palette['accent']}; }}
 {scope} .asb-usage-count {{ font-size: {11 * s:g}px; }}
@@ -15377,12 +15621,18 @@ class UsageWindow(ActivityWindow):
 {scope} .asb-usage-name {{ font-size: {13 * s:g}px; font-weight: 600; }}
 {scope} .asb-usage-sub {{ font-size: {11 * s:g}px; color: {palette['dim']}; }}
 {scope} .asb-usage-value {{ font-size: {13 * s:g}px; }}
-{scope} .asb-usage-figure {{ font-size: {20 * s:g}px; }}
+{scope} .asb-usage-figure {{ font-size: {15 * s:g}px; }}
 {scope} .asb-usage-legend {{ min-height: {22 * s:g}px; font-size: {12 * s:g}px; }}
 {scope} .asb-usage-cell {{ min-height: {34 * s:g}px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: {12 * s:g}px; }}
 {scope} .asb-usage-head {{ min-height: {30 * s:g}px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: {11 * s:g}px; color: {palette['dim']}; }}
-{scope} .asb-usage-swatch {{ min-width: 8px; min-height: 8px; border-radius: 2px; }}
-{scope} .asb-usage-key-dot {{ min-width: 8px; min-height: 8px; border-radius: 50%; }}
+{scope} .asb-usage-swatch {{ min-width: {8 * s:g}px; min-height: {8 * s:g}px; border-radius: 2px; }}
+{scope} .asb-usage-key-dot {{ min-width: {8 * s:g}px; min-height: {8 * s:g}px; border-radius: 50%; }}
+{scope} .asb-activity-dot {{ min-width: {7 * s:g}px; min-height: {7 * s:g}px; }}
+{scope} .asb-activity-dot.asb-activity-hollow {{ min-width: {max(0, 7 * s - 3):g}px; min-height: {max(0, 7 * s - 3):g}px; }}
+{scope} .asb-usage-model-key {{ font-size: {11 * s:g}px; color: {palette['dim']}; }}
+{scope} .asb-usage-cost {{ padding-right: 24px; }}
+{scope} .asb-usage-check check:not(:checked) {{ border: 1.5px solid {palette['dim']}; }}
+{scope} asb-usage-chart:focus-visible {{ outline: 2px solid {palette['accent']}; outline-offset: 1px; }}
 {scope} .asb-usage-key {{ font-size: {12 * s:g}px; color: {palette['text']}; }}
 {scope} .asb-usage-check {{ min-height: {22 * s:g}px; font-size: {12 * s:g}px; color: {palette['text']}; }}
 {scope} .asb-usage-check:disabled {{ filter: none; opacity: 1; }}
@@ -15392,7 +15642,7 @@ class UsageWindow(ActivityWindow):
 {scope} .asb-usage-split button {{ min-height: {24 * s:g}px; padding: 0 10px; font-size: {12 * s:g}px; }}
 {scope} .asb-usage-figures, {scope} .asb-usage-figures > flowboxchild, {scope} .asb-usage-keys,
 {scope} .asb-usage-keys > flowboxchild {{ padding: 0; background: none; min-width: 0; min-height: 0; }}
-{scope} .asb-usage-fold > box > title > expander {{ min-width: 16px; min-height: 16px; margin-right: 6px; color: {palette['text']}; opacity: 1; }}
+{scope} .asb-usage-fold > box > title > expander {{ min-width: {16 * s:g}px; min-height: {16 * s:g}px; margin-right: 6px; color: {palette['text']}; opacity: 1; }}
 {scope} progressbar.asb-usage-scan > trough {{ min-height: 2px; min-width: 0; padding: 0; border: none; border-radius: 0; background: none; box-shadow: none; }}
 {scope} progressbar.asb-usage-scan > trough > progress {{ min-height: 2px; border: none; border-radius: 0; background: {palette['accent']}; }}
 """ + swatches + keys
@@ -15404,6 +15654,8 @@ class UsageWindow(ActivityWindow):
             self.round.text_scale = self.text_scale
             if self.chart.text_scale != self.text_scale:
                 self.chart.set_text_scale(self.text_scale)
+            self.empty_icon.set_pixel_size(round(64 * self.text_scale))
+            self.layout_content()
             self.round.queue_draw()
             self.chart.queue_draw()
         for name, breakpoint in getattr(self, "breakpoints", {}).items():
@@ -15432,12 +15684,17 @@ class UsageWindow(ActivityWindow):
     @staticmethod
     def text(value="", css=(), xalign=0, **kwargs):
         widget = Gtk.Label(label=value, xalign=xalign, **kwargs)
+        attributes = Pango.AttrList()
+        attributes.insert(Pango.attr_insert_hyphens_new(False))
+        widget.set_attributes(attributes)
         for name in css:
             widget.add_css_class(name)
         return widget
 
     def dot(self, machine):
-        return self.hue_dot(MACHINE_HUES.index(machine["hue"]), machine["offline"])
+        dot = self.hue_dot(MACHINE_HUES.index(machine["hue"]), machine["offline"])
+        dot.set_size_request(round(7 * self.text_scale), round(7 * self.text_scale))
+        return dot
 
     def app_color(self, app):
         """The app data color; Other has 3:1 or more on the window."""
@@ -15482,6 +15739,16 @@ class UsageWindow(ActivityWindow):
                 GLib.source_remove(self.poll_timer)
             self.poll_timer = GLib.timeout_add_seconds(seconds, self.poll_tick)
 
+    def fold_changed(self, fold, _param, name):
+        if not self.setting_folds:
+            self.fold_states[name] = fold.get_expanded()
+
+    def layout_folds(self):
+        self.setting_folds = True
+        for name in ("machine", "app", "maker"):
+            getattr(self, f"{name}_fold").set_expanded(self.fold_states.get(name, name == "machine" or (name == "app" and not self.narrow)))
+        self.setting_folds = False
+
     def breakpoint_changed(self, *_args):
         name = getattr(self.get_current_breakpoint(), "asb_name", None)
         self.narrow, self.small = name in ("narrow", "small"), name == "small"
@@ -15499,11 +15766,17 @@ class UsageWindow(ActivityWindow):
         self.round_cell.set_valign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_halign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
         self.round.set_hexpand(self.narrow)
-        self.round.set_size(240 if self.narrow else UsageRound.SIZE)
-        self.round_keys_clamp.set_halign(self.round.get_halign())
-        self.round_keys_clamp.set_size_request(self.round.size, -1)
-        self.round_keys_clamp.set_maximum_size(self.round.size)
-        self.round_keys_clamp.set_tightening_threshold(self.round.size)
+        if self.narrow:
+            self.round.set_halign(Gtk.Align.FILL)
+            self.round.set_fill(UsageRound.SIZE * self.text_scale)
+        else:
+            self.round.set_size(UsageRound.SIZE)
+        self.round_keys_clamp.set_halign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
+        size = round(UsageRound.SIZE * self.text_scale) if self.narrow else UsageRound.SIZE
+        self.round_keys_clamp.set_size_request(-1 if self.narrow else size, -1)
+        self.round_keys_clamp.set_maximum_size(size)
+        self.round_keys_clamp.set_tightening_threshold(size)
+        self.layout_folds()
         self.blocks.set_orientation(Gtk.Orientation.VERTICAL if self.small else Gtk.Orientation.HORIZONTAL)
         self.blocks.set_spacing(20 if self.small else 36)
 
@@ -15534,7 +15807,8 @@ class UsageWindow(ActivityWindow):
         self.filter_count.set_visible(filtered)
         self.filter_show_all.set_visible(filtered)
         self.fold_show_all.set_visible(filtered)
-        key = [(machine["machineId"], machine["name"], machine.get("state"), machine.get("lastReportAtMs")) for machine in self.data["machines"]]
+        key = (self.text_scale, [(machine["machineId"], machine["name"], machine.get("state"), machine.get("lastReportAtMs"))
+                                 for machine in self.data["machines"]])
         if key != self.chip_key:
             self.chip_key = key
             remove_children(self.chips)
@@ -15543,7 +15817,7 @@ class UsageWindow(ActivityWindow):
                 # A check per machine: checked means shown.
                 button = Gtk.CheckButton(valign=Gtk.Align.CENTER, halign=Gtk.Align.FILL)
                 button.add_css_class("asb-usage-check")
-                inner = Gtk.Box(spacing=6)
+                inner = Gtk.Box(spacing=round(6 * self.text_scale))
                 inner.append(self.dot({"hue": machine_hue(index), "offline": machine.get("state") == "offline"}))
                 inner.append(self.text(machine["name"], ("asb-usage-chip-name",)))
                 if machine.get("state") == "offline":
@@ -15565,13 +15839,14 @@ class UsageWindow(ActivityWindow):
     def render_keys(self, arcs):
         """One key per app of the outer ring, in its order: the app dot and name."""
         apps = list(dict.fromkeys(arc["id"].split("/", 1)[1] for arc in arcs if arc["kind"] == "app"))
-        if apps == getattr(self.round_keys, "asb_apps", None):
+        if (apps, self.text_scale) == getattr(self.round_keys, "asb_apps", None):
             return
-        self.round_keys.asb_apps = apps
+        self.round_keys.asb_apps = (apps, self.text_scale)
+        self.round_keys.set_column_spacing(round(12 * self.text_scale))
         self.round_keys.remove_all()
         for app in apps:
-            key = Gtk.Box(spacing=6)
-            dot = Gtk.Box(width_request=8, height_request=8, valign=Gtk.Align.CENTER)
+            key = Gtk.Box(spacing=round(6 * self.text_scale))
+            dot = Gtk.Box(width_request=round(8 * self.text_scale), height_request=round(8 * self.text_scale), valign=Gtk.Align.CENTER)
             dot.add_css_class("asb-usage-key-dot")
             dot.add_css_class(f"asb-usage-app-{app or 'other'}")
             key.append(dot)
@@ -15588,13 +15863,21 @@ class UsageWindow(ActivityWindow):
         empty = not data["records"]
         self.scroll.set_visible(not empty)
         self.empty.set_visible(empty)
-        self.empty_title.set_label("No usage yet" if self.period == "all" else f"No usage in {dict(self.PERIODS)[self.period]}")
+        self.empty_title.set_label("No usage yet" if self.period == "all" else f"No usage in the last {dict(self.PERIODS)[self.period]}")
         self.empty_all_time.set_visible(self.period != "all")
         view = usage_view(data, on, self.metric)
         cost = self.metric == "cost"
         show = format_cost if cost else format_tokens
         arcs = [dict(arc, color=self.app_color(arc["id"].split("/", 1)[1])) if arc["kind"] == "app" else arc
                 for arc in usage_round_arcs(view, data["machines"], self.metric)]
+        machines = {machine["id"]: machine for machine in view["machines"]}
+        for arc in arcs:
+            if arc["kind"] == "machine":
+                arc["tip"] = f"{arc['label']}: {show(arc['value'])}, {format_share(arc['value'] / view['total'] if view['total'] else 0)} of total"
+            else:
+                machine, app = arc["id"].split("/", 1)
+                row = machines[machine]
+                arc["tip"] = self.segment_tip(row, app, arc["value"], show)
         scanning = not (data.get("scan") or {}).get("complete", True)
         self.round.set_arcs(arcs, show(view["total"]), "at API prices" if cost else "processed tokens", show,
                             usage_ring_note(view, scanning, len(on), len(data["machines"])))
@@ -15621,6 +15904,11 @@ class UsageWindow(ActivityWindow):
                             self.chart_key is not None and key != self.chart_key)
         self.chart_key = key
 
+    @staticmethod
+    def segment_tip(machine, app, value, show):
+        share = value / machine["value"] if machine["value"] else 0
+        return f"{machine['name']} · {ACTIVITY_APP_LABELS[app]}: {show(value)}, {format_share(share)} of {machine['name']}"
+
     def row_box(self):
         row = Gtk.Box(spacing=8 if self.small else 14)
         row.add_css_class("asb-usage-row")
@@ -15643,22 +15931,24 @@ class UsageWindow(ActivityWindow):
         row = self.row_box()
         setattr(row, "asb_" + kind, item["id"])
         row.asb_name = self.text("", ("asb-usage-name",), ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True)
-        who = Gtk.Box(spacing=7)
-        if kind != "machine":
-            who.set_valign(Gtk.Align.CENTER)
+        who = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        slot = Gtk.Box(width_request=round(16 * self.text_scale), halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
         if kind == "machine":
             row.asb_dot = self.dot(item)
-            who.append(row.asb_dot)
+            slot.append(row.asb_dot)
         elif kind == "app":
-            who.append(self.mark(item["id"]))
-        who.append(row.asb_name)
+            mark = self.mark(item["id"])
+            mark.set_pixel_size(round(14 * self.text_scale))
+            slot.append(mark)
+        who.append(slot)
+        name = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        name.append(row.asb_name)
         if kind == "machine":
-            name, who = who, Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
-            who.append(name)
-            # The state wraps to at most two lines.
+            # The state wraps to at most two lines, at the same x as the name and the fold title.
             row.asb_state = self.text("", ("asb-usage-sub",), wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, lines=2,
                                       ellipsize=Pango.EllipsizeMode.END, max_width_chars=1, hexpand=True)
-            who.append(row.asb_state)
+            name.append(row.asb_state)
+        who.append(name)
         bar = UsageBar(10, self.palette["track"])
         self.row_cells(row, who, bar, item["value"], item["share"], show)
         row.asb_bar, row.asb_share = bar, row.get_last_child()
@@ -15694,7 +15984,8 @@ class UsageWindow(ActivityWindow):
                         row.asb_dot.remove_css_class(f"asb-activity-hue-{index}")
                     row.asb_dot.add_css_class(f"asb-activity-hue-{MACHINE_HUES.index(item['hue'])}")
                     (row.asb_dot.add_css_class if item["offline"] else row.asb_dot.remove_css_class)("asb-activity-hollow")
-                    segments = [(item["apps"][app]["value"], self.app_color(app)) for app in USAGE_APPS + ("",)]
+                    segments = [(item["apps"][app]["value"], self.app_color(app), self.segment_tip(item, app, item["apps"][app]["value"], show))
+                                for app in USAGE_APPS + ("",)]
                 else:
                     segments = [(item["value"] or 0, self.app_color(item["id"]) if kind == "app" else self.palette["accent"])]
                 row.asb_bar.track = self.palette["track"]
@@ -15709,8 +16000,8 @@ class UsageWindow(ActivityWindow):
 
     def render_totals(self, view):
         parts = view["parts"]
-        figures = (("Processed tokens", format_tokens(view["tokens"])), ("Cached input", format_tokens(parts["cacheRead"] + parts["cacheWrite"])),
-                   ("Uncached input", format_tokens(parts["uncached"])), ("Output", format_tokens(parts["output"])),
+        self.totals_heading.set_label("Totals so far" if not (self.data.get("scan") or {}).get("complete", True) else "Totals")
+        figures = (("Cost", format_cost(view["cost"])), ("Processed tokens", format_tokens(view["tokens"])),
                    ("Cache savings", format_cost(view["savings"])))
         if not hasattr(self, "total_figures"):
             self.total_figures = []
@@ -15751,6 +16042,7 @@ class UsageWindow(ActivityWindow):
             bar.set_segments([(values[part], ramp[part]) for part in USAGE_PARTS])
             total, line = sum(values.values()), bar.get_next_sibling()
             for part in USAGE_PARTS:
+                line.set_spacing(round(8 * self.text_scale))
                 share = line.get_last_child()
                 share.get_prev_sibling().set_label(show(values[part]))
                 share.set_label(format_share(values[part] / total if total else 0))
@@ -15761,6 +16053,16 @@ class UsageWindow(ActivityWindow):
         grid = self.models
         names = {machine["machineId"]: machine["name"] for machine in self.data["machines"]}
         rows = {machine["id"]: machine for machine in view["machines"]}
+        key = [(machine["id"], machine["name"], machine["hue"], machine["offline"]) for machine in view["machines"]], self.text_scale
+        if key != getattr(self.model_keys, "asb_key", None):
+            self.model_keys.asb_key = key
+            self.model_keys.remove_all()
+            for machine in view["machines"]:
+                entry = Gtk.Box(spacing=round(6 * self.text_scale))
+                entry.append(self.dot(machine))
+                entry.append(self.text(machine["name"], ("asb-usage-model-key",)))
+                self.model_keys.append(entry)
+                entry.get_parent().set_focusable(False)
         columns = [("Model", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
             [("Model", 0), ("App", 0), ("Machines", 0), ("Cost", 1), ("Share", 0), ("Tokens", 1)]
         if columns != getattr(self, "model_columns", None):
@@ -15768,6 +16070,8 @@ class UsageWindow(ActivityWindow):
             self.model_columns, self.model_cells = columns, {}
             for column, (title, xalign) in enumerate(columns):
                 self.model_head = self.text(title, ("asb-usage-head",), xalign, hexpand=title in ("Model", "App", "Machines", "Tokens"))
+                if title == "Cost" and not self.small:
+                    self.model_head.add_css_class("asb-usage-cost")
                 grid.attach(self.model_head, column, 0, 1, 1)
         keys = {(model["model"], model["app"]) for model in view["models"]}
         for key in [key for key in self.model_cells if key not in keys]:
@@ -15789,14 +16093,16 @@ class UsageWindow(ActivityWindow):
             # One fixed slot per shown machine, in machine order: a machine without this model leaves its slot empty.
             dots = cells["Machines"]
             machines = [(machine, names[machine], rows[machine]["hue"], rows[machine]["offline"], machine in model["machines"]) for machine in rows]
-            if machines != getattr(dots, "asb_machines", None):
-                dots.asb_machines = machines
+            if (machines, self.text_scale) != getattr(dots, "asb_machines", None):
+                dots.asb_machines = machines, self.text_scale
+                dots.set_spacing(round(4 * self.text_scale))
                 remove_children(dots)
                 text = ", ".join(names[machine] + (" (offline)" if rows[machine]["offline"] else "") for machine in model["machines"])
                 dots.update_property([Gtk.AccessibleProperty.LABEL], [text])
                 dots.set_tooltip_text(text)
                 for machine in rows:
-                    dots.append(self.dot(rows[machine]) if machine in model["machines"] else Gtk.Box(width_request=7, height_request=7))
+                    dots.append(self.dot(rows[machine]) if machine in model["machines"] else
+                                Gtk.Box(width_request=round(7 * self.text_scale), height_request=round(7 * self.text_scale)))
             share = cells["Share"]
             if model["share"] is None:
                 remove_children(share)
@@ -15819,15 +16125,23 @@ class UsageWindow(ActivityWindow):
     def model_row(self, model):
         """The cells of one Models row by column title. render_models fills the texts that change."""
         # A long model name wraps in a narrow window (at Large Text) in place of being cut.
-        cells = {"Model": self.text(model["model"], ("asb-mono",), wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR),
+        # Zero-width spaces permit breaks at model separators, never inside the words. No inserted hyphens.
+        name = re.sub(r"([/.:])", "\\1\u200b", model["model"])
+        cells = {"Model": self.text(name, ("asb-mono",), wrap=True, wrap_mode=Pango.WrapMode.WORD),
                  "Cost": self.text("", (), 1), "Tokens": self.text("", ("asb-mono",), 1)}
-        app = Gtk.Box(spacing=6, tooltip_text=ACTIVITY_APP_LABELS[model["app"]])
+        attributes = Pango.AttrList()
+        attributes.insert(Pango.attr_insert_hyphens_new(False))
+        cells["Model"].set_attributes(attributes)
+        cells["Model"].update_property([Gtk.AccessibleProperty.LABEL], [model["model"]])
+        app = Gtk.Box(spacing=round(6 * self.text_scale), tooltip_text=ACTIVITY_APP_LABELS[model["app"]])
         app.append(self.mark(model["app"]))
         if not self.small:
             app.append(self.text(ACTIVITY_APP_LABELS[model["app"]]))
         cells["App"] = app
         cells["Machines"] = Gtk.Box(spacing=4, accessible_role=Gtk.AccessibleRole.IMG)
         cells["Share"] = Gtk.Box(spacing=8)
+        if not self.small:
+            cells["Cost"].add_css_class("asb-usage-cost")
         for cell in cells.values():
             cell.add_css_class("asb-usage-cell")
             cell.asb_model = (model["model"], model["app"])

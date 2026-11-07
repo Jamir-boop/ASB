@@ -13575,7 +13575,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 record["cost"] = None
         window = self.window(replies)
         folds = (window.machine_fold, window.app_fold, window.maker_fold)
-        self.assertEqual([fold.get_expanded() for fold in folds], [True, False, False])
+        self.assertEqual([fold.get_expanded() for fold in folds], [True, True, False])
         self.assertEqual([self.labels(fold.get_label_widget())[0] for fold in folds], ["Machines", "Apps", "Providers"])
         self.assertEqual([fold.get_child() for fold in folds], [window.machine_rows, window.app_rows, window.maker_rows])
         self.assertEqual([fold.get_margin_top() for fold in folds], [0, 10, 10])
@@ -13591,7 +13591,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual([fold.get_expanded() for fold in folds], [True, True, False])
         view = asb.usage_view(window.data, self.ALL, "cost")
         self.assertEqual(sorted(view["unpriced_models"]), ["gpt-6.1-mini", "mimo-v2.6-pro"])
-        self.assertEqual(window.round.note_text, "2 models unpriced")
+        self.assertEqual(window.round.note_text, "2\u00a0models\u00a0unpriced")
         self.assertEqual(window.round.get_tooltip_text(),
                          f"Prices: LiteLLM, Oct 26\n2 unpriced models: {asb.format_tokens(view['unpriced_tokens'])} tokens not in the cost.\n"
                          + ", ".join(view["unpriced_models"]))
@@ -13630,7 +13630,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.round.center(), (asb.format_cost(view["total"]), "at API prices"))
         self.assertEqual(window.round.center(), ("$2,343.50", "at API prices"))
         self.assert_accessible_label(window.round, "Usage by machine and app")
-        self.assertEqual(window.round.arcs, asb.usage_round_arcs(view, self.REPLIES["30d"]["machines"], "cost"))
+        self.assertEqual([{key: value for key, value in arc.items() if key != "tip"} for arc in window.round.arcs],
+                         asb.usage_round_arcs(view, self.REPLIES["30d"]["machines"], "cost"))
         rows = self.children(window.machine_rows)
         self.assertEqual([row.asb_machine for row in rows], ["desk", "laptop", "studio"])
         self.assertEqual([self.labels(row) for row in rows], [
@@ -13642,14 +13643,13 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertAlmostEqual(bar.fraction, view["machines"][0]["share"])
         # Desk's OpenCode model is unpriced: no OpenCode segment under Cost.
         self.assertEqual([color for _value, color in bar.segments], ["#c9ccd1", "#d97757"])
-        self.assertEqual(window.round.note_text, "1 model unpriced")
+        self.assertEqual(window.round.note_text, "1\u00a0model\u00a0unpriced")
         found, round_bounds = window.round.compute_bounds(window)
         self.assertTrue(found)
         self.assertEqual((round_bounds.get_width(), round_bounds.get_height()), (320, 320))
         found, side = rows[0].compute_bounds(window)
         self.assertGreater(side.get_x(), round_bounds.get_x() + 320)
-        self.assertEqual(self.figures(window), {"Processed tokens": "3.33B", "Cached input": "2.95B", "Uncached input": "310.1M",
-                                                "Output": "68.4M", "Cache savings": "$5,916.10"})
+        self.assertEqual(self.figures(window), {"Cost": "$2,343.50", "Processed tokens": "3.33B", "Cache savings": "$5,916.10"})
         self.assert_no_new_warnings()
 
     def test_all_time_month_chart_and_empty_state(self):
@@ -13704,7 +13704,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertEqual(self.labels(row), [maker["label"], asb.format_cost(maker["value"]),
                                                "" if maker["share"] is None else asb.format_share(maker["share"])])
             who, bar, value, share = self.children(row)
-            self.assertEqual(len(self.children(who.get_child())), 1)
+            self.assertEqual(len(self.children(who.get_child())), 2)
             self.assertEqual(bar.segments, [] if maker["value"] is None else [(maker["value"], window.palette["accent"])])
         self.assertTrue(value.has_css_class("asb-dim"))
         self.assertTrue(value.has_css_class("asb-usage-value"))
@@ -13729,7 +13729,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         grok = next(row for row in rows if row.asb_app == "grok")
         who = self.children(grok)[0].get_child()
         self.assertEqual(self.labels(who), ["Grok"])
-        self.assertEqual(who.get_first_child().get_gicon().get_file().get_basename(), "asb-terminal-symbolic.svg")
+        self.assertEqual(who.get_first_child().get_first_child().get_gicon().get_file().get_basename(), "asb-terminal-symbolic.svg")
         self.assertEqual([key for key, _label, _color in window.chart.series], ["codex", "claude", "opencode", "antigravity", "grok", ""])
         self.assertNotIn("pi", [key for key, _label, _color in window.chart.series])
         for model, cells in self.model_rows(window):
@@ -13941,12 +13941,12 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(chart.colors()[chart.TOTAL], window.palette["accent"])
         right = chart.get_width() - chart.RIGHT
         widest = max(asb.activity_layout(chart, text, 11).get_pixel_extents()[1].width for _key, text, *_rest in labels)
-        self.assertEqual(chart.RIGHT, math.ceil(7 + 5 + widest + 8))
+        self.assertEqual(chart.RIGHT, math.ceil(chart.gap() + max(widest, chart.text(chart.header()).get_pixel_extents()[1].width) + 8))
         boxes = sorted((top, top + height) for _key, _text, _left, top, _width, height in labels)
         for (_top, bottom), (after, _bottom) in zip(boxes, boxes[1:]):
             self.assertGreaterEqual(after - bottom, 2 - 1e-6)
         for key, _text, left, top, width, height in labels:
-            self.assertEqual(left, right + 8)
+            self.assertEqual(left, right + chart.gap())
             self.assertLessEqual(left + width, chart.get_width())
             self.assertGreaterEqual(top, chart.TOP - 1e-6)
             self.assertLessEqual(top + height, chart.BOTTOM + 1e-6)
@@ -14003,8 +14003,12 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual([item.get_stroke().get_line_width() for item in strokes if list(item.get_stroke().get_dash())], [1.5, 1.5, 1.5, 2])
         fills = [item for item in self.render_nodes(node) if isinstance(item, asb.Gsk.FillNode)]
         area = fills[0].get_child()
-        self.assertIsInstance(area, asb.Gsk.ColorNode)
-        self.assertEqual(area.get_color().to_string(), asb.alpha_color(window.palette["accent"], .10).to_string())
+        self.assertIsInstance(area, asb.Gsk.LinearGradientNode)
+        stops = area.get_color_stops()
+        self.assertEqual([stop.offset for stop in stops], [0, 1])
+        self.assertEqual([stop.color.to_string() for stop in stops], [asb.alpha_color(window.palette["accent"], .16).to_string(),
+                                                                    asb.alpha_color(window.palette["accent"], 0).to_string()])
+        self.assertEqual((area.get_start().y, area.get_end().y), (chart.TOP, chart.BOTTOM))
         # The tooltip lists the Total first.
         self.motion(chart).emit("motion", chart.centers()[0], 60.)
         title, names, values = chart.tip["layouts"]
@@ -14096,7 +14100,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         x = chart.centers()[0]
         self.assertAlmostEqual(x, (chart.LEFT + chart.get_width() - chart.RIGHT) / 2)
         paths = chart.series_paths()
-        # A 3 px dot per series, and the Total dot on top.
+        # A hollow 3 px point per series, and the Total point on top: the only bucket is current.
         self.assertEqual([key for key, *_rest in paths], ["b", "a", chart.TOTAL])
         for (_key, _color, line, dot), value in zip(paths, (30, 12, 42)):
             self.assertIsNone(line)
@@ -14106,6 +14110,11 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertAlmostEqual(bounds.get_x() + 3, x, delta=.01)
             self.assertAlmostEqual(bounds.get_y() + 3, chart.y(value), delta=.01)
         self.drain(.1)
+        node = self.chart_node(chart)
+        rings = [node for node in self.render_nodes(node) if isinstance(node, asb.Gsk.StrokeNode) and node.get_stroke().get_line_width() == 1.5]
+        self.assertEqual(len(rings), 3)
+        for _key, _text, left, *_rest in chart.end_labels():
+            self.assertEqual(left - x - 3, 6)
         self.pixels(chart)
         self.motion(chart).emit("motion", chart.LEFT + 5, 100)
         self.assertEqual((chart.tip["index"], chart.tip["title"], chart.tip["total_text"]), (0, "October 2026", "$42.00"))
@@ -14355,7 +14364,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertEqual(window.stack.compute_bounds(window)[1].get_y(), top.get_y())
             css = window.css.to_string()
             self.assertIn("progressbar.asb-usage-scan > trough > progress", css)
-            self.assertEqual(window.round.note_text, "so far · 1 model unpriced")
+            self.assertEqual(window.round.note_text, "so\u00a0far · 1\u00a0model\u00a0unpriced")
             content_top = window.content.compute_bounds(window)[1].get_y()
             self.poll_calls.reset_mock()
             self.addCleanup(setattr, self.poll_calls, "return_value", 0)
@@ -14374,7 +14383,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             self.poll_calls.assert_called_once_with(15, window.poll_tick)
             self.assertFalse(window.scan_label.get_visible())
             self.assertFalse(window.scan_bar.get_visible())
-            self.assertEqual(window.round.note_text, "1 model unpriced")
+            self.assertEqual(window.round.note_text, "1\u00a0model\u00a0unpriced")
             # The page did not move when the scan ended.
             self.drain(.1)
             self.assertEqual(window.content.compute_bounds(window)[1].get_y(), content_top)
@@ -14558,9 +14567,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_blocks_side_by_side(window)
         found, round_bounds = window.round.compute_bounds(window)
         self.assertTrue(found)
-        self.assertEqual((round_bounds.get_width(), round_bounds.get_height()), (240, 240))
-        self.assertAlmostEqual(round_bounds.get_x() + 120, window.get_width() / 2, delta=8)
-        self.assertEqual(len(self.children(window.figures)), 5)
+        self.assertEqual(round_bounds.get_height(), 320)
+        self.assertEqual(window.round.outer_radius(), 146)
+        self.assertAlmostEqual(round_bounds.get_x() + round_bounds.get_width() / 2, window.get_width() / 2, delta=8)
+        self.assertEqual(len(self.children(window.figures)), 3)
         self.assertIn("Machines", [child.get_label() for child in self.children(window.models) if child.has_css_class("asb-usage-head")])
         small = self.window(size=(600, 900))
         self.assertTrue(small.small and small.narrow)
@@ -14593,13 +14603,14 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(ring.arcs)
         for arc in ring.arcs:
             radius, angle = (arc["r0"] + arc["r1"]) / 2, math.radians((arc["a0"] + arc["a1"]) / 2)
-            self.assertIs(ring.arc_at((160 + radius * math.cos(angle)) * .75, (160 + radius * math.sin(angle)) * .75), arc)
+            scale = ring.size / ring.SIZE
+            self.assertIs(ring.arc_at(ring.origin + (160 + radius * math.cos(angle)) * scale, (160 + radius * math.sin(angle)) * scale), arc)
         ring.total_text, ring.sub_text = "$123,456.78", "Claude Code on a-very-long-machine-name"
         (value, *_), (sub, *_) = ring.center_layouts()[:2]
-        self.assertLessEqual(value.get_pixel_extents()[1].width, 2 * 109 * .75 - 16)
+        self.assertLessEqual(value.get_pixel_extents()[1].width, 2 * 109 * ring.size / ring.SIZE - 16)
         self.assertGreaterEqual(value.get_font_description().get_size() / asb.Pango.SCALE, 15)
         self.assertTrue(sub.is_ellipsized())
-        self.assertLessEqual(sub.get_pixel_extents()[1].width, 2 * 109 * .75 - 16)
+        self.assertLessEqual(sub.get_pixel_extents()[1].width, 2 * 109 * ring.size / ring.SIZE - 16)
         wide = self.window()
         (value, *_), _sub = wide.round.center_layouts()[:2]
         self.assertEqual(wide.round.total_text, "$2,343.50")
@@ -14631,9 +14642,9 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertEqual(set(cells), {cells[0]})
                 self.assertEqual(len(heights), 9)
                 # A wrapped machine state makes its row taller; every other row keeps one height.
-                self.assertEqual(len(set(heights)), 1 if size != (600, 900) else 2)
+                self.assertEqual(len(set(heights)), 1 if size == (948, 760) else 2)
                 self.assertLessEqual(min(heights), 36)
-                states = {row.asb_machine: self.children(self.children(row)[0].get_child())[1] for row in self.children(window.machine_rows)}
+                states = {row.asb_machine: row.asb_state for row in self.children(window.machine_rows)}
                 studio, desk = states["studio"], states["desk"]
                 self.assertEqual(studio.get_label(), "Offline · seen Oct 25, 14:30")
                 self.assertEqual(studio.get_tooltip_text(), "Offline · seen Oct 25, 14:30")
@@ -14651,16 +14662,19 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(window.empty.get_visible())
         self.assertFalse(window.scroll.get_visible())
         # A centered block: the title (15 px, weight 600), the dim line, and Show all time.
-        self.assertEqual(self.labels(window.empty), ["No usage in 30 days", "Usage shows here after an agent app runs.", "Show all time"])
+        self.assertEqual(self.labels(window.empty), ["No usage in the last 30 days", "Usage shows here after an agent app runs.", "Show all time"])
         self.assertEqual((window.empty.get_halign(), window.empty.get_valign()), (asb.Gtk.Align.CENTER, asb.Gtk.Align.CENTER))
         self.assertTrue(window.empty_title.has_css_class("asb-error-title"))
-        line = window.empty_title.get_next_sibling()
+        line = window.empty_title.get_next_sibling().get_child()
         self.assertTrue(line.has_css_class("asb-dim") and line.has_css_class("asb-error-text"))
         self.assertTrue(window.empty_all_time.get_visible())
+        self.assertEqual((window.empty_icon.get_icon_name(), window.empty_icon.get_pixel_size()), ("x-office-spreadsheet-symbolic", 64))
+        self.assertTrue(window.empty_icon.has_css_class("asb-dim"))
+        self.assertTrue(window.empty_all_time.has_css_class("suggested-action") and window.empty_all_time.has_css_class("pill"))
         self.assertEqual(list(window.chip_buttons), ["desk", "laptop", "studio"])
         window.set_period("24h")
         self.drain(.05)
-        self.assertEqual(window.empty_title.get_label(), "No usage in 24 hours")
+        self.assertEqual(window.empty_title.get_label(), "No usage in the last 24 hours")
         window.empty_all_time.emit("clicked")
         self.drain(.05)
         self.assertEqual((window.period, window.period_menu.get_selected(), window.routes[-1]), ("all", 4, "/api/activity/usage?period=all"))
@@ -14714,7 +14728,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(self.font_px(window.chart_title), 13 * 1.5)
         rules = window.css.to_string()
         for rule in (".asb-usage-small {\n  font-size: 18px;", ".asb-usage-row {\n  border-bottom-color:", "min-height: 51px",
-                     ".asb-error-title {\n  font-size: 22.5px;"):
+                     ".asb-error-title {\n  font-size: 30px;"):
             self.assertIn(rule, rules)
         self.assertEqual((window.breakpoints["narrow"].get_condition().to_string(), window.breakpoints["small"].get_condition().to_string()),
                          (f"max-width: {round(899 * 1.5)}px", f"max-width: {round(639 * 1.5)}px"))
@@ -14744,15 +14758,13 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         window = self.window()
         self.assertFalse(window.has_css_class("asb-custom"))
         button = window.metric_buttons["cost"]
-        found, accent = button.get_style_context().lookup_color("accent_bg_color")
+        found, accent = button.get_style_context().lookup_color("accent_color")
         self.assertTrue(found)
         found, bounds = button.compute_bounds(window)
         self.assertTrue(found)
         self.assert_pixel(window, bounds.get_x() + 4, bounds.get_y() + bounds.get_height() // 2,
-                          "#" + "".join(f"{round(channel * 255):02x}" for channel in (accent.red, accent.green, accent.blue)))
-        found, text = button.get_style_context().lookup_color("accent_fg_color")
-        self.assertTrue(found)
-        self.assertEqual(button.get_color().to_string(), text.to_string())
+                          window.palette["accent"])
+        self.assertEqual(button.get_color().to_string(), asb.rgba(window.palette["win"]).to_string())
         self.assert_no_new_warnings()
 
     def ring_pixels(self, window, widget, color):
@@ -14819,10 +14831,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         ring = window.round
         self.assertEqual(ring.HOLE, 109)
         self.assertEqual({(arc["r0"], arc["r1"]) for arc in ring.arcs}, {(109, 131), (134, 146)})
-        self.assertEqual(ring.note_text, "so far · 1 model unpriced")
+        self.assertEqual(ring.note_text, "so\u00a0far · 1\u00a0model\u00a0unpriced")
         window.chip_buttons["laptop"].set_active(False)
         self.drain(.1)
-        self.assertEqual(ring.note_text, "so far · 2 of 3 machines · 1 model unpriced")
+        self.assertEqual(ring.note_text, "so\u00a0far · 2\u00a0of\u00a03\u00a0machines · 1\u00a0model\u00a0unpriced")
         lines = ring.center_layouts()
         self.assertEqual([layout.get_text() for layout, *_rest in lines], [ring.total_text, "at API prices", ring.note_text])
         note, x, y, color = lines[2]
@@ -14975,6 +14987,264 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assert_no_new_warnings()
 
 
+    def test_narrow_chart_key_and_bucket_header(self):
+        window = self.window(size=(360, 760), period="all")
+        chart = window.chart
+        self.assertTrue(chart.narrow)
+        self.assertEqual(chart.end_labels(), [])
+        self.assertEqual(chart.RIGHT, 4)
+        entries = chart.key_entries()
+        self.assertEqual([key for key, *_ in entries], list(chart.end_texts))
+        self.assertEqual(entries[0][1:3], ("Total", asb.format_cost(chart.sums[-1])))
+        self.assertEqual({width for *_, width in entries}, {chart.get_width() / 2})
+        for index, (_key, _name, _value, left, top, width) in enumerate(entries):
+            self.assertEqual(left, index % 2 * width)
+            self.assertEqual(top, chart.key_top() + chart.label_height + 4 + index // 2 * 18)
+        self.assertEqual(chart.get_height(), chart.height_for(chart.get_width()))
+        for period, header in (("all", "This month so far"), ("7d", "Today so far"), ("24h", "This hour so far")):
+            window.set_period(period)
+            self.drain(.05)
+            self.assertEqual(chart.header(), header)
+            self.assertEqual(chart.text(header).get_font_description().get_size() / asb.Pango.SCALE, 11)
+        window.set_default_size(600, 760)
+        self.drain(.15)
+        self.assertFalse(chart.narrow)
+        self.assertTrue(chart.end_labels())
+        self.assertEqual(chart.key_entries(), [])
+        self.assert_no_new_warnings()
+
+    def test_complete_bucket_marks_and_end_label_leaders(self):
+        window, chart = self.curve_chart([{"a": 1, "b": 10, "c": 10}] * 7)
+        chart.series_paths()
+        self.assertIsNotNone(chart.dots)
+        # Exactly one radius 3 circle at each of the six complete Total buckets.
+        expected = asb.Gsk.PathBuilder.new()
+        for index, x in enumerate(chart.centers()[:-1]):
+            expected.add_circle(asb.Graphene.Point().init(x, chart.value_y(index, chart.TOTAL)), 3)
+        self.assertEqual(chart.dots.to_string(), expected.to_path().to_string())
+        for _key, _text, left, _top, _width, _height in chart.end_labels():
+            self.assertEqual(left - chart.plot_right() - 3, 6)
+        snapshot = asb.Gtk.Snapshot()
+        chart.snapshot_labels(snapshot, asb.alpha_color(window.palette["dim"]), asb.alpha_color(window.palette["text"]))
+        nodes = self.render_nodes(snapshot.to_node())
+        # At least one close end label moves by more than 3 px and has a 1 px leader; no filled label dots remain.
+        self.assertTrue(any(isinstance(node, asb.Gsk.StrokeNode) and node.get_stroke().get_line_width() == 1 for node in nodes))
+        self.assertFalse(any(isinstance(node, asb.Gsk.RoundedClipNode) for node in nodes))
+        chart.set_data(self.CURVE_SERIES, [{"a": 1, "b": 10, "c": 10}] * 13,
+                       {"unit": "day", "startsMs": list(range(13))}, asb.format_cost, "cost", False)
+        chart.series_paths()
+        self.assertIsNone(chart.dots)
+        self.assert_no_new_warnings()
+
+    def test_chart_keyboard_cursor_and_focus_ring(self):
+        window = self.window(period="all")
+        chart = window.chart
+        self.assertTrue(chart.get_focusable())
+        self.assertEqual(chart.get_css_name(), "asb-usage-chart")
+        window.set_focus_visible(True)
+        chart.grab_focus()
+        self.drain(.1)
+        self.assertTrue(chart.has_focus())
+        keys = next(controller for controller in chart.observe_controllers() if isinstance(controller, asb.Gtk.EventControllerKey))
+        last = len(chart.bars) - 1
+        for key, index in ((asb.Gdk.KEY_End, last), (asb.Gdk.KEY_Left, last - 1), (asb.Gdk.KEY_Home, 0),
+                           (asb.Gdk.KEY_Left, 0), (asb.Gdk.KEY_Right, 1), (asb.Gdk.KEY_End, last), (asb.Gdk.KEY_Right, last)):
+            self.assertTrue(keys.emit("key-pressed", key, 0, asb.Gdk.ModifierType(0)))
+            self.assertEqual(chart.hover, index)
+            self.assertEqual(chart.tip["index"], index)
+            tip = chart.tip
+            text = ", ".join([f"{tip['title']}: Total {tip['total_text']}"] + [f"{name} {value}" for name, value in tip["rows"]])
+            self.assert_accessible_label(chart, text)
+        self.assertFalse(keys.emit("key-pressed", asb.Gdk.KEY_Tab, 0, asb.Gdk.ModifierType(0)))
+        self.drain(.1)
+        self.ring_pixels(window, chart, window.palette["accent"])
+        rules = window.css.to_string().split("asb-usage-chart:focus-visible {")[1].split("}")[0]
+        self.assertIn("outline-width: 2px", rules)
+        self.assertIn(f"outline-color: {asb.rgba(window.palette['accent']).to_string()}", rules)
+        self.assert_no_new_warnings()
+
+    def test_ring_grows_with_large_text_and_folds_keep_user_state(self):
+        self.set_text_dpi(98304)
+        window = self.window(period="all")
+        folds = (window.machine_fold, window.app_fold, window.maker_fold)
+        self.assertEqual([fold.get_expanded() for fold in folds], [True, True, False])
+        # A fold the user changed keeps its state across both layout changes and data reads.
+        window.app_fold.set_expanded(False)
+        window.maker_fold.set_expanded(True)
+        self.set_text_dpi(147456)
+        self.assertTrue(window.narrow)
+        self.assertEqual([fold.get_expanded() for fold in folds], [True, False, True])
+        ring = window.round
+        self.assertAlmostEqual(ring.outer_radius(), 219)
+        total, caption = [layout.get_font_description().get_size() / asb.Pango.SCALE for layout, *_ in ring.center_layouts()[:2]]
+        self.assertGreaterEqual(total, 2 * caption)
+        window.refresh()
+        self.set_text_dpi(98304)
+        self.assertEqual([fold.get_expanded() for fold in folds], [True, False, True])
+        self.assertEqual(ring.outer_radius(), 146)
+        narrow = self.window(size=(360, 760))
+        self.assertEqual([getattr(narrow, name + "_fold").get_expanded() for name in ("machine", "app", "maker")], [True, False, False])
+        self.assertAlmostEqual(narrow.round.outer_radius(), min(146, (narrow.round.get_width() - 32) / 2))
+        self.assert_no_new_warnings()
+
+    def test_fold_rows_share_one_name_edge(self):
+        self.set_text_dpi(98304)
+        window = self.window()
+        window.maker_fold.set_expanded(True)
+        self.drain(.1)
+        for name in ("machine", "app", "maker"):
+            fold, rows = getattr(window, name + "_fold"), getattr(window, name + "_rows")
+            heading = fold.get_label_widget()
+            if name == "machine":
+                heading = heading.get_first_child()
+            edge = heading.compute_bounds(window)[1].get_x()
+            for row in self.children(rows):
+                self.assertEqual(row.asb_name.compute_bounds(window)[1].get_x(), edge)
+                slot = self.children(row)[0].get_child().get_first_child()
+                self.assertEqual(slot.get_width(), 16)
+                if name == "machine":
+                    self.assertEqual(row.asb_state.compute_bounds(window)[1].get_x(), edge)
+        self.assert_no_new_warnings()
+
+    def test_totals_cost_and_scan_heading(self):
+        window = self.window()
+        self.assertEqual(list(self.figures(window)), ["Cost", "Processed tokens", "Cache savings"])
+        self.assertEqual(self.figures(window)["Cost"], asb.format_cost(window.view["cost"]))
+        self.assertEqual(window.figures.get_max_children_per_line(), 3)
+        self.assertEqual(self.font_px(window.total_figures[0].get_last_child()), 15)
+        window.data["scan"] = {"complete": False}
+        window.render_view()
+        self.assertEqual(window.totals_heading.get_label(), "Totals so far")
+        window.set_metric("tokens")
+        self.assertEqual(self.figures(window)["Cost"], asb.format_cost(window.view["cost"]))
+        self.assert_no_new_warnings()
+
+    def test_model_key_machine_labels_gutter_and_separator_wrap(self):
+        replies = copy.deepcopy(self.REPLIES)
+        replies["30d"]["records"][0]["model"] = "maker/model.part:variant-long name"
+        window = self.window(replies)
+        self.assertEqual(self.labels(window.model_keys), ["Desk", "Laptop", "Studio"])
+        self.assertEqual(window.model_keys.get_column_spacing(), 12)
+        keys = self.children(window.model_keys)
+        for key in keys:
+            self.assertEqual(self.font_px(key.get_child().get_last_child()), 11)
+        for previous, key in zip(keys, keys[1:]):
+            end = previous.get_child().get_last_child().compute_bounds(window)[1]
+            dot = key.get_child().get_first_child().compute_bounds(window)[1]
+            self.assertAlmostEqual(dot.get_x() - end.get_x() - end.get_width(), 12, delta=.5)
+        for model, cells in self.model_rows(window):
+            names = next(row["machines"] for row in window.view["models"] if (row["model"], row["app"]) == model)
+            text = ", ".join(machine["name"] + (" (offline)" if machine["offline"] else "") for machine in window.view["machines"] if machine["id"] in names)
+            self.assert_accessible_label(cells[2], text)
+            self.assertEqual(cells[0].get_wrap_mode(), asb.Pango.WrapMode.WORD)
+            self.assertIn("insert-hyphens false", cells[0].get_attributes().to_string())
+            if model[0].startswith("maker/"):
+                self.assertEqual(cells[0].get_label(), "maker/​model.​part:​variant-long name")
+                self.assert_accessible_label(cells[0], model[0])
+        self.assertIn("padding-right: 24px", window.css.to_string().split(".asb-usage-cost {")[1].split("}")[0])
+        self.assert_no_new_warnings()
+
+    def test_ring_and_machine_bar_segment_tooltips(self):
+        window = self.window()
+        ring = window.round
+        class Tip:
+            def set_text(self, text):
+                self.text = text
+        tip = Tip()
+        for arc in ring.arcs:
+            radius, angle = (arc["r0"] + arc["r1"]) / 2, math.radians((arc["a0"] + arc["a1"]) / 2)
+            x, y = ring.origin + ring.size / ring.SIZE * (160 + radius * math.cos(angle)), ring.size / ring.SIZE * (160 + radius * math.sin(angle))
+            self.assertTrue(ring.query_tooltip(None, x, y, False, tip))
+            self.assertEqual(tip.text, arc["tip"])
+            self.assertIn(asb.format_cost(arc["value"]), tip.text)
+            self.assertIn("% of ", tip.text)
+        self.assertFalse(ring.query_tooltip(None, ring.origin + ring.size / 2, ring.size / 2, False, tip))
+        self.assertIn("Prices:", ring.get_tooltip_text())
+        for row in self.children(window.machine_rows):
+            bar = row.asb_bar
+            for index, text in enumerate(bar.tips):
+                self.assertIn(" · ", text)
+                left = sum(value for value, _ in bar.segments[:index])
+                total = sum(value for value, _ in bar.segments)
+                x = (bar.get_width() * bar.fraction - len(bar.segments) + 1) * (left + bar.segments[index][0] / 2) / total + index
+                self.assertTrue(bar.query_tooltip(None, x, 5, False, tip))
+                self.assertEqual(tip.text, text)
+                self.assertIn(text, [arc["tip"] for arc in ring.arcs if arc["kind"] == "app"])
+        self.assert_no_new_warnings()
+
+    def test_usage_marks_and_gaps_follow_large_text(self):
+        window = self.window()
+        self.set_text_dpi(147456)
+        # The live scale change rebuilds machine checks, row marks, app keys, and Models marks.
+        check = window.chip_buttons["desk"].get_child()
+        self.assertEqual(check.get_spacing(), 9)
+        self.assertEqual(check.get_first_child().get_size_request(), (10, 10))
+        key = self.children(window.round_keys)[0].get_child()
+        self.assertEqual(key.get_spacing(), 9)
+        self.assertEqual(key.get_first_child().get_size_request(), (12, 12))
+        self.assertEqual(window.round_keys.get_column_spacing(), 18)
+        for block in window.type_blocks:
+            line = block.get_first_child().get_next_sibling().get_next_sibling()
+            self.assertEqual(line.get_spacing(), 12)
+        rules = window.css.to_string()
+        self.assertIn("min-width: 12px", rules.split(".asb-usage-swatch {")[1].split("}")[0])
+        self.assertIn("min-height: 12px", rules.split(".asb-usage-key-dot {")[1].split("}")[0])
+        self.assert_no_new_warnings()
+
+    def test_checked_toggles_keep_accent_on_hover(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)
+        for colors in (None, asb.validate_theme(CUSTOM)):
+            window = self.window()
+            window.set_palette(colors)
+            for button in (window.metric_buttons["cost"], window.split_buttons["app"]):
+                button.set_state_flags(asb.Gtk.StateFlags.PRELIGHT, False)
+                self.drain(.1)
+                bounds = button.compute_bounds(window)[1]
+                self.assert_pixel(window, bounds.get_x() + 4, bounds.get_y() + bounds.get_height() // 2, window.palette["accent"])
+                self.assertEqual(asb.hex_color(button.get_color()), window.palette["win"])
+                button.unset_state_flags(asb.Gtk.StateFlags.PRELIGHT)
+        self.assert_no_new_warnings()
+
+    def test_unchecked_machine_ring_and_native_button_contrast(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)
+        for colors in (None, {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#a0a0a0", "divider": "#030303"},
+                       {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}):
+            window = self.window()
+            window.set_palette(colors)
+            window.chip_buttons["laptop"].set_active(False)
+            window.machine_filter.popup()
+            self.drain(.1)
+            rules = window.css.to_string().split("check:not(:checked) {")[1].split("}")[0]
+            self.assertIn("border-left-width: 1.5px", rules)
+            self.assertIn(f"border-left-color: {asb.rgba(window.palette['dim']).to_string()}", rules)
+            popover = window.machine_filter.get_popover()
+            bounds = popover.get_child().compute_bounds(popover)[1]
+            data, stride = self.pixels(popover)
+            x, y = int(bounds.get_x() + bounds.get_width() - 2), int(bounds.get_y() + 2)
+            offset = y * stride + x * 4
+            background = "#" + data[offset:offset + 3].hex()
+            self.assertGreaterEqual(asb.contrast(window.palette["dim"], background), 3)
+            window.machine_filter.popdown()
+        # The nine stock GNOME dark accents all have readable window-colored button text.
+        if hasattr(asb.Adw, "AccentColor"):
+            window = self.window()
+            native = asb.native_colors(window)
+            for name in ("BLUE", "TEAL", "GREEN", "YELLOW", "ORANGE", "RED", "PINK", "PURPLE", "SLATE"):
+                accent = asb.hex_color(asb.Adw.accent_color_to_standalone_rgba(getattr(asb.Adw.AccentColor, name), True))
+                with patch.object(asb, "native_colors", return_value=dict(native, accent=accent)):
+                    window.set_palette(None)
+                self.drain(.01)
+                self.assertGreaterEqual(asb.contrast(window.palette["win"], accent), 4.5)
+                for button in (window.metric_buttons["cost"], window.split_buttons["app"], window.retry_button, window.empty_all_time):
+                    self.assertEqual(asb.hex_color(button.get_color()), window.palette["win"])
+        self.assert_no_new_warnings()
+
+
+
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")
 class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
     snapshot_window = WidgetCheck.snapshot_window
@@ -15104,17 +15374,20 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         while child:
             parts.append(child)
             child = child.get_next_sibling()
-        icon, title, clamp, button = parts
-        self.assertEqual((icon.get_icon_name(), icon.get_pixel_size()), ("network-offline-symbolic", 48))
+        icon, title, clamp, reason_clamp, button = parts
+        self.assertFalse(reason_clamp.get_visible())
+        self.assertIs(reason_clamp.get_child(), window.error_reason)
+        self.assertTrue(window.error_reason.get_selectable())
+        self.assertEqual((icon.get_icon_name(), icon.get_pixel_size()), ("computer-fail-symbolic", 64))
         self.assertTrue(icon.has_css_class("asb-dim"))
         self.assertEqual(title.get_label(), "Cannot load test activity")
         self.assertTrue(title.has_css_class("asb-error-title"))
         self.assertEqual((clamp.get_child(), clamp.get_maximum_size()), (window.error_label, 360))
         self.assertTrue(window.error_label.has_css_class("asb-dim") and window.error_label.has_css_class("asb-error-text"))
         self.assertIs(button, window.retry_button)
-        self.assertTrue(button.has_css_class("suggested-action"))
+        self.assertTrue(button.has_css_class("suggested-action") and button.has_css_class("pill"))
         rules = window.css.to_string()
-        self.assertIn(".asb-error-title {\n  font-size: 15px;\n  font-weight: 600;", rules)
+        self.assertIn(".asb-error-title {\n  font-size: 20px;\n  font-weight: 700;", rules)
         self.assertIn(".asb-error-text {\n  font-size: 13px;", rules)
         window.set_palette(asb.validate_theme(CUSTOM))
         rules = window.css.to_string()
@@ -15127,6 +15400,26 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
         window.refresh()
         self.assertEqual((len(window.routes), window.stack.get_visible_child_name(), window.data), (3, "data", {"n": 1}))
         self.assertEqual(len(window.renders), 1)
+
+    def test_no_http_response_has_recovery_and_a_separate_system_reason(self):
+        for failure, reason in ((asb.URLError(ConnectionRefusedError(111, "Connection refused")), "Connection refused"),
+                                (asb.URLError("timed out"), "timed out"), (OSError("Network unreachable"), "Network unreachable")):
+            with self.subTest(reason=reason), patch.object(asb.LOCAL_HTTP, "open", side_effect=failure):
+                with self.assertRaises(RuntimeError) as caught:
+                    asb.request_json("http://127.0.0.1:1", "/api/activity/usage?period=all")
+                self.assertEqual(str(caught.exception), asb.ACTIVITY_NO_ENGINE + "\n" + reason)
+                window = self.probe([caught.exception])
+                window.refresh()
+                self.assertEqual(window.error_label.get_label(), asb.ACTIVITY_NO_ENGINE)
+                self.assertEqual(window.error_reason.get_label(), reason)
+                self.assertTrue(window.error_reason.get_visible() and window.error_reason_clamp.get_visible())
+                self.assertTrue(window.error_reason.get_selectable())
+                self.assertIn("font-size: 12px", window.css.to_string().split(".asb-error-reason {")[1].split("}")[0])
+        # A server detail with a newline stays whole in the body.
+        window = self.probe([RuntimeError("Server detail\nTry another period.")])
+        window.refresh()
+        self.assertEqual(window.error_label.get_label(), "Server detail\nTry another period.")
+        self.assertFalse(window.error_reason_clamp.get_visible())
 
     def test_period_change_reads_the_new_period(self):
         window = self.probe()
@@ -15393,8 +15686,8 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertNotIn("font-family", mono)
             # GNOME colors: a checked linked toggle is the accent, as the board's filter pills.
             checked = rules.split(".asb-activity .linked > button:checked {")[1].split("}")[0]
-            self.assertIn("background-color: @accent_bg_color;", checked)
-            self.assertIn("color: @accent_fg_color;", checked)
+            self.assertIn(f"background-color: {asb.rgba(window.palette['accent']).to_string()};", checked)
+            self.assertIn(f"color: {asb.rgba(window.palette['win']).to_string()};", checked)
         # The message proxy of Messages keeps no outline of its own: the table draws its rings.
         def fail(_route):
             raise RuntimeError("No engine.")
