@@ -73,11 +73,18 @@ internal class SeatLabelInput(val id: String, val degrees: Float, val sizes: Lis
 internal data class SeatLabelSpot(val text: Int, val place: Int, val box: Rect)
 
 /**
- * The table that the labels avoid: the center disc [rc] (when [disc]), the machine band from [ri] to [ro], and [blocked]: the pins,
- * the machine labels, the not-sent ends, and the shown key line.
+ * The table that the labels avoid: the center disc [rc] (when [disc]), the machine band from [ri] to [ro], [blocked] (the machine
+ * labels and the shown key line), and [circles] (center, radius): the pins and the not-sent end points.
  */
 internal class LabelTable(val center: Offset, val rp: Float, val rc: Float, val disc: Boolean, val width: Float, val height: Float,
-    val blocked: List<Rect>, val ri: Float = Float.MAX_VALUE, val ro: Float = Float.MAX_VALUE)
+    val blocked: List<Rect>, val ri: Float = Float.MAX_VALUE, val ro: Float = Float.MAX_VALUE,
+    val circles: List<Pair<Offset, Float>> = emptyList())
+
+/** A pin as a label obstacle: the 17 dp outer edge of the 2 dp accent ring, less the PC 0.5 tolerance. */
+internal fun pinCircle(pin: Offset, dp: Float): Pair<Offset, Float> = pin to 16.5f * dp
+
+/** A not-sent end point as a label obstacle: half the end width and 1 dp. */
+internal fun endCircle(point: Offset, endWidth: Float, dp: Float): Pair<Offset, Float> = point to endWidth / 2 + 1 * dp
 
 /**
  * Port of place_labels. The [chosen] seats place first (in that order) and show only their whole text, inward when no place is
@@ -97,6 +104,11 @@ internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, 
         return near(box) < table.ro + 2 * dp && far > table.ri - 2 * dp
     }
     val room = 6 * dp
+    // A box is free of a circle when the nearest point of the box is farther than the radius from the circle center.
+    fun touches(box: Rect, circle: Pair<Offset, Float>): Boolean {
+        val (p, r) = circle
+        return hypot(p.x.coerceIn(box.left, box.right) - p.x, p.y.coerceIn(box.top, box.bottom) - p.y) <= r
+    }
     fun box(seat: SeatLabelInput, text: Int, place: Int): Rect {
         val size = seat.sizes[text]
         val at = seatLabelPlace(c, table.rp, seat.degrees, size, place, dp)
@@ -114,7 +126,7 @@ internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, 
             for (place in 0..8) {
                 val b = box(seat, text, place)
                 val inside = b.left >= 2 * dp && b.top >= 2 * dp && b.right <= table.width - 2 * dp && b.bottom <= table.height - 2 * dp
-                if (inside && !(table.disc && onDisc(b)) && !onBand(b) && table.blocked.none { hit(it, b) } &&
+                if (inside && !(table.disc && onDisc(b)) && !onBand(b) && table.blocked.none { hit(it, b) } && table.circles.none { touches(b, it) } &&
                     placed.none { hit(Rect(it.left - room, it.top, it.right + room, it.bottom), b) }) {
                     found = SeatLabelSpot(text, place, b)
                     break@search

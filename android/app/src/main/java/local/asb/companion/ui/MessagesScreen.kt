@@ -760,14 +760,16 @@ private fun DrawScope.drawTable(
     fun drawChord(chord: Chord, draw: ChordDraw, part: String) {
         val lit = chord.key in litChords
         val dim = !lit && (lighting || (flying.isNotEmpty() && chord.key !in flying))
+        // A selection never recolors a not-sent mark: a lit all-not-sent chord stays dashed in the not-sent color, 3 dp wide.
         val color = when {
-            lit -> colors.accent
             chord.bad -> if (dim) dimBad else bad
+            lit -> colors.accent
             else -> if (dim) dimGray else gray
         }
-        if (lit && part in setOf("all", "casing")) drawPath(draw.curve.path, background, style = Stroke(draw.width + 2 * dp, cap = StrokeCap.Round))
+        val width = if (chord.bad && lit) 3 * dp else draw.width
+        if (lit && part in setOf("all", "casing")) drawPath(draw.curve.path, background, style = Stroke(width + 2 * dp, cap = StrokeCap.Round))
         if (part in setOf("all", "stroke") && draw.trim.second > draw.trim.first) {
-            drawPath(draw.stroke(dp), color, style = Stroke(draw.width, cap = StrokeCap.Round, pathEffect = if (chord.bad) badDash else null))
+            drawPath(draw.stroke(dp), color, style = Stroke(width, cap = StrokeCap.Round, pathEffect = if (chord.bad) badDash else null))
         }
         // A mixed pair: each receiver end with not-sent messages is dashed in the not-sent color over a casing 2 dp wider.
         if (part in setOf("all", "casing")) for (end in draw.ends) drawPath(polyline(end), background, style = Stroke(draw.endWidth + 2 * dp))
@@ -818,11 +820,12 @@ private fun DrawScope.drawTable(
     val inputs = seated.filter { it.id in geom.angles }.map { seat ->
         SeatLabelInput(seat.id, geom.angles.getValue(seat.id), texts.getValue(seat.id).map { Size(it.size.width.toFloat(), it.size.height.toFloat()) })
     }
-    // Each not-sent end point with its stroke and the 3 dp halo of a label.
-    val endBoxes = curves.values.filterNotNull().flatMap { draw -> draw.ends.flatten().map { Rect(it, draw.endWidth / 2 + 3 * dp) } }
-    val blocked = pinBoxes + machineBoxes + endBoxes + listOfNotNull(key?.box?.takeIf { key.shown })
+    // The pins and the not-sent end points are circles (the key line keeps the pin squares).
+    val circles = seated.mapNotNull { geom.pin(it.id) }.map { pinCircle(it, dp) } +
+        curves.values.filterNotNull().flatMap { draw -> draw.ends.flatten().map { endCircle(it, draw.endWidth, dp) } }
+    val blocked = machineBoxes + listOfNotNull(key?.box?.takeIf { key.shown })
     val spots = placeSeatLabels(inputs, chosen, counts, activityTimes(reply.messages),
-        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro), dp, litPins - chosen.toSet())
+        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro, circles), dp, litPins - chosen.toSet())
     for ((id, spot) in spots) {
         if (spot == null) continue
         // While the table dims, the labels of seats that are not lit draw in the muted color.

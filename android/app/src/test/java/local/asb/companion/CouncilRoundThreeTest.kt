@@ -33,6 +33,8 @@ import local.asb.companion.ui.LabelTable
 import local.asb.companion.ui.SeatLabelInput
 import local.asb.companion.ui.activityColorsOf
 import local.asb.companion.ui.appSplit
+import local.asb.companion.ui.endCircle
+import local.asb.companion.ui.pinCircle
 import local.asb.companion.ui.axisLabels
 import local.asb.companion.ui.factLines
 import local.asb.companion.ui.hex
@@ -86,6 +88,38 @@ class CouncilRoundThreeTest {
             .getValue("top")!!
         assertEquals(0, spot.text)
         assertTrue(spot.place == 5 || spot.place == 7)
+    }
+
+    @Test fun pinsAreCirclesForLabels() {
+        // The whole text takes the under-right diagonal (place 5); a pin 18 dp from its nearest corner leaves it free, 16 dp blocks it.
+        val top = SeatLabelInput("top", -90f, sizes)
+        val rects = listOf(Rect(0f, 0f, 205f, 400f), Rect(205f, 92f, 400f, 108f))
+        val place = { circles: List<Pair<Offset, Float>> ->
+            placeSeatLabels(listOf(top), emptyList(), emptyMap(), emptyMap(),
+                LabelTable(center, 100f, 0f, false, 400f, 400f, rects, circles = circles), 1f).getValue("top")!!
+        }
+        val free = place(emptyList())
+        assertEquals(5, free.place)
+        val corner = Offset(free.box.left, free.box.top)
+        val away = { distance: Float -> corner - Offset(distance, distance) / Math.sqrt(2.0).toFloat() }
+        assertEquals(16.5f, pinCircle(Offset.Zero, 1f).second)
+        assertEquals(5, place(listOf(pinCircle(away(18f), 1f))).place)
+        assertTrue(place(listOf(pinCircle(away(16f), 1f))).place != 5)
+    }
+
+    @Test fun notSentEndPointsAreCirclesForLabels() {
+        // An end point endWidth / 2 + 1.5 dp left of the inward box leaves it free; at endWidth / 2 + 0.5 dp it blocks it.
+        val seat = SeatLabelInput("s", -90f, listOf(Size(40f, 14f)))
+        val endWidth = 3f
+        val place = { circles: List<Pair<Offset, Float>> ->
+            placeSeatLabels(listOf(seat), emptyList(), emptyMap(), emptyMap(),
+                LabelTable(center, 100f, 0f, false, 400f, 400f, emptyList(), circles = circles), 1f).getValue("s")!!
+        }
+        val free = place(emptyList())
+        assertEquals(0, free.place)
+        val beside = { distance: Float -> Offset(free.box.left - distance, (free.box.top + free.box.bottom) / 2) }
+        assertEquals(0, place(listOf(endCircle(beside(endWidth / 2 + 1.5f), endWidth, 1f))).place)
+        assertTrue(place(listOf(endCircle(beside(endWidth / 2 + .5f), endWidth, 1f))).place != 0)
     }
 
     @Test fun labelsKeepOffTheMachineBand() {
