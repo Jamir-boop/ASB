@@ -40,6 +40,9 @@ import androidx.compose.ui.unit.sp
 import local.asb.companion.R
 import androidx.compose.ui.graphics.toArgb
 import local.asb.companion.data.APP_COLORS
+import local.asb.companion.data.MACHINE_HUES
+import local.asb.companion.data.STATUS_COLORS
+import local.asb.companion.data.accentGuard
 import local.asb.companion.data.Palette
 import local.asb.companion.data.contrast
 import local.asb.companion.data.contrastFloor
@@ -69,22 +72,28 @@ internal fun Color.hex(): String = "#" + Integer.toHexString(toArgb() and 0xffff
 /** [color] mixed [fraction] of the way from [base], as mixColor (no alpha). */
 internal fun mixToward(base: Color, color: Color, fraction: Double): Color = hexColor(mixColor(base.hex(), color.hex(), fraction))
 
-// Other and Unknown (#5d6268) move toward the text until they have 3:1 on the background.
-internal fun quietFloor(palette: Palette): Color = hexColor(contrastFloor(APP_COLORS.getValue(""), palette.text, palette.background, 3.0))
-
-internal fun activityColorsOf(palette: Palette): ActivityColors = ActivityColors(
-    other = quietFloor(palette),
-    unknown = quietFloor(palette),
-    tokens = usageTokenRamp(palette.accent, palette.background).mapValues { hexColor(it.value) },
-    background = hexColor(palette.background),
-    track = hexColor(mixColor(palette.background, palette.text, .17)),
-    edge = hexColor(edgeColor(palette.background, palette.text, .36, listOf(palette.background))),
-    rule = hexColor(mixColor(palette.background, palette.text, .13)),
-    text = hexColor(palette.text),
-    muted = hexColor(palette.muted),
-    accent = hexColor(palette.accent),
-    divider = hexColor(palette.divider),
-)
+// Other and Unknown (#5d6268) move toward the text until they have 3:1 on the background; then each data color too near the
+// accent changes only its lightness (the PC accent_guard).
+internal fun activityColorsOf(palette: Palette): ActivityColors {
+    val floor = contrastFloor(APP_COLORS.getValue(""), palette.text, palette.background, 3.0)
+    val guard = { color: String -> hexColor(accentGuard(color, palette.accent, palette.background)) }
+    val status = STATUS_COLORS.mapValues { (key, color) -> guard(if (key == "unknown") floor else color) }
+    return ActivityColors(
+        status = status,
+        statusText = status + mapOf("accepted" to guard(palette.muted), "written" to guard("#959ba3")),
+        apps = APP_COLORS.mapValues { (key, color) -> guard(if (key == "") floor else color) },
+        hues = MACHINE_HUES.map(guard),
+        tokens = usageTokenRamp(palette.accent, palette.background).mapValues { hexColor(it.value) },
+        background = hexColor(palette.background),
+        track = hexColor(mixColor(palette.background, palette.text, .17)),
+        edge = hexColor(edgeColor(palette.background, palette.text, .36, listOf(palette.background))),
+        rule = hexColor(mixColor(palette.background, palette.text, .13)),
+        text = hexColor(palette.text),
+        muted = hexColor(palette.muted),
+        accent = hexColor(palette.accent),
+        divider = hexColor(palette.divider),
+    )
+}
 
 // The desktop is dark only, so the app is too: one dark scheme from the PC palette, no dynamic color.
 internal fun asbColorScheme(palette: Palette): ColorScheme {

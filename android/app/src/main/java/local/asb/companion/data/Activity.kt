@@ -180,10 +180,10 @@ fun usageAppKey(app: String): String = if (app in USAGE_APP_ORDER) app else ""
 
 fun statusLabel(status: String): String = when (status) {
     "accepted" -> "Accepted"
-    "written" -> "Socket written"
-    "held" -> "Held"
+    "written" -> "No receipt"
+    "held" -> "On hold"
     "not-sent" -> "Not sent"
-    else -> "Unknown"
+    else -> "Status unknown"
 }
 
 fun statusKey(status: String): String = if (status in STATUS_ORDER) status else "unknown"
@@ -239,16 +239,21 @@ fun seatCounts(messages: List<ActivityMessage>): Map<String, SeatCount> {
 
 private fun SeatCount?.orEmpty() = this ?: SeatCount()
 
-/** One chord: [a] comes first on the circle; [ab] counts a to b, [ba] b to a. */
-data class Chord(val a: String, val b: String, val ab: Int, val ba: Int, val bad: Boolean) {
+/**
+ * One chord: [a] comes first on the circle; [ab] counts a to b, [ba] b to a; [badAb] and [badBa] count the not-sent messages of
+ * each direction.
+ */
+data class Chord(val a: String, val b: String, val ab: Int, val ba: Int, val bad: Boolean, val badAb: Int = 0, val badBa: Int = 0) {
     val n: Int get() = ab + ba
     val key: String get() = "$a|$b"
+    /** Some messages are not sent and some are: the chord draws a not-sent receiver end. */
+    val mixed: Boolean get() = !bad && badAb + badBa > 0
 }
 
 /** One chord per unordered pair of seated seats with messages; [Chord.bad] when every message is not-sent. */
 fun chords(messages: List<ActivityMessage>, seated: List<Seat>): List<Chord> {
     val index = seated.mapIndexed { i, seat -> seat.id to i }.toMap()
-    data class Tally(var ab: Int = 0, var ba: Int = 0, var bad: Int = 0)
+    data class Tally(var ab: Int = 0, var ba: Int = 0, var badAb: Int = 0, var badBa: Int = 0)
     val pairs = LinkedHashMap<Pair<String, String>, Tally>()
     for (message in messages) {
         val i = index[message.from] ?: continue
@@ -256,10 +261,11 @@ fun chords(messages: List<ActivityMessage>, seated: List<Seat>): List<Chord> {
         if (i == j) continue
         val key = if (i < j) message.from to message.to else message.to to message.from
         val tally = pairs.getOrPut(key) { Tally() }
-        if (message.from == key.first) tally.ab++ else tally.ba++
-        if (statusKey(message.status) == "not-sent") tally.bad++
+        val forward = message.from == key.first
+        if (forward) tally.ab++ else tally.ba++
+        if (statusKey(message.status) == "not-sent") { if (forward) tally.badAb++ else tally.badBa++ }
     }
-    return pairs.map { (key, t) -> Chord(key.first, key.second, t.ab, t.ba, t.bad == t.ab + t.ba) }
+    return pairs.map { (key, t) -> Chord(key.first, key.second, t.ab, t.ba, t.badAb + t.badBa == t.ab + t.ba, t.badAb, t.badBa) }
 }
 
 data class MachineRow(val machineIds: List<String>, val label: String, val count: Int)
@@ -567,7 +573,8 @@ fun usageRingNote(scanning: Boolean, shown: Int, total: Int, cost: Boolean, unpr
     if (scanning) parts += "so far"
     if (shown < total) parts += "$shown of $total machines"
     if (cost && unpricedTokens > 0) parts += "$unpricedModels model${if (unpricedModels == 1) "" else "s"} unpriced"
-    return parts.joinToString(" · ")
+    // No-break spaces inside a part, so the note breaks only between parts.
+    return parts.joinToString(" · ") { it.replace(' ', '\u00a0') }
 }
 
 /** Port of oklab: Björn Ottosson's OKLab (L, a, b) of an sRGB hex color. */
@@ -605,20 +612,20 @@ internal fun oklchColor(lightness: Double, startChroma: Double, hue: Double): St
     }
 }
 
-/** Port of usage_token_ramp: the token type colors, a ramp of the accent in OKLCH; cache read gets lighter until it has 3:1. */
+/**
+ * Port of usage_token_ramp: the token type colors, a ramp of the accent in OKLCH in even lightness steps from the floor to the
+ * accent. The floor is the lowest lightness from 0.30 up (0.005 steps) at which cache read has 3:1 on the background; output is
+ * the accent itself.
+ */
 fun usageTokenRamp(accent: String, background: String): Map<String, String> {
     val (lightness, a, b) = oklab(accent)
     val chroma = hypot(a, b)
     val hue = (Math.toDegrees(atan2(b, a)) % 360 + 360) % 360
-    val steps = listOf(.50 to .45, .62 to .60, .74 to .80, lightness to 1.0)
-    val ramp = TOKEN_TYPES.map { it.first }.zip(steps).associate { (key, step) -> key to oklchColor(step.first, chroma * step.second, hue) }
-        .toMutableMap()
-    var step = .50
-    while (contrast(ramp.getValue("cacheRead"), background) < 3 && step < 1) {
-        step += .005
-        ramp["cacheRead"] = oklchColor(step, chroma * .45, hue)
-    }
-    return ramp
+    var floor = .30
+    while (contrast(oklchColor(floor, chroma * .40, hue), background) < 3 && floor < 1) floor = Math.rint((floor + .005) * 1000) / 1000
+    val shares = listOf(.40, .60, .80)
+    return TOKEN_TYPES.take(3).mapIndexed { i, (key, _) -> key to oklchColor(floor + i * (lightness - floor) / 3, chroma * shares[i], hue) }
+        .toMap() + ("output" to accent)
 }
 
 /** Chart label intervals by bucket unit and count, counted from the last bar. */
@@ -635,12 +642,10 @@ fun chartLabelShown(count: Int, unit: String, index: Int): Boolean {
 
 data class UsageFigure(val label: String, val tokens: Long?, val cost: Double?)
 
-/** The five totals: Processed tokens, Cached input, Uncached input, Output, Cache savings. */
+/** The three totals: Cost (at API prices), Processed tokens, Cache savings; the token types are in their own block. */
 fun usageFigures(totals: UsageTotals): List<UsageFigure> = listOf(
+    UsageFigure("Cost", null, totals.cost),
     UsageFigure("Processed tokens", totals.tokens, null),
-    UsageFigure("Cached input", totals.parts.cacheRead + totals.parts.cacheWrite, null),
-    UsageFigure("Uncached input", totals.parts.uncached, null),
-    UsageFigure("Output", totals.parts.output, null),
     UsageFigure("Cache savings", null, totals.savings),
 )
 

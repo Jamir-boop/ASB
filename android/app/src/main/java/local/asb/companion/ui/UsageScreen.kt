@@ -29,7 +29,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
@@ -92,7 +91,6 @@ import local.asb.companion.data.chartBars
 import local.asb.companion.data.chartSeries
 import local.asb.companion.data.keptUsage
 import local.asb.companion.data.costShares
-import local.asb.companion.data.machineHue
 import local.asb.companion.data.makerRows
 import local.asb.companion.data.machineRows
 import local.asb.companion.data.modelRows
@@ -171,7 +169,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                                     Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !(on && onCount == 1),
                                         role = Role.Switch) { off = toggleMachine(machineIds, offSet, machine.machineId).toList() },
                                         contentAlignment = Alignment.Center) {
-                                        MachineChip(machine, hexColor(machineHue(index)), colors, Modifier.alpha(if (on) 1f else .5f),
+                                        MachineChip(machine, colors.hue(index), colors, Modifier.alpha(if (on) 1f else .5f),
                                             strike = !on)
                                     }
                                 }
@@ -202,17 +200,17 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
 private fun UsageEmpty(period: String, colors: ActivityColors, onAllTime: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(48.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(if (period == "all") "No usage yet" else "No usage in ${periodLabel(period)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+        Text(if (period == "all") "No usage yet" else "No usage in the last ${periodLabel(period)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
             color = colors.text, textAlign = TextAlign.Center)
         Text("Usage shows here after an agent app runs.", fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.Center)
-        if (period != "all") Button(onClick = onAllTime) { Text("Show all time") }
+        if (period != "all") AccentButton("Show all time", colors, onClick = onAllTime)
     }
 }
 
 @Composable
 private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metric, byMachine: Boolean,
     onSplit: (Boolean) -> Unit, colors: ActivityColors) {
-    val hues = remember(reply) { reply.machines.mapIndexed { i, m -> m.machineId to hexColor(machineHue(i)) }.toMap() }
+    val hues = remember(reply, colors) { reply.machines.mapIndexed { i, m -> m.machineId to colors.hue(i) }.toMap() }
     val machines = remember(reply) { reply.machines.associateBy { it.machineId } }
     Column(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 16.dp, bottom = 32.dp)) {
         RoundChart(reply, totals, metric, colors)
@@ -261,7 +259,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         Spacer(Modifier.height(28.dp))
         UsageChart(reply, totals, metric, byMachine, onSplit, hues, colors)
         Spacer(Modifier.height(28.dp))
-        SectionTitle("Totals", colors)
+        SectionTitle(if (reply.scan.complete) "Totals" else "Totals so far", colors)
         Spacer(Modifier.height(6.dp))
         usageFigures(totals).chunked(2).forEach { pair ->
             Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -316,7 +314,8 @@ private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     // The third center line, only when nothing is tapped.
     val note = if (tapped != null) "" else usageRingNote(!reply.scan.complete, totals.machineIds.size, reply.machines.size,
         metric == Metric.COST, totals.unpricedTokens, totals.unpricedModels.size)
-    val arcColor = { arc: RoundArc -> if (arc.app == "") colors.other else hexColor(arc.color) }
+    val hues = remember(reply, colors) { reply.machines.mapIndexed { i, m -> m.machineId to colors.hue(i) }.toMap() }
+    val arcColor = { arc: RoundArc -> arc.app?.let { appColor(it, colors) } ?: hues[arc.machineId] ?: colors.hue(0) }
     val measurer = rememberTextMeasurer()
     val summary = (listOf(listOf(value, sub, note).filter { it.isNotEmpty() }.joinToString(" ")) +
         arcs.map { "${arcLabel(it)}: ${formatValue(it.value, metric)}" }).joinToString(", ")

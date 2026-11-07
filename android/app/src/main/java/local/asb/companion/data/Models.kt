@@ -252,6 +252,33 @@ fun contrastFloor(color: String, ink: String, surface: String, minimum: Double =
     return ink
 }
 
+/**
+ * Port of accent_guard: a data color near the accent in hue (both with OKLCH chroma 0.04 or more, hues less than 30° apart) and
+ * under 1.5:1 on it moves only its OKLCH lightness, away from the accent lightness in 0.005 steps, until it has 2:1 on the accent
+ * and 3:1 on the background; at 0 or 1 it tries the other way, and with no such lightness it stays [color].
+ */
+fun accentGuard(color: String, accent: String, background: String): String {
+    val (lightness, a, b) = oklab(color)
+    val (accentLightness, aa, ab) = oklab(accent)
+    val chroma = Math.hypot(a, b)
+    val hue = degrees360(Math.toDegrees(Math.atan2(b, a)))
+    val distance = Math.abs(degrees360(hue - degrees360(Math.toDegrees(Math.atan2(ab, aa))) + 180) - 180)
+    if (chroma < .04 || Math.hypot(aa, ab) < .04 || distance >= 30 || contrast(color, accent) >= 1.5) return color
+    val direction = if (lightness <= accentLightness) -1 else 1
+    for (sign in listOf(direction, -direction)) {
+        var step = lightness
+        while (step > 0 && step < 1) {
+            step = (step + sign * .005).coerceIn(0.0, 1.0)
+            val candidate = oklchColor(step, chroma, hue)
+            if (contrast(candidate, accent) >= 2 && contrast(candidate, background) >= 3) return candidate
+        }
+    }
+    return color
+}
+
+// Python's x % 360 for a double.
+private fun degrees360(value: Double): Double = (value % 360 + 360) % 360
+
 // Text keeps 4.5:1: the first mix of color toward text that has it on every surface.
 fun readableColor(color: String, text: String, surfaces: List<String>): String {
     for (percent in 0..100) {

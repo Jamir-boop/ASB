@@ -148,7 +148,7 @@ class ActivityTest {
         assertEquals(setOf(
             Chord("a1", "b1", 1, 1, false),
             Chord("a2", "b2", 1, 0, false),
-            Chord("a1", "c1", 2, 0, true),
+            Chord("a1", "c1", 2, 0, true, 2, 0),
             Chord("unknown:m1", "b2", 0, 1, false),
             Chord("a1", "a2", 1, 0, false),
             Chord("b1", "c1", 0, 1, false),
@@ -156,6 +156,10 @@ class ActivityTest {
         // A pair with one sent message among not-sent ones is not bad.
         val mixed = messages.messages + messages.messages[0].copy(id = "x9", from = "c1", to = "a1", status = "accepted")
         assertFalse(chords(mixed, seated).single { it.key == "a1|c1" }.bad)
+        // It is mixed: its a1 to c1 direction has the not-sent receiver end.
+        assertEquals(Chord("a1", "c1", 2, 1, false, 2, 0), chords(mixed, seated).single { it.key == "a1|c1" })
+        assertTrue(chords(mixed, seated).single { it.key == "a1|c1" }.mixed)
+        assertFalse(chords(messages.messages, seated).any { it.mixed })
         // Only seated seats get chords.
         val two = seated.filter { it.id in setOf("a1", "b1") }
         assertEquals(listOf("a1|b1"), chords(messages.messages, two).map { it.key })
@@ -255,8 +259,9 @@ class ActivityTest {
         assertEquals(listOf("codex", "claude", "opencode"), chartSeries(totals, false))
         assertEquals(listOf("m1", "m2", "m3"), chartSeries(totals, true))
         val figures = usageFigures(totals)
-        assertEquals(listOf("Processed tokens", "Cached input", "Uncached input", "Output", "Cache savings"), figures.map { it.label })
-        assertEquals(listOf(2980L, 1027L + 238, 1116L, 599L, null), figures.map { it.tokens })
+        assertEquals(listOf("Cost", "Processed tokens", "Cache savings"), figures.map { it.label })
+        assertEquals(listOf(null, 2980L, null), figures.map { it.tokens })
+        assertEquals(totals.cost, figures.first().cost!!, .001)
         assertEquals(.75, figures.last().cost!!, .001)
         assertEquals(1.0, tokenShares(totals).sumOf { it.share }, .001)
         assertEquals(listOf("Cache read", "Cache write", "Uncached input", "Output"), tokenShares(totals).map { it.label })

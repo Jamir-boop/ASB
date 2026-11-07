@@ -8,8 +8,6 @@ import local.asb.companion.data.contrastFloor
 import local.asb.companion.data.machineHue
 import local.asb.companion.data.mixColor
 import local.asb.companion.data.usageAxis
-import local.asb.companion.data.usageRingNote
-import local.asb.companion.data.usageTokenRamp
 import local.asb.companion.ui.messageTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -48,22 +46,8 @@ class CouncilRoundOneTest {
         assertEquals("23:05", messageTime(ms("2026-10-25T23:05:00"), now, "24h"))
     }
 
-    @Test fun tokenRampMatchesThePc() {
-        val keys = listOf("cacheRead", "cacheWrite", "uncached", "output")
-        val ramp = { accent: String, background: String -> usageTokenRamp(accent, background).let { r -> keys.map { r.getValue(it) } } }
-        assertEquals(listOf("#7a5e2b", "#a67f35", "#d7a131", "#ffb900"), ramp("#ffb900", "#000000"))
-        assertEquals(listOf("#527083", "#628ca6", "#77b3d8", "#81d0ff"), ramp("#81d0ff", "#222226"))
-        assertEquals(listOf("#4b677e", "#648bac", "#7ab1df", "#7cc4ff"), ramp("#7cc4ff", "#10141c"))
-    }
-
     @Test fun axisReachesTheLargestTotal() {
         assertEquals(500.0 to 4, usageAxis(1650.0))
         assertEquals(1000.0 to 3, usageAxis(2470.0))
-    }
-
-    @Test fun ringNoteJoinsItsParts() {
-        assertEquals("so far · 2 of 3 machines · 1 model unpriced", usageRingNote(true, 2, 3, true, 10, 1))
-        assertEquals("3 models unpriced", usageRingNote(false, 3, 3, true, 10, 3))
-        assertEquals("", usageRingNote(false, 3, 3, false, 10, 1))
     }
 }

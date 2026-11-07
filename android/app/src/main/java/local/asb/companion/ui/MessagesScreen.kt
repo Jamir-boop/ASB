@@ -38,6 +38,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -97,7 +98,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -118,13 +118,11 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlinx.coroutines.delay
-import local.asb.companion.data.APP_COLORS
 import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.ActivityMessage
 import local.asb.companion.data.ActivityMessages
 import local.asb.companion.data.Chord
 import local.asb.companion.data.MESSAGE_PERIODS
-import local.asb.companion.data.STATUS_COLORS
 import local.asb.companion.data.STATUS_TIPS
 import local.asb.companion.data.Seat
 import local.asb.companion.data.Ledger
@@ -138,7 +136,6 @@ import local.asb.companion.data.chordGray
 import local.asb.companion.data.chords
 import local.asb.companion.data.mixColor
 import local.asb.companion.data.ledger
-import local.asb.companion.data.machineHue
 import local.asb.companion.data.newestMessage
 import local.asb.companion.data.periodLabel
 import local.asb.companion.data.seatCounts
@@ -152,7 +149,11 @@ import local.asb.companion.net.AsbError
 
 /** The surfaces of the Messages and Usage screens, from the Board palette. */
 internal class ActivityColors(val background: Color, val track: Color, val edge: Color, val rule: Color, val text: Color,
-    val muted: Color, val accent: Color, val divider: Color, val other: Color, val unknown: Color, val tokens: Map<String, Color>)
+    val muted: Color, val accent: Color, val divider: Color, val status: Map<String, Color>, val statusText: Map<String, Color>,
+    val apps: Map<String, Color>, val hues: List<Color>, val tokens: Map<String, Color>) {
+    /** The hue of the machine at [index] in machine order; the list repeats. */
+    fun hue(index: Int): Color = hues[index.coerceAtLeast(0) % hues.size]
+}
 
 @Composable
 internal fun activityColors(): ActivityColors {
@@ -161,18 +162,13 @@ internal fun activityColors(): ActivityColors {
 }
 
 /** The status swatch colors; Unknown has 3:1 on the background. */
-internal fun statusColor(status: String, colors: ActivityColors): Color =
-    if (statusKey(status) == "unknown") colors.unknown else hexColor(STATUS_COLORS.getValue(statusKey(status)))
+internal fun statusColor(status: String, colors: ActivityColors): Color = colors.status.getValue(statusKey(status))
 
 /** The status text colors: accepted muted, written #959ba3, the others their swatch. */
-internal fun statusTextColor(status: String, colors: ActivityColors): Color = when (statusKey(status)) {
-    "accepted" -> colors.muted
-    "written" -> hexColor("#959ba3")
-    else -> statusColor(status, colors)
-}
+internal fun statusTextColor(status: String, colors: ActivityColors): Color = colors.statusText.getValue(statusKey(status))
 
 /** The app colors; Other has 3:1 on the background. */
-internal fun appColor(app: String, colors: ActivityColors): Color = if (app == "") colors.other else hexColor(APP_COLORS.getValue(app))
+internal fun appColor(app: String, colors: ActivityColors): Color = colors.apps.getValue(app)
 
 internal fun machineOffline(machine: ActivityMachine?): Boolean = machine == null || machine.state !in setOf("local", "online")
 
@@ -311,7 +307,6 @@ private const val FLIGHT_GAP_MS = 150L
 private val FlightEasing = CubicBezierEasing(.45f, 0f, .2f, 1f)
 private val LIGHT = Color(0xff79b2ff)
 private val GLOW = Color(0xff3987e5)
-private val BAD = Color(0xfff5a090)
 
 private class Flight(val message: ActivityMessage, val startNanos: Long) {
     val notSent get() = statusKey(message.status) == "not-sent"
@@ -361,7 +356,7 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                     if (current != null) {
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             current.machines.forEachIndexed { index, machine ->
-                                MachineChip(machine, hexColor(machineHue(index)), colors)
+                                MachineChip(machine, colors.hue(index), colors)
                             }
                         }
                         val seated = remember(current, selected) { seatedSeats(current, selected) }
@@ -376,7 +371,7 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                 when {
                     current == null && error != null -> ActivityError(error.orEmpty(), colors) { attempt++ }
                     current == null -> ActivityLoading()
-                    current.messages.isEmpty() && current.machines.isEmpty() -> ActivityEmpty("No messages in ${periodLabel(period)}", colors)
+                    current.messages.isEmpty() && current.machines.isEmpty() -> ActivityEmpty("No messages in the last ${periodLabel(period)}", colors)
                     else -> {
                         error?.let { Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
                         MessagesContent(current, selected, chordKey, flights, frameNanos, colors,
@@ -430,7 +425,19 @@ private class Curve(val p0: Offset, val q: Offset, val p2: Offset) {
 
     fun distanceTo(point: Offset): Float = (1..48).minOf { segmentDistance(point, points[it - 1], points[it]) }
 
+    val length: Float get() = lengths.last()
+
     val path: Path get() = Path().apply { moveTo(p0.x, p0.y); quadraticTo(q.x, q.y, p2.x, p2.y) }
+}
+
+/** Port of the layout_table fails: per direction of [chord] with not-sent messages, the points of its receiver end, 4 dp apart. */
+private fun notSentEnds(chord: Chord, curve: Curve, dp: Float): List<List<Offset>> {
+    if (!chord.mixed) return emptyList()
+    val part = notSentEndShare(curve.length, dp)
+    val steps = max(1, kotlin.math.ceil(part * curve.length / (4 * dp)).toInt())
+    return listOf(chord.badAb to true, chord.badBa to false).filter { it.first > 0 }.map { (_, forward) ->
+        (0..steps).map { i -> curve.pointAtLength(if (forward) 1 - part + part * i / steps else part - part * i / steps) }
+    }
 }
 
 private fun segmentDistance(p: Offset, a: Offset, b: Offset): Float {
@@ -581,7 +588,7 @@ private fun MessagesContent(
 ) {
     val seats = remember(reply) { reply.seats.associateBy { it.id } }
     val machines = remember(reply) { reply.machines.associateBy { it.machineId } }
-    val hues = remember(reply) { reply.machines.mapIndexed { i, m -> m.machineId to hexColor(machineHue(i)) }.toMap() }
+    val hues = remember(reply, colors) { reply.machines.mapIndexed { i, m -> m.machineId to colors.hue(i) }.toMap() }
     val seated = remember(reply, selected) { seatedSeats(reply, selected) }
     val chordList = remember(reply, seated) { chords(reply.messages, seated) }
     val counts = remember(reply) { seatCounts(reply.messages) }
@@ -595,7 +602,9 @@ private fun MessagesContent(
     val palette = LocalPalette.current
     val machinesWithSeats = remember(reply) { activeSeats(reply).map { it.machineId }.distinct().size }
     val summary = "${plural(activeSeats(reply).size, "session")} on ${plural(machinesWithSeats, "machine")}, " +
-        "${plural(ledger.total, "message")} in ${periodLabel(reply.period)}"
+        "${plural(ledger.total, "message")} in the last ${periodLabel(reply.period)}"
+    // As on the PC narrow layout, the Messages section stands above the table; an empty period shows only the table.
+    if (ledger.total > 0) MessagesSummary(ledger, colors)
     BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
         val sideDp = maxWidth
         val side = with(density) { sideDp.toPx() }
@@ -648,7 +657,7 @@ private fun MessagesContent(
         }
     }
     CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, onPeriod)
-    LedgerView(ledger, reply, hues, machines, colors, title)
+    if (ledger.total > 0) LedgerView(ledger, reply, hues, machines, colors, title)
 }
 
 private fun DrawScope.drawTable(
@@ -690,8 +699,9 @@ private fun DrawScope.drawTable(
     }
     val lighting = litChords.isNotEmpty() || litPins.isNotEmpty()
     val flying = if (lighting) emptySet() else flights.filter { it.startNanos <= frameNanos }.mapNotNull { pairKey(it.message, seated) }.toSet()
+    val bad = statusColor("not-sent", colors)
     val dimGray = mixToward(background, gray, .35)
-    val dimBad = mixToward(background, BAD, .35)
+    val dimBad = mixToward(background, bad, .35)
     val badDash = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp))
     val nMax = max(1, chordList.maxOfOrNull { it.n } ?: 1)
     // The lit chords draw last, so that no chord crosses them.
@@ -702,11 +712,16 @@ private fun DrawScope.drawTable(
         val width = if (chord.bad) 2 * dp else (1.5f + 7 * sqrt(chord.n.toFloat() / nMax)) * dp
         val color = when {
             lit -> colors.accent
-            chord.bad -> if (dim) dimBad else BAD
+            chord.bad -> if (dim) dimBad else bad
             else -> if (dim) dimGray else gray
         }
         if (lit) drawPath(curve.path, background, style = Stroke(width + 2 * dp, cap = StrokeCap.Round))
         drawPath(curve.path, color, style = Stroke(width, cap = StrokeCap.Round, pathEffect = if (chord.bad) badDash else null))
+        // A mixed pair: the receiver end of each direction with not-sent messages is dashed in the not-sent color.
+        for (end in notSentEnds(chord, curve, dp)) {
+            drawPath(Path().apply { moveTo(end[0].x, end[0].y); for (p in end.drop(1)) lineTo(p.x, p.y) }, if (dim) dimBad else bad,
+                style = Stroke(2 * dp, pathEffect = badDash))
+        }
     }
     if (!geom.small) drawCircle(background, geom.rc, c)
     if (!geom.small) drawCircle(colors.rule, geom.rc, c, style = Stroke(1 * dp))
@@ -732,40 +747,29 @@ private fun DrawScope.drawTable(
         }
         drawCircle(LIGHT, 3 * dp, head, alpha = fade)
     }
-    // Seat labels: the whole label, else cut to 10 characters, else none; only the selected one on a small table.
-    val machineBoxes = geom.labels.map { it.box }
-    val placed = if (geom.small) mutableListOf() else machineBoxes.map { Rect(it.left - 1 * dp, it.top, it.right + 1 * dp, it.bottom) }.toMutableList()
+    // Seat labels (the PC place_labels): five places each, with the whole text, then cut to 10 and to 7 characters, else none.
+    val machineBoxes = geom.labels.map { Rect(it.box.left - 1 * dp, it.box.top, it.box.right + 1 * dp, it.box.bottom) }
     val pinBoxes = seated.mapNotNull { geom.pin(it.id) }.map { Rect(it, 16 * dp) }
-    val onDisc = { box: Rect ->
-        val near = Offset(c.x.coerceIn(box.left, box.right), c.y.coerceIn(box.top, box.bottom))
-        !geom.small && (near - c).getDistance() < geom.rc + 2 * dp
-    }
-    val times = activityTimes(reply.messages)
-    val order = seated.sortedWith(compareBy<Seat> { if (it.id == selected) 0 else 1 }.thenByDescending { times[it.id] ?: 0L })
+    val key = layoutKey(geom, chordList, machines, colors, measurer, dp, size, pinBoxes + geom.labels.map { it.box })
     val labelStyle = TextStyle(color = colors.text, fontSize = 12.sp)
-    for (seat in order) {
-        if (geom.small && seat.id != selected) continue
-        val degrees = geom.angles[seat.id] ?: continue
-        val name = seat.title.ifEmpty { "Other sessions" }
-        val whole = measurer.measure(name, labelStyle, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            constraints = Constraints(maxWidth = (160 * dp).toInt()))
-        // The selected seat always shows its whole label.
-        val choices = if (seat.id == selected || name.length <= 10) listOf(whole) else listOf(whole, measurer.measure(name.take(10) + "…", labelStyle, maxLines = 1))
-        for (layout in choices) {
-            val hw = layout.size.width / 2f
-            val rad = Math.toRadians(degrees.toDouble())
-            val ux = abs(cos(rad)).toFloat()
-            val uy = abs(sin(rad)).toFloat()
-            val off = max(30 * dp, min(if (ux > .01f) (20 * dp + hw) / ux else Float.MAX_VALUE, if (uy > .01f) 27 * dp / uy else Float.MAX_VALUE))
-            val center = geom.polar(geom.rp - off, degrees)
-            val box = Rect(center.x - hw, center.y - layout.size.height / 2f, center.x + hw, center.y + layout.size.height / 2f)
-            val box1 = Rect(box.left - 1 * dp, box.top, box.right + 1 * dp, box.bottom)
-            if (seat.id != selected && (onDisc(box1) || placed.any { it.overlaps(box1) } || pinBoxes.any { it.overlaps(box1) })) continue
-            placed += box1
-            drawHaloText(layout, box.topLeft, background, dp)
-            break
-        }
+    val texts = seated.associate { seat ->
+        seat.id to seatLabelTexts(seat.title.ifEmpty { "Other sessions" }).map { measurer.measure(it, labelStyle, maxLines = 1) }
     }
+    // The selected seat and the two seats of the selected chord place first and show their whole label.
+    val chosen = listOfNotNull(selected, selectedChord?.a, selectedChord?.b).distinct().filter { id -> seated.any { it.id == id } }
+    val counts = seatCounts(reply.messages).mapValues { it.value.sent + it.value.received }
+    val inputs = seated.filter { it.id in geom.angles }.map { seat ->
+        SeatLabelInput(seat.id, geom.angles.getValue(seat.id), texts.getValue(seat.id).map { Size(it.size.width.toFloat(), it.size.height.toFloat()) })
+    }
+    val blocked = pinBoxes + machineBoxes + listOfNotNull(key?.box?.takeIf { key.shown })
+    val spots = placeSeatLabels(inputs, chosen, counts, activityTimes(reply.messages),
+        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked), dp)
+    for ((id, spot) in spots) {
+        if (spot == null) continue
+        drawHaloText(texts.getValue(id)[spot.text], Offset(spot.box.left + 1 * dp, spot.box.top), background, dp)
+    }
+    // A chosen label without a free place can cover the key, which then hides.
+    val keyShown = key != null && key.shown && spots.values.none { it != null && it.box.overlaps(key.box) }
     // Pins are opaque: the background fill, then the ring. A lit pin has a 2 dp accent ring; the others mix toward the background.
     for (seat in seated) {
         val pin = geom.pin(seat.id) ?: continue
@@ -782,7 +786,7 @@ private fun DrawScope.drawTable(
         }
     }
     for (label in geom.labels) drawText(label.layout, topLeft = Offset(label.x, label.y))
-    drawKey(geom, chordList, machines, colors, gray, measurer, dp, placed + pinBoxes + machineBoxes)
+    key?.takeIf { keyShown }?.let { drawKey(it, colors, gray, dp) }
 }
 
 /** Port of snapshot_label: a 3 dp halo in the background color, from copies of the text around its place, then the text. */
@@ -796,18 +800,22 @@ private fun DrawScope.drawHaloText(layout: TextLayoutResult, topLeft: Offset, ha
     drawText(layout, topLeft = topLeft)
 }
 
+/** The key line: its items (kind, left x, text), its box, and whether it shows. */
+private class KeyLayout(val items: List<Triple<String, Float, TextLayoutResult>>, val box: Rect, val middle: Float, val shown: Boolean)
+
 /**
- * Port of layout_key and snapshot_key: at the bottom left, a thin and a thick chord sample with the smallest and the largest
- * pair counts, a dashed Not sent sample, and an Offline arc when a machine is offline. It shows only when it touches none of
- * [boxes] and stays outside the outer ring.
+ * Port of layout_key: at the bottom left, a thin and a thick chord sample with the smallest and the largest pair counts, a dashed
+ * Not sent sample, a Some not sent sample when a pair has both, and an Offline arc when a machine is offline. It shows only when
+ * it touches none of [boxes] and stays outside the outer ring; null with no chords.
  */
-private fun DrawScope.drawKey(geom: TableGeom, chordList: List<Chord>, machines: Map<String, ActivityMachine>, colors: ActivityColors,
-    gray: Color, measurer: TextMeasurer, dp: Float, boxes: List<Rect>) {
-    if (chordList.isEmpty()) return
+private fun layoutKey(geom: TableGeom, chordList: List<Chord>, machines: Map<String, ActivityMachine>, colors: ActivityColors,
+    measurer: TextMeasurer, dp: Float, size: Size, boxes: List<Rect>): KeyLayout? {
+    if (chordList.isEmpty()) return null
     val low = chordList.minOf { it.n }
     val high = chordList.maxOf { it.n }
     val words = if (low != high) "${formatCount(low.toLong())} to ${formatCount(high.toLong())} messages" else plural(high, "message")
-    val parts = listOf("chords" to words, "bad" to "Not sent") +
+    val parts = listOf("chords" to "Line width: $words", "bad" to "Not sent") +
+        (if (chordList.any { it.mixed }) listOf("mixed" to "Some not sent") else emptyList()) +
         if (geom.ranges.keys.any { machineOffline(machines[it]) }) listOf("offline" to "Offline") else emptyList()
     val style = TextStyle(color = colors.muted, fontSize = 11.sp)
     var x = 12 * dp
@@ -819,15 +827,26 @@ private fun DrawScope.drawKey(geom: TableGeom, chordList: List<Chord>, machines:
     val height = items.maxOf { it.third.size.height }.toFloat()
     val box = Rect(12 * dp, size.height - 12 * dp - height, x - 14 * dp, size.height - 12 * dp)
     val near = Offset(geom.c.x.coerceIn(box.left, box.right), geom.c.y.coerceIn(box.top, box.bottom))
-    if ((near - geom.c).getDistance() <= geom.ro + 2 * dp || boxes.any { it.overlaps(box) }) return
-    val middle = box.top + height / 2
-    for ((kind, left, layout) in items) {
+    val clear = box.right <= size.width - 12 * dp && (near - geom.c).getDistance() > geom.ro + 2 * dp
+    return KeyLayout(items, box, box.top + height / 2, clear && boxes.none { it.overlaps(box) })
+}
+
+/** Port of snapshot_key. */
+private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Color, dp: Float) {
+    val middle = key.middle
+    val bad = statusColor("not-sent", colors)
+    val dashes = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp))
+    for ((kind, left, layout) in key.items) {
         when (kind) {
             "chords" -> for ((start, width) in listOf(left to 1.5f * dp, left + 18 * dp to 8.5f * dp)) {
                 drawLine(gray, Offset(start + width / 2, middle), Offset(start + 14 * dp - width / 2, middle), width, StrokeCap.Round)
             }
-            "bad" -> drawLine(BAD, Offset(left + 1 * dp, middle), Offset(left + 17 * dp, middle), 2 * dp,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp)))
+            "bad" -> drawLine(bad, Offset(left + 1 * dp, middle), Offset(left + 17 * dp, middle), 2 * dp, pathEffect = dashes)
+            // A gray chord with a dashed not-sent end.
+            "mixed" -> {
+                drawLine(gray, Offset(left + 1 * dp, middle), Offset(left + 9 * dp, middle), 2 * dp)
+                drawLine(bad, Offset(left + 12 * dp, middle), Offset(left + 17 * dp, middle), 2 * dp, pathEffect = dashes)
+            }
             else -> drawPath(Path().apply {
                 moveTo(left + 1 * dp, middle + 4 * dp)
                 quadraticTo(left + 9 * dp, middle - 7 * dp, left + 17 * dp, middle + 4 * dp)
@@ -883,33 +902,36 @@ private fun CenterPanel(
             newest != null -> {
                 Text("Newest message", fontSize = 11.sp, color = colors.muted)
                 Text("${title(newest.from)} → ${title(newest.to)}", style = route, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                val accepted = statusKey(newest.status) == "accepted"
                 Text(buildAnnotatedString {
                     append("${messageTime(newest.atMs, reply.nowMs.takeIf { it > 0 } ?: System.currentTimeMillis(), reply.period)} · ")
-                    withStyle(SpanStyle(color = if (accepted) colors.muted else statusTextColor(newest.status, colors))) {
+                    withStyle(SpanStyle(color = statusTextColor(newest.status, colors))) {
                         append(statusLabel(newest.status))
                     }
                 }, fontSize = 11.sp, style = figures, color = colors.muted)
             }
             else -> {
-                Text("No messages in ${periodLabel(reply.period)}", style = route)
+                Text("No messages in the last ${periodLabel(reply.period)}", style = route)
                 Text("When an agent sends a message to another session, it shows here.", fontSize = 12.sp, color = colors.muted,
                     modifier = Modifier.widthIn(max = 260.dp))
                 NEXT_PERIOD[reply.period]?.let { next ->
-                    Button(onClick = { onPeriod(next) }, modifier = Modifier.padding(top = 6.dp)) { Text("Show ${periodLabel(next)}") }
+                    AccentButton("Show the last ${periodLabel(next)}", colors, Modifier.padding(top = 6.dp)) { onPeriod(next) }
                 }
             }
         }
     }
 }
 
+/** A filled pill button in the accent, with the background as its content color (the PC suggested-action pill). */
 @Composable
-private fun LedgerView(
-    ledger: Ledger, reply: ActivityMessages, hues: Map<String, Color>,
-    machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String,
-) {
-    HorizontalDivider(thickness = 1.dp, color = colors.divider)
-    Column(Modifier.fillMaxWidth().background(colors.background).padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 28.dp)) {
+internal fun AccentButton(text: String, colors: ActivityColors, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Button(onClick = onClick, modifier = modifier, shape = CircleShape,
+        colors = ButtonDefaults.buttonColors(containerColor = colors.accent, contentColor = colors.background)) { Text(text) }
+}
+
+/** The Messages section: the total with the not-sent count, the status bar, and the legend. */
+@Composable
+private fun MessagesSummary(ledger: Ledger, colors: ActivityColors) {
+    Column(Modifier.fillMaxWidth().background(colors.background).padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 16.dp)) {
         SectionTitle("Messages", colors)
         val notSent = ledger.byStatus.firstOrNull { it.first == "not-sent" }?.second ?: 0
         val totalName = plural(ledger.total, "message") + if (notSent > 0) ", ${formatCount(notSent.toLong())} not sent" else ""
@@ -919,14 +941,13 @@ private fun LedgerView(
                 fontWeight = FontWeight.Bold, color = colors.text, modifier = Modifier.alignByBaseline())
             if (notSent > 0) {
                 Row(Modifier.alignByBaseline(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    StatusIcon("not-sent", BAD, 14.dp)
-                    Text("${formatCount(notSent.toLong())} not sent", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = BAD,
+                    val bad = statusTextColor("not-sent", colors)
+                    StatusIcon("not-sent", bad, 14.dp)
+                    Text("${formatCount(notSent.toLong())} not sent", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = bad,
                         style = figures)
                 }
             }
         }
-        // An empty period shows only the heading and 0.
-        if (ledger.total == 0) return@Column
         val shown = ledger.byStatus.filter { it.second > 0 }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 10.dp).height(8.dp)
             .clearAndSetSemantics { contentDescription = shown.joinToString(", ") { "${statusLabel(it.first)} ${it.second}" } },
@@ -949,7 +970,17 @@ private fun LedgerView(
                 }
             }
         }
-        LedgerRule(colors)
+    }
+}
+
+/** The ledger under the table: Recent, Between machines, and Between apps. */
+@Composable
+private fun LedgerView(
+    ledger: Ledger, reply: ActivityMessages, hues: Map<String, Color>,
+    machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String,
+) {
+    HorizontalDivider(thickness = 1.dp, color = colors.divider)
+    Column(Modifier.fillMaxWidth().background(colors.background).padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 28.dp)) {
         SectionTitle("Recent", colors)
         val now = reply.nowMs.takeIf { it > 0 } ?: System.currentTimeMillis()
         val timeStyle = figures.merge(TextStyle(fontSize = 12.sp, color = colors.muted))
