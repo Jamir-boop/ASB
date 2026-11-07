@@ -2453,6 +2453,10 @@ def messages_view(reply, selected=(), limit=MESSAGE_SEATS):
         machine_index.get(item[1].get("machineId"), len(machines)), item[1].get("order", 0), item[0]))]
     position = {seat_id: index for index, seat_id in enumerate(circle)}
     records = reply.get("messages") or []
+    for seat_id in [seat_id for seat_id in seats if seat_id.startswith("unknown:")]:
+        labels = list(dict.fromkeys(record.get(end + "Label") for record in records for end in ("from", "to")
+                                    if record[end] == seat_id and record.get(end + "Label")))
+        seats[seat_id] = dict(seats[seat_id], title=unlisted_name(labels), labels=labels)
     other = any(message_app(seats.get(record[end])) == "" for record in records for end in ("from", "to"))
     apps = list(ACTIVITY_APPS) + ([""] if other else [])
     matrix = [[0] * len(apps) for _app in apps]
@@ -2468,9 +2472,11 @@ def messages_view(reply, selected=(), limit=MESSAGE_SEATS):
         a, b = sorted((source, target), key=lambda seat_id: (position.get(seat_id, len(position)), seat_id))
         pair = pairs.get((a, b))
         if pair is None:
-            pair = pairs[(a, b)] = {"key": (a, b), "a": a, "b": b, "ab": 0, "ba": 0, "n": 0, "bad": 0, "badAB": 0, "badBA": 0}
+            pair = pairs[(a, b)] = {"key": (a, b), "a": a, "b": b, "ab": 0, "ba": 0, "n": 0, "bad": 0, "badAB": 0, "badBA": 0, "by": {}}
         forward = source == a
         pair["n"] += 1
+        pair["by"][status] = pair["by"].get(status, 0) + 1
+        pair["last"] = max(pair.get("last", at), at)
         pair["ab" if forward else "ba"] += 1
         if status == "not-sent":
             pair["bad"] += 1
@@ -2490,7 +2496,10 @@ def messages_view(reply, selected=(), limit=MESSAGE_SEATS):
     keep = [seat_id for seat_id in dict.fromkeys(selected) if seat_id in activity and seat_id in position]
     others = sorted((seat_id for seat_id in circle if seat_id in activity and seat_id not in keep), key=lambda seat_id: (-activity[seat_id], position[seat_id]))
     chosen = set(keep + others[:max(0, limit - len(keep))])
-    return {"total": len(records), "by_status": by_status, "seats": seats, "machines": machines, "circle": circle, "counts": counts,
+    # The 5 pairs with the most messages, seated or not: then the newer newest message, then circle order.
+    rank_pair = lambda pair: (-pair["n"], -pair["last"], position.get(pair["a"], len(position)), position.get(pair["b"], len(position)))
+    busiest = sorted((pair for pair in pairs.values() if pair["a"] != pair["b"]), key=rank_pair)[:5]
+    return {"busiest": busiest, "total": len(records), "by_status": by_status, "seats": seats, "machines": machines, "circle": circle, "counts": counts,
             "pairs": pairs, "apps": apps, "matrix": matrix, "app_pairs": sum(1 for row in matrix for cell in row if cell),
             "machine_rows": [{"ids": key, "label": " ⇄ ".join(names.get(machine, machine) for machine in key), "count": machine_counts[key]} for key in keys],
             "activity": activity, "seated": [seat_id for seat_id in circle if seat_id in chosen],
@@ -2508,9 +2517,11 @@ def table_geometry(width, height, seated, seats, machines, shrink=0, scale=1):
     disc grows with its text, up to half the inner radius."""
     size = min(width, height) - 16
     outer = max(24, size / 2 - 56 - shrink)
-    inner = outer - 10
-    geometry = {"W": width, "H": height, "S": size, "cx": width / 2, "cy": height / 2, "Ro": outer, "Ri": inner, "Rp": inner - 36,
-                "Rc": min(120 * scale, inner * .4 * min(scale, 1.25)), "ids": list(seated), "mach": {}, "seat": {}, "slot": 0}
+    # With no seats the band is 8 px times the text scale, and the disc takes the free radius inside it.
+    inner = outer - (10 if seated else 8 * scale)
+    disc = min(120 * scale, inner * .4 * min(scale, 1.25)) if seated else max(0, inner - 24 * scale)
+    geometry = {"W": width, "H": height, "KH": height, "S": size, "cx": width / 2, "cy": height / 2, "Ro": outer, "Ri": inner, "Rp": inner - 36,
+                "Rc": disc, "ids": list(seated), "mach": {}, "seat": {}, "slot": 0}
     machine_index = {machine["machineId"]: index for index, machine in enumerate(machines)}
     groups = {}
     for seat_id in seated:
@@ -2639,20 +2650,46 @@ def message_thread(records, seats, kind, key):
                 "total": len(mine), "forward": forward}
     mine = [record for record in records if key in (record["from"], record["to"])]
     sent = sum(1 for record in mine if record["from"] == key)
-    return {"kind": kind, "key": key, "route": title(key), "counts": f"Sent {sent}  Received {len(mine) - sent}", "total": len(mine), "forward": sent}
+    return {"kind": kind, "key": key, "route": title(key), "counts": f"Sent {sent}  Received {len(mine) - sent}", "total": len(mine), "forward": sent,
+            "bad": sum(1 for record in mine if message_status(record) == "not-sent")}
+
+
+def unlisted_name(labels):
+    """The name of a seat of sessions that are not cards: its one label, the count of its labels, or Unlisted sessions."""
+    if len(labels) == 1:
+        return labels[0]
+    return f"{len(labels)} unlisted sessions" if labels else "Unlisted sessions"
+
+
+def unlisted_tip(labels):
+    """The labels of a seat of several unlisted sessions: at most 5, then …."""
+    return ", ".join(labels[:5] + (["…"] if len(labels) > 5 else []))
 
 
 def message_end_title(record, end, seats):
     """The name of the from or to end: the name from the message for an unknown end, else the session title."""
     seat_id = record[end]
     name = record.get(end + "Label") if seat_id.startswith("unknown:") else ""
-    return name or (seats.get(seat_id) or {}).get("title") or "Other sessions"
+    return name or (seats.get(seat_id) or {}).get("title") or "Unlisted sessions"
 
 
 def message_status_label(record):
-    """The status text; a not-sent message shows its reason."""
+    """The status text; a not-sent message adds its reason (Not sent · Machine offline)."""
     status = message_status(record)
-    return (record.get("reason") or "Not sent") if status == "not-sent" else ACTIVITY_STATUS_LABELS[status]
+    if status == "not-sent" and record.get("reason"):
+        return f"Not sent · {record['reason']}"
+    return ACTIVITY_STATUS_LABELS[status]
+
+
+def message_status_word(thread, record):
+    """The status word of a thread block, or None: none for Accepted, and in a status thread none for the thread status, but a
+    not-sent message keeps its reason alone."""
+    status = message_status(record)
+    if status == "accepted":
+        return None
+    if thread["kind"] == "status" and status == thread["key"]:
+        return record.get("reason") or None if status == "not-sent" else None
+    return message_status_label(record)
 
 
 def message_text(record):
@@ -2706,6 +2743,33 @@ def message_status_text_color(palette, status):
     color = MESSAGE_STATUS_TEXT[status]
     value = message_status_colors(palette)["unknown"] if color == "unknown" else palette.get(color, color)
     return accent_guard(value, palette["accent"], palette["win"])
+
+
+def status_text_on(palette, status, surface):
+    """The status word color with 4.5:1 on the surface: the OKLCH lightness moves away from the surface in steps of 0.005, with the
+    same hue and chroma; at 0 or 1 the text color."""
+    color = message_status_text_color(palette, status)
+    if contrast(color, surface) >= 4.5:
+        return color
+    value, a, b = oklab(color)
+    chroma, hue = math.hypot(a, b), math.degrees(math.atan2(b, a)) % 360
+    step = .005 if value >= oklab(surface)[0] else -.005
+    while 0 < value < 1:
+        value = max(0, min(1, value + step))
+        candidate = oklch_color(value, chroma, hue)
+        if contrast(candidate, surface) >= 4.5:
+            return candidate
+    return palette["text"]
+
+
+def message_block_surface(palette, hue):
+    """The surface of a thread block: the sender machine hue mixed into the window at 14%, or 22% on a near-black window."""
+    return mix_color(palette["win"], hue, .22 if luminance(palette["win"]) < .01 else .14)
+
+
+MESSAGE_NO_TEXT = "Text not available"
+MESSAGE_CENTER_HINT = "Select a session or a line to read its messages"
+MESSAGE_NO_TEXT_TIP = "ASB has no copy of this text."
 
 
 MESSAGE_STATUS_TIPS = {"accepted": "The receiving session took the message.",
@@ -13001,16 +13065,18 @@ class TableCanvas(Gtk.Widget):
     __gtype_name__ = "AsbTableCanvas"
 
     def __init__(self, table):
-        super().__init__(hexpand=True, vexpand=True)
+        super().__init__(hexpand=True, vexpand=True, has_tooltip=True)
         self.table = table
+        self.connect("query-tooltip", table.disc_tooltip)
 
     def do_get_request_mode(self):
         return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH if self.table.narrow else Gtk.SizeRequestMode.CONSTANT_SIZE
 
     def do_measure(self, orientation, for_size):
-        # The narrow layout gives the table a square of up to 560px; the wide layout gives it the free space.
+        # The narrow layout gives the table a square of up to 560 px at text scale 1: an outer radius of up to 216 px times the
+        # text scale. The reader under a small table adds the room it needs above the key line. The wide layout gives it the free space.
         if orientation == Gtk.Orientation.VERTICAL and self.table.narrow and for_size > 0:
-            height = min(for_size, 560)
+            height = min(for_size, round(432 * self.table.window.text_scale + 128)) + self.table.reader_extra
             return height, height, -1, -1
         return 0, 0, -1, -1
 
@@ -13036,14 +13102,19 @@ class RoundTable(Gtk.Overlay):
         self.chords, self.chord_keys, self.pins, self.labels, self.machine_items, self.machine_info = [], [], {}, {}, {}, {}
         self.key = None
         # The pin and the chord under the pointer, and the pin and the chord with keyboard focus.
-        self.hover = {"seat": None, "chord": None, "focus": None, "chord_focus": None}
+        # A Busiest pairs row with the pointer or the focus lights its chord as a hover does.
+        self.hover = {"seat": None, "chord": None, "focus": None, "chord_focus": None, "row": None}
         self.proxies, self.proxy_order = {}, []
         self.flights, self.rings, self.send_until = [], [], {}
         self.icons = {}
+        # The reader under a small table: its top, the height it adds to the table, and the tooltip of the center disc.
+        self.reader_top = self.reader_extra = 0
+        self.disc_tip = self.fitted = None
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Machines, sessions and messages"])
         self.canvas = TableCanvas(self)
         self.set_child(self.canvas)
         self.center = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, can_target=False, visible=False)
+        self.center.set_layout_manager(CenterLayout())
         self.center.add_css_class("asb-msg-center")
         self.add_overlay(self.center)
         self.connect("get-child-position", self.child_position)
@@ -13070,8 +13141,9 @@ class RoundTable(Gtk.Overlay):
         self.chord_keys = [key for key, pair in view["pairs"].items() if pair["a"] in placed and pair["b"] in placed and pair["a"] != pair["b"]]
         if self.hover["seat"] not in placed:
             self.hover["seat"] = None
-        if self.hover["chord"] not in self.chord_keys:
-            self.hover["chord"] = None
+        for slot in ("chord", "row"):
+            if self.hover[slot] not in self.chord_keys:
+                self.hover[slot] = None
         self.sync_proxies()
         self.layout_table()
         moving = (animate and previous is not None and self.geometry is not None and previous["geometry"]["ids"] != self.geometry["ids"]
@@ -13092,7 +13164,7 @@ class RoundTable(Gtk.Overlay):
         index = next((index for index, machine in enumerate(view["machines"]) if machine["machineId"] == seat.get("machineId")), None)
         machine = view["machines"][index] if index is not None else {}
         counts = view["counts"].get(seat_id, {"sent": 0, "received": 0})
-        title = seat.get("title") or "Other sessions"
+        title = seat.get("title") or "Unlisted sessions"
         size = 12 * self.window.text_scale
         # The whole label, then the labels cut to 10 and to 7 characters, which show when a longer one finds no free place.
         texts = []
@@ -13100,7 +13172,9 @@ class RoundTable(Gtk.Overlay):
             layout = activity_layout(self, text, size)
             _ink, logical = layout.get_pixel_extents()
             texts.append({"layout": layout, "w": logical.width, "h": logical.height})
-        return {"title": title, "app": message_app(seat), "machine": seat.get("machineId", ""), "hue": self.window.machine_hue(index if index is not None else 0),
+        labels = seat.get("labels") or []
+        return {"title": title, "tip": f"{title}\n{unlisted_tip(labels)}" if len(labels) > 1 else title,
+                "app": message_app(seat), "machine": seat.get("machineId", ""), "hue": self.window.machine_hue(index if index is not None else 0),
                 "offline": machine.get("state") == "offline", "texts": texts, "layout": texts[0]["layout"], "w": texts[0]["w"], "h": texts[0]["h"],
                 "label": f"{title}, {ACTIVITY_APP_LABELS[message_app(seat)]}, {machine.get('name', '')}: {counts['sent']} sent, {counts['received']} received"}
 
@@ -13118,12 +13192,17 @@ class RoundTable(Gtk.Overlay):
             else:
                 pair = self.view["pairs"][key[1]]
                 text = f"{self.title(pair['a'])} and {self.title(pair['b'])}: {format_count(pair['n'])} message{'' if pair['n'] == 1 else 's'}"
-                proxy.set_tooltip_text(f"{self.title(pair['a'])} ⇄ {self.title(pair['b'])}\n→ {format_count(pair['ab'])}  ← {format_count(pair['ba'])}")
+                tip = f"{self.title(pair['a'])} ⇄ {self.title(pair['b'])}\n→ {format_count(pair['ab'])}  ← {format_count(pair['ba'])}"
+                thread = self.window.thread
+                if thread and thread["kind"] == "status" and pair["by"].get(thread["key"]):
+                    # A chord lit by a status thread names its count of that status.
+                    tip += f"\n{ACTIVITY_STATUS_LABELS[thread['key']]}: {format_count(pair['by'][thread['key']])}"
+                proxy.set_tooltip_text(tip)
             proxy.update_property([Gtk.AccessibleProperty.LABEL], [text])
         self.proxy_order = [self.proxies[key] for key in wanted]
 
     def title(self, seat_id):
-        return (self.view["seats"].get(seat_id) or {}).get("title") or "Other sessions"
+        return (self.view["seats"].get(seat_id) or {}).get("title") or "Unlisted sessions"
 
     def layout_table(self):
         width, height = self.canvas.get_width(), self.canvas.get_height()
@@ -13133,17 +13212,22 @@ class RoundTable(Gtk.Overlay):
         view = self.view
         self.machine_info = {machine["machineId"]: (self.window.machine_hue(index), machine.get("state") == "offline") for index, machine in enumerate(view["machines"])}
         # A machine label that would come nearer than 12 px to the table edge makes the ring smaller by the overflow.
-        shrink = 0
+        shrink, scale = 0, self.window.text_scale
+        # The reader under a small table stands in the room it added below the square of the table.
+        square = height - self.reader_extra if self.narrow else height
         for _attempt in range(4):
-            geometry = self.geometry = table_geometry(width, height, list(self.pins), view["seats"], view["machines"], shrink, self.window.text_scale)
+            geometry = self.geometry = table_geometry(width, square, list(self.pins), view["seats"], view["machines"], shrink, scale)
+            geometry["KH"] = height
             need = self.label_overflow(self.machine_labels(geometry["mach"], clamp=False))
             if need <= .5:
                 break
             shrink += need
         small = geometry["S"] < 480
-        if small != self.small:
+        if small != self.small or (not small and self.fitted != geometry["Rc"]):
             self.small = small
-            # The center or the reader shows the same content; the window swaps them after this layout.
+            # The center or the reader shows the same content; the window swaps them, or fits the center lines to the new disc,
+            # after this layout.
+            self.fitted = None if small else geometry["Rc"]
             GLib.idle_add(self.window.table_size_changed)
         pairs = [view["pairs"][key] for key in self.chord_keys]
         largest = max([1] + [pair["n"] for pair in pairs])
@@ -13154,20 +13238,26 @@ class RoundTable(Gtk.Overlay):
             start, control, end = chord_curve(geometry, a, b, same)
             table = curve_table(start, control, end)
             bad = pair["bad"] == pair["n"]
-            fails = []
-            if not bad:
-                # The receiver end of each direction with not-sent messages: the last 15% of the chord, 24 px or more.
-                length = table[1][-1]
-                part = min(1, max(.15, 24 / length)) if length else 1
+            fails, trim = [], (0, 1)
+            length = table[1][-1]
+            if not bad and length:
+                # The receiver end of each direction with not-sent messages: from the pin rim (16 px times the text scale from its
+                # center) 15% of the chord, 24 px times the text scale or more, and at most half of the chord.
+                part, rim = min(max(24 * scale, .15 * length), length / 2), 16 * scale
+                steps = max(1, math.ceil(part / 4))
                 for count, forward in ((pair["badAB"], True), (pair["badBA"], False)):
                     if count:
-                        steps = max(1, math.ceil(part * length / 4))
-                        fails.append([curve_point(table, (1 - part + part * index / steps) if forward else part - part * index / steps)
-                                      for index in range(steps + 1)])
+                        near = max(0, length - rim) if forward else min(length, rim)
+                        far = max(0, near - part) if forward else min(length, near + part)
+                        fails.append([curve_point(table, (near + (far - near) * index / steps) / length) for index in range(steps + 1)])
+                        # The stroke ends where the dashed end starts.
+                        trim = (trim[0], min(trim[1], far / length)) if forward else (max(trim[0], far / length), trim[1])
+            width = 2 if bad else 1.5 + 7 * math.sqrt(pair["n"] / largest)
             self.chords.append({"key": pair["key"], "a": a, "b": b, "points": (start, control, end), "table": table, "bad": bad, "same": same,
-                                "width": 2 if bad else 1.5 + 7 * math.sqrt(pair["n"] / largest), "fails": fails})
+                                "width": width, "fails": fails, "trim": trim, "end_width": max(3, width)})
         self.machine_items = self.machine_labels(geometry["mach"])
         self.place_labels()
+        self.place_reader()
         for key, proxy in self.proxies.items():
             if key[0] == "pin":
                 proxy.curve = None
@@ -13204,6 +13294,23 @@ class RoundTable(Gtk.Overlay):
             items[machine["machineId"]] = entries
         return items
 
+    def place_reader(self):
+        """The reader under a small narrow table: directly under the drawn table, above the key line. The table grows by the room
+        it needs; the next layout uses it."""
+        geometry, reader = self.geometry, self.window.reader
+        extra = 0
+        if self.narrow and self.small and reader.get_visible():
+            bottoms = [geometry["cy"] + geometry["Ro"]] + [item["y"] + item["h"] for entries in self.machine_items.values() for item in entries]
+            bottoms += [label["box"][3] for label in self.labels.values() if label["shown"]]
+            self.reader_top = round(max(bottoms) + 8)
+            key = self.key["box"][3] - self.key["box"][1] if self.key else 0
+            need = self.reader_top + reader.measure(Gtk.Orientation.VERTICAL, geometry["W"])[1] + 8 + key + 12
+            extra = max(0, math.ceil(need - (geometry["KH"] - self.reader_extra)))
+        if extra != self.reader_extra:
+            self.reader_extra = extra
+            # Before the next frame, so the table grows in the same frame as its reader.
+            GLib.idle_add(lambda: self.canvas.queue_resize() or False, priority=GLib.PRIORITY_HIGH_IDLE)
+
     def label_overflow(self, items):
         """How much smaller the ring radius must be so that each machine label is 12 px or more inside the table."""
         width, height, need = self.geometry["W"], self.geometry["H"], 0
@@ -13227,27 +13334,40 @@ class RoundTable(Gtk.Overlay):
     def place_labels(self):
         """Each seat label takes the first free place (inward, under, over, left, or right of its pin) with its whole text, then with
         the text cut to 10, then to 7 characters; else it hides. The chosen seats place first, then by message count, then the
-        newest, then circle order. A free place stays 2 px inside the table, off the center disc, and touches no other label, pin,
-        machine label, or the key line."""
+        newest, then circle order. A free place stays 2 px inside the table, off the center disc and the machine band, and touches no
+        other label (6 px times the text scale wider at each side), pin, machine label, not-sent end, or the key line."""
         geometry, scale = self.geometry, self.window.text_scale
         disc = geometry["S"] >= 480
+        cx, cy = geometry["cx"], geometry["cy"]
 
         def hit(a, b):
             return a[0] < b[2] - .5 and b[0] < a[2] - .5 and a[1] < b[3] - .5 and b[1] < a[3] - .5
 
+        def near(box):
+            near_x, near_y = min(max(cx, box[0]), box[2]), min(max(cy, box[1]), box[3])
+            return math.hypot(near_x - cx, near_y - cy)
+
         def center(box):
             # A label on the center disc would cover the center text.
-            near_x, near_y = min(max(geometry["cx"], box[0]), box[2]), min(max(geometry["cy"], box[1]), box[3])
-            return math.hypot(near_x - geometry["cx"], near_y - geometry["cy"]) < geometry["Rc"] + 2
+            return near(box) < geometry["Rc"] + 2
+
+        def band(box):
+            # The machine band, from 2 px inside it to 2 px outside it.
+            far = max(math.hypot(x - cx, y - cy) for x in (box[0], box[2]) for y in (box[1], box[3]))
+            return near(box) < geometry["Ro"] + 2 and far > geometry["Ri"] - 2
         pins, opened = [], self.open_lit()[1]
         for seat_id in self.pins:
             x, y = table_point(geometry, geometry["Rp"], geometry["seat"][seat_id])
-            # An open pin's accent ring reaches 21.75 px.
-            reach = 22 if seat_id in opened else 16
+            # An open pin's accent ring reaches 21.75 px, and its focus ring 25.75 px.
+            reach = 16 + self.pin_ring(seat_id, opened)
             pins.append((x - reach, y - reach, x + reach, y + reach))
         self.layout_key(pins)
         machines = [(item["x"] - 1, item["y"], item["x"] + item["w"] + 1, item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
-        blocked = pins + machines + ([self.key["box"]] if self.key and self.key["shown"] else [])
+        # Each not-sent end with its stroke and the 3 px halo of a label.
+        ends = [(x - r, y - r, x + r, y + r) for chord in self.chords for points in chord["fails"] for x, y in points
+                for r in (chord["end_width"] / 2 + 3,)]
+        blocked = pins + machines + ends + ([self.key["box"]] if self.key and self.key["shown"] else [])
+        room = 6 * scale
         chosen = self.chosen_seats()
         counts, activity = self.view["counts"], self.view["activity"]
         circle = {seat_id: index for index, seat_id in enumerate(self.pins)}
@@ -13264,17 +13384,18 @@ class RoundTable(Gtk.Overlay):
             # A chosen seat shows only its whole text.
             for text in range(1 if seat_id in chosen else len(pin["texts"])):
                 for place in range(5):
-                    x, y = self.label_place_with(pin, angle, geometry, text, place, scale, seat_id in opened)
+                    x, y = self.label_place_with(pin, angle, geometry, text, place, scale, self.pin_ring(seat_id, opened))
                     box = (x - 1, y, x + pin["texts"][text]["w"] + 1, y + pin["texts"][text]["h"])
                     inside = box[0] >= 2 and box[1] >= 2 and box[2] <= geometry["W"] - 2 and box[3] <= geometry["H"] - 2
-                    if inside and not (disc and center(box)) and not any(hit(other, box) for other in placed + blocked):
+                    if (inside and not (disc and center(box)) and not band(box) and not any(hit(other, box) for other in blocked)
+                            and not any(hit((other[0] - room, other[1], other[2] + room, other[3]), box) for other in placed)):
                         found = (text, place, box)
                         break
                 if found:
                     break
             if found is None and seat_id in chosen:
                 # No free place: the chosen seat shows its whole label inward, and the other labels avoid it.
-                x, y = self.label_place_with(pin, angle, geometry, 0, 0, scale, seat_id in opened)
+                x, y = self.label_place_with(pin, angle, geometry, 0, 0, scale, self.pin_ring(seat_id, opened))
                 found = (0, 0, (x - 1, y, x + pin["w"] + 1, y + pin["h"]))
             if found:
                 placed.append(found[2])
@@ -13284,12 +13405,17 @@ class RoundTable(Gtk.Overlay):
             self.key["shown"] = False
         self.label_tips()
 
+    def pin_ring(self, seat_id, opened):
+        """How far the rings of a pin reach past its 16 px: 6 px for an open pin, 10 px when it also has the focus."""
+        return (10 if self.hover["focus"] == seat_id else 6) if seat_id in opened else 0
+
     def label_tips(self):
-        # A pin whose label is cut or hidden keeps the whole title as its tooltip.
+        # A pin whose label is cut or hidden keeps the whole title as its tooltip; a seat of several unlisted sessions names them.
         for seat_id, label in self.labels.items():
-            proxy = self.proxies.get(("pin", seat_id))
+            proxy, pin = self.proxies.get(("pin", seat_id)), self.pins[seat_id]
             if proxy:
-                proxy.set_tooltip_text(None if label["shown"] and label["text"] == 0 and not self.window.thread else self.pins[seat_id]["title"])
+                whole = label["shown"] and label["text"] == 0 and not self.window.thread and pin["tip"] == pin["title"]
+                proxy.set_tooltip_text(None if whole else pin["tip"])
 
     def layout_key(self, boxes):
         """The key line at the bottom left: chord widths with the smallest and the largest seated pair counts, a not-sent chord,
@@ -13314,7 +13440,7 @@ class RoundTable(Gtk.Overlay):
             items.append({"kind": kind, "x": x, "layout": layout, "tx": x + sample + 6, "w": logical.width, "h": logical.height})
             x += sample + 6 + logical.width + 14
         height = max(item["h"] for item in items)
-        box = (12, geometry["H"] - 12 - height, x - 14, geometry["H"] - 12)
+        box = (12, geometry["KH"] - 12 - height, x - 14, geometry["KH"] - 12)
         near_x, near_y = min(max(geometry["cx"], box[0]), box[2]), min(max(geometry["cy"], box[1]), box[3])
         clear = box[2] <= geometry["W"] - 12 and math.hypot(near_x - geometry["cx"], near_y - geometry["cy"]) > geometry["Ro"] + 2
         others = boxes + [(item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
@@ -13325,12 +13451,16 @@ class RoundTable(Gtk.Overlay):
         geometry = self.geometry
         rectangle.x = rectangle.y = rectangle.width = rectangle.height = 0
         if widget is self.center:
-            minimum = widget.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
-            width = max(minimum, round(geometry["Rc"] * 1.6)) if geometry else minimum
+            # The center lines have their planned widths (CenterLayout): the box is as wide as the widest.
+            width = widget.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
             height = widget.measure(Gtk.Orientation.VERTICAL, width)[1]
             if geometry:
                 rectangle.x, rectangle.y = round(geometry["cx"] - width / 2), round(geometry["cy"] - height / 2)
             rectangle.width, rectangle.height = width, height
+        elif widget is self.window.reader:
+            if geometry:
+                rectangle.y, rectangle.width = self.reader_top, round(geometry["W"])
+                rectangle.height = widget.measure(Gtk.Orientation.VERTICAL, rectangle.width)[1]
         elif geometry is None:
             pass
         elif widget.key[0] == "pin" and widget.key[1] in geometry["seat"]:
@@ -13396,15 +13526,27 @@ class RoundTable(Gtk.Overlay):
         seat, chord = self.hit(x, y)
         if seat:
             self.proxies[("pin", seat)].grab_focus()
-            self.window.open_thread("session", seat)
+            self.activate_item(("pin", seat))
         elif chord:
-            self.window.open_thread("pair", chord)
+            self.activate_item(("chord", chord))
         else:
             # A click on an empty part of the table closes the thread.
             self.window.close_thread()
 
     def activate_item(self, key):
-        self.window.open_thread("session" if key[0] == "pin" else "pair", key[1])
+        """Open the thread of a pin or a chord; a second activation of the open pin or chord closes it, as Back does."""
+        kind, thread = "session" if key[0] == "pin" else "pair", self.window.thread
+        if thread and thread["kind"] == kind and thread["key"] == key[1]:
+            self.window.close_thread()
+        else:
+            self.window.open_thread(kind, key[1])
+
+    def disc_tooltip(self, _widget, x, y, _keyboard, tooltip):
+        geometry = self.geometry
+        if not self.disc_tip or geometry is None or geometry["S"] < 480 or math.hypot(x - geometry["cx"], y - geometry["cy"]) > geometry["Rc"]:
+            return False
+        tooltip.set_text(self.disc_tip)
+        return True
 
     def proxy_focus(self, proxy, entered):
         slot = "focus" if proxy.key[0] == "pin" else "chord_focus"
@@ -13422,7 +13564,7 @@ class RoundTable(Gtk.Overlay):
 
     def state(self):
         """The preview's applyHighlight: (chord, seat, thread, flying, pin) for the drawing and the center."""
-        chord = self.hover["chord"] or self.hover["chord_focus"]
+        chord = self.hover["chord"] or self.hover["chord_focus"] or self.hover["row"]
         seat = None if chord else self.hover["seat"] or self.hover["focus"]
         # A status thread selects no seat or chord.
         thread = self.window.thread if self.window.thread and self.window.thread["kind"] != "status" else None
@@ -13437,6 +13579,10 @@ class RoundTable(Gtk.Overlay):
             return {thread["key"]}, set(thread["key"])
         if thread and thread["kind"] == "session":
             return {key for key in self.chord_keys if thread["key"] in key}, {thread["key"]}
+        if thread and thread["kind"] == "status" and self.view is not None:
+            # The seated pairs with a message of that status in the period, and both of their pins.
+            chords = {key for key in self.chord_keys if self.view["pairs"][key]["by"].get(thread["key"])}
+            return chords, {seat_id for key in chords for seat_id in key}
         return set(), set()
 
     def lit(self, state):
@@ -13445,7 +13591,9 @@ class RoundTable(Gtk.Overlay):
         if chord:
             chords, pins = chords | {chord}, pins | set(chord)
         elif seat:
-            chords, pins = chords | {key for key in self.chord_keys if seat in key}, pins | {seat}
+            # A hovered or focused seat lights its chords and its partners, the other ends of those chords.
+            mine = {key for key in self.chord_keys if seat in key}
+            chords, pins = chords | mine, pins | {seat} | {seat_id for key in mine for seat_id in key}
         return chords, pins
 
     def hover_dims(self, state):
@@ -13588,9 +13736,9 @@ class RoundTable(Gtk.Overlay):
                 for chord, tone in tones:
                     if tone != "lit":
                         self.snapshot_chord(snapshot, chord, fade, tone, palette, gray)
-                # The lit chords last, so that no chord crosses them: first all casings, then all strokes, so that the casing of
-                # one lit chord never cuts another.
-                for part in ("casing", "stroke"):
+                # The lit chords last, so that no chord crosses them: first all casings (with the casings of their not-sent ends),
+                # then all strokes, then the not-sent dashes, so that the casing of one lit chord never cuts another.
+                for part in ("casing", "stroke", "ends"):
                     for chord, tone in tones:
                         if tone == "lit":
                             self.snapshot_chord(snapshot, chord, fade, tone, palette, gray, part)
@@ -13599,15 +13747,16 @@ class RoundTable(Gtk.Overlay):
             snapshot_stroke(snapshot, circle_path(cx, cy, geometry["Rc"]), 1, rgba(palette["rule"]))
         self.snapshot_lights(snapshot, now, palette)
         shown, scale = state[1], self.window.text_scale
+        opened, dims = self.open_lit()[1], self.hover_dims(state)
         for seat_id, angle in seats.items():
             label = self.labels.get(seat_id)
             if label and (label["shown"] or seat_id == shown):
-                # The hovered or focused seat shows its whole label.
+                # The hovered or focused seat shows its whole label; while the table dims, the labels of seats that are not lit dim too.
                 text, place = (0, label["place"] if label["shown"] else 0) if seat_id == shown else (label["text"], label["place"])
                 pin = self.pins[seat_id]
                 self.snapshot_label(snapshot, pin["texts"][text]["layout"], *self.label_place_with(pin, angle, geometry, text, place, scale,
-                                                                                                  seat_id in self.open_lit()[1]),
-                                    enter.get(seat_id, 1), palette)
+                                                                                                  self.pin_ring(seat_id, opened)),
+                                    enter.get(seat_id, 1), palette, dims and seat_id not in lit[1])
         for seat_id, angle in seats.items():
             self.snapshot_pin(snapshot, self.pins[seat_id], *table_point(geometry, geometry["Rp"], angle), seat_id, lit, enter.get(seat_id, 1), now, palette)
         if self.move:
@@ -13650,12 +13799,13 @@ class RoundTable(Gtk.Overlay):
                 builder.line_to(x + 17, middle)
                 snapshot_stroke(snapshot, builder.to_path(), 2, rgba(message_status_colors(palette)["not-sent"]), [5, 5])
             elif item["kind"] == "mixed":
-                # A gray chord with a dashed not-sent end.
-                for left, right, color, dash in ((x + 1, x + 9, gray, None), (x + 12, x + 17, message_status_colors(palette)["not-sent"], [5, 5])):
+                # A gray chord, then a 3 px dashed not-sent end over its casing in the window color, as on the table.
+                for left, width, color, dash in ((x + 1, 2, gray, None), (x + 9, 5, palette["win"], None),
+                                                 (x + 9, 3, message_status_colors(palette)["not-sent"], [5, 5])):
                     builder = Gsk.PathBuilder.new()
                     builder.move_to(left, middle)
-                    builder.line_to(right, middle)
-                    snapshot_stroke(snapshot, builder.to_path(), 2, rgba(color), dash)
+                    builder.line_to(x + 17, middle)
+                    snapshot_stroke(snapshot, builder.to_path(), width, rgba(color), dash)
             else:
                 builder = Gsk.PathBuilder.new()
                 builder.move_to(x + 1, middle + 4)
@@ -13666,56 +13816,67 @@ class RoundTable(Gtk.Overlay):
             snapshot_layout(snapshot, item["layout"], item["tx"], middle - item["h"] / 2, dim)
 
     @staticmethod
-    def label_place_with(pin, angle, geometry, text=0, place=0, scale=1, opened=False):
+    def label_place_with(pin, angle, geometry, text=0, place=0, scale=1, ring=0):
         """The top left of a seat label: inward from the pin (place 0), or 3 px under (1), over (2), left of (3), or right of (4) the
-        32 px pin. text is the index in pin["texts"]."""
+        32 px pin and its rings. text is the index in pin["texts"]; ring is how far the rings reach past the pin (pin_ring)."""
         width, height = pin["texts"][text]["w"], pin["texts"][text]["h"]
         if place == 0:
-            x, y = table_point(geometry, geometry["Rp"] - seat_label_offset(angle, width / 2, scale) - (6 if opened else 0), angle)
+            x, y = table_point(geometry, geometry["Rp"] - seat_label_offset(angle, width / 2, scale) - ring, angle)
             return x - width / 2, y - height / 2
         x, y = table_point(geometry, geometry["Rp"], angle)
-        gap = (22 if opened else 16) + 3 * scale
+        gap = 16 + ring + 3 * scale
         return ((x - width / 2, y + gap), (x - width / 2, y - gap - height), (x - gap - width, y - height / 2), (x + gap, y - height / 2))[place - 1]
 
     def snapshot_chord(self, snapshot, chord, fade, tone, palette, gray, part="all"):
         """A chord in the neutral gray, the accent over a 1 px casing in the window color (lit), or 35% toward the window (dim).
-        A pair with only not-sent messages is dashed in the bad color (3 px when lit), and a mixed pair has a dashed receiver end
-        in the bad color over the stroke. part is "casing" or "stroke" for the two passes of the lit chords, else "all"."""
+        A pair with only not-sent messages is dashed in the bad color (3 px when lit). A mixed pair has a dashed receiver end in the
+        bad color, at least 3 px wide, over a casing in the window color 2 px wider; the stroke ends where the dashed end starts.
+        part is "casing", "stroke", or "ends" for the three passes of the lit chords, else "all"."""
         start, control, end = chord["points"]
         builder = Gsk.PathBuilder.new()
         builder.move_to(*start)
         builder.quad_to(*control, *end)
         path = builder.to_path()
-        win = palette["win"]
+        win, bad = palette["win"], message_status_colors(palette)["not-sent"]
 
         def tone_color(value):
             return rgba(mix_color(win, value, .35) if tone == "dim" else value)
-        # fade is only the cross-fade of a seat move.
-        snapshot.push_opacity(fade)
-        width = 3 if chord["bad"] and tone == "lit" else chord["width"]
-        if tone == "lit" and part != "stroke":
-            snapshot_stroke(snapshot, path, width + 2, rgba(win))
-        if part == "casing":
-            snapshot.pop()
-            return
-        line = Gsk.Stroke.new(width)
-        line.set_line_cap(Gsk.LineCap.ROUND)
-        if chord["bad"]:
-            # A selection never recolors a not-sent mark.
-            line.set_dash([5, 5])
-            snapshot.append_stroke(path, line, tone_color(message_status_colors(palette)["not-sent"]))
-        else:
-            snapshot.append_stroke(path, line, tone_color(palette["accent"] if tone == "lit" else gray))
-        for points in chord["fails"]:
+
+        def polyline(points):
             builder = Gsk.PathBuilder.new()
             builder.move_to(*points[0])
             for point in points[1:]:
                 builder.line_to(*point)
-            snapshot_stroke(snapshot, builder.to_path(), 2, tone_color(message_status_colors(palette)["not-sent"]), [5, 5])
+            return builder.to_path()
+        # fade is only the cross-fade of a seat move.
+        snapshot.push_opacity(fade)
+        width = 3 if chord["bad"] and tone == "lit" else chord["width"]
+        if tone == "lit" and part in ("all", "casing"):
+            snapshot_stroke(snapshot, path, width + 2, rgba(win))
+        if part in ("all", "stroke"):
+            line = Gsk.Stroke.new(width)
+            line.set_line_cap(Gsk.LineCap.ROUND)
+            if chord["bad"]:
+                # A selection never recolors a not-sent mark.
+                line.set_dash([5, 5])
+                snapshot.append_stroke(path, line, tone_color(bad))
+            elif not chord["fails"]:
+                snapshot.append_stroke(path, line, tone_color(palette["accent"] if tone == "lit" else gray))
+            elif chord["trim"][1] > chord["trim"][0]:
+                low, high = chord["trim"]
+                steps = max(2, math.ceil((high - low) * chord["table"][1][-1] / 4))
+                snapshot.append_stroke(polyline([curve_point(chord["table"], low + (high - low) * index / steps) for index in range(steps + 1)]),
+                                       line, tone_color(palette["accent"] if tone == "lit" else gray))
+        if part in ("all", "casing"):
+            for points in chord["fails"]:
+                snapshot_stroke(snapshot, polyline(points), chord["end_width"] + 2, rgba(win))
+        if part in ("all", "ends"):
+            for points in chord["fails"]:
+                snapshot_stroke(snapshot, polyline(points), chord["end_width"], tone_color(bad), [5, 5])
         snapshot.pop()
 
-    def snapshot_label(self, snapshot, layout, x, y, alpha, palette):
-        halo, text = alpha_color(palette["win"], alpha), alpha_color(palette["text"], alpha)
+    def snapshot_label(self, snapshot, layout, x, y, alpha, palette, dim=False):
+        halo, text = alpha_color(palette["win"], alpha), alpha_color(palette["dim" if dim else "text"], alpha)
         # A 3 px halo in the window color under the glyphs: copies of the text around it.
         for radius, steps in ((1.5, 8), (3, 16)):
             for step in range(steps):
@@ -13745,7 +13906,8 @@ class RoundTable(Gtk.Overlay):
                             [4, 3] if pin["offline"] else None)
         proxy = self.proxies.get(("pin", seat_id))
         if proxy is not None and proxy.has_focus():
-            snapshot_stroke(snapshot, circle_path(x, y, 20), 2, rgba(mix_color(win, palette["accent"], dim)))
+            # On an open pin the focus ring is outermost: a 2 px gap outside the open ring (18.75 to 21.75 px).
+            snapshot_stroke(snapshot, circle_path(x, y, 24.75 if opened else 20), 2, rgba(mix_color(win, palette["accent"], dim)))
         icon = self.icons.get(pin["app"])
         if icon is None:
             theme = Gtk.IconTheme.get_for_display(self.get_display())
@@ -13855,6 +14017,77 @@ class ThreadHeadLayout(Gtk.LayoutManager):
         mark.allocate(bw, bh, -1, transform)
 
 
+class CenterLayout(Gtk.LayoutManager):
+    """The lines of the table center, one under another and each centered at its planned width (MessagesWindow.fit_center: the
+    disc chord at the height of the line); a line with no plan takes the whole width."""
+    __gtype_name__ = "AsbCenterLayout"
+
+    def __init__(self):
+        super().__init__()
+        self.widths, self.gap = {}, 3
+
+    def lines(self, widget):
+        child = widget.get_first_child()
+        while child is not None:
+            if child.should_layout():
+                yield child
+            child = child.get_next_sibling()
+
+    def line_size(self, child, width):
+        minimum, natural = child.measure(Gtk.Orientation.HORIZONTAL, -1)[:2]
+        planned = self.widths.get(child)
+        line = max(minimum, min(natural, width if planned is None else min(planned, width)))
+        return line, child.measure(Gtk.Orientation.VERTICAL, line)[1]
+
+    def do_get_request_mode(self, _widget):
+        return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH
+
+    def do_measure(self, widget, orientation, for_size):
+        lines = list(self.lines(widget))
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            minimum = max([child.measure(orientation, -1)[0] for child in lines] + [0])
+            natural = max([self.line_size(child, math.inf)[0] for child in lines] + [0])
+            return minimum, natural, -1, -1
+        width = math.inf if for_size < 0 else for_size
+        height = sum(self.line_size(child, width)[1] for child in lines) + self.gap * max(0, len(lines) - 1)
+        return height, height, -1, -1
+
+    def do_allocate(self, widget, width, _height, _baseline):
+        y = 0
+        for child in self.lines(widget):
+            line, height = self.line_size(child, width)
+            child.allocate(line, height, -1, Gsk.Transform.new().translate(Graphene.Point().init((width - line) / 2, y)))
+            y += height + self.gap
+
+
+class CapLayout(Gtk.LayoutManager):
+    """One child at the left edge, as wide as the cap or the free width if that is less."""
+    __gtype_name__ = "AsbCapLayout"
+
+    def __init__(self, cap):
+        super().__init__()
+        self.cap = cap
+
+    def do_get_request_mode(self, _widget):
+        return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH
+
+    def do_measure(self, widget, orientation, for_size):
+        child = widget.get_first_child()
+        if child is None or not child.should_layout():
+            return 0, 0, -1, -1
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            minimum = child.measure(orientation, -1)[0]
+            return minimum, max(minimum, self.cap), -1, -1
+        width = self.cap if for_size < 0 else max(child.measure(Gtk.Orientation.HORIZONTAL, -1)[0], min(for_size, self.cap))
+        minimum, natural = child.measure(orientation, width)[:2]
+        return minimum, natural, -1, -1
+
+    def do_allocate(self, widget, width, height, _baseline):
+        child = widget.get_first_child()
+        if child is not None and child.should_layout():
+            child.allocate(max(child.measure(Gtk.Orientation.HORIZONTAL, -1)[0], min(width, self.cap)), height, -1, None)
+
+
 class TotalStack(Gtk.Stack):
     """The stack of the ledger total: it gives the baseline of its shown label, so the not-sent count stands on the same baseline."""
     __gtype_name__ = "AsbTotalStack"
@@ -13866,6 +14099,12 @@ class TotalStack(Gtk.Stack):
             inner = child.measure(orientation, for_size)
             return found[0], found[1], inner[2], inner[3]
         return found[0], found[1], -1, -1
+
+
+def set_route(route, broken):
+    """Show a center route whole or broken before its arrow; the full route stays its accessible label."""
+    route.set_label(route.asb_route[1] if broken else route.asb_route[0])
+    route.update_property([Gtk.AccessibleProperty.LABEL], [route.asb_route[0]])
 
 
 class MessagesWindow(ActivityWindow):
@@ -13891,11 +14130,13 @@ class MessagesWindow(ActivityWindow):
 
         # The table, the reader for a small table, and the ledger column.
         self.table = RoundTable(self)
+        # The reader under a small table stands in the table, directly under the drawn table and above the key line.
         self.reader = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, visible=False)
         self.reader.add_css_class("asb-msg-reader")
+        self.table.add_overlay(self.reader)
         self.left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-        for widget in (self.table, self.reader):
-            self.left.append(widget)
+        self.left.append(self.table)
+        self.page_tick = None
         self.ledger = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False,
                                 hhomogeneous=True, interpolate_size=False)
         self.ledger.add_css_class("asb-msg-ledger")
@@ -13909,6 +14150,10 @@ class MessagesWindow(ActivityWindow):
         self.wide.append(self.left)
         self.wide.append(self.ledger)
         self.narrow_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        # The stacked Messages head: at most 340 px times the text scale wide, at the left edge.
+        self.head_box = Gtk.Box()
+        self.head_box.set_layout_manager(CapLayout(round(340 * self.text_scale)))
+        self.narrow_box.append(self.head_box)
         self.narrow_scroll = Gtk.ScrolledWindow(child=self.narrow_box, hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True, visible=False)
         self.data_page.append(self.wide)
         self.data_page.append(self.narrow_scroll)
@@ -13939,8 +14184,13 @@ class MessagesWindow(ActivityWindow):
                        for index in range(len(MACHINE_HUES)))
         colors = message_status_colors(palette)
         statuses = "".join(f"{scope} .asb-msg-sw-{status} {{ background: {colors[status]}; }}\n"
-                           f"{scope} .asb-msg-stt-{status} {{ color: {message_status_text_color(palette, status)}; }}\n" for status in MESSAGE_STATUS_TEXT)
-        return hues + statuses + f"""
+                           f"{scope} .asb-msg-stt-{status} {{ color: {message_status_text_color(palette, status)}; }}\n"
+                           f"{scope} .asb-msg-stw-{status} {{ color: {status_text_on(palette, status, palette['win'])}; }}\n" for status in MESSAGE_STATUS_TEXT)
+        # A status word in a thread block has 4.5:1 on the tint of that block.
+        words = "".join(f"{scope} .asb-msg-bg-{index} .asb-msg-stw-{status} {{ color: "
+                        f"{status_text_on(palette, status, message_block_surface(palette, self.machine_hue(index)))}; }}\n"
+                        for index in range(len(MACHINE_HUES)) for status in MESSAGE_STATUS_TEXT)
+        return hues + statuses + words + f"""
 {scope} asb-message-proxy {{ outline: none; }}
 {scope} .asb-msg-small {{ font-size: {px(12)}; }}
 {scope} .asb-msg-tiny {{ font-size: {px(11)}; }}
@@ -13988,7 +14238,9 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-c-name {{ font-size: {px(15)}; font-weight: 600; }}
 {scope} .asb-msg-c-num {{ font-feature-settings: "tnum"; font-size: {px(18)}; }}
 {scope} .asb-msg-c-dir {{ font-feature-settings: "tnum"; font-size: {px(14)}; }}
-{scope} .asb-msg-c-fail {{ font-size: {px(12)}; color: {colors['not-sent']}; }}
+{scope} .asb-msg-c-fail {{ font-size: {px(12)}; color: {status_text_on(palette, 'not-sent', palette['win'])}; }}
+{scope} .asb-msg-empty-title {{ font-size: {px(20)}; font-weight: 700; }}
+{scope} .asb-msg-busy {{ min-height: {px(26)}; }}
 """
 
     def set_palette(self, colors):
@@ -14013,6 +14265,8 @@ class MessagesWindow(ActivityWindow):
             breakpoint.set_condition(self.breakpoint_condition(name))
         if not self.table.narrow:
             self.ledger.set_size_request(round(340 * self.text_scale), -1)
+        self.head_box.get_layout_manager().cap = round(340 * self.text_scale)
+        self.head_box.queue_resize()
         if self.view is not None:
             self.render_ledger([], False)
             self.table.update(self.view)
@@ -14032,11 +14286,11 @@ class MessagesWindow(ActivityWindow):
     def set_top(self, top):
         """In each stacked layout the Messages section (the total, the status bar, and the legend) stands above the table."""
         section = self.messages_section
-        if top == (section.get_parent() is self.narrow_box):
+        if top == (section.get_parent() is self.head_box):
             return
         section.get_parent().remove(section)
         if top:
-            self.narrow_box.prepend(section)
+            self.head_box.append(section)
         else:
             self.first_column.prepend(section)
         (section.add_css_class if top else section.remove_css_class)("asb-msg-top")
@@ -14047,6 +14301,7 @@ class MessagesWindow(ActivityWindow):
         """Below 900px: one vertical scroll with the table, the reader, and the ledger."""
         self.table.narrow = narrow
         target, source = (self.narrow_box, self.wide) if narrow else (self.wide, self.narrow_box)
+        self.table.reader_extra = 0
         for widget in (self.left, self.ledger):
             if widget.get_parent() is source:
                 source.remove(widget)
@@ -14104,7 +14359,8 @@ class MessagesWindow(ActivityWindow):
         self.total_row.append(self.total)
         # The not-sent count opens the Not sent status thread; its icon is centered on its text, and the two stand on the baseline.
         scale = self.text_scale
-        content = Gtk.Box(spacing=round(4 * scale), valign=Gtk.Align.BASELINE_FILL)
+        # The box has its natural height on the baseline, so the icon centers on the label text, not on the row.
+        content = Gtk.Box(spacing=round(4 * scale), valign=getattr(Gtk.Align, "BASELINE_CENTER", Gtk.Align.BASELINE_FILL))
         content.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS["not-sent"], pixel_size=round(14 * scale), valign=Gtk.Align.CENTER))
         self.not_sent_label = Gtk.Label(valign=Gtk.Align.BASELINE_FILL)
         content.append(self.not_sent_label)
@@ -14120,6 +14376,9 @@ class MessagesWindow(ActivityWindow):
         recent = self.recent_section = section("Recent", first)
         self.recent = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         recent.append(self.recent)
+        busiest = self.busiest_section = section("Busiest pairs", first)
+        self.busiest = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        busiest.append(self.busiest)
         machines = section("Between machines", second)
         self.machines_section = machines
         self.machine_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -14127,7 +14386,7 @@ class MessagesWindow(ActivityWindow):
         apps = self.apps_section = section("Between apps", second)
         self.matrix = Gtk.Grid(hexpand=True)
         apps.append(self.matrix)
-        self.legend_counts, self.legend_rows, self.matrix_cells, self.machine_counts, self.recent_rows = {}, {}, {}, {}, []
+        self.legend_counts, self.legend_rows, self.matrix_cells, self.machine_counts, self.recent_rows, self.busiest_rows = {}, {}, {}, {}, [], []
         return box
 
     def machine_dot(self, machine_id):
@@ -14160,7 +14419,7 @@ class MessagesWindow(ActivityWindow):
         empty = view["total"] == 0
         self.ledger.set_visible(not empty)
         self.messages_section.set_visible(not empty)
-        for widget in (self.share, self.legend, self.recent_section, self.machines_section, self.apps_section):
+        for widget in (self.share, self.legend, self.recent_section, self.busiest_section, self.machines_section, self.apps_section):
             widget.set_visible(not empty)
         self.share.update(view["by_status"])
         remove_children(self.legend)
@@ -14187,12 +14446,12 @@ class MessagesWindow(ActivityWindow):
                 for widget in (name, value):
                     widget.add_css_class("asb-dim")
             if status == "accepted":
+                # The empty chevron slot: all counts end at one x.
+                row.append(Gtk.Box(width_request=round(16 * scale)))
                 item = row
             else:
                 # A status with messages opens the status thread, as a Recent row does.
-                chevron = Gtk.Image(icon_name="go-next-symbolic", pixel_size=round(12 * scale))
-                chevron.add_css_class("asb-dim")
-                row.append(chevron)
+                row.append(self.chevron())
                 item = Gtk.Button(has_frame=False, child=row)
                 item.add_css_class("asb-msg-legend")
                 item.update_property([Gtk.AccessibleProperty.LABEL], [f"{ACTIVITY_STATUS_LABELS[status]}, {format_count(count)}"])
@@ -14273,13 +14532,13 @@ class MessagesWindow(ActivityWindow):
             route.set_attributes(no_hyphens(route.get_attributes()))
             content.append(route)
             status, status_text = message_status(record), message_status_label(record)
-            icon = Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=round(14 * scale), tooltip_text=status_text)
-            icon.add_css_class(f"asb-msg-stt-{status}")
-            icon.update_property([Gtk.AccessibleProperty.LABEL], [status_text])
-            content.append(icon)
-            chevron = Gtk.Image(icon_name="go-next-symbolic", pixel_size=round(12 * scale))
-            chevron.add_css_class("asb-dim")
-            content.append(chevron)
+            # A status shows only when it is not Accepted, as in a thread.
+            if status != "accepted":
+                icon = Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=round(14 * scale), tooltip_text=status_text)
+                icon.add_css_class(f"asb-msg-stt-{status}")
+                icon.update_property([Gtk.AccessibleProperty.LABEL], [status_text])
+                content.append(icon)
+            content.append(self.chevron())
             row.set_child(content)
             row.update_property([Gtk.AccessibleProperty.LABEL], [f"{when.get_label()}, {route.get_label()}, {status_text}"])
             row.connect("clicked", self.recent_clicked, record)
@@ -14290,9 +14549,72 @@ class MessagesWindow(ActivityWindow):
             else:
                 self.recent.append(row)
             self.recent_rows.append(row)
+        self.render_busiest()
+
+    def chevron(self):
+        """The dim 12 px chevron at the end of a ledger row, in a 16 px slot (both times the text scale)."""
+        chevron = Gtk.Image(icon_name="go-next-symbolic", pixel_size=round(12 * self.text_scale), width_request=round(16 * self.text_scale))
+        chevron.add_css_class("asb-dim")
+        return chevron
+
+    def render_busiest(self):
+        """Busiest pairs: the 5 pairs with the most messages, in the Recent row style; a row lights its chord on the table."""
+        view, scale = self.view, self.text_scale
+        remove_children(self.busiest)
+        self.busiest_rows = []
+        self.table.hover["row"] = None
+        for pair in view["busiest"]:
+            a, b = self.seat_title(pair["a"]), self.seat_title(pair["b"])
+            row = Gtk.Button(has_frame=False, tooltip_text=f"{a} ⇄ {b}")
+            row.add_css_class("asb-msg-recent")
+            row.add_css_class("asb-msg-busy")
+            content = Gtk.Box(spacing=round(8 * scale))
+            names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+            route = Gtk.Box(spacing=round(4 * scale))
+            for text in (a, "⇄", b):
+                name = Gtk.Label(label=text, xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE if text != "⇄" else Pango.EllipsizeMode.NONE)
+                name.set_attributes(no_hyphens(name.get_attributes()))
+                route.append(name)
+            names.append(route)
+            if pair["bad"]:
+                line = Gtk.Box(spacing=round(4 * scale))
+                line.add_css_class("asb-msg-stw-not-sent")
+                line.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS["not-sent"], pixel_size=round(12 * scale)))
+                line.append(label(f"{format_count(pair['bad'])} not sent", "asb-msg-small"))
+                names.append(line)
+            content.append(names)
+            count = label(format_count(pair["n"]), "asb-mono")
+            count.set_xalign(1)
+            content.append(count)
+            content.append(self.chevron())
+            row.set_child(content)
+            spoken = f"{a} and {b}, {format_count(pair['n'])} message{'' if pair['n'] == 1 else 's'}"
+            row.update_property([Gtk.AccessibleProperty.LABEL], [spoken + (f", {format_count(pair['bad'])} not sent" if pair["bad"] else "")])
+            row.connect("clicked", lambda _button, key=pair["key"]: self.open_thread("pair", key))
+            # The pointer or the focus on a row lights its chord as a chord hover does; a pair with an unseated session lights nothing.
+            row.asb_key, row.asb_lit = pair["key"], set()
+            for controller, flag in ((Gtk.EventControllerMotion(), "pointer"), (Gtk.EventControllerFocus(), "focus")):
+                controller.connect("enter", lambda *_args, item=row, name=flag: self.busiest_lit(item, name, True))
+                controller.connect("leave", lambda *_args, item=row, name=flag: self.busiest_lit(item, name, False))
+                row.add_controller(controller)
+            self.busiest.append(row)
+            self.busiest_rows.append(row)
+
+    def busiest_lit(self, row, flag, entered):
+        (row.asb_lit.add if entered else row.asb_lit.discard)(flag)
+        key, table = row.asb_key, self.table
+        if row.asb_lit and key in table.chord_keys:
+            wanted = key
+        elif table.hover["row"] == key:
+            wanted = None
+        else:
+            return
+        if wanted != table.hover["row"]:
+            table.hover["row"] = wanted
+            table.changed()
 
     def seat_title(self, seat_id):
-        return (self.view["seats"].get(seat_id) or {}).get("title") or "Other sessions"
+        return (self.view["seats"].get(seat_id) or {}).get("title") or "Unlisted sessions"
 
     def recent_clicked(self, _button, record):
         a, b = sorted((record["from"], record["to"]), key=lambda seat_id: (self.view["circle"].index(seat_id) if seat_id in self.view["circle"] else len(self.view["circle"]), seat_id))
@@ -14350,15 +14672,18 @@ class MessagesWindow(ActivityWindow):
         # Only the narrow layout has the reader: there the table height does not depend on it. In the wide layout a shown reader
         # would make the table smaller, and the small table would keep the reader.
         reader = self.table.small and self.table.narrow
-        box = self.reader if reader else self.table.center
+        box, scale = (self.reader if reader else self.table.center), self.text_scale
         remove_children(self.table.center)
         remove_children(self.reader)
+        self.table.center.get_layout_manager().widths = {}
         empty = self.view["total"] == 0
         self.table.center.set_visible(ACTIVITY_PATHS and not self.table.small)
         # Only the empty center has a button.
         self.table.center.set_can_target(empty)
+        self.table.center.get_layout_manager().gap = round(12 * scale) if empty else 3
         self.reader.set_visible(ACTIVITY_PATHS and reader and self.table.geometry is not None)
         align = Gtk.Align.START if reader else Gtk.Align.CENTER
+        routes, hint = [], None
 
         def text(value, css, wrap=False, dim=False, parent=None):
             widget = Gtk.Label(label=value, halign=align, xalign=0 if reader else .5, justify=Gtk.Justification.LEFT if reader else Gtk.Justification.CENTER)
@@ -14372,17 +14697,14 @@ class MessagesWindow(ActivityWindow):
             if not wrap:
                 widget.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
             if css == "asb-msg-c-route" and re.search(r" [→⇄]", value):
-                # Break only before the arrow; each name ellipsizes on its own line, never at a literal hyphen.
-                geometry = self.table.geometry
-                room = (self.table.get_width() - 32 if reader else round(geometry["Rc"] * 1.6)) if geometry else 160
-                measured = activity_layout(self.table, value, 13 * self.text_scale, Pango.Weight.SEMIBOLD)
-                shown = re.sub(r" ([→⇄])", r"\n\1", value, count=1) if measured.get_pixel_size()[0] > room else value
-                widget.set_label(shown)
+                # A route breaks only before its arrow; each name ellipsizes on its own line, never at a literal hyphen.
+                widget.asb_route = (value, re.sub(r" ([→⇄])", r"\n\1", value, count=1))
                 widget.set_wrap(False)
                 widget.set_wrap_mode(Pango.WrapMode.WORD)
                 widget.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
                 widget.set_tooltip_text(value)
                 widget.update_property([Gtk.AccessibleProperty.LABEL], [value])
+                routes.append(widget)
             (parent or box).append(widget)
             return widget
         hover_chord, seat, thread, _flying, _pin = self.table.state()
@@ -14391,9 +14713,19 @@ class MessagesWindow(ActivityWindow):
         if self.thread is not None:
             pair_key = self.thread["key"] if self.thread["kind"] == "pair" else None
             session = self.thread["key"] if self.thread["kind"] == "session" else None
-        if pair_key and pair_key in self.view["pairs"]:
+        if self.thread is not None and self.thread["kind"] == "status":
+            # The open status thread owns the center: the status, its messages, and its pairs (seated or not) in the period.
+            status = self.thread["key"]
+            head = Gtk.Box(spacing=round(4 * scale), halign=align)
+            head.add_css_class(f"asb-msg-stw-{status}")
+            head.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=round(12 * scale)))
+            text(ACTIVITY_STATUS_LABELS[status], "asb-msg-c-route", parent=head)
+            box.append(head)
+            count = self.view["by_status"][status]
+            pairs = sum(1 for pair in self.view["pairs"].values() if pair["by"].get(status))
+            text(f"{format_count(count)} message{'' if count == 1 else 's'} · {format_count(pairs)} pair{'' if pairs == 1 else 's'}", "asb-msg-tiny", dim=True)
+        elif pair_key and pair_key in self.view["pairs"]:
             pair = self.view["pairs"][pair_key]
-            # A route that does not fit breaks only before its arrow.
             text(f"{self.seat_title(pair['a'])} ⇄\u00a0{self.seat_title(pair['b'])}", "asb-msg-c-route", wrap=True)
             for arrow, count in (("→", pair["ab"]), ("←", pair["ba"])):
                 text(f"{arrow} {count}", "asb-msg-c-dir")
@@ -14418,6 +14750,9 @@ class MessagesWindow(ActivityWindow):
                 column.append(number)
                 figures.append(column)
             box.append(figures)
+            failed = sum(1 for record in self.data.get("messages") or [] if session in (record["from"], record["to"]) and message_status(record) == "not-sent")
+            if failed:
+                text(f"Not sent {format_count(failed)}", "asb-msg-c-fail")
         elif self.view["recent"]:
             # Only who wrote to whom: the texts show in a thread.
             record, seats = self.view["recent"][0], self.view["seats"]
@@ -14427,23 +14762,88 @@ class MessagesWindow(ActivityWindow):
             status = message_status(record)
             line = text(f"{when} · {message_status_label(record)}", "asb-msg-tiny", dim=True)
             if status != "accepted":
-                line.set_markup(f"{GLib.markup_escape_text(when)} · <span foreground=\"{message_status_text_color(self.palette, status)}\">"
+                line.set_markup(f"{GLib.markup_escape_text(when)} · <span foreground=\"{status_text_on(self.palette, status, self.palette['win'])}\">"
                                 f"{GLib.markup_escape_text(message_status_label(record))}</span>")
-            text("Select a session or a line to read its messages", "asb-msg-tiny", wrap=True, dim=True)
+            hint = text(MESSAGE_CENTER_HINT, "asb-msg-tiny", wrap=True, dim=True)
         elif empty:
             period = dict(self.PERIODS)[self.period]
-            text(f"No messages in the last {period}", "asb-msg-c-route", wrap=True)
+            # The block of the Usage empty page: the icon, the title, the hint, and the pill.
+            icon = Gtk.Image(icon_name="asb-messages-symbolic", pixel_size=round(64 * scale), halign=align)
+            icon.add_css_class("asb-dim")
+            box.append(icon)
+            title = text(f"No messages in the last {period}", "asb-msg-empty-title", wrap=True)
+            title.set_lines(2)
+            title.set_ellipsize(Pango.EllipsizeMode.END)
             # The hint wraps at 260 px or less.
             inner = Gtk.Box(halign=align)
             text("When an agent sends a message to another session, it shows here.", "asb-msg-small", wrap=True, dim=True, parent=inner)
             box.append(Adw.Clamp(maximum_size=260, tightening_threshold=260, halign=align, child=inner))
             following = MESSAGE_NEXT_PERIOD.get(self.period)
             if following:
-                show = Gtk.Button(label=f"Show the last {dict(self.PERIODS)[following]}", halign=align, margin_top=6)
+                show = Gtk.Button(label=f"Show the last {dict(self.PERIODS)[following]}", halign=align)
                 show.add_css_class("suggested-action")
                 show.add_css_class("pill")
                 show.connect("clicked", lambda *_: self.set_period(following))
                 box.append(show)
+        # The disc always has the hint in its tooltip and accessible description, also when the hint does not show.
+        self.table.disc_tip = MESSAGE_CENTER_HINT if hint is not None else None
+        if hint is not None:
+            self.table.center.update_property([Gtk.AccessibleProperty.DESCRIPTION], [MESSAGE_CENTER_HINT])
+        else:
+            self.table.center.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+        if reader:
+            for route in routes:
+                measured = activity_layout(self.table, route.asb_route[0], 13 * scale, Pango.Weight.SEMIBOLD)
+                set_route(route, measured.get_pixel_size()[0] > self.table.get_width() - 32)
+            # The reader height sets the room under the table.
+            if self.table.geometry is not None:
+                self.table.place_reader()
+            self.table.queue_allocate()
+        elif self.table.geometry is not None and self.table.geometry["S"] >= 480:
+            self.fit_center(routes, hint, empty)
+
+    def fit_center(self, routes, hint, empty):
+        """Each center line gets the disc chord at its height, less 8 px at each side. The hint shows only when it fits whole and no
+        name must be cut; a route that does not fit breaks before its arrow, then ellipsizes each name in the middle. The empty
+        block keeps 12 px times the text scale from the disc edge."""
+        box, geometry = self.table.center, self.table.geometry
+        layout, gap = box.get_layout_manager(), box.get_layout_manager().gap
+        radius = geometry["Rc"] - (12 * self.text_scale if empty else 0)
+
+        def plan():
+            lines, child = [], box.get_first_child()
+            while child is not None:
+                if child.get_visible():
+                    lines.append(child)
+                child = child.get_next_sibling()
+            widths, fits = {child: 2 * radius * .8 - 16 for child in lines}, True
+            for _round in range(4):
+                layout.widths = widths
+                sizes = [layout.line_size(child, math.inf)[1] for child in lines]
+                y, widths, fits = -(sum(sizes) + gap * max(0, len(lines) - 1)) / 2, {}, True
+                for child, height in zip(lines, sizes):
+                    far = max(abs(y), abs(y + height))
+                    chord = 2 * math.sqrt(radius * radius - far * far) - 16 if far < radius else 0
+                    widths[child] = max(1, chord)
+                    fits = fits and chord >= child.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
+                    y += height + gap
+            layout.widths = widths
+            return fits
+
+        def place_routes():
+            for route in routes:
+                set_route(route, False)
+            plan()
+            for route in routes:
+                if route.measure(Gtk.Orientation.HORIZONTAL, -1)[1] > layout.widths[route]:
+                    set_route(route, True)
+            fits = plan()
+            return fits, any(route.measure(Gtk.Orientation.HORIZONTAL, -1)[1] > layout.widths[route] for route in routes)
+        fits, cut = place_routes()
+        if hint is not None and (cut or not fits):
+            box.remove(hint)
+            place_routes()
+        box.queue_resize()
 
     # The thread.
     def build_thread(self):
@@ -14479,6 +14879,8 @@ class MessagesWindow(ActivityWindow):
             return
         opened = self.thread is not None
         self.thread = {"kind": kind, "key": tuple(key) if kind == "pair" else key, "title": title, "target": message_id, "limit": MESSAGE_THREAD_LIMIT}
+        # The ledger page with the Busiest pairs rows goes away: their light ends.
+        self.table.hover["row"] = None
         self.thread_reply = None
         self.update_view()
         self.render_thread()
@@ -14486,14 +14888,62 @@ class MessagesWindow(ActivityWindow):
         self.fetch_thread()
         if not opened:
             self.ledger.set_visible_child_name("thread")
+        self.scroll_page("thread")
 
     def close_thread(self):
         if self.thread is None:
             return
+        thread = self.thread
+        pins = [] if thread["kind"] == "status" else list(thread["key"]) if thread["kind"] == "pair" else [thread["key"]]
         self.stop_thread_steps()
         self.thread = self.thread_reply = None
         self.update_view()
         self.ledger.set_visible_child_name("stats")
+        self.scroll_page(pins)
+
+    def scroll_page(self, target):
+        """In stacked layouts, after the next layout: the thread head at the top of the view ("thread"), or the chosen pins in view."""
+        clock = self.get_frame_clock()
+        if not self.table.narrow or clock is None:
+            return
+        if self.page_tick is not None:
+            self.page_tick[0].disconnect(self.page_tick[1])
+        frames = [0]
+
+        def goal():
+            adjustment, origin = self.narrow_scroll.get_vadjustment(), Graphene.Point().init(0, 0)
+            if target == "thread":
+                found, point = self.thread_head.compute_point(self.narrow_box, origin)
+                return point.y if found else None
+            geometry = self.table.geometry
+            found, point = self.table.compute_point(self.narrow_box, origin)
+            places = [table_point(geometry, geometry["Rp"], geometry["seat"][seat_id])[1] for seat_id in target
+                      if geometry and seat_id in geometry["seat"]] if found else []
+            if not places:
+                return None
+            # The pins with their rings, 26 px around each center.
+            top, bottom = point.y + min(places) - 26, point.y + max(places) + 26
+            value, page = adjustment.get_value(), adjustment.get_page_size()
+            return top if top < value else min(top, bottom - page) if bottom > value + page else value
+
+        def step(clock):
+            # The new thread builds its blocks and the reader can change the page height over a few frames: follow them until the
+            # goal is reached and stays, for at most 30 frames.
+            adjustment, value = self.narrow_scroll.get_vadjustment(), goal()
+            frames[0] += 1
+            if value is not None:
+                limit = adjustment.get_upper() - adjustment.get_page_size()
+                moved = abs(adjustment.get_value() - min(value, limit)) > .5
+                if moved:
+                    adjustment.set_value(value)
+                if (moved or value > limit + .5 or frames[0] < 3) and frames[0] < 30:
+                    # The next frame: a layout requested in its own layout phase would run again in this frame.
+                    GLib.idle_add(lambda: clock.request_phase(Gdk.FrameClockPhase.LAYOUT) or False)
+                    return
+            self.page_tick[0].disconnect(self.page_tick[1])
+            self.page_tick = None
+        self.page_tick = (clock, clock.connect_after("layout", step))
+        clock.request_phase(Gdk.FrameClockPhase.LAYOUT)
 
     def show_session(self, seat_id, title=""):
         """Show messages of a Board card: the session thread of that seat; before the first reply, after it."""
@@ -14533,6 +14983,9 @@ class MessagesWindow(ActivityWindow):
         self.thread_route.set_label(route)
         self.thread_route.set_tooltip_text(route)
         self.thread_counts.set_label(header["counts"])
+        if header.get("bad"):
+            color = status_text_on(self.palette, "not-sent", self.palette["win"])
+            self.thread_counts.set_markup(f"{GLib.markup_escape_text(header['counts'])}  <span foreground=\"{color}\">Not sent {format_count(header['bad'])}</span>")
         self.render_thread_list()
 
     def fetch_thread(self):
@@ -14726,15 +15179,18 @@ class MessagesWindow(ActivityWindow):
         when.add_css_class("asb-mono")
         when.add_css_class("asb-dim")
         top.append(when)
-        status = message_status(record)
-        if status != "accepted":
+        status, word = message_status(record), message_status_word(thread, record)
+        if word is not None:
             mark = Gtk.Box(spacing=round(3 * self.text_scale))
             mark.add_css_class(f"asb-msg-stt-{status}")
-            mark.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=round(12 * self.text_scale)))
-            reason = label(message_status_label(record), "asb-msg-tiny")
+            # In its own status thread a not-sent block keeps only its reason, with no icon.
+            if not (thread["kind"] == "status" and status == thread["key"]):
+                mark.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=round(12 * self.text_scale)))
+            reason = label(word, "asb-msg-tiny")
+            reason.add_css_class(f"asb-msg-stw-{status}")
             reason.set_wrap(True)
             mark.append(reason)
-        if status != "accepted":
+        if word is not None:
             head = Gtk.Box(spacing=round(6 * self.text_scale))
             layout = ThreadHeadLayout()
             layout.gap = round(6 * self.text_scale)
@@ -14746,12 +15202,13 @@ class MessagesWindow(ActivityWindow):
             block.append(top)
         body = message_text(record)
         # A small width_chars gives GTK a cheap minimum width; without it GTK lays out each long text at its narrowest.
-        text = Gtk.Label(label=body if body is not None else "No text", xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+        text = Gtk.Label(label=body if body is not None else MESSAGE_NO_TEXT, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
                          width_chars=20, selectable=True)
         text.add_css_class("asb-msg-body")
         if body is None:
             text.add_css_class("asb-dim")
             text.add_css_class("asb-msg-notext")
+            text.set_tooltip_text(MESSAGE_NO_TEXT_TIP)
         block.append(text)
         # Grid columns of 2%: a block spans 86% at the left or the right.
         self.thread_list.attach(block, 0 if left else 7, row, 43, 1)

@@ -10867,19 +10867,99 @@ class MessagesLogicChecks(unittest.TestCase):
         record = {"id": "x", "from": "unknown:m2", "to": "docs", "fromLabel": "beta-helper", "toLabel": ""}
         self.assertEqual(asb.message_end_title(record, "from", seats), "beta-helper")
         self.assertEqual(asb.message_end_title(record, "to", seats), "docs")
-        # Without a name, or with a name on a known end, the session title or Other sessions shows.
+        # Without a name, or with a name on a known end, the session title or Unlisted sessions shows.
         self.assertEqual(asb.message_end_title(dict(record, fromLabel=""), "from", seats), "Other sessions")
-        self.assertEqual(asb.message_end_title({"from": "unknown:m9", "to": "docs"}, "from", {}), "Other sessions")
+        self.assertEqual(asb.message_end_title({"from": "unknown:m9", "to": "docs"}, "from", {}), "Unlisted sessions")
         self.assertEqual(asb.message_end_title(dict(record, toLabel="not-this"), "to", seats), "docs")
-        self.assertEqual(asb.message_end_title({"from": "gone", "to": "docs"}, "from", seats), "Other sessions")
+        self.assertEqual(asb.message_end_title({"from": "gone", "to": "docs"}, "from", seats), "Unlisted sessions")
         session = {"kind": "session", "key": "docs"}
         self.assertEqual(asb.message_block(session, record, seats), (True, "From beta-helper"))
         self.assertEqual(asb.message_block(session, {"from": "docs", "to": "unknown:m2", "toLabel": "gamma-helper"}, seats), (False, "To gamma-helper"))
         self.assertEqual(asb.message_block({"kind": "pair", "key": ("unknown:m2", "docs")}, record, seats), (True, "beta-helper"))
 
+    def test_a_seat_of_unknown_sessions_is_named_from_the_labels_of_its_messages(self):
+        reply = self.reply()
+        now = reply["nowMs"]
+        seat = {"id": "unknown:laptop", "title": "Other sessions", "app": "", "machineId": "laptop", "order": 0}
+
+        def named(*labels):
+            messages = [{"id": f"u{index}", "from": "unknown:laptop", "to": "docs", "atMs": now - 1000 - index, "status": "accepted", "fromLabel": label}
+                        for index, label in enumerate(labels)]
+            messages.append({"id": "back", "from": "docs", "to": "unknown:laptop", "atMs": now - 500, "status": "accepted", "toLabel": ""})
+            return asb.messages_view(dict(reply, seats=reply["seats"] + [seat], messages=reply["messages"] + messages))["seats"]["unknown:laptop"]
+        self.assertEqual((named("beta-helper", "beta-helper")["title"], named("beta-helper")["labels"]), ("beta-helper", ["beta-helper"]))
+        self.assertEqual(named("beta-helper", "gamma-helper")["title"], "2 unlisted sessions")
+        self.assertEqual(named()["title"], "Unlisted sessions")
+        self.assertEqual(asb.unlisted_tip(named("a", "b", "c")["labels"]), "a, b, c")
+        self.assertEqual(asb.unlisted_tip([f"s{index}" for index in range(7)]), "s0, s1, s2, s3, s4, …")
+        # The reply itself is not changed, and a block keeps the label of its own message.
+        self.assertEqual(seat["title"], "Other sessions")
+        seats = {"unknown:laptop": named("beta-helper", "gamma-helper"), "docs": {"title": "docs"}}
+        session = {"kind": "session", "key": "docs"}
+        self.assertEqual(asb.message_block(session, {"from": "unknown:laptop", "to": "docs", "fromLabel": "beta-helper"}, seats), (True, "From beta-helper"))
+        self.assertEqual(asb.message_block(session, {"from": "docs", "to": "unknown:laptop", "toLabel": ""}, seats), (False, "To 2 unlisted sessions"))
+
+    def test_a_status_thread_block_omits_the_status_of_the_thread(self):
+        offline = {"status": "not-sent", "reason": "Machine offline"}
+        for kind, key in (("pair", ("a", "b")), ("session", "a")):
+            thread = {"kind": kind, "key": key}
+            self.assertEqual([asb.message_status_word(thread, record) for record in ({"status": "accepted"}, {"status": "written"}, offline, {"status": "not-sent"})],
+                             [None, "No receipt", "Not sent · Machine offline", "Not sent"])
+        self.assertIsNone(asb.message_status_word({"kind": "status", "key": "written"}, {"status": "written"}))
+        self.assertEqual(asb.message_status_word({"kind": "status", "key": "written"}, {"status": "held"}), "On hold")
+        not_sent = {"kind": "status", "key": "not-sent"}
+        self.assertEqual(asb.message_status_word(not_sent, offline), "Machine offline")
+        self.assertIsNone(asb.message_status_word(not_sent, {"status": "not-sent", "reason": ""}))
+
+    def test_pairs_count_each_status_and_the_busiest_pairs_rank_by_count_newest_and_circle(self):
+        reply = self.reply()
+        view = asb.messages_view(reply)
+        for key, pair in view["pairs"].items():
+            mine = [record for record in reply["messages"] if {record["from"], record["to"]} == set(key)]
+            self.assertEqual(pair["by"], {status: count for status in asb.ACTIVITY_STATUSES if (count := sum(asb.message_status(record) == status for record in mine))})
+            self.assertEqual(pair["last"], max(record["atMs"] for record in mine))
+        circle = view["circle"]
+        expected = sorted((pair for pair in view["pairs"].values() if pair["a"] != pair["b"]),
+                          key=lambda pair: (-pair["n"], -pair["last"], circle.index(pair["a"]), circle.index(pair["b"])))[:5]
+        self.assertEqual(view["busiest"], expected)
+        self.assertEqual([(pair["key"], pair["n"]) for pair in view["busiest"]][:2], [(("release-plan", "parser-review"), 139), (("release-plan", "docs"), 80)])
+        # Equal counts: the newer newest message first, then circle order.
+        seats = [{"id": f"s{index}", "title": f"s{index}", "app": "codex", "machineId": "m", "order": index} for index in range(5)]
+        base = {"nowMs": 10_000, "machines": [{"machineId": "m", "name": "M", "state": "local"}], "seats": seats}
+        records = [{"id": "x", "from": "s2", "to": "s3", "atMs": 4000, "status": "accepted"}, {"id": "y", "from": "s0", "to": "s1", "atMs": 5000, "status": "accepted"},
+                   {"id": "z", "from": "s3", "to": "s4", "atMs": 5000, "status": "accepted"}]
+        self.assertEqual([pair["key"] for pair in asb.messages_view(dict(base, messages=records))["busiest"]], [("s0", "s1"), ("s3", "s4"), ("s2", "s3")])
+        self.assertEqual(asb.messages_view(dict(base, messages=[]))["busiest"], [])
+
+    def test_status_words_have_4_5_to_1_on_the_window_and_on_every_machine_tint(self):
+        looks = {"user": {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"},
+                 "stock": {"background": "#222226", "text": "#ffffff", "accent": "#81d0ff", "muted": asb.mix_color("#222226", "#ffffff", .72), "divider": "#6e6e71"},
+                 "navy": {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}}
+        for look, colors in looks.items():
+            palette = asb.activity_palette(colors)
+            surfaces = [palette["win"]] + [asb.message_block_surface(palette, asb.accent_guard(asb.machine_hue(index), palette["accent"], palette["win"]))
+                                           for index in range(len(asb.MACHINE_HUES))]
+            for status in asb.ACTIVITY_STATUSES:
+                for surface in surfaces:
+                    with self.subTest(look=look, status=status, surface=surface):
+                        color = asb.status_text_on(palette, status, surface)
+                        self.assertGreaterEqual(asb.contrast(color, surface), 4.5)
+                        base = asb.message_status_text_color(palette, status)
+                        if asb.contrast(base, surface) >= 4.5:
+                            self.assertEqual(color, base)
+                        else:
+                            # Only the lightness moves: the hue stays within the rounding of sRGB.
+                            moved, original = asb.oklab(color), asb.oklab(base)
+                            if math.hypot(*original[1:]) > .02 and color != palette["text"]:
+                                hue = lambda value: math.degrees(math.atan2(value[2], value[1]))
+                                self.assertLess(abs((hue(moved) - hue(original) + 180) % 360 - 180), 6)
+        # At the end of the lightness range the text color.
+        self.assertEqual(asb.status_text_on(asb.activity_palette(looks["navy"]), "accepted", "#808080"), "#e8eaee")
+
     def test_a_not_sent_message_shows_its_reason_and_text_may_be_missing(self):
         for reason in ("Machine offline", "Too large", "Rate limited", "Refused"):
-            self.assertEqual(asb.message_status_label({"status": "not-sent", "reason": reason}), reason)
+            self.assertEqual(asb.message_status_label({"status": "not-sent", "reason": reason}), f"Not sent · {reason}")
+        self.assertEqual((asb.MESSAGE_NO_TEXT, asb.MESSAGE_NO_TEXT_TIP), ("Text not available", "ASB has no copy of this text."))
         self.assertEqual(asb.message_status_label({"status": "not-sent", "reason": ""}), "Not sent")
         self.assertEqual(asb.message_status_label({"status": "not-sent"}), "Not sent")
         self.assertEqual([asb.message_status_label({"status": status, "reason": "Refused"}) for status in ("accepted", "written", "held", "unknown", "odd")],
