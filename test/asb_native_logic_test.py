@@ -316,6 +316,36 @@ class ActivityHelperChecks(unittest.TestCase):
             self.assertEqual(guarded(apps, accent, window), apps)
             self.assertEqual(guarded(hues, accent, window), hues)
 
+    def test_accent_guard_moves_near_duplicates_of_the_nine_gnome_accents(self):
+        window = "#222226"
+        statuses = {**asb.ACTIVITY_STATUS_COLORS, "unknown": asb.contrast_floor(asb.ACTIVITY_STATUS_COLORS["unknown"], "#ffffff", window, 3)}
+        colors = {**{"app:" + key: value for key, value in asb.ACTIVITY_APP_COLORS.items()}, **{"status:" + key: value for key, value in statuses.items()},
+                  **{f"machine:{index}": value for index, value in enumerate(asb.MACHINE_HUES)}}
+        # Every color that moves on each accent; no color stays unchanged because no lightness passes.
+        moved = {"blue": {}, "teal": {},
+                 "green": {"machine:1": "#5ba36b"},
+                 "yellow": {"app:grok": "#979201", "status:held": "#b18727", "machine:3": "#b78440"},
+                 "orange": {"status:held": "#efc269", "status:not-sent": "#fefcfb", "machine:3": "#a4722d"},
+                 "red": {"app:claude": "#b75939", "status:not-sent": "#feece8", "machine:4": "#aa5c7c"},
+                 "pink": {"machine:4": "#bb6b8b"},
+                 "purple": {"machine:4": "#c06f90"},
+                 "slate": {"app:codex": "#b0b3b7", "status:accepted": "#b0b3b7"}}
+        accents = {"blue": "#81d0ff", "teal": "#7bdff4", "green": "#8de698", "yellow": "#ffc057", "orange": "#ff9c5b",
+                   "red": "#ff888c", "pink": "#ffa0d8", "purple": "#fba7ff", "slate": "#bbd1e5"}
+        for name, accent in accents.items():
+            guarded = {key: asb.accent_guard(value, accent, window) for key, value in colors.items()}
+            self.assertEqual(guarded, {**colors, **moved[name]}, name)
+            for key, value in guarded.items():
+                self.assertGreaterEqual(math.dist(asb.oklab(value), asb.oklab(accent)), .09, (name, key))
+                if value != colors[key]:
+                    self.assertGreaterEqual(asb.contrast(value, window), 3, (name, key))
+        # The user palette keeps its results: only On hold of the status colors moves.
+        self.assertEqual({key: asb.accent_guard(value, "#ffb900", "#000000") for key, value in asb.ACTIVITY_STATUS_COLORS.items()},
+                         dict(asb.ACTIVITY_STATUS_COLORS, held="#ac8220"))
+        # The second trigger alone: a gray near a gray accent moves although its chroma is under 0.04.
+        self.assertLess(math.dist(asb.oklab("#c9ccd1"), asb.oklab("#bbd1e5")), .09)
+        self.assertLess(math.hypot(*asb.oklab("#c9ccd1")[1:]), .04)
+
     def test_chord_gray_and_the_unknown_status_floor(self):
         # The weakest text mix from 40% with 3:1 on the window and every sector fill.
         fills = [asb.mix_color("#000000", hue, .05) for hue in asb.MACHINE_HUES[:3]]
@@ -1110,9 +1140,10 @@ class UsageLogicChecks(unittest.TestCase):
         for _index, text, left in labels:
             self.assertGreaterEqual(left, 0)
             self.assertLessEqual(left + 7 * len(text), chart_width)
-        self.assertEqual(labels[-1][:2], (len(starts) - 1, "This month · so far"))
+        # The last tick names its bucket like the others; `so far` stays in the header.
+        self.assertEqual(labels[-1][0], len(starts) - 1)
         year = None
-        for index, text, _left in labels[:-1]:
+        for index, text, _left in labels:
             at = datetime.fromtimestamp(starts[index] / 1000, timezone.utc)
             short = asb.ACTIVITY_MONTHS[at.month - 1][:3]
             self.assertEqual(text, short if at.year == year else f"{short} {at.year}")
@@ -1126,18 +1157,20 @@ class UsageLogicChecks(unittest.TestCase):
         twenty = self.months(2025, 4, 20)
         labels = self.axis("month", twenty, 452)
         self.assert_axis_rules(labels, twenty, 452)
-        self.assertEqual([text for _index, text, _left in labels], ["May 2025", "Aug", "Nov", "Feb 2026", "This month · so far"])
-        self.assertEqual([index for index, _text, _left in labels], [1, 4, 7, 10, 19])
+        self.assertEqual([text for _index, text, _left in labels], ["May 2025", "Aug", "Nov", "Feb 2026", "May", "Nov"])
+        self.assertEqual([index for index, _text, _left in labels], [1, 4, 7, 10, 13, 19])
         # One point sits in the middle of the plot, with its label centered under it.
         one = self.axis("month", twenty[:1], 452)
-        self.assertEqual([text for _index, text, _left in one], ["This month · so far"])
+        self.assertEqual([text for _index, text, _left in one], ["Apr 2025"])
         self.assertEqual(one[0][2] + 7 * len(one[0][1]) / 2, (48 + 452) / 2)
         labels = self.axis("month", twelve, 1900)
         self.assert_axis_rules(labels, twelve, 1900)
         self.assertEqual([text for _index, text, _left in labels],
-                         ["Nov 2025", "Dec", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "This month · so far"])
-        self.assertEqual([text for _index, text, _left in labels], [asb.bucket_label({"unit": "month", "startsMs": twelve}, index)
-                                                                    + (" · so far" if index == 11 else "") for index in range(12)])
+                         ["Nov 2025", "Dec", "Jan 2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct"])
+        self.assertEqual([text for _index, text, _left in labels][:-1], [asb.bucket_label({"unit": "month", "startsMs": twelve}, index)
+                                                                         for index in range(11)])
+        # Where the year changes at the last bucket, the last tick names the year.
+        self.assertEqual(self.axis("month", self.months(2025, 10, 4), 900)[-1][1], "Jan 2026")
         # The first label starts at its point and the last ends at its point.
         self.assertEqual((labels[0][2], labels[-1][2] + 7 * len(labels[-1][1])), (48, 1900))
 
@@ -1149,11 +1182,12 @@ class UsageLogicChecks(unittest.TestCase):
             with self.subTest(unit=unit):
                 buckets = {"unit": unit, "startsMs": starts}
                 labels = self.axis(unit, starts, 900)
-                # The last label names the current bucket, so far.
+                # The last label names the current bucket in the style of the others: its clock or its day, without `so far`.
+                name = (lambda index: asb.format_clock(starts[index])) if unit == "hour" else (lambda index: asb.format_day(starts[index]))
                 self.assertEqual([(index, text) for index, text, _left in labels],
-                                 [(index, asb.bucket_label(buckets, index) + (" · so far" if index == len(starts) - 1 else ""))
-                                  for index in range(len(starts)) if (len(starts) - 1 - index) % every == 0])
-                self.assertEqual(labels[-1][1], "Now · so far" if unit == "hour" else "Today · so far")
+                                 [(index, name(index)) for index in range(len(starts)) if (len(starts) - 1 - index) % every == 0])
+                self.assertEqual([text for _index, text, _left in labels][:-1], [asb.bucket_label(buckets, index) for index, _text, _left in labels[:-1]])
+                self.assertNotIn("so far", labels[-1][1])
                 self.assertEqual(labels[-1][2] + 7 * len(labels[-1][1]), 900)
 
     def test_narrow_axis_keeps_both_ends_when_they_fit(self):
@@ -1353,6 +1387,16 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual(asb.usage_end_label_tops([140, 140], 10, 0, 140), [118, 130])
         self.assertEqual(asb.usage_end_label_tops([0, 0], 10, 0, 140), [0, 12])
         self.assertEqual(asb.usage_end_label_tops([], 10, 0, 140), [])
+
+    def test_facts_break_only_between_facts_and_drop_the_separator(self):
+        facts = ("Offline", "seen\u00a0Oct\u00a025,\u00a014:30")
+        measure = lambda text: 7 * len(text)
+        self.assertEqual(asb.facts_lines(facts, 7 * 28, measure), ["Offline · seen\u00a0Oct\u00a025,\u00a014:30"])
+        self.assertEqual(asb.facts_lines(facts, 7 * 27, measure), ["Offline", "seen\u00a0Oct\u00a025,\u00a014:30"])
+        # A fact wider than the width keeps its own line whole.
+        self.assertEqual(asb.facts_lines(facts, 10, measure), ["Offline", "seen\u00a0Oct\u00a025,\u00a014:30"])
+        self.assertEqual(asb.facts_lines(("a", "b", "c"), 7 * 5, measure), ["a · b", "c"])
+        self.assertEqual(asb.facts_lines((), 100, measure), [])
 
     def test_ring_note(self):
         view = self.view()

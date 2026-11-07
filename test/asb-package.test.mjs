@@ -38,6 +38,10 @@ test('release runtime includes the filter glyph of the native toolbar', () => {
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-filter-symbolic.svg'));
 });
 
+test('release runtime includes the usage glyph of the empty Usage page', () => {
+  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-usage-symbolic.svg'));
+});
+
 test('release runtime includes the card copy kind glyphs', () => {
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-link-symbolic.svg'));
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-globe-symbolic.svg'));
