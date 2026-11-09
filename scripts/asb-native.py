@@ -13644,6 +13644,7 @@ class RoundTable(Gtk.Overlay):
         self.reader_top = self.reader_extra = 0
         self.disc_tip = self.fitted = None
         self.label_cache = {}
+        self.thread_memo = None
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Machines, sessions and messages"])
         self.canvas = TableCanvas(self)
         self.set_child(self.canvas)
@@ -13736,12 +13737,12 @@ class RoundTable(Gtk.Overlay):
                 text = f"{self.title(pair['a'])} and {self.title(pair['b'])}: {format_count(pair['n'])} message{'' if pair['n'] == 1 else 's'}"
                 tip = (f"{self.title(pair['a'])} → {self.title(pair['b'])}: {format_count(pair['ab'])}\n"
                        f"{self.title(pair['b'])} → {self.title(pair['a'])}: {format_count(pair['ba'])}")
-                thread = self.window.thread
+                thread, lit = self.window.thread, self.thread_counts()
                 if pair["bad"] and not (thread and thread["kind"] == "status"):
                     tip += f"\nNot sent: {format_count(pair['bad'])}"
-                if thread and thread["kind"] == "status" and pair["by"].get(thread["key"]):
-                    # A chord lit by a status thread names its count of that status.
-                    tip += f"\n{ACTIVITY_STATUS_LABELS[thread['key']]}: {format_count(pair['by'][thread['key']])}"
+                if lit and lit.get(key[1]):
+                    # A chord lit by a status or a time thread names its count of that status or in that hour or day.
+                    tip += f"\n{self.thread_name()}: {format_count(lit[key[1]])}"
                 proxy.set_tooltip_text(tip)
             proxy.name = text
             proxy.update_property([Gtk.AccessibleProperty.LABEL], [text])
@@ -13749,6 +13750,34 @@ class RoundTable(Gtk.Overlay):
 
     def title(self, seat_id):
         return (self.view["seats"].get(seat_id) or {}).get("title") or "Unlisted sessions"
+
+    def thread_counts(self):
+        """With a status or a time thread open, the message count of that status or in that hour or day for each seated chord;
+        else None. The time counts come from the records of the reply (start <= atMs < end)."""
+        thread = self.window.thread
+        if not thread or thread["kind"] not in ("status", "time") or self.view is None:
+            return None
+        # One count for each frame: the memo holds for this thread key, reply, and view only, so a step to another bucket counts again.
+        memo = self.thread_memo
+        if memo and memo[0] == (thread["kind"], thread["key"]) and memo[1] is self.window.data and memo[2] is self.view:
+            return memo[3]
+        if thread["kind"] == "status":
+            counts = {key: self.view["pairs"][key]["by"].get(thread["key"], 0) for key in self.chord_keys}
+        else:
+            start, end = thread["key"]
+            pairs = {frozenset(key): key for key in self.chord_keys}
+            counts = dict.fromkeys(self.chord_keys, 0)
+            for record in (self.window.data or {}).get("messages") or []:
+                key = pairs.get(frozenset((record["from"], record["to"])))
+                if key is not None and start <= record["atMs"] < end:
+                    counts[key] += 1
+        self.thread_memo = ((thread["kind"], thread["key"]), self.window.data, self.view, counts)
+        return counts
+
+    def thread_name(self):
+        """The name of an open status or time thread in the key and the tooltips: the status, or the hour or day."""
+        thread = self.window.thread
+        return ACTIVITY_STATUS_LABELS[thread["key"]] if thread["kind"] == "status" else message_time_name(thread["key"], partial=False)
 
     def layout_table(self, preserve_labels=False):
         width, height = self.canvas.get_width(), self.canvas.get_height()
@@ -14111,9 +14140,10 @@ class RoundTable(Gtk.Overlay):
         geometry, scale = self.geometry, self.window.text_scale
         if not self.chords:
             return
-        thread = self.window.thread
-        status = thread["key"] if thread and thread["kind"] == "status" else None
-        counts = [self.view["pairs"][key]["by"].get(status, 0) if status else self.view["pairs"][key]["n"] for key in self.chord_keys]
+        lit = self.thread_counts()
+        # A time thread that lights no chord shows the gray key.
+        status = lit is not None and (self.window.thread["kind"] == "status" or any(lit.values()))
+        counts = [lit[key] if status else self.view["pairs"][key]["n"] for key in self.chord_keys]
         counts = [count for count in counts if count]
         if not counts:
             return
@@ -14121,7 +14151,7 @@ class RoundTable(Gtk.Overlay):
         middle = round(high / 4)
         text = (f"{format_count(low)} to {format_count(high)}" if low != high else format_count(high)) + (" messages" if high != 1 else " message")
         if status:
-            text += f" ({ACTIVITY_STATUS_LABELS[status]})"
+            text += f" ({self.thread_name()})"
         rest = [("bad", "Not sent")]
         if any(chord["fails"] for chord in self.chords):
             rest.append(("mixed", "Some not sent"))
@@ -14348,8 +14378,8 @@ class RoundTable(Gtk.Overlay):
         else:
             chord = self.hover["chord_focus"]
             seat = None if chord else self.hover["focus"]
-        # A status thread selects no seat or chord.
-        thread = self.window.thread if self.window.thread and self.window.thread["kind"] != "status" else None
+        # A status or a time thread selects no seat or chord.
+        thread = self.window.thread if self.window.thread and self.window.thread["kind"] not in ("status", "time") else None
         flying = set() if chord or seat or thread else {flight["key"] for flight in self.flights if flight["start"] <= GLib.get_monotonic_time()}
         pin = seat or (thread["key"] if thread and thread["kind"] == "session" else None)
         return chord, seat, thread, flying, pin
@@ -14361,9 +14391,10 @@ class RoundTable(Gtk.Overlay):
             return {thread["key"]}, set(thread["key"])
         if thread and thread["kind"] == "session":
             return {key for key in self.chord_keys if thread["key"] in key}, {thread["key"]}
-        if thread and thread["kind"] == "status" and self.view is not None:
-            # The seated pairs with a message of that status in the period, and both of their pins.
-            chords = {key for key in self.chord_keys if self.view["pairs"][key]["by"].get(thread["key"])}
+        lit = self.thread_counts()
+        if lit is not None:
+            # The seated pairs with a message of that status in the period, or in that hour or day, and both of their pins.
+            chords = {key for key, count in lit.items() if count}
             return chords, {seat_id for key in chords for seat_id in key}
         return set(), set()
 
@@ -14669,12 +14700,9 @@ class RoundTable(Gtk.Overlay):
         snapshot.push_opacity(fade)
         scale = self.window.text_scale
         width = (3 if lit else 2) if chord["bad"] else chord["width"]
-        thread = self.window.thread
-        if not chord["bad"] and thread and thread["kind"] == "status":
-            count = self.view["pairs"][chord["key"]]["by"].get(thread["key"], 0)
-            if count:
-                largest = max(self.view["pairs"][key]["by"].get(thread["key"], 0) for key in self.chord_keys)
-                width = status_chord_width(count, largest)
+        counts = self.thread_counts()
+        if not chord["bad"] and counts and counts.get(chord["key"]):
+            width = status_chord_width(counts[chord["key"]], max(counts.values()))
         if tone == "top":
             width += 1.5
         if lit and part in ("all", "casing"):

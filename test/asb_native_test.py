@@ -17727,10 +17727,11 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.thread_back.get_tooltip_text(), "Back to the overview (Esc)")
         mine = [record for record in window.data["messages"] if key[0] <= record["atMs"] < key[1]]
         self.assertEqual(set(window.thread_blocks), {record["id"] for record in mine[-60:]})
-        # The blocks of All messages: both ends, and no chord lights.
+        # The blocks of All messages: both ends; the chords of the seated pairs with a message in the bucket light.
         record = mine[-1]
         self.assertEqual(asb.message_block(window.thread, record, window.view["seats"])[0], True)
-        self.assertEqual(window.table.open_lit(), (set(), set()))
+        lit = {key for key in window.table.chord_keys if any(set(key) == {item["from"], item["to"]} for item in mine)}
+        self.assertEqual(window.table.open_lit(), (lit, {seat for key in lit for seat in key}))
         self.assertEqual(window.selected_ids(), ())
         # The center counts the day as the All messages center counts the period.
         pairs = len({frozenset((item["from"], item["to"])) for item in mine})
@@ -19041,13 +19042,14 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         gray = table.chord_gray(palette)
         self.assertEqual(samples, [(group["x"], 16, group["width"], gray) for group in groups])
         self.assertEqual([call.args[1].get_text() for call in layouts.call_args_list[:4]], ["4", "35", "139 messages", "Line width:"])
-        # The pair, session, All messages, and time threads keep the three counts; a status thread keeps its two accent samples.
+        # The pair, session, and All messages threads keep the three counts; a status thread, and a time thread that lights chords
+        # (addendum TT2), keep two accent samples.
         for kind, key in (("pair", ("release-plan", "parser-review")), ("session", "docs"), ("all", "all")):
             window.open_thread(kind, key); self.drain(.3)
             self.assertEqual(table.key["items"][0]["kind"], "scale", kind)
         window.open_time(len(window.data["buckets"]["startsMs"]) - 2); self.drain(.3)
         self.assertEqual(window.thread["kind"], "time")
-        self.assertEqual(table.key["items"][0]["kind"], "scale")
+        self.assertEqual((table.key["items"][0]["kind"], table.key["accent"]), ("chords", True))
         window.open_thread("status", "written"); self.drain(.3)
         self.assertEqual(table.key["items"][0]["kind"], "chords")
         self.assertRegex(table.key["items"][0]["layout"].get_text(), r"^Line width: [\d,]+ to [\d,]+ messages \(No receipt\)$")
@@ -19203,6 +19205,87 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         table.label_cache["old"] = True
         table.layout_table()
         self.assertNotIn("old", table.label_cache)
+
+    def test_W6_TT1_TT5_an_open_time_thread_lights_its_chords(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        rest = {seat: item["box"] for seat, item in table.labels.items()}
+        starts = window.data["buckets"]["startsMs"]
+        index = next(index for index, start in enumerate(starts) if asb.format_day(start) == "Oct 22")
+        window.open_time(index); self.drain(.4)
+        start, end = window.thread["key"]
+        # TT1: the seated pairs with a message in the bucket, and both of their pins; no open ring and no chosen seat.
+        counts = {}
+        for record in self.records():
+            key = next((key for key in table.chord_keys if set(key) == {record[1], record[2]}), None)
+            if key and start <= record[3] < end:
+                counts[key] = counts.get(key, 0) + 1
+        self.assertTrue(counts)
+        self.assertEqual(table.thread_counts(), {key: counts.get(key, 0) for key in table.chord_keys})
+        self.assertEqual(table.open_lit(), (set(counts), {seat for key in counts for seat in key}))
+        self.assertEqual((table.ring_pins(), table.chosen_seats()), (set(), []))
+        self.assertEqual({seat: item["box"] for seat, item in table.labels.items()}, rest)
+        state = table.state()
+        tones = {chord["key"]: table.chord_tone(chord, state, table.lit(state)) for chord in table.chords}
+        self.assertEqual({key for key, tone in tones.items() if tone == "lit"}, set(counts))
+        self.assertLessEqual({tone for key, tone in tones.items() if key not in counts}, {"rest"})
+        seat = next(iter(table.open_lit()[1]))
+        with patch.object(asb, "snapshot_stroke") as strokes:
+            table.snapshot_pin(asb.Gtk.Snapshot(), table.pins[seat], 100, 100, seat, table.lit(state), 1, 0, palette)
+        self.assertEqual([(call.args[2], asb.hex_color(call.args[3])) for call in strokes.call_args_list], [(2, palette["accent"])])
+        # TT2: the widths of T6 with the counts of the bucket, and the key with the two accent samples and the day.
+        largest = max(counts.values())
+        for chord in table.chords:
+            if chord["key"] in counts and not chord["bad"]:
+                snapshot = Mock()
+                table.snapshot_chord(snapshot, chord, 1, "lit", palette, table.chord_gray(palette), "stroke")
+                self.assertAlmostEqual(snapshot.append_stroke.call_args_list[0].args[1].get_line_width(), asb.status_chord_width(counts[chord["key"]], largest), places=5)
+        low = min(counts.values())
+        text = f"Line width: {low} to {largest} messages (Oct 22)" if low != largest else f"Line width: {largest} message{'' if largest == 1 else 's'} (Oct 22)"
+        self.assertEqual((table.key["items"][0]["kind"], table.key["items"][0]["layout"].get_text()), ("chords", text))
+        self.assertEqual((table.key["widths"], table.key["accent"]), ((asb.status_chord_width(low, largest), asb.status_chord_width(largest, largest)), True))
+        with patch.object(table, "update_property") as update:
+            table.place_labels(False)
+        if table.key["shown"]:
+            self.assertTrue(update.call_args.args[1][0].startswith(text + ", "))
+        # TT3: the tooltip of a lit chord ends with the bucket line.
+        for key in table.chord_keys:
+            tip = table.proxies[("chord", key)].get_tooltip_text()
+            if key in counts:
+                self.assertTrue(tip.endswith(f"\nOct 22: {counts[key]}"), tip)
+            else:
+                self.assertNotIn("Oct 22", tip)
+        # TT5: a step changes the key in place (here to Oct 24); the table follows on the next update.
+        index = next(index for index, start in enumerate(starts) if asb.format_day(start) == "Oct 24")
+        following = (starts[index], starts[index + 1] if index + 1 < len(starts) else asb.message_bucket_end(window.data))
+        window.thread["key"] = following
+        window.update_view(); self.drain(.2)
+        moved = {}
+        for record in self.records():
+            key = next((key for key in table.chord_keys if set(key) == {record[1], record[2]}), None)
+            if key and following[0] <= record[3] < following[1]:
+                moved[key] = moved.get(key, 0) + 1
+        self.assertEqual(table.open_lit()[0], set(moved))
+        name = asb.message_time_name(following, partial=False)
+        self.assertTrue(table.key["items"][0]["layout"].get_text().endswith(f"({name})"))
+        # A chord with no message in the bucket stays at rest.
+        state = table.state()
+        other = next(key for key in table.chord_keys if key not in moved)
+        self.assertEqual(table.chord_tone(next(chord for chord in table.chords if chord["key"] == other), state, table.lit(state)), "rest")
+        # TT4: hover follows the rules of an open status thread.
+        for hover, tone in ((other, "hover"), (next(iter(moved)), "top")):
+            table.hover["chord"] = hover
+            state = table.state()
+            self.assertEqual(table.chord_tone(next(chord for chord in table.chords if chord["key"] == hover), state, table.lit(state)), tone)
+        table.hover["chord"] = None
+        # A bucket with no seated pair lights nothing and shows the gray key.
+        after = asb.message_bucket_end(window.data)
+        window.thread["key"] = (after, after + 86_400_000)
+        window.update_view(); self.drain(.2)
+        self.assertEqual(table.open_lit(), (set(), set()))
+        self.assertFalse(table.key["accent"])
+        self.assertEqual(table.key["items"][0]["kind"], "scale")
+        self.assertFalse(any("Oct" in table.proxies[("chord", key)].get_tooltip_text().split("\n")[-1] for key in table.chord_keys))
 
     def test_R1_one_escape_closes_the_messages_window_after_a_reopen(self):
         # R1: a hidden window gets no key release, so one Escape press closes it again after the next open.
