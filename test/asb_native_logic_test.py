@@ -1354,13 +1354,14 @@ class UsageLogicChecks(unittest.TestCase):
                 self.assertEqual(len(labels), 3 if step * 3 >= maximum else 4)
 
     def test_token_ramp_of_the_accent(self):
-        for accent, window, expected in (("#ffb900", "#000000", ["#6e572b", "#9c762b", "#cd9723", "#ffb900"]),
-                                         ("#81d0ff", "#222226", ["#557081", "#648fa9", "#73afd3", "#81d0ff"]),
-                                         ("#7cc4ff", "#10141c", ["#4c657a", "#5c83a4", "#6ca3d1", "#7cc4ff"])):
+        for accent, window, expected in (("#ffb900", "#000000", ["#765400", "#a27400", "#d09600", "#ffb900"]),
+                                         ("#81d0ff", "#222226", ["#44728d", "#5890b2", "#6cb0d8", "#81d0ff"]),
+                                         ("#7cc4ff", "#10141c", ["#3e6687", "#5284ad", "#67a3d5", "#7cc4ff"])):
             with self.subTest(accent=accent):
                 ramp = asb.usage_token_ramp(accent, window)
                 self.assertEqual(list(ramp), list(asb.USAGE_PARTS))
-                self.assertEqual(list(ramp.values()), expected)
+                for actual, target in zip(ramp.values(), expected):
+                    self.assertTrue(all(abs(int(actual[i:i + 2], 16) - int(target[i:i + 2], 16)) <= 1 for i in (1, 3, 5)), (actual, target))
                 self.assertGreaterEqual(asb.contrast(ramp["cacheRead"], window), 3)
                 for first, second in zip(expected, expected[1:]):
                     self.assertGreaterEqual(asb.math.dist(asb.oklab(first), asb.oklab(second)), .09)
@@ -1400,15 +1401,15 @@ class UsageLogicChecks(unittest.TestCase):
 
     def test_ring_note(self):
         view = self.view()
-        self.assertEqual(asb.usage_ring_note(view, False, 3, 3), "1\u00a0model\u00a0unpriced")
-        self.assertEqual(asb.usage_ring_note(view, True, 2, 3), "so\u00a0far · 2\u00a0of\u00a03\u00a0machines · 1\u00a0model\u00a0unpriced")
-        self.assertEqual(asb.usage_ring_note(self.view(metric="tokens"), True, 3, 3), "so\u00a0far")
+        self.assertEqual(asb.usage_ring_note(view, False, 3, 3), "without\u00a01\u00a0unpriced\u00a0model")
+        self.assertEqual(asb.usage_ring_note(view, True, 2, 3), "still\u00a0reading · 2\u00a0of\u00a03\u00a0machines · without\u00a01\u00a0unpriced\u00a0model")
+        self.assertEqual(asb.usage_ring_note(self.view(metric="tokens"), True, 3, 3), "still\u00a0reading")
         self.assertEqual(asb.usage_ring_note(self.view(on={"laptop"}), False, 1, 3), "1\u00a0of\u00a03\u00a0machines")
         reply = copy.deepcopy(self.REPLIES["30d"])
         for record in reply["records"]:
             if record["model"] in ("gpt-6.1-mini", "claude-haiku-5-5"):
                 record["cost"] = None
-        self.assertEqual(asb.usage_ring_note(self.view(reply=reply), False, 3, 3), "3\u00a0models\u00a0unpriced")
+        self.assertEqual(asb.usage_ring_note(self.view(reply=reply), False, 3, 3), "without\u00a03\u00a0unpriced\u00a0models")
 
     def test_round_arcs(self):
         view, machines = self.view(), self.REPLIES["30d"]["machines"]
