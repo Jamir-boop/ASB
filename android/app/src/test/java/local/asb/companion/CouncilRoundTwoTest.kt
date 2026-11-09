@@ -100,14 +100,15 @@ class CouncilRoundTwoTest {
 
     @Test fun fivePlacesAroundThePin() {
         val size = Size(40f, 14f)
-        val expected = listOf(Offset(180f, 123f), Offset(180f, 119f), Offset(180f, 67f), Offset(141f, 93f), Offset(219f, 93f))
+        // Every place counts from the outer edge of the largest pin ring (PIN_RING, 2 dp past the 16 dp pin).
+        val expected = listOf(Offset(180f, 125f), Offset(180f, 121f), Offset(180f, 65f), Offset(139f, 93f), Offset(221f, 93f))
         for (place in 0..4) {
             val at = seatLabelPlace(center, 100f, -90f, size, place, 1f)
             assertEquals(expected[place].x, at.x, .01f)
             assertEquals(expected[place].y, at.y, .01f)
         }
-        // On a 2 dp screen the near edge is (16 + 3) × 2 px from the pin center.
-        assertEquals(100f + 38f, seatLabelPlace(center, 100f, -90f, size, 1, 2f).y, .01f)
+        // On a 2 dp screen the near edge is (16 + 2 + 3) × 2 px from the pin center.
+        assertEquals(100f + 42f, seatLabelPlace(center, 100f, -90f, size, 1, 2f).y, .01f)
     }
 
     private fun table(blocked: List<Rect> = emptyList()) = LabelTable(center, 100f, 40f, true, 400f, 400f, blocked)
@@ -119,10 +120,10 @@ class CouncilRoundTwoTest {
     @Test fun labelsTakeTheFirstFreePlace() {
         val spot = place(emptyList())!!
         assertEquals(0 to 0, spot.text to spot.place)
-        assertEquals(Rect(139f, 123f, 261f, 137f).toString(), spot.box.let { Rect(Math.round(it.left).toFloat(), Math.round(it.top).toFloat(),
+        assertEquals(Rect(139f, 125f, 261f, 139f).toString(), spot.box.let { Rect(Math.round(it.left).toFloat(), Math.round(it.top).toFloat(),
             Math.round(it.right).toFloat(), Math.round(it.bottom).toFloat()) }.toString())
         // With inward blocked, the label goes under the pin.
-        assertEquals(0 to 1, place(listOf(Rect(130f, 134f, 270f, 140f)))!!.let { it.text to it.place })
+        assertEquals(0 to 1, place(listOf(Rect(130f, 136f, 270f, 140f)))!!.let { it.text to it.place })
     }
 
     @Test fun labelsCutWhenTheWholeTextFindsNoPlace() {

@@ -69,6 +69,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -79,6 +80,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
@@ -129,7 +131,9 @@ import kotlinx.coroutines.delay
 import local.asb.companion.R
 import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.BucketCount
+import local.asb.companion.data.messageBucketPartial
 import local.asb.companion.data.messageBuckets
+import local.asb.companion.data.offlineBandColor
 import local.asb.companion.data.BusyPair
 import local.asb.companion.data.UNLISTED
 import local.asb.companion.data.busiestPairs
@@ -680,6 +684,7 @@ private fun MessagesContent(
     val title = { id: String -> titles[id] ?: UNLISTED }
     val busiest = remember(reply) { busiestPairs(reply) }
     val buckets = remember(reply) { messageBuckets(reply) }
+    val partial = remember(reply) { messageBucketPartial(reply) }
     val labelMemory = remember { LabelMemory() }
     val marks = listOf("codex", "claude", "opencode", "").associateWith { painterResource(appMark(it)) }
     val measurer = rememberTextMeasurer()
@@ -699,55 +704,60 @@ private fun MessagesContent(
     // As on the PC narrow layout, the Messages section stands above the table; an empty period shows only the table.
     // With no buckets in the reply, the strip does not show.
     if (ledger.total > 0) MessagesSummary(ledger, colors, if (buckets.isEmpty()) null else { ->
-        CountStrip(buckets, reply.buckets.unit, gray, colors, bucket, onBucket,
+        CountStrip(buckets, reply.buckets.unit, partial, gray, colors, bucket, onBucket,
             Modifier.padding(bottom = 10.dp).onGloballyPositioned { strip.bounds = it.boundsInWindow() })
     })
-    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-        val sideDp = maxWidth
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val sideDp = maxWidth - 16.dp
         val side = with(density) { sideDp.toPx() }
         val dp = density.density
         val geom = remember(side, seated, reply, colors, measurer) { layoutTable(side, dp, seated, reply.machines, colors, measurer) }
-        val curves = remember(geom, chordList) {
-            val nMax = max(1, chordList.maxOfOrNull { it.n } ?: 1)
-            chordList.associate { chord ->
-                chord.key to geom.curve(chord.a, chord.b, seats[chord.a]?.machineId == seats[chord.b]?.machineId)?.let { chordDraw(chord, it, nMax, dp) }
-            }
-        }
-        val currentOnSeat by rememberUpdatedState(onSeat)
-        val currentOnChord by rememberUpdatedState(onChord)
-        val currentOnClear by rememberUpdatedState(onClear)
-        Canvas(
-            Modifier.size(sideDp)
-                .semantics { contentDescription = summary }
-                .pointerInput(geom, curves) {
-                    detectTapGestures { point ->
-                        val seat = seated.map { it.id }.minByOrNull { id -> geom.pin(id)?.let { (it - point).getDistance() } ?: Float.MAX_VALUE }
-                        val seatDistance = seat?.let { geom.pin(it) }?.let { (it - point).getDistance() } ?: Float.MAX_VALUE
-                        val chord = curves.entries.mapNotNull { (key, draw) -> draw?.let { key to it.curve.distanceTo(point) } }
-                            .minByOrNull { it.second }
-                        when {
-                            seat != null && seatDistance <= 20 * dp -> currentOnSeat(seat)
-                            chord != null && chord.second <= 14 * dp -> currentOnChord(chord.first)
-                            else -> currentOnClear()
-                        }
+        Column {
+            Box(Modifier.padding(horizontal = 8.dp)) {
+                val curves = remember(geom, chordList) {
+                    val nMax = max(1, chordList.maxOfOrNull { it.n } ?: 1)
+                    chordList.associate { chord ->
+                        chord.key to geom.curve(chord.a, chord.b, seats[chord.a]?.machineId == seats[chord.b]?.machineId)?.let { chordDraw(chord, it, nMax, dp) }
                     }
-                },
-        ) {
-            drawTable(reply, geom, seated, chordList, curves, machines, hues, selectedSeat, selectedChord, flights,
-                frameNanos, marks, colors, gray, measurer, dp, titles, labelMemory)
-        }
-        // TalkBack reaches each seat in circle order; a tap selects it, as a tap on its pin.
-        for (seat in seated) {
-            val pin = geom.pin(seat.id) ?: continue
-            val count = counts[seat.id]
-            val label = "${title(seat.id)}, ${appLabel(seat.app)}, ${machines[seat.machineId]?.name.orEmpty()}: " +
-                "${count?.sent ?: 0} sent, ${count?.received ?: 0} received"
-            Box(Modifier.offset { IntOffset((pin.x - 20 * dp).roundToInt(), (pin.y - 20 * dp).roundToInt()) }.size(40.dp)
-                .clickable(interactionSource = null, indication = null, role = Role.Button) { onSeat(seat.id) }
-                .clearAndSetSemantics { contentDescription = label; role = Role.Button })
+                }
+                val currentOnSeat by rememberUpdatedState(onSeat)
+                val currentOnChord by rememberUpdatedState(onChord)
+                val currentOnClear by rememberUpdatedState(onClear)
+                Canvas(
+                    Modifier.size(sideDp)
+                        .semantics { contentDescription = summary }
+                        .pointerInput(geom, curves) {
+                            detectTapGestures { point ->
+                                val seat = seated.map { it.id }.minByOrNull { id -> geom.pin(id)?.let { (it - point).getDistance() } ?: Float.MAX_VALUE }
+                                val seatDistance = seat?.let { geom.pin(it) }?.let { (it - point).getDistance() } ?: Float.MAX_VALUE
+                                val chord = curves.entries.mapNotNull { (key, draw) -> draw?.let { key to it.curve.distanceTo(point) } }
+                                    .minByOrNull { it.second }
+                                when {
+                                    seat != null && seatDistance <= 20 * dp -> currentOnSeat(seat)
+                                    chord != null && chord.second <= 14 * dp -> currentOnChord(chord.first)
+                                    else -> currentOnClear()
+                                }
+                            }
+                        },
+                ) {
+                    drawTable(reply, geom, seated, chordList, curves, machines, hues, selectedSeat, selectedChord, flights,
+                        frameNanos, marks, colors, gray, measurer, dp, titles, labelMemory)
+                }
+                // TalkBack reaches each seat in circle order; a tap selects it, as a tap on its pin.
+                for (seat in seated) {
+                    val pin = geom.pin(seat.id) ?: continue
+                    val count = counts[seat.id]
+                    val label = "${title(seat.id)}, ${appLabel(seat.app)}, ${machines[seat.machineId]?.name.orEmpty()}: " +
+                        seatDirections(count)
+                    Box(Modifier.offset { IntOffset((pin.x - 20 * dp).roundToInt(), (pin.y - 20 * dp).roundToInt()) }.size(40.dp)
+                        .clickable(interactionSource = null, indication = null, role = Role.Button) { onSeat(seat.id) }
+                        .clearAndSetSemantics { contentDescription = label; role = Role.Button })
+                }
+            }
+            // The empty block sizes follow the width of the center disc.
+            CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, 2 * geom.rc / dp, onPeriod)
         }
     }
-    CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, onPeriod)
     val seatedIds = seated.map { it.id }.toSet()
     if (ledger.total > 0) LedgerView(ledger, busiest, reply, hues, machines, colors, title) { pair ->
         // A tap selects the chord of a pair whose two sessions are seated, as a tap on the chord.
@@ -769,16 +779,14 @@ private fun DrawScope.drawTable(
     for ((id, range) in geom.ranges) {
         val offline = machineOffline(machines[id])
         val hue = hues[id] ?: continue
+        // An offline sector draws no dashed radial edges.
         drawPath(sectorPath(c, r0, geom.ri, range.first, range.second), hue.copy(alpha = if (offline) .03f else .05f))
-        if (offline) for (a in listOf(range.first, range.second)) {
-            drawLine(hue, geom.polar(r0, a), geom.polar(geom.ri, a), 1 * dp, pathEffect = dash)
-        }
     }
     for ((id, range) in geom.ranges) {
         val offline = machineOffline(machines[id])
         val hue = hues[id] ?: continue
         val band = sectorPath(c, geom.ri, geom.ro, range.first, range.second)
-        drawPath(band, hue.copy(alpha = if (offline) .45f else .85f))
+        drawPath(band, if (offline) hexColor(offlineBandColor(background.hex(), hue.hex())) else hue.copy(alpha = .85f))
         if (offline) drawPath(band, hue, style = Stroke(1 * dp, pathEffect = dash))
     }
     // Chords: at rest one neutral gray; a selection lights its chords in the accent, and the others mix 35% toward the background.
@@ -856,7 +864,7 @@ private fun DrawScope.drawTable(
     // Seat labels (the PC place_labels): nine places each, with the whole text on one and on two lines, then cut to 10 and to 7
     // characters, else none.
     val machineBoxes = geom.labels.map { Rect(it.box.left - 1 * dp, it.box.top, it.box.right + 1 * dp, it.box.bottom) }
-    val pinBoxes = seated.mapNotNull { geom.pin(it.id) }.map { Rect(it, 16 * dp) }
+    val pinBoxes = seated.mapNotNull { geom.pin(it.id) }.map { Rect(it, (16 + PIN_RING) * dp) }
     val key = layoutKey(geom, chordList, machines, colors, measurer, dp, size, pinBoxes + geom.labels.map { it.box })
     val labelStyle = TextStyle(color = colors.text, fontSize = 12.sp, textAlign = TextAlign.Center)
     val names = seated.associate { seat -> seat.id to seatLabelTexts(titles[seat.id] ?: UNLISTED) }
@@ -864,25 +872,45 @@ private fun DrawScope.drawTable(
     // The selected seat and the two seats of the selected chord place first and show their whole label.
     val chosen = listOfNotNull(selected, selectedChord?.a, selectedChord?.b).distinct().filter { id -> seated.any { it.id == id } }
     val counts = seatCounts(reply.messages).mapValues { it.value.sent + it.value.received }
+    // Kept-off shapes: the own exits of each seat, by the rest width of their chord, and every all-not-sent chord.
+    val exits = HashMap<String, MutableList<Pair<Float, List<Pair<Offset, Float>>>>>()
+    for (chord in chordList) {
+        val draw = curves[chord.key] ?: continue
+        for ((id, start) in listOf(chord.a to true, chord.b to false)) {
+            exits.getOrPut(id) { mutableListOf() } += draw.width to exitCircles(draw.curve.length, draw.curve::pointAtLength, start, draw.width, dp)
+        }
+    }
+    val dashed = chordList.filter { it.bad }.flatMap { chord ->
+        curves[chord.key]?.let { dashedCircles(it.curve.length, it.curve::pointAtLength, it.width, dp) }.orEmpty()
+    }
     val inputs = seated.filter { it.id in geom.angles }.map { seat ->
+        val own = exits[seat.id].orEmpty()
+        val widest = own.maxOfOrNull { it.first }
         SeatLabelInput(seat.id, geom.angles.getValue(seat.id), texts.getValue(seat.id).map { Size(it.size.width.toFloat(), it.size.height.toFloat()) },
-            seatLabelWholeCount(names.getValue(seat.id)), pinCircle(geom.pin(seat.id)!!, dp))
+            seatLabelWholeCount(names.getValue(seat.id)), pinCircle(geom.pin(seat.id)!!, dp), own.flatMap { it.second },
+            own.filter { it.first == widest }.flatMap { it.second })
     }
     // The pins and the not-sent end points are circles (the key line keeps the pin squares).
-    val circles = seated.mapNotNull { geom.pin(it.id) }.map { pinCircle(it, dp) } +
-        curves.values.filterNotNull().flatMap { draw -> draw.ends.flatten().map { endCircle(it, draw.endWidth, dp) } }
+    val pinCircles = seated.mapNotNull { geom.pin(it.id) }.map { pinCircle(it, dp) }
+    val circles = curves.values.filterNotNull().flatMap { draw -> draw.ends.flatten().map { endCircle(it, draw.endWidth, dp) } }
     val blocked = machineBoxes + listOfNotNull(key?.box?.takeIf { key.shown })
     // A selection change keeps the labels that are still free; a period change, other seats, or another size places from the start.
     val reset = listOf(reply.period, seated.map { it.id }, size)
     val spots = placeSeatLabels(inputs, chosen, counts, activityTimes(reply.messages),
-        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro, circles), dp, litPins - chosen.toSet(),
+        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro, circles, pinCircles, dashed), dp,
+        litPins - chosen.toSet(),
         if (memory.reset == reset) memory.spots else emptyMap())
     memory.reset = reset
     memory.spots = spots
+    val arcs = geom.ranges.mapValues { it.value.first to it.value.second }
     for ((id, spot) in spots) {
         if (spot == null) continue
+        // The halo has the fill of the region under the label center: the sector tint there, or the background (also the disc).
+        val halo = regionMachine(spot.box.center, c, r0, geom.ri, arcs)?.let { machine ->
+            hues[machine]?.copy(alpha = if (machineOffline(machines[machine])) .03f else .05f)?.compositeOver(background)
+        } ?: background
         // While the table dims, the labels of seats that are not lit draw in the muted color.
-        drawHaloText(texts.getValue(id)[spot.text], Offset(spot.box.left + 1 * dp, spot.box.top), background, dp,
+        drawHaloText(texts.getValue(id)[spot.text], Offset(spot.box.left + 1 * dp, spot.box.top), halo, dp,
             if (lighting && id !in litPins) colors.muted else null)
     }
     // A chosen label without a free place can cover the key, which then hides.
@@ -910,7 +938,7 @@ private fun DrawScope.drawTable(
     // The Offline sample takes the hue of the offline machine, or the muted color when several machines are offline.
     val offline = geom.ranges.keys.filter { machineOffline(machines[it]) }
     val offlineColor = offline.singleOrNull()?.let { hues[it] } ?: colors.muted
-    key?.takeIf { keyShown }?.let { drawKey(it, colors, gray, offlineColor, dp) }
+    key?.takeIf { keyShown }?.let { drawKey(it, colors, gray, offlineColor, geom.ro - geom.ri, dp) }
 }
 
 /** The last seat label placement, kept while the period, the seated seats, and the size stay the same. */
@@ -951,8 +979,7 @@ private fun layoutKey(geom: TableGeom, chordList: List<Chord>, machines: Map<Str
     var x = 12 * dp
     val items = parts.map { (kind, text) ->
         val layout = measurer.measure(text, style, maxLines = 1)
-        val sample = (if (kind == "chords") 32 else 18) * dp
-        Triple(kind, x, layout).also { x += sample + 6 * dp + layout.size.width + 14 * dp }
+        Triple(kind, x, layout).also { x += keySample(kind) * dp + 6 * dp + layout.size.width + 14 * dp }
     }
     val height = items.maxOf { it.third.size.height }.toFloat()
     val box = Rect(12 * dp, size.height - 12 * dp - height, x - 14 * dp, size.height - 12 * dp)
@@ -961,16 +988,24 @@ private fun layoutKey(geom: TableGeom, chordList: List<Chord>, machines: Map<Str
     return KeyLayout(items, box, box.top + height / 2, clear && boxes.none { it.overlaps(box) })
 }
 
-/** Port of snapshot_key. */
-private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Color, offline: Color, dp: Float) {
+/** The width in dp of a key sample: the two chord samples 36, the Offline band piece 20, the others 18. */
+private fun keySample(kind: String): Int = when (kind) {
+    "chords" -> 36
+    "offline" -> 20
+    else -> 18
+}
+
+/** Port of snapshot_key; [band] is the width of the machine band. */
+private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Color, offline: Color, band: Float, dp: Float) {
     val middle = key.middle
     val bad = statusColor("not-sent", colors)
     val dashes = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp))
     val endDash = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))
     for ((kind, left, layout) in key.items) {
         when (kind) {
-            "chords" -> for ((start, width) in listOf(left to 1.5f * dp, left + 18 * dp to 8.5f * dp)) {
-                drawLine(gray, Offset(start + width / 2, middle), Offset(start + 14 * dp - width / 2, middle), width, StrokeCap.Round)
+            // Two 16 dp butt-capped segments, 1.5 and 8.5 dp wide, 4 dp apart.
+            "chords" -> for ((start, width) in listOf(left to 1.5f * dp, left + 20 * dp to 8.5f * dp)) {
+                drawLine(gray, Offset(start, middle), Offset(start + 16 * dp, middle), width, StrokeCap.Butt)
             }
             "bad" -> drawLine(bad, Offset(left, middle), Offset(left + 18 * dp, middle), 2 * dp, pathEffect = dashes)
             // A gray chord, a 2 dp gap, then a 3 dp dashed not-sent end over its casing in the background color, as on the table.
@@ -979,15 +1014,16 @@ private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Colo
                 drawLine(colors.background, Offset(left + 8 * dp, middle), Offset(left + 18 * dp, middle), 5 * dp)
                 drawLine(bad, Offset(left + 8 * dp, middle), Offset(left + 18 * dp, middle), 3 * dp, pathEffect = endDash)
             }
-            // A short piece of the offline band: its fill and its dashed edges.
+            // A 20 dp straight piece of the offline band at its real width: its fill and its dashed long edges.
             else -> {
-                val band = sectorPath(Offset(left + 9 * dp, middle + 17 * dp), 14 * dp, 20 * dp, -118f, -62f)
-                drawPath(band, offline.copy(alpha = .45f))
-                drawPath(band, offline, style = Stroke(1 * dp, pathEffect = endDash))
+                val half = band / 2
+                drawRect(hexColor(offlineBandColor(colors.background.hex(), offline.hex())), Offset(left, middle - half), Size(20 * dp, band))
+                for (edge in listOf(middle - half + .5f * dp, middle + half - .5f * dp)) {
+                    drawLine(offline, Offset(left, edge), Offset(left + 20 * dp, edge), 1 * dp, pathEffect = endDash)
+                }
             }
         }
-        val sample = (if (kind == "chords") 32 else 18) * dp
-        drawText(layout, topLeft = Offset(left + sample + 6 * dp, middle - layout.size.height / 2f))
+        drawText(layout, topLeft = Offset(left + keySample(kind) * dp + 6 * dp, middle - layout.size.height / 2f))
     }
 }
 
@@ -1002,7 +1038,7 @@ private fun pairKey(message: ActivityMessage, seated: List<Seat>): String? {
 @Composable
 private fun CenterPanel(
     reply: ActivityMessages, seat: String?, chord: Chord?, counts: Map<String, SeatCount>, seats: Map<String, Seat>,
-    machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String, onPeriod: (String) -> Unit,
+    machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String, disc: Float, onPeriod: (String) -> Unit,
 ) {
     HorizontalDivider(thickness = 1.dp, color = colors.divider)
     Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp)
@@ -1028,8 +1064,8 @@ private fun CenterPanel(
                 Text("${appLabel(info?.app.orEmpty())} · ${machines[info?.machineId]?.name.orEmpty()}", fontSize = 12.sp,
                     color = colors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    for ((label, value, bad) in listOf(Triple("Sent", count?.sent ?: 0, count?.badSent ?: 0),
-                        Triple("Received", count?.received ?: 0, count?.badReceived ?: 0))) {
+                    for ((label, value, bad) in listOf(Triple("Outgoing", count?.sent ?: 0, count?.badSent ?: 0),
+                        Triple("Incoming", count?.received ?: 0, count?.badReceived ?: 0))) {
                         Column {
                             Text(label, fontSize = 11.sp, color = colors.muted)
                             Text(formatCount(value.toLong()), fontSize = 18.sp, style = figures, color = colors.text)
@@ -1048,11 +1084,12 @@ private fun CenterPanel(
                     }
                 }, fontSize = 11.sp, style = figures, color = colors.muted)
             }
-            // The block of the Usage empty page: the icon, the title, the hint, and the pill.
+            // The block of the Usage empty page: the icon, the title, the hint, and the pill; larger from a 520 dp disc.
             else -> Column(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally) {
-                EmptyBlock(R.drawable.ic_messages, "No messages in the last ${periodLabel(reply.period)}",
-                    "When an agent sends a message to another session, it shows here.", colors)
+                val (icon, titleSp) = emptyBlockSizes(disc)
+                EmptyBlock(R.drawable.ic_messages, "No messages in the last ${periodLabel(reply.period)}", MESSAGES_EMPTY_HINT, colors,
+                    icon.dp, titleSp)
                 NEXT_PERIOD[reply.period]?.let { next ->
                     AccentButton("Show the last ${periodLabel(next)}", colors, Modifier.padding(top = 4.dp)) { onPeriod(next) }
                 }
@@ -1067,11 +1104,11 @@ private fun NotSentCount(count: Int, colors: ActivityColors) {
     if (count > 0) Text("${formatCount(count.toLong())} not sent", fontSize = 12.sp, style = figures, color = statusWordColor("not-sent", colors))
 }
 
-/** The empty page block: a muted 64 dp icon, the 20 sp bold title (at most 2 lines), and the hint (at most 260 dp wide). */
+/** The empty page block: a muted [iconSize] icon, the [titleSp] bold title (at most 2 lines), and the hint (at most 260 dp wide). */
 @Composable
-internal fun EmptyBlock(icon: Int, title: String, hint: String, colors: ActivityColors) {
-    Icon(painterResource(icon), contentDescription = null, tint = colors.muted, modifier = Modifier.size(64.dp))
-    Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = colors.text, textAlign = TextAlign.Center, maxLines = 2,
+internal fun EmptyBlock(icon: Int, title: String, hint: String, colors: ActivityColors, iconSize: Dp = 64.dp, titleSp: Int = 20) {
+    Icon(painterResource(icon), contentDescription = null, tint = colors.muted, modifier = Modifier.size(iconSize))
+    Text(title, fontSize = titleSp.sp, fontWeight = FontWeight.Bold, color = colors.text, textAlign = TextAlign.Center, maxLines = 2,
         overflow = TextOverflow.Ellipsis)
     Text(hint, fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 260.dp))
 }
@@ -1131,18 +1168,22 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
 }
 
 /**
- * Port of CountStrip: messages over time, a 24 dp plot (3 dp insets) over a 16 dp tick row. A 1.5 dp line in the rest chord [gray]
- * joins the bucket points; a bucket with a not-sent message has a 3 dp dot in the not-sent color. The tick row names the first and
- * the last bucket, or the [chosen] bucket (a tap or a drag chooses the nearest one) with a 1 dp muted line at its point.
+ * Port of CountStrip: messages over time, a 24 dp plot (3 dp insets) over a 16 dp tick row. A 2 dp line in the rest chord [gray]
+ * joins the bucket points, each on a device pixel center, over a 1 dp baseline in the rule color at the y of count 0; a bucket with
+ * a not-sent message has a 3 dp dot in the not-sent color. When the last bucket is the current one ([partial]), the segment into it
+ * is dashed and its point is a hollow ring. The tick row names the first and the last bucket with a caption between them, or the
+ * [chosen] bucket (a tap or a drag chooses the nearest one), which has a 1 dp muted line and a dot at its point.
  */
 @Composable
-private fun CountStrip(buckets: List<BucketCount>, unit: String, gray: Color, colors: ActivityColors, chosen: Int?, onChoose: (Int) -> Unit,
-    modifier: Modifier = Modifier) {
+private fun CountStrip(buckets: List<BucketCount>, unit: String, partial: Boolean, gray: Color, colors: ActivityColors, chosen: Int?,
+    onChoose: (Int) -> Unit, modifier: Modifier = Modifier) {
     val measurer = rememberTextMeasurer()
     val style = TextStyle(fontSize = 11.sp, color = colors.muted)
     val bad = statusColor("not-sent", colors)
     val name = "Messages per ${if (unit == "hour") "hour" else "day"}"
-    val tip = chosen?.let { buckets.getOrNull(it) }?.let { messageBucketTip(it.startMs, it.count, it.bad, unit) }
+    val tip = chosen?.let { index ->
+        buckets.getOrNull(index)?.let { messageBucketTip(it.startMs, it.count, it.bad, unit, partial && index == buckets.lastIndex) }
+    }
     val currentChoose by rememberUpdatedState(onChoose)
     Canvas(modifier.fillMaxWidth().height(40.dp)
         .clearAndSetSemantics { contentDescription = listOfNotNull(name, tip).joinToString(", ") }
@@ -1157,36 +1198,104 @@ private fun CountStrip(buckets: List<BucketCount>, unit: String, gray: Color, co
         val inset = 3 * dp
         val plot = 24 * dp
         val largest = buckets.maxOf { it.count }
-        val points = buckets.mapIndexed { i, b -> Offset(stripX(i, buckets.size, size.width, inset), stripY(b.count, largest, plot, inset)) }
-        val x = chosen?.let { points.getOrNull(it) }?.x
-        if (x != null) drawLine(colors.muted, Offset(x, 0f), Offset(x, plot), 1 * dp)
-        if (points.size > 1) drawPath(polyline(points), gray, style = Stroke(1.5f * dp, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        for ((point, b) in points.zip(buckets)) if (b.bad > 0) drawCircle(bad, 3 * dp, point)
+        val points = buckets.mapIndexed { i, b ->
+            Offset(pixelCenter(stripX(i, buckets.size, size.width, inset)), pixelCenter(stripY(b.count, largest, plot, inset)))
+        }
+        val current = partial && points.size > 1
+        // The zero baseline under the line, as the Usage chart baseline.
+        val zero = pixelCenter(stripY(0, largest, plot, inset))
+        drawLine(colors.rule, Offset(points.first().x, zero), Offset(points.last().x, zero), 1 * dp)
+        val point = chosen?.let { points.getOrNull(it) }
+        if (point != null) drawLine(colors.muted, Offset(point.x, 0f), Offset(point.x, plot), 1 * dp)
+        val solid = if (current) points.dropLast(1) else points
+        if (solid.size > 1) drawPath(polyline(solid), gray, style = Stroke(2 * dp, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        if (current) {
+            // The current bucket is not complete: a dashed segment into a hollow point.
+            drawLine(gray, points[points.size - 2], points.last(), 2 * dp, StrokeCap.Butt, PathEffect.dashPathEffect(floatArrayOf(3 * dp, 3 * dp)))
+            drawCircle(colors.background, 3 * dp, points.last())
+            drawCircle(gray, 3 * dp, points.last(), style = Stroke(1.5f * dp))
+        }
+        for ((p, b) in points.zip(buckets)) if (b.bad > 0) drawCircle(bad, 3 * dp, p)
+        if (chosen != null && point != null) {
+            // A not-sent dot keeps its color and gets a 1 dp ring in the text color; another bucket gets a dot over a 1 dp casing.
+            if (buckets[chosen].bad > 0) drawCircle(colors.text, 3.5f * dp, point, style = Stroke(1 * dp))
+            else {
+                drawCircle(colors.background, 4 * dp, point)
+                drawCircle(colors.text, 3 * dp, point)
+            }
+        }
         val top = plot + 2 * dp
-        if (tip != null && x != null) {
+        if (tip != null && point != null) {
             val layout = measurer.measure(tip, style, maxLines = 1)
-            drawText(layout, topLeft = Offset(stripTipLeft(x, layout.size.width.toFloat(), size.width), top))
+            drawText(layout, topLeft = Offset(stripTipLeft(point.x, layout.size.width.toFloat(), size.width), top))
         } else {
-            val first = measurer.measure(stripBucketName(buckets.first().startMs, unit), style, maxLines = 1)
+            val first = measurer.measure(stripFirstName(buckets.first().startMs, buckets.last().startMs, unit), style, maxLines = 1)
             drawText(first, topLeft = Offset(0f, top))
             if (buckets.size > 1) {
                 val last = measurer.measure(stripBucketName(buckets.last().startMs, unit), style, maxLines = 1)
-                drawText(last, topLeft = Offset(size.width - last.size.width, top))
+                val lastLeft = size.width - last.size.width
+                drawText(last, topLeft = Offset(lastLeft, top))
+                // The caption, centered between the names with 12 dp from each; the not-sent part goes first when it does not fit.
+                val per = measurer.measure(if (unit == "hour") "per hour" else "per day", style, maxLines = 1)
+                val dot = measurer.measure(" · ", style, maxLines = 1)
+                val notSent = measurer.measure(" not sent", style, maxLines = 1)
+                val rest = dot.size.width + 6 * dp + notSent.size.width
+                val left = first.size.width.toFloat()
+                val parts = stripCaptionParts(left, lastLeft, per.size.width.toFloat(), rest, buckets.any { it.bad > 0 }, dp)
+                if (parts > 0) {
+                    val total = per.size.width + if (parts == 2) rest else 0f
+                    var x = left + 12 * dp + (lastLeft - left - 24 * dp - total) / 2
+                    drawText(per, topLeft = Offset(x, top))
+                    if (parts == 2) {
+                        x += per.size.width
+                        drawText(dot, topLeft = Offset(x, top))
+                        x += dot.size.width
+                        drawCircle(bad, 3 * dp, Offset(x + 3 * dp, top + per.size.height / 2f))
+                        drawText(notSent, topLeft = Offset(x + 6 * dp, top))
+                    }
+                }
             }
         }
     }
 }
 
-/** A 3 dp accent share bar of [fraction] over the bar track, with a 1 dp background gap between them (as the Usage bars). */
-@Composable
-private fun ShareBar(fraction: Float, colors: ActivityColors, modifier: Modifier = Modifier) {
-    Canvas(modifier.fillMaxWidth().height(3.dp)) {
-        val f = fraction.coerceIn(0f, 1f)
-        val corner = CornerRadius(1.5f * density)
-        val start = trackStart(size.width, f, 1 * density)
-        if (start < size.width) drawRoundRect(colors.track, Offset(start, 0f), Size(size.width - start, size.height), corner)
-        if (f > 0) drawRoundRect(colors.accent, Offset.Zero, Size(size.width * f, size.height), corner)
+/** A 3 dp accent share bar of [fraction] over the bar track, from [left] to the right edge, with a 1 dp background gap between them. */
+private fun DrawScope.drawShareBar(left: Float, top: Float, fraction: Float, colors: ActivityColors) {
+    val width = size.width - left
+    val height = 3 * density
+    val f = fraction.coerceIn(0f, 1f)
+    val corner = CornerRadius(1.5f * density)
+    val start = trackStart(width, f, 1 * density)
+    if (start < width) drawRoundRect(colors.track, Offset(left + start, top), Size(width - start, height), corner)
+    if (f > 0) drawRoundRect(colors.accent, Offset(left, top), Size(width * f, height), corner)
+}
+
+/** Where the last text line of a barred row is: the row, the text, and its layout. The bar stands 4 dp under its descender line. */
+private class BarLine {
+    var row by mutableStateOf<LayoutCoordinates?>(null)
+    var text by mutableStateOf<LayoutCoordinates?>(null)
+    var layout by mutableStateOf<TextLayoutResult?>(null)
+
+    /** The y in the row of the descender line of the last text line, for a [fontPx] text; null before the layout. */
+    fun descender(fontPx: Float): Float? {
+        val row = row?.takeIf { it.isAttached } ?: return null
+        val text = text?.takeIf { it.isAttached } ?: return null
+        val layout = layout ?: return null
+        val descent = android.graphics.Paint().apply { textSize = fontPx }.fontMetrics.descent
+        return row.localPositionOf(text, Offset(0f, layout.getLineBaseline(layout.lineCount - 1) + descent)).y
     }
+}
+
+/**
+ * A ledger row with a share bar of [fraction] 4 dp under the descender line of its last text line ([line], a [fontSp] text), from
+ * [barStart] to the row end; the 6 dp under the content keep the row pitch, and the rest of the row is under the bar.
+ */
+@Composable
+private fun BarredRow(fraction: Float, colors: ActivityColors, line: BarLine, fontSp: Int, modifier: Modifier = Modifier,
+    barStart: Dp = 0.dp, content: @Composable () -> Unit) {
+    Column(modifier.fillMaxWidth().onGloballyPositioned { line.row = it }.drawBehind {
+        line.descender(fontSp.sp.toPx())?.let { drawShareBar(barStart.toPx(), it + 4.dp.toPx(), fraction, colors) }
+    }.padding(bottom = 6.dp)) { content() }
 }
 
 /** The ledger under the table: Recent, Busiest pairs, Between machines, and Between apps. */
@@ -1218,15 +1327,21 @@ private fun LedgerView(
         }
         LedgerRule(colors)
         SectionTitle("Busiest pairs", colors)
+        // Each bar fills its count over the period total (D14 A).
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            val most = busiest.maxOfOrNull { it.n } ?: 1
-            for (pair in busiest) BusyPairRow(pair, pair.n.toFloat() / most, title, colors) { onPair(pair) }
+            for (pair in busiest) BusyPairRow(pair, shareFill(pair.n, ledger.total), title, colors) { onPair(pair) }
         }
         LedgerRule(colors)
         SectionTitle("Between machines", colors)
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            val most = max(1, ledger.machineRows.maxOfOrNull { it.count } ?: 1)
-            for (row in ledger.machineRows) Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
+            for (row in ledger.machineRows) {
+                val share = shareFill(row.count, ledger.total)
+                val label = if (row.machineIds.size > 1) row.label else "Within ${row.label}"
+                val line = remember { BarLine() }
+                // The bar starts under the name: after the two-dot slot (two 7 dp dots, 3 dp apart) and the 6 dp row gap.
+                BarredRow(share, colors, line, 12, Modifier.clearAndSetSemantics {
+                    contentDescription = "$label, ${plural(row.count, "message")}, ${shareWords(share)}"
+                }, barStart = 23.dp) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 24.dp), horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -1234,12 +1349,11 @@ private fun LedgerView(
                         // The empty place of a second dot: all names start at one x.
                         if (row.machineIds.size == 1) Spacer(Modifier.width(7.dp))
                     }
-                    Text(if (row.machineIds.size > 1) row.label else "Within ${row.label}", fontSize = 12.sp, color = colors.text,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(label, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { line.layout = it }, modifier = Modifier.weight(1f).onGloballyPositioned { line.text = it })
                     Text(formatCount(row.count.toLong()), fontSize = 12.sp, style = figures, color = colors.text)
                 }
-                // The bar starts under the name: after the two-dot slot (two 7 dp dots, 3 dp apart) and the 6 dp row gap.
-                ShareBar(row.count.toFloat() / most, colors, Modifier.padding(start = 23.dp, top = 3.dp))
+                }
             }
         }
         LedgerRule(colors)
@@ -1250,19 +1364,26 @@ private fun LedgerView(
 
 /**
  * A Busiest pairs row: the route with each name ellipsized in the middle and the count; a not-sent line 2 dp under the route when the
- * pair has some; and a share bar of [share] 3 dp under the last line.
+ * pair has some; and a share bar of [share] (of all messages) 4 dp under the descender line of the last line.
  */
 @Composable
 private fun BusyPairRow(pair: BusyPair, share: Float, title: (String) -> String, colors: ActivityColors, onClick: () -> Unit) {
     val a = title(pair.a)
     val b = title(pair.b)
-    val spoken = "$a and $b, ${plural(pair.n, "message")}" + if (pair.bad > 0) ", ${formatCount(pair.bad.toLong())} not sent" else ""
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).clearAndSetSemantics { contentDescription = spoken; role = Role.Button }) {
+    val spoken = "$a and $b, ${plural(pair.n, "message")}" + (if (pair.bad > 0) ", ${formatCount(pair.bad.toLong())} not sent" else "") +
+        ", ${shareWords(share)}"
+    val line = remember { BarLine() }
+    // The last text line: the not-sent line (11 sp) when the pair has one, else the route (12 sp).
+    val last = { font: Int -> Modifier.onGloballyPositioned { line.text = it }.takeIf { (pair.bad > 0) == (font == 11) } ?: Modifier }
+    val layout = { font: Int -> { it: TextLayoutResult -> if ((pair.bad > 0) == (font == 11)) line.layout = it } }
+    BarredRow(share, colors, line, if (pair.bad > 0) 11 else 12,
+        Modifier.clickable(onClick = onClick).clearAndSetSemantics { contentDescription = spoken; role = Role.Button }) {
         Row(Modifier.fillMaxWidth().heightIn(min = 26.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val name = Modifier.weight(1f, fill = false)
-                Text(a, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = name)
+                Text(a, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, onTextLayout = layout(12),
+                    modifier = name.then(last(12)))
                 Text("⇄", fontSize = 12.sp, color = colors.text, maxLines = 1)
                 Text(b, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = name)
             }
@@ -1271,9 +1392,9 @@ private fun BusyPairRow(pair: BusyPair, share: Float, title: (String) -> String,
         if (pair.bad > 0) Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically) {
             StatusIcon("not-sent", statusWordColor("not-sent", colors), 12.dp)
-            Text("${formatCount(pair.bad.toLong())} not sent", fontSize = 11.sp, style = figures, color = colors.muted, maxLines = 1)
+            Text("${formatCount(pair.bad.toLong())} not sent", fontSize = 11.sp, style = figures, color = colors.muted, maxLines = 1,
+                onTextLayout = layout(11), modifier = last(11))
         }
-        ShareBar(share, colors, Modifier.padding(top = 3.dp))
     }
 }
 

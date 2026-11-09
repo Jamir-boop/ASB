@@ -67,7 +67,7 @@ class CouncilRoundThreeTest {
 
     @Test fun ninePlacesAroundThePin() {
         val size = Size(40f, 14f)
-        val d = .707f * 19f
+        val d = .707f * 21f
         // The four diagonals put the label corner nearest the pin at 45° and the gap of places 1 to 4.
         val expected = mapOf(5 to Offset(200f + d, 100f + d), 6 to Offset(200f - d - 40f, 100f + d),
             7 to Offset(200f + d, 100f - d - 14f), 8 to Offset(200f - d - 40f, 100f - d - 14f))
@@ -91,7 +91,8 @@ class CouncilRoundThreeTest {
     }
 
     @Test fun pinsAreCirclesForLabels() {
-        // The whole text takes the under-right diagonal (place 5); a pin 18 dp from its nearest corner leaves it free, 16 dp blocks it.
+        // The whole text takes the under-right diagonal (place 5); a pin 18 dp from its nearest corner leaves it free (its circle
+        // has the 17.5 dp radius), 16 dp blocks it.
         val top = SeatLabelInput("top", -90f, sizes)
         val rects = listOf(Rect(0f, 0f, 205f, 400f), Rect(205f, 92f, 400f, 108f))
         val place = { circles: List<Pair<Offset, Float>> ->
@@ -102,7 +103,7 @@ class CouncilRoundThreeTest {
         assertEquals(5, free.place)
         val corner = Offset(free.box.left, free.box.top)
         val away = { distance: Float -> corner - Offset(distance, distance) / Math.sqrt(2.0).toFloat() }
-        assertEquals(16.5f, pinCircle(Offset.Zero, 1f).second)
+        assertEquals(17.5f, pinCircle(Offset.Zero, 1f).second)
         assertEquals(5, place(listOf(pinCircle(away(18f), 1f))).place)
         assertTrue(place(listOf(pinCircle(away(16f), 1f))).place != 5)
     }
@@ -137,7 +138,7 @@ class CouncilRoundThreeTest {
     @Test fun placedLabelsKeepSixDpAtTheirSides() {
         // b's inward place starts 2.5 dp right of a's inward box, at the same height: inside a's 6 dp side room.
         val a = SeatLabelInput("a", -90f, listOf(Size(40f, 14f)))
-        val b = SeatLabelInput("b", -60.3f, listOf(Size(40f, 14f)))
+        val b = SeatLabelInput("b", -59.5f, listOf(Size(40f, 14f)))
         val table = LabelTable(center, 121f, 0f, false, 400f, 400f, emptyList())
         val alone = placeSeatLabels(listOf(b), emptyList(), emptyMap(), emptyMap(), table, 1f).getValue("b")!!
         val spots = placeSeatLabels(listOf(a, b), emptyList(), mapOf("a" to 2), emptyMap(), table, 1f)

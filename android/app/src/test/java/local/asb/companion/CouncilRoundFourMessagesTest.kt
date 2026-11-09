@@ -89,8 +89,8 @@ class CouncilRoundFourMessagesTest {
     private val small = listOf(Size(40f, 14f))
     private val open = LabelTable(center, 100f, 0f, false, 400f, 400f, emptyList())
 
-    // Everything but the inward box of a 40 × 14 label of the pin at the top: (179, 123) to (221, 137).
-    private val onlyInward = listOf(Rect(0f, 0f, 400f, 122f), Rect(0f, 138f, 400f, 400f), Rect(0f, 122f, 178f, 138f), Rect(222f, 122f, 400f, 138f))
+    // Everything but the inward box of a 40 × 14 label of the pin at the top: (179, 125) to (221, 139).
+    private val onlyInward = listOf(Rect(0f, 0f, 400f, 124f), Rect(0f, 140f, 400f, 400f), Rect(0f, 124f, 178f, 140f), Rect(222f, 124f, 400f, 140f))
 
     private fun labelOf(otherPinX: Float, blocked: List<Rect>): SeatLabelSpot? {
         val a = SeatLabelInput("a", -90f, small, pin = pinCircle(Offset(200f, 100f), 1f))
@@ -100,17 +100,18 @@ class CouncilRoundFourMessagesTest {
     }
 
     @Test fun labelsStayNearerTheirOwnPin() {
-        // The inward box is 23 px from its own pin center (6.5 px from its circle). A pin 26 px right of the box is 9.5 px from it:
-        // less than 6.5 + 4, so on an open table another place wins.
+        // The inward box is 25 px from its own pin center (7.5 px from its 17.5 px circle). A pin 30 px right of the box is 12.5 px
+        // from it (7.5 + 4 or more); at 26 px it is 8.5 px, so on an open table another place wins.
         assertEquals(0, labelOf(251f, emptyList())!!.place)
         assertTrue(labelOf(247f, emptyList())!!.place != 0)
     }
 
     @Test fun crowdedLabelsTakeTheTwoDpPass() {
-        // Only the inward place is free of the boxes. At 9.5 px only the 2 dp pass (6.5 + 2) places the label; at 6.5 px it hides.
+        // Only the inward place is free of the boxes. At 10.5 px (a pin 28 px right of the box) only the 2 dp pass (7.5 + 2) places
+        // the label; at 7.5 px it hides (the last pass, from the 16 dp pin, puts the box on the blocked rows).
         assertEquals(0, labelOf(251f, onlyInward)!!.place)
-        assertEquals(0, labelOf(247f, onlyInward)!!.place)
-        assertNull(labelOf(244f, onlyInward))
+        assertEquals(0, labelOf(249f, onlyInward)!!.place)
+        assertNull(labelOf(246f, onlyInward))
     }
 
     @Test fun aSelectionKeepsAFreeLabelWhereItIs() {
@@ -123,9 +124,9 @@ class CouncilRoundFourMessagesTest {
         assertEquals(0, placeSeatLabels(listOf(a), emptyList(), emptyMap(), emptyMap(), left, 1f, previous = kept).getValue("a")!!.place)
     }
 
-    // Two holes at the top pin: the inward place (186, 122) to (214, 138) and the right place (217, 92) to (241, 108).
-    private val twoHoles = listOf(Rect(0f, 0f, 400f, 92f), Rect(0f, 92f, 217f, 108f), Rect(241f, 92f, 400f, 108f), Rect(0f, 108f, 400f, 122f),
-        Rect(0f, 122f, 186f, 138f), Rect(214f, 122f, 400f, 138f), Rect(0f, 138f, 400f, 400f))
+    // Two holes at the top pin: the inward place (186, 124) to (214, 140) and the right place (219, 92) to (243, 108).
+    private val twoHoles = listOf(Rect(0f, 0f, 400f, 92f), Rect(0f, 92f, 219f, 108f), Rect(243f, 92f, 400f, 108f), Rect(0f, 108f, 400f, 124f),
+        Rect(0f, 124f, 186f, 140f), Rect(214f, 124f, 400f, 140f), Rect(0f, 140f, 400f, 400f))
 
     private fun repair(blocked: List<Rect>, chosen: List<String> = emptyList()): Map<String, SeatLabelSpot?> {
         // The 20 dp label fits both holes; the 24 dp label fits only the inward hole, where the first label is.
@@ -140,7 +141,7 @@ class CouncilRoundFourMessagesTest {
         assertEquals(4, spots.getValue("first")!!.place)
         assertEquals(0, spots.getValue("second")!!.place)
         // No other free place: the move is undone and the seat hides.
-        val undone = repair(twoHoles + Rect(217f, 92f, 241f, 108f))
+        val undone = repair(twoHoles + Rect(219f, 92f, 243f, 108f))
         assertEquals(0, undone.getValue("first")!!.place)
         assertNull(undone.getValue("second"))
         // A chosen label never moves.

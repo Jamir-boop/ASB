@@ -146,9 +146,20 @@ fun messageTime(ms: Long, nowMs: Long, period: String): String {
 /** The name of a count strip bucket: the clock for an hour (`16:00`), else the date (`Oct 20`). */
 fun stripBucketName(startMs: Long, unit: String): String = if (unit == "hour") formatTime(startMs) else formatDate(startMs)
 
-/** Port of message_bucket_tip: `Oct 22: 84 messages, 2 not sent` or `14:00: 1 message`. */
-fun messageBucketTip(startMs: Long, count: Int, bad: Int, unit: String): String =
-    "${stripBucketName(startMs, unit)}: ${formatCount(count.toLong())} message${if (count == 1) "" else "s"}" +
+/**
+ * The first bucket name of the strip: in 24 hours (hours) it has its weekday when its bucket is on an earlier day than the
+ * [lastMs] bucket (`Sun 17:00`), else [stripBucketName].
+ */
+fun stripFirstName(firstMs: Long, lastMs: Long, unit: String): String =
+    if (unit == "hour" && local(firstMs).toLocalDate() < local(lastMs).toLocalDate()) "${WEEKDAY.format(local(firstMs))} ${formatTime(firstMs)}"
+    else stripBucketName(firstMs, unit)
+
+/**
+ * Port of message_bucket_tip: `Oct 22: 84 messages, 2 not sent` or `14:00: 1 message`; the current bucket ([partial]) says
+ * `16:00 so far: 4 messages`.
+ */
+fun messageBucketTip(startMs: Long, count: Int, bad: Int, unit: String, partial: Boolean = false): String =
+    "${stripBucketName(startMs, unit)}${if (partial) " so far" else ""}: ${formatCount(count.toLong())} message${if (count == 1) "" else "s"}" +
         if (bad > 0) ", ${formatCount(bad.toLong())} not sent" else ""
 
 /** Today, Yesterday, or the date, by local calendar day. */

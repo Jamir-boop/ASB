@@ -23,6 +23,8 @@ data class ActivityBuckets(
     val startsMs: List<@Serializable(with = MillisSerializer::class) Long> = emptyList(),
     // The hour of the first record; only the All time reply has it.
     @Serializable(with = MillisSerializer::class) val firstMs: Long? = null,
+    // The end of the last bucket; an older engine has none.
+    @Serializable(with = MillisSerializer::class) val endMs: Long? = null,
 )
 
 @Serializable
@@ -238,6 +240,20 @@ fun messageFailureReason(message: ActivityMessage, seats: Map<String, Seat> = em
 fun messageStatusLabel(message: ActivityMessage, seats: Map<String, Seat> = emptyMap(), machines: List<ActivityMachine> = emptyList()): String =
     if (statusKey(message.status) == "not-sent" && message.reason.isNotEmpty()) "Not sent · ${messageFailureReason(message, seats, machines)}"
     else statusLabel(message.status)
+
+/**
+ * Port of message_bucket_partial: the last bucket holds nowMs (the current hour or day, which is not complete). Its end is
+ * [ActivityBuckets.endMs], or without it an hour or a day after its start.
+ */
+fun messageBucketPartial(reply: ActivityMessages): Boolean {
+    val last = reply.buckets.startsMs.lastOrNull() ?: return false
+    val end = reply.buckets.endMs ?: (last + if (reply.buckets.unit == "hour") 3_600_000L else 86_400_000L)
+    return reply.nowMs in last until end
+}
+
+/** Port of offline_band_color: the offline machine band, the [hue] mixed 55% toward [win], or less, as far as keeps 3:1 on [win]. */
+fun offlineBandColor(win: String, hue: String): String =
+    (45..100).map { mixColor(win, hue, it / 100.0) }.firstOrNull { contrast(it, win) >= 3 } ?: hue
 
 /** One count strip bucket: its start, its messages, and its not-sent messages. */
 data class BucketCount(val startMs: Long, val count: Int, val bad: Int)
