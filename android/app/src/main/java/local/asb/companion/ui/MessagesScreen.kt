@@ -13,6 +13,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -66,6 +69,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -81,7 +85,11 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -120,11 +128,12 @@ import kotlin.math.sqrt
 import kotlinx.coroutines.delay
 import local.asb.companion.R
 import local.asb.companion.data.ActivityMachine
+import local.asb.companion.data.BucketCount
+import local.asb.companion.data.messageBuckets
 import local.asb.companion.data.BusyPair
 import local.asb.companion.data.UNLISTED
 import local.asb.companion.data.busiestPairs
 import local.asb.companion.data.messageStatusLabel
-import local.asb.companion.data.notSentCounts
 import local.asb.companion.data.seatTitles
 import local.asb.companion.data.ActivityMessage
 import local.asb.companion.data.ActivityMessages
@@ -341,6 +350,8 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
     var flights by remember { mutableStateOf(emptyList<Flight>()) }
     var chordKey by remember { mutableStateOf<String?>(null) }
     var frameNanos by remember { mutableLongStateOf(0L) }
+    var bucket by remember(reply?.buckets) { mutableStateOf<Int?>(null) }
+    val strip = remember { StripPlace() }
     PollWhileResumed(api, engine, period, attempt, intervalMs = { 10_000L }) {
         try {
             val next = api.activityMessages(period, engine)
@@ -364,7 +375,8 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
     }
     Scaffold(contentWindowInsets = SafeContentInsets, topBar = { ActivityTopBar("Messages", onBack) }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
-            Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().verticalScroll(rememberScrollState())) {
+            Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().onGloballyPositioned { strip.page = it }
+                .pointerInput(Unit) { clearOnTapOutside(strip) { bucket = null } }.verticalScroll(rememberScrollState())) {
                 val current = reply
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -390,7 +402,7 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                     current.messages.isEmpty() && current.machines.isEmpty() -> ActivityEmpty("No messages in the last ${periodLabel(period)}", colors)
                     else -> {
                         error?.let { Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
-                        MessagesContent(current, selected, chordKey, flights, frameNanos, colors,
+                        MessagesContent(current, selected, chordKey, flights, frameNanos, colors, bucket, strip, { bucket = it },
                             // A second tap on the selected seat or chord clears the selection.
                             onSeat = { onSelect(it.takeIf { id -> id != selected }); chordKey = null },
                             onChord = { chordKey = it.takeIf { key -> key != chordKey }; onSelect(null) },
@@ -400,6 +412,27 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                 }
             }
         }
+    }
+}
+
+/** Where the count strip is in the window, and the coordinates of the page that holds it. */
+private class StripPlace {
+    var page: LayoutCoordinates? = null
+    var bounds = Rect.Zero
+}
+
+/** Runs [clear] after a tap (a touch that moves less than the touch slop) outside the count strip; it consumes nothing. */
+private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.clearOnTapOutside(strip: StripPlace, clear: () -> Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var moved = false
+        while (true) {
+            val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+            if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) moved = true
+            if (!change.pressed) break
+        }
+        val at = strip.page?.takeIf { it.isAttached }?.localToWindow(down.position) ?: return@awaitEachGesture
+        if (!moved && !strip.bounds.contains(at)) clear()
     }
 }
 
@@ -449,7 +482,7 @@ private class Curve(val p0: Offset, val q: Offset, val p2: Offset) {
 
 /**
  * A chord to draw (the PC layout_table chords): its stroke runs from [trim].first to [trim].second of the length, and each
- * not-sent receiver end of a mixed pair is a polyline of points 4 dp apart, [endWidth] wide.
+ * not-sent receiver end of a mixed pair is a polyline of points 4 dp apart, from the pin rim, [endWidth] (3 dp) wide.
  */
 private class ChordDraw(val curve: Curve, val width: Float, val ends: List<List<Offset>>, val trim: Pair<Float, Float>, val endWidth: Float) {
     /** The trimmed stroke: the whole curve, or a polyline when an end cuts it. */
@@ -475,7 +508,7 @@ private fun chordDraw(chord: Chord, curve: Curve, nMax: Int, dp: Float): ChordDr
             trim = if (forward) trim.first to min(trim.second, far / length) else max(trim.first, far / length) to trim.second
         }
     }
-    return ChordDraw(curve, width, ends, trim, max(3 * dp, width))
+    return ChordDraw(curve, width, ends, if (ends.isEmpty()) trim else strokeTrim(trim, length, width, dp), 3 * dp)
 }
 
 private fun polyline(points: List<Offset>): Path = Path().apply {
@@ -628,7 +661,8 @@ private val NEXT_PERIOD = mapOf("24h" to "7d", "7d" to "30d")
 @Composable
 private fun MessagesContent(
     reply: ActivityMessages, selected: String?, chordKey: String?, flights: List<Flight>, frameNanos: Long,
-    colors: ActivityColors, onSeat: (String) -> Unit, onChord: (String) -> Unit, onClear: () -> Unit, onPeriod: (String) -> Unit,
+    colors: ActivityColors, bucket: Int?, strip: StripPlace, onBucket: (Int) -> Unit, onSeat: (String) -> Unit, onChord: (String) -> Unit,
+    onClear: () -> Unit, onPeriod: (String) -> Unit,
 ) {
     val seats = remember(reply) { reply.seats.associateBy { it.id } }
     val machines = remember(reply) { reply.machines.associateBy { it.machineId } }
@@ -642,7 +676,8 @@ private fun MessagesContent(
     val titles = remember(reply) { seatTitles(reply) }
     val title = { id: String -> titles[id] ?: UNLISTED }
     val busiest = remember(reply) { busiestPairs(reply) }
-    val notSent = remember(reply) { notSentCounts(reply.messages) }
+    val buckets = remember(reply) { messageBuckets(reply) }
+    val labelMemory = remember { LabelMemory() }
     val marks = listOf("codex", "claude", "opencode", "").associateWith { painterResource(appMark(it)) }
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
@@ -650,20 +685,25 @@ private fun MessagesContent(
     val machinesWithSeats = remember(reply) { activeSeats(reply).map { it.machineId }.distinct().size }
     val summary = "${plural(activeSeats(reply).size, "session")} on ${plural(machinesWithSeats, "machine")}, " +
         "${plural(ledger.total, "message")} in the last ${periodLabel(reply.period)}"
+    // The neutral chord color (chords at rest and the count strip) for the background and the sector fills of the machines on the
+    // table: the machines with seated seats, or all machines when none is seated.
+    val gray = remember(reply, seated, palette, hues) {
+        val fills = reply.machines.map { it.machineId }.filter { id -> seated.isEmpty() || seated.any { it.machineId == id } }.map { id ->
+            mixColor(palette.background, hues.getValue(id).hex(), if (machineOffline(machines[id])) .03 else .05)
+        }
+        hexColor(chordGray(palette.background, palette.text, fills))
+    }
     // As on the PC narrow layout, the Messages section stands above the table; an empty period shows only the table.
-    if (ledger.total > 0) MessagesSummary(ledger, colors)
+    // With no buckets in the reply, the strip does not show.
+    if (ledger.total > 0) MessagesSummary(ledger, colors, if (buckets.isEmpty()) null else { ->
+        CountStrip(buckets, reply.buckets.unit, gray, colors, bucket, onBucket,
+            Modifier.padding(bottom = 10.dp).onGloballyPositioned { strip.bounds = it.boundsInWindow() })
+    })
     BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
         val sideDp = maxWidth
         val side = with(density) { sideDp.toPx() }
         val dp = density.density
         val geom = remember(side, seated, reply, colors, measurer) { layoutTable(side, dp, seated, reply.machines, colors, measurer) }
-        // The neutral chord color for the background and the sector fills of the machines on the table.
-        val gray = remember(geom, palette) {
-            val fills = geom.ranges.keys.map { id ->
-                mixColor(palette.background, hues.getValue(id).hex(), if (machineOffline(machines[id])) .03 else .05)
-            }
-            hexColor(chordGray(palette.background, palette.text, fills))
-        }
         val curves = remember(geom, chordList) {
             val nMax = max(1, chordList.maxOfOrNull { it.n } ?: 1)
             chordList.associate { chord ->
@@ -691,7 +731,7 @@ private fun MessagesContent(
                 },
         ) {
             drawTable(reply, geom, seated, chordList, curves, machines, hues, selectedSeat, selectedChord, flights,
-                frameNanos, marks, colors, gray, measurer, dp, titles)
+                frameNanos, marks, colors, gray, measurer, dp, titles, labelMemory)
         }
         // TalkBack reaches each seat in circle order; a tap selects it, as a tap on its pin.
         for (seat in seated) {
@@ -704,7 +744,7 @@ private fun MessagesContent(
                 .clearAndSetSemantics { contentDescription = label; role = Role.Button })
         }
     }
-    CenterPanel(reply, selectedSeat, selectedChord, counts, notSent, seats, machines, colors, title, onPeriod)
+    CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, onPeriod)
     val seatedIds = seated.map { it.id }.toSet()
     if (ledger.total > 0) LedgerView(ledger, busiest, reply, hues, machines, colors, title) { pair ->
         // A tap selects the chord of a pair whose two sessions are seated, as a tap on the chord.
@@ -716,7 +756,7 @@ private fun DrawScope.drawTable(
     reply: ActivityMessages, geom: TableGeom, seated: List<Seat>, chordList: List<Chord>, curves: Map<String, ChordDraw?>,
     machines: Map<String, ActivityMachine>, hues: Map<String, Color>, selected: String?,
     selectedChord: Chord?, flights: List<Flight>, frameNanos: Long, marks: Map<String, Painter>, colors: ActivityColors,
-    gray: Color, measurer: TextMeasurer, dp: Float, titles: Map<String, String>,
+    gray: Color, measurer: TextMeasurer, dp: Float, titles: Map<String, String>, memory: LabelMemory,
 ) {
     if (geom.ranges.isEmpty()) return
     val c = geom.c
@@ -756,6 +796,7 @@ private fun DrawScope.drawTable(
     val dimGray = mixToward(background, gray, .35)
     val dimBad = mixToward(background, bad, .35)
     val badDash = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp))
+    val endDash = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))
     // Port of snapshot_chord: part is "casing", "stroke", or "ends" for the three passes of the lit chords, else "all".
     fun drawChord(chord: Chord, draw: ChordDraw, part: String) {
         val lit = chord.key in litChords
@@ -769,12 +810,15 @@ private fun DrawScope.drawTable(
         val width = if (chord.bad && lit) 3 * dp else draw.width
         if (lit && part in setOf("all", "casing")) drawPath(draw.curve.path, background, style = Stroke(width + 2 * dp, cap = StrokeCap.Round))
         if (part in setOf("all", "stroke") && draw.trim.second > draw.trim.first) {
-            drawPath(draw.stroke(dp), color, style = Stroke(width, cap = StrokeCap.Round, pathEffect = if (chord.bad) badDash else null))
+            // An all-not-sent chord: 5 dp on and 5 dp off with butt caps.
+            drawPath(draw.stroke(dp), color, style = if (chord.bad) Stroke(width, cap = StrokeCap.Butt, pathEffect = badDash)
+                else Stroke(width, cap = StrokeCap.Round))
         }
-        // A mixed pair: each receiver end with not-sent messages is dashed in the not-sent color over a casing 2 dp wider.
+        // A mixed pair: each receiver end with not-sent messages is 3 dp, 4 dp on and 3 dp off from the rim, with butt caps, in the
+        // not-sent color over a casing 2 dp wider.
         if (part in setOf("all", "casing")) for (end in draw.ends) drawPath(polyline(end), background, style = Stroke(draw.endWidth + 2 * dp))
         if (part in setOf("all", "ends")) for (end in draw.ends) {
-            drawPath(polyline(end), if (dim) dimBad else bad, style = Stroke(draw.endWidth, pathEffect = badDash))
+            drawPath(polyline(end), if (dim) dimBad else bad, style = Stroke(draw.endWidth, pathEffect = endDash))
         }
     }
     for (chord in chordList) if (chord.key !in litChords) curves[chord.key]?.let { drawChord(chord, it, "all") }
@@ -806,26 +850,32 @@ private fun DrawScope.drawTable(
         }
         drawCircle(LIGHT, 3 * dp, head, alpha = fade)
     }
-    // Seat labels (the PC place_labels): nine places each, with the whole text, then cut to 10 and to 7 characters, else none.
+    // Seat labels (the PC place_labels): nine places each, with the whole text on one and on two lines, then cut to 10 and to 7
+    // characters, else none.
     val machineBoxes = geom.labels.map { Rect(it.box.left - 1 * dp, it.box.top, it.box.right + 1 * dp, it.box.bottom) }
     val pinBoxes = seated.mapNotNull { geom.pin(it.id) }.map { Rect(it, 16 * dp) }
     val key = layoutKey(geom, chordList, machines, colors, measurer, dp, size, pinBoxes + geom.labels.map { it.box })
-    val labelStyle = TextStyle(color = colors.text, fontSize = 12.sp)
-    val texts = seated.associate { seat ->
-        seat.id to seatLabelTexts(titles[seat.id] ?: UNLISTED).map { measurer.measure(it, labelStyle, maxLines = 1) }
-    }
+    val labelStyle = TextStyle(color = colors.text, fontSize = 12.sp, textAlign = TextAlign.Center)
+    val names = seated.associate { seat -> seat.id to seatLabelTexts(titles[seat.id] ?: UNLISTED) }
+    val texts = names.mapValues { (_, list) -> list.map { measurer.measure(it, labelStyle, maxLines = 2) } }
     // The selected seat and the two seats of the selected chord place first and show their whole label.
     val chosen = listOfNotNull(selected, selectedChord?.a, selectedChord?.b).distinct().filter { id -> seated.any { it.id == id } }
     val counts = seatCounts(reply.messages).mapValues { it.value.sent + it.value.received }
     val inputs = seated.filter { it.id in geom.angles }.map { seat ->
-        SeatLabelInput(seat.id, geom.angles.getValue(seat.id), texts.getValue(seat.id).map { Size(it.size.width.toFloat(), it.size.height.toFloat()) })
+        SeatLabelInput(seat.id, geom.angles.getValue(seat.id), texts.getValue(seat.id).map { Size(it.size.width.toFloat(), it.size.height.toFloat()) },
+            seatLabelWholeCount(names.getValue(seat.id)), pinCircle(geom.pin(seat.id)!!, dp))
     }
     // The pins and the not-sent end points are circles (the key line keeps the pin squares).
     val circles = seated.mapNotNull { geom.pin(it.id) }.map { pinCircle(it, dp) } +
         curves.values.filterNotNull().flatMap { draw -> draw.ends.flatten().map { endCircle(it, draw.endWidth, dp) } }
     val blocked = machineBoxes + listOfNotNull(key?.box?.takeIf { key.shown })
+    // A selection change keeps the labels that are still free; a period change, other seats, or another size places from the start.
+    val reset = listOf(reply.period, seated.map { it.id }, size)
     val spots = placeSeatLabels(inputs, chosen, counts, activityTimes(reply.messages),
-        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro, circles), dp, litPins - chosen.toSet())
+        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro, circles), dp, litPins - chosen.toSet(),
+        if (memory.reset == reset) memory.spots else emptyMap())
+    memory.reset = reset
+    memory.spots = spots
     for ((id, spot) in spots) {
         if (spot == null) continue
         // While the table dims, the labels of seats that are not lit draw in the muted color.
@@ -834,7 +884,8 @@ private fun DrawScope.drawTable(
     }
     // A chosen label without a free place can cover the key, which then hides.
     val keyShown = key != null && key.shown && spots.values.none { it != null && it.box.overlaps(key.box) }
-    // Pins are opaque: the background fill, then the ring. A lit pin has a 2 dp accent ring; the others mix toward the background.
+    // Pins are opaque: the background fill, then the ring, after all chords and not-sent ends. A lit pin has a 2 dp accent ring with a
+    // 1 dp background casing on each side; the others mix toward the background.
     for (seat in seated) {
         val pin = geom.pin(seat.id) ?: continue
         val offline = machineOffline(machines[seat.machineId])
@@ -842,15 +893,27 @@ private fun DrawScope.drawTable(
         val chosen = seat.id in litPins
         val factor = (if (offline) .75 else 1.0) * (if (lighting && !chosen) .35 else 1.0)
         drawCircle(background, 16 * dp, pin)
-        if (chosen) drawCircle(colors.accent, 16 * dp, pin, style = Stroke(2 * dp))
-        else drawCircle(mixToward(background, hue, factor), 16 * dp, pin, style = Stroke(1.5f * dp, pathEffect = if (offline) dash else null))
+        if (chosen) {
+            drawCircle(background, 16 * dp, pin, style = Stroke(4 * dp))
+            drawCircle(colors.accent, 16 * dp, pin, style = Stroke(2 * dp))
+        } else drawCircle(mixToward(background, hue, factor), 16 * dp, pin, style = Stroke(1.5f * dp, pathEffect = if (offline) dash else null))
         val mark = marks[appKey(seat.app)] ?: continue
         translate(pin.x - 7 * dp, pin.y - 7 * dp) {
-            with(mark) { draw(Size(14 * dp, 14 * dp), colorFilter = ColorFilter.tint(mixToward(background, colors.text, .85 * factor))) }
+            // The app glyphs use the muted text color of the unlit seat labels.
+            with(mark) { draw(Size(14 * dp, 14 * dp), colorFilter = ColorFilter.tint(mixToward(background, colors.muted, factor))) }
         }
     }
     for (label in geom.labels) drawText(label.layout, topLeft = Offset(label.x, label.y))
-    key?.takeIf { keyShown }?.let { drawKey(it, colors, gray, dp) }
+    // The Offline sample takes the hue of the offline machine, or the muted color when several machines are offline.
+    val offline = geom.ranges.keys.filter { machineOffline(machines[it]) }
+    val offlineColor = offline.singleOrNull()?.let { hues[it] } ?: colors.muted
+    key?.takeIf { keyShown }?.let { drawKey(it, colors, gray, offlineColor, dp) }
+}
+
+/** The last seat label placement, kept while the period, the seated seats, and the size stay the same. */
+private class LabelMemory {
+    var reset: Any? = null
+    var spots: Map<String, SeatLabelSpot?> = emptyMap()
 }
 
 /** Port of snapshot_label: a 3 dp halo in the background color, from copies of the text around its place, then the text. */
@@ -896,26 +959,29 @@ private fun layoutKey(geom: TableGeom, chordList: List<Chord>, machines: Map<Str
 }
 
 /** Port of snapshot_key. */
-private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Color, dp: Float) {
+private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Color, offline: Color, dp: Float) {
     val middle = key.middle
     val bad = statusColor("not-sent", colors)
     val dashes = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp))
+    val endDash = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))
     for ((kind, left, layout) in key.items) {
         when (kind) {
             "chords" -> for ((start, width) in listOf(left to 1.5f * dp, left + 18 * dp to 8.5f * dp)) {
                 drawLine(gray, Offset(start + width / 2, middle), Offset(start + 14 * dp - width / 2, middle), width, StrokeCap.Round)
             }
-            "bad" -> drawLine(bad, Offset(left + 1 * dp, middle), Offset(left + 17 * dp, middle), 2 * dp, pathEffect = dashes)
-            // A gray chord, then a 3 dp dashed not-sent end over its casing in the background color, as on the table.
+            "bad" -> drawLine(bad, Offset(left, middle), Offset(left + 18 * dp, middle), 2 * dp, pathEffect = dashes)
+            // A gray chord, a 2 dp gap, then a 3 dp dashed not-sent end over its casing in the background color, as on the table.
             "mixed" -> {
-                drawLine(gray, Offset(left + 1 * dp, middle), Offset(left + 17 * dp, middle), 2 * dp)
-                drawLine(colors.background, Offset(left + 9 * dp, middle), Offset(left + 17 * dp, middle), 5 * dp)
-                drawLine(bad, Offset(left + 9 * dp, middle), Offset(left + 17 * dp, middle), 3 * dp, pathEffect = dashes)
+                drawLine(gray, Offset(left, middle), Offset(left + 6 * dp, middle), 2 * dp)
+                drawLine(colors.background, Offset(left + 8 * dp, middle), Offset(left + 18 * dp, middle), 5 * dp)
+                drawLine(bad, Offset(left + 8 * dp, middle), Offset(left + 18 * dp, middle), 3 * dp, pathEffect = endDash)
             }
-            else -> drawPath(Path().apply {
-                moveTo(left + 1 * dp, middle + 4 * dp)
-                quadraticTo(left + 9 * dp, middle - 7 * dp, left + 17 * dp, middle + 4 * dp)
-            }, colors.muted, style = Stroke(1 * dp, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))))
+            // A short piece of the offline band: its fill and its dashed edges.
+            else -> {
+                val band = sectorPath(Offset(left + 9 * dp, middle + 17 * dp), 14 * dp, 20 * dp, -118f, -62f)
+                drawPath(band, offline.copy(alpha = .45f))
+                drawPath(band, offline, style = Stroke(1 * dp, pathEffect = endDash))
+            }
         }
         val sample = (if (kind == "chords") 32 else 18) * dp
         drawText(layout, topLeft = Offset(left + sample + 6 * dp, middle - layout.size.height / 2f))
@@ -932,9 +998,8 @@ private fun pairKey(message: ActivityMessage, seated: List<Seat>): String? {
 
 @Composable
 private fun CenterPanel(
-    reply: ActivityMessages, seat: String?, chord: Chord?, counts: Map<String, SeatCount>, notSent: Map<String, Int>,
-    seats: Map<String, Seat>, machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String,
-    onPeriod: (String) -> Unit,
+    reply: ActivityMessages, seat: String?, chord: Chord?, counts: Map<String, SeatCount>, seats: Map<String, Seat>,
+    machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String, onPeriod: (String) -> Unit,
 ) {
     HorizontalDivider(thickness = 1.dp, color = colors.divider)
     Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp)
@@ -943,11 +1008,14 @@ private fun CenterPanel(
         val route = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
         val newest = newestMessage(reply.messages)
         when {
-            chord != null -> {
+            // TalkBack reads one part per direction, then the not-sent count.
+            chord != null -> Column(Modifier.clearAndSetSemantics { contentDescription = chordText(chord, title) },
+                verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("${title(chord.a)} ⇄ ${title(chord.b)}", style = route, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("→ ${formatCount(chord.ab.toLong())}", fontSize = 14.sp, style = figures, color = colors.text)
-                Text("← ${formatCount(chord.ba.toLong())}", fontSize = 14.sp, style = figures, color = colors.text)
-                NotSentLine(chord.badAb + chord.badBa, colors)
+                for ((arrow, count, bad) in listOf(Triple("→", chord.ab, chord.badAb), Triple("←", chord.ba, chord.badBa))) {
+                    Text("$arrow ${formatCount(count.toLong())}", fontSize = 14.sp, style = figures, color = colors.text)
+                    NotSentCount(bad, colors)
+                }
             }
             seat != null -> {
                 val info = seats[seat]
@@ -957,14 +1025,15 @@ private fun CenterPanel(
                 Text("${appLabel(info?.app.orEmpty())} · ${machines[info?.machineId]?.name.orEmpty()}", fontSize = 12.sp,
                     color = colors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    for ((label, value) in listOf("Sent" to (count?.sent ?: 0), "Received" to (count?.received ?: 0))) {
+                    for ((label, value, bad) in listOf(Triple("Sent", count?.sent ?: 0, count?.badSent ?: 0),
+                        Triple("Received", count?.received ?: 0, count?.badReceived ?: 0))) {
                         Column {
                             Text(label, fontSize = 11.sp, color = colors.muted)
                             Text(formatCount(value.toLong()), fontSize = 18.sp, style = figures, color = colors.text)
+                            NotSentCount(bad, colors)
                         }
                     }
                 }
-                NotSentLine(notSent[seat] ?: 0, colors)
             }
             newest != null -> {
                 Text("Newest message", fontSize = 11.sp, color = colors.muted)
@@ -972,7 +1041,7 @@ private fun CenterPanel(
                 Text(buildAnnotatedString {
                     append("${messageTime(newest.atMs, reply.nowMs.takeIf { it > 0 } ?: System.currentTimeMillis(), reply.period)} · ")
                     withStyle(SpanStyle(color = statusWordColor(newest.status, colors))) {
-                        append(messageStatusLabel(newest))
+                        append(messageStatusLabel(newest, seats, reply.machines))
                     }
                 }, fontSize = 11.sp, style = figures, color = colors.muted)
             }
@@ -989,11 +1058,10 @@ private fun CenterPanel(
     }
 }
 
-/** `Not sent N` (12 sp) in the not-sent status word color; nothing when [count] is 0. */
+/** `1 not sent` (12 sp) in the not-sent status word color, under a count; nothing when [count] is 0. */
 @Composable
-private fun NotSentLine(count: Int, colors: ActivityColors) {
-    if (count > 0) Text("Not sent ${formatCount(count.toLong())}", fontSize = 12.sp, style = figures, color = statusWordColor("not-sent", colors),
-        modifier = Modifier.padding(top = 2.dp))
+private fun NotSentCount(count: Int, colors: ActivityColors) {
+    if (count > 0) Text("${formatCount(count.toLong())} not sent", fontSize = 12.sp, style = figures, color = statusWordColor("not-sent", colors))
 }
 
 /** The empty page block: a muted 64 dp icon, the 20 sp bold title (at most 2 lines), and the hint (at most 260 dp wide). */
@@ -1012,9 +1080,9 @@ internal fun AccentButton(text: String, colors: ActivityColors, modifier: Modifi
         colors = ButtonDefaults.buttonColors(containerColor = colors.accent, contentColor = colors.background)) { Text(text) }
 }
 
-/** The Messages section: the total with the not-sent count, the status bar, and the legend. */
+/** The Messages section: the total with the not-sent count, the status bar, the [strip] (6 dp under the bar), and the legend. */
 @Composable
-private fun MessagesSummary(ledger: Ledger, colors: ActivityColors) {
+private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Composable () -> Unit)?) {
     Column(Modifier.fillMaxWidth().background(colors.background).padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 16.dp)) {
         SectionTitle("Messages", colors)
         val notSent = ledger.byStatus.firstOrNull { it.first == "not-sent" }?.second ?: 0
@@ -1033,7 +1101,7 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors) {
             }
         }
         val shown = ledger.byStatus.filter { it.second > 0 }
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 10.dp).height(8.dp)
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = if (strip != null) 6.dp else 10.dp).height(8.dp)
             .clearAndSetSemantics { contentDescription = shown.joinToString(", ") { "${statusLabel(it.first)} ${it.second}" } },
             horizontalArrangement = Arrangement.spacedBy(1.dp)) {
             for ((status, count) in shown) {
@@ -1041,6 +1109,8 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors) {
                     .background(statusColor(status, colors), RoundedCornerShape(2.dp)))
             }
         }
+        // The legend follows 10 dp under the strip, or 10 dp under the bar.
+        strip?.invoke()
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             for ((status, count) in shown) {
                 // The usual outcomes are quiet; the ones to look at keep the text color.
@@ -1054,6 +1124,65 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors) {
                 }
             }
         }
+    }
+}
+
+/**
+ * Port of CountStrip: messages over time, a 24 dp plot (3 dp insets) over a 16 dp tick row. A 1.5 dp line in the rest chord [gray]
+ * joins the bucket points; a bucket with a not-sent message has a 3 dp dot in the not-sent color. The tick row names the first and
+ * the last bucket, or the [chosen] bucket (a tap or a drag chooses the nearest one) with a 1 dp muted line at its point.
+ */
+@Composable
+private fun CountStrip(buckets: List<BucketCount>, unit: String, gray: Color, colors: ActivityColors, chosen: Int?, onChoose: (Int) -> Unit,
+    modifier: Modifier = Modifier) {
+    val measurer = rememberTextMeasurer()
+    val style = TextStyle(fontSize = 11.sp, color = colors.muted)
+    val bad = statusColor("not-sent", colors)
+    val name = "Messages per ${if (unit == "hour") "hour" else "day"}"
+    val tip = chosen?.let { buckets.getOrNull(it) }?.let { messageBucketTip(it.startMs, it.count, it.bad, unit) }
+    val currentChoose by rememberUpdatedState(onChoose)
+    Canvas(modifier.fillMaxWidth().height(40.dp)
+        .clearAndSetSemantics { contentDescription = listOfNotNull(name, tip).joinToString(", ") }
+        .pointerInput(buckets.size) {
+            detectTapGestures { at -> stripBucketAt(at.x, buckets.size, size.width.toFloat(), 3.dp.toPx())?.let(currentChoose) }
+        }
+        .pointerInput(buckets.size) {
+            val pick = { x: Float -> stripBucketAt(x, buckets.size, size.width.toFloat(), 3.dp.toPx())?.let(currentChoose) }
+            detectHorizontalDragGestures(onDragStart = { pick(it.x) }) { change, _ -> pick(change.position.x) }
+        }) {
+        val dp = density
+        val inset = 3 * dp
+        val plot = 24 * dp
+        val largest = buckets.maxOf { it.count }
+        val points = buckets.mapIndexed { i, b -> Offset(stripX(i, buckets.size, size.width, inset), stripY(b.count, largest, plot, inset)) }
+        val x = chosen?.let { points.getOrNull(it) }?.x
+        if (x != null) drawLine(colors.muted, Offset(x, 0f), Offset(x, plot), 1 * dp)
+        if (points.size > 1) drawPath(polyline(points), gray, style = Stroke(1.5f * dp, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        for ((point, b) in points.zip(buckets)) if (b.bad > 0) drawCircle(bad, 3 * dp, point)
+        val top = plot + 2 * dp
+        if (tip != null && x != null) {
+            val layout = measurer.measure(tip, style, maxLines = 1)
+            drawText(layout, topLeft = Offset(stripTipLeft(x, layout.size.width.toFloat(), size.width), top))
+        } else {
+            val first = measurer.measure(stripBucketName(buckets.first().startMs, unit), style, maxLines = 1)
+            drawText(first, topLeft = Offset(0f, top))
+            if (buckets.size > 1) {
+                val last = measurer.measure(stripBucketName(buckets.last().startMs, unit), style, maxLines = 1)
+                drawText(last, topLeft = Offset(size.width - last.size.width, top))
+            }
+        }
+    }
+}
+
+/** A 3 dp accent share bar of [fraction] over the bar track, with a 1 dp background gap between them (as the Usage bars). */
+@Composable
+private fun ShareBar(fraction: Float, colors: ActivityColors, modifier: Modifier = Modifier) {
+    Canvas(modifier.fillMaxWidth().height(3.dp)) {
+        val f = fraction.coerceIn(0f, 1f)
+        val corner = CornerRadius(1.5f * density)
+        val start = trackStart(size.width, f, 1 * density)
+        if (start < size.width) drawRoundRect(colors.track, Offset(start, 0f), Size(size.width - start, size.height), corner)
+        if (f > 0) drawRoundRect(colors.accent, Offset.Zero, Size(size.width * f, size.height), corner)
     }
 }
 
@@ -1087,13 +1216,15 @@ private fun LedgerView(
         LedgerRule(colors)
         SectionTitle("Busiest pairs", colors)
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            for (pair in busiest) BusyPairRow(pair, title, colors) { onPair(pair) }
+            val most = busiest.maxOfOrNull { it.n } ?: 1
+            for (pair in busiest) BusyPairRow(pair, pair.n.toFloat() / most, title, colors) { onPair(pair) }
         }
         LedgerRule(colors)
         SectionTitle("Between machines", colors)
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            for (row in ledger.machineRows) {
-                Row(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}, horizontalArrangement = Arrangement.spacedBy(6.dp),
+            val most = max(1, ledger.machineRows.maxOfOrNull { it.count } ?: 1)
+            for (row in ledger.machineRows) Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 24.dp), horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                         for (id in row.machineIds) MachineDot(hues[id] ?: colors.text, machineOffline(machines[id]))
@@ -1104,6 +1235,8 @@ private fun LedgerView(
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     Text(formatCount(row.count.toLong()), fontSize = 12.sp, style = figures, color = colors.text)
                 }
+                // The bar starts under the name: after the two-dot slot (two 7 dp dots, 3 dp apart) and the 6 dp row gap.
+                ShareBar(row.count.toFloat() / most, colors, Modifier.padding(start = 23.dp, top = 3.dp))
             }
         }
         LedgerRule(colors)
@@ -1112,29 +1245,32 @@ private fun LedgerView(
     }
 }
 
-/** A Busiest pairs row: the route with each name ellipsized in the middle, the count, and a not-sent line when the pair has some. */
+/**
+ * A Busiest pairs row: the route with each name ellipsized in the middle and the count; a not-sent line 2 dp under the route when the
+ * pair has some; and a share bar of [share] 3 dp under the last line.
+ */
 @Composable
-private fun BusyPairRow(pair: BusyPair, title: (String) -> String, colors: ActivityColors, onClick: () -> Unit) {
+private fun BusyPairRow(pair: BusyPair, share: Float, title: (String) -> String, colors: ActivityColors, onClick: () -> Unit) {
     val a = title(pair.a)
     val b = title(pair.b)
     val spoken = "$a and $b, ${plural(pair.n, "message")}" + if (pair.bad > 0) ", ${formatCount(pair.bad.toLong())} not sent" else ""
-    Row(Modifier.fillMaxWidth().heightIn(min = 26.dp).clickable(onClick = onClick).clearAndSetSemantics {
-        contentDescription = spoken; role = Role.Button
-    }, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).clearAndSetSemantics { contentDescription = spoken; role = Role.Button }) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 26.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val name = Modifier.weight(1f, fill = false)
                 Text(a, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = name)
                 Text("⇄", fontSize = 12.sp, color = colors.text, maxLines = 1)
                 Text(b, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = name)
             }
-            if (pair.bad > 0) Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                val word = statusWordColor("not-sent", colors)
-                StatusIcon("not-sent", word, 12.dp)
-                Text("${formatCount(pair.bad.toLong())} not sent", fontSize = 12.sp, style = figures, color = word, maxLines = 1)
-            }
+            Text(formatCount(pair.n.toLong()), fontSize = 12.sp, style = figures, color = colors.text)
         }
-        Text(formatCount(pair.n.toLong()), fontSize = 12.sp, style = figures, color = colors.text)
+        if (pair.bad > 0) Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            StatusIcon("not-sent", statusWordColor("not-sent", colors), 12.dp)
+            Text("${formatCount(pair.bad.toLong())} not sent", fontSize = 11.sp, style = figures, color = colors.muted, maxLines = 1)
+        }
+        ShareBar(share, colors, Modifier.padding(top = 3.dp))
     }
 }
 
@@ -1147,7 +1283,7 @@ private fun LedgerRule(colors: ActivityColors) {
 
 @Composable
 private fun AppMatrix(ledger: Ledger, colors: ActivityColors) {
-    val cell = Modifier.height(24.dp).padding(horizontal = 4.dp)
+    val cell = Modifier.height(24.dp).padding(start = 4.dp)
     Column(Modifier.fillMaxWidth().semantics { contentDescription = "Messages from app (rows) to app (columns)" }) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("From → To", fontSize = 11.sp, color = colors.muted, maxLines = 1, modifier = Modifier.width(118.dp).then(cell))

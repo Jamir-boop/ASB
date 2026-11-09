@@ -25,7 +25,7 @@ import local.asb.companion.data.busiestPairs
 import local.asb.companion.data.contrast
 import local.asb.companion.data.contrastFloor
 import local.asb.companion.data.messageStatusLabel
-import local.asb.companion.data.notSentCounts
+import local.asb.companion.data.seatCounts
 import local.asb.companion.data.seatTitles
 import local.asb.companion.data.statusTextOn
 import local.asb.companion.data.unlistedName
@@ -54,10 +54,10 @@ class CouncilRoundThreeTest {
     // ---------- Messages ----------
 
     @Test fun notSentEndsStartAtThePinRim() {
-        // 15% of a 400 px chord, from 16 px before the receiver pin.
-        assertEquals(384f to 324f, notSentEndSpan(400f, 1f, forward = true))
-        assertEquals(16f to 76f, notSentEndSpan(400f, 1f, forward = false))
-        // At least 24 dp, at most half of the chord.
+        // Round 4: 24 dp of a 400 px chord (no longer 15%), from 16 px before the receiver pin.
+        assertEquals(384f to 360f, notSentEndSpan(400f, 1f, forward = true))
+        assertEquals(16f to 40f, notSentEndSpan(400f, 1f, forward = false))
+        // 24 dp, at most half of the chord.
         assertEquals(84f to 60f, notSentEndSpan(100f, 1f, forward = true))
         assertEquals(32f to 80f, notSentEndSpan(200f, 2f, forward = false))
         assertEquals(24f to 4f, notSentEndSpan(40f, 1f, forward = true))
@@ -177,9 +177,10 @@ class CouncilRoundThreeTest {
         assertEquals("Not sent · Machine offline", messageStatusLabel(message("1", "a", "b", 1, "not-sent", reason = "Machine offline")))
         assertEquals("Not sent", messageStatusLabel(message("1", "a", "b", 1, "not-sent")))
         assertEquals("On hold", messageStatusLabel(message("1", "a", "b", 1, "held", reason = "x")))
-        val counts = notSentCounts(listOf(message("1", "a", "b", 1, "not-sent"), message("2", "b", "a", 2, "not-sent"),
-            message("3", "a", "c", 3)))
-        assertEquals(mapOf("a" to 2, "b" to 2), counts)
+        // Round 4: each seat counts its not-sent messages per direction.
+        val counts = seatCounts(listOf(message("1", "a", "b", 1, "not-sent"), message("2", "b", "a", 2, "not-sent"),
+            message("3", "a", "c", 3))).mapValues { it.value.badSent + it.value.badReceived }
+        assertEquals(mapOf("a" to 2, "b" to 2, "c" to 0), counts)
     }
 
     @Test fun statusWordsHaveFourAndAHalfToOne() {

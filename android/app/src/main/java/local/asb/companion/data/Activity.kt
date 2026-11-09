@@ -65,6 +65,7 @@ data class ActivityMessages(
     val seats: List<Seat> = emptyList(),
     val messages: List<ActivityMessage> = emptyList(),
     val truncated: Boolean = false,
+    val buckets: ActivityBuckets = ActivityBuckets(),
 )
 
 @Serializable
@@ -193,9 +194,46 @@ fun statusLabel(status: String): String = when (status) {
 
 fun statusKey(status: String): String = if (status in STATUS_ORDER) status else "unknown"
 
-/** Port of message_status_label: the status name; a not-sent message adds its reason (Not sent · Machine offline). */
-fun messageStatusLabel(message: ActivityMessage): String =
-    if (statusKey(message.status) == "not-sent" && message.reason.isNotEmpty()) "Not sent · ${message.reason}" else statusLabel(message.status)
+/**
+ * Port of message_failure_reason: with a known name of the receiver machine (the machineId of the `to` seat, or the ID after
+ * `unknown:`), Machine offline becomes `Desk was not reachable` and Refused becomes `Refused by Desk`; else the reason stays.
+ */
+fun messageFailureReason(message: ActivityMessage, seats: Map<String, Seat> = emptyMap(), machines: List<ActivityMachine> = emptyList()): String {
+    val machineId = seats[message.to]?.machineId?.takeIf { it.isNotEmpty() } ?: message.to.removePrefix("unknown:").takeIf { message.to.startsWith("unknown:") }
+    val name = machines.firstOrNull { it.machineId == machineId }?.name?.takeIf { it.isNotEmpty() } ?: return message.reason
+    return when (message.reason) {
+        "Machine offline" -> "$name was not reachable"
+        "Refused" -> "Refused by $name"
+        else -> message.reason
+    }
+}
+
+/** Port of message_status_label: the status name; a not-sent message adds its reason (Not sent · Desk was not reachable). */
+fun messageStatusLabel(message: ActivityMessage, seats: Map<String, Seat> = emptyMap(), machines: List<ActivityMachine> = emptyList()): String =
+    if (statusKey(message.status) == "not-sent" && message.reason.isNotEmpty()) "Not sent · ${messageFailureReason(message, seats, machines)}"
+    else statusLabel(message.status)
+
+/** One count strip bucket: its start, its messages, and its not-sent messages. */
+data class BucketCount(val startMs: Long, val count: Int, val bad: Int)
+
+/**
+ * Port of message_buckets: a message goes in the last bucket whose start is at or before its time, so the local starts of the reply
+ * decide each bucket; a message before the first start counts in none.
+ */
+fun messageBuckets(reply: ActivityMessages): List<BucketCount> {
+    val starts = reply.buckets.startsMs
+    val counts = IntArray(starts.size)
+    val bad = IntArray(starts.size)
+    for (m in reply.messages) {
+        // binarySearch gives the index of an equal start, else -(insertion point) - 1.
+        val found = starts.binarySearch(m.atMs)
+        val index = if (found >= 0) starts.lastIndexOf(m.atMs) else -found - 2
+        if (index < 0) continue
+        counts[index]++
+        if (statusKey(m.status) == "not-sent") bad[index]++
+    }
+    return starts.mapIndexed { i, start -> BucketCount(start, counts[i], bad[i]) }
+}
 
 /** The hue of the machine at [index] in machine order; the list repeats. */
 fun machineHue(index: Int): String = MACHINE_HUES[index.coerceAtLeast(0) % MACHINE_HUES.size]
@@ -244,13 +282,6 @@ fun busiestPairs(reply: ActivityMessages, limit: Int = 5): List<BusyPair> {
     return pairs.values.sortedWith(compareBy({ -it.n }, { -it.last }, { rank(it.a) }, { rank(it.b) })).take(limit)
 }
 
-/** The not-sent messages each seat sent or received. */
-fun notSentCounts(messages: List<ActivityMessage>): Map<String, Int> {
-    val counts = HashMap<String, Int>()
-    for (m in messages) if (statusKey(m.status) == "not-sent") for (id in listOf(m.from, m.to).distinct()) counts[id] = (counts[id] ?: 0) + 1
-    return counts
-}
-
 /** Seats in circle order: machines in reply order, then seat `order`; a seat of an unlisted machine goes last. */
 fun circleOrder(reply: ActivityMessages): List<Seat> {
     val machineIndex = reply.machines.mapIndexed { index, machine -> machine.machineId to index }.toMap()
@@ -284,13 +315,15 @@ fun seatedSeats(reply: ActivityMessages, selected: String?, limit: Int = SEAT_LI
     return circle.filter { it.id in chosen }
 }
 
-data class SeatCount(val sent: Int = 0, val received: Int = 0)
+/** The messages a seat sent and received; [badSent] and [badReceived] count the not-sent ones. */
+data class SeatCount(val sent: Int = 0, val received: Int = 0, val badSent: Int = 0, val badReceived: Int = 0)
 
 fun seatCounts(messages: List<ActivityMessage>): Map<String, SeatCount> {
     val counts = HashMap<String, SeatCount>()
     for (message in messages) {
-        counts[message.from] = counts[message.from].orEmpty().let { it.copy(sent = it.sent + 1) }
-        counts[message.to] = counts[message.to].orEmpty().let { it.copy(received = it.received + 1) }
+        val bad = if (statusKey(message.status) == "not-sent") 1 else 0
+        counts[message.from] = counts[message.from].orEmpty().let { it.copy(sent = it.sent + 1, badSent = it.badSent + bad) }
+        counts[message.to] = counts[message.to].orEmpty().let { it.copy(received = it.received + 1, badReceived = it.badReceived + bad) }
     }
     return counts
 }

@@ -89,8 +89,9 @@ class CouncilRoundTwoTest {
 
     @Test fun seatLabelTextsCutTo24Then10Then7() {
         assertEquals(listOf("Short"), seatLabelTexts("Short"))
-        assertEquals(listOf("Nine char", "Nine ch…"), seatLabelTexts("Nine char"))
-        assertEquals(listOf("Twelve chars", "Twelve cha…", "Twelve …"), seatLabelTexts("Twelve chars"))
+        // Round 4: a two-line text after the last break, and a cut drops trailing separators.
+        assertEquals(listOf("Nine char", "Nine \nchar", "Nine ch…"), seatLabelTexts("Nine char"))
+        assertEquals(listOf("Twelve chars", "Twelve \nchars", "Twelve cha…", "Twelve…"), seatLabelTexts("Twelve chars"))
         val long = "A title that is longer than 24 characters"
         assertEquals(listOf(long.take(24) + "…", long.take(10) + "…", long.take(7) + "…"), seatLabelTexts(long))
     }

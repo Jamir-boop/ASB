@@ -143,6 +143,14 @@ fun messageTime(ms: Long, nowMs: Long, period: String): String {
     return "${if (days <= 6) WEEKDAY.format(local(ms)) else formatDate(ms)} ${formatTime(ms)}"
 }
 
+/** The name of a count strip bucket: the clock for an hour (`16:00`), else the date (`Oct 20`). */
+fun stripBucketName(startMs: Long, unit: String): String = if (unit == "hour") formatTime(startMs) else formatDate(startMs)
+
+/** Port of message_bucket_tip: `Oct 22: 84 messages, 2 not sent` or `14:00: 1 message`. */
+fun messageBucketTip(startMs: Long, count: Int, bad: Int, unit: String): String =
+    "${stripBucketName(startMs, unit)}: ${formatCount(count.toLong())} message${if (count == 1) "" else "s"}" +
+        if (bad > 0) ", ${formatCount(bad.toLong())} not sent" else ""
+
 /** Today, Yesterday, or the date, by local calendar day. */
 fun dayText(ms: Long, nowMs: Long): String = when (ChronoUnit.DAYS.between(local(ms).toLocalDate(), local(nowMs).toLocalDate())) {
     0L -> "Today"
