@@ -17589,6 +17589,172 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         # Two lines of about 232 px (it was three lines of 203 px).
         self.assertGreater(box.get_width(), 203)
 
+    def shortcut(self, window, trigger):
+        """Run the window shortcut of the trigger as GTK does; False when it did nothing."""
+        controller = window.shortcuts
+        for position in range(controller.get_n_items()):
+            item = controller.get_item(position)
+            if item.get_trigger().to_string() == trigger:
+                return item.get_action().activate(0, window, None)
+        raise AssertionError(trigger)
+
+    def test_M6b_D19_N1_N2_a_time_thread_has_the_strip_with_its_bucket_marked(self):
+        window = self.window()
+        strip, palette = window.thread_strip, window.palette
+        # N1: only a time thread has the strip and the step buttons.
+        for kind, key in (("pair", ("release-plan", "parser-review")), ("session", "docs"), ("status", "written"), ("all", "all")):
+            window.open_thread(kind, key); self.drain(.3)
+            self.assertFalse(strip.get_visible() or window.thread_steps.get_visible(), kind)
+            self.assertIsNone(strip.open)
+        window.close_thread(); self.drain(.3)
+        window.open_time(2); self.drain(.5)
+        self.assertTrue(strip.get_visible() and strip.get_mapped() and window.thread_steps.get_mapped())
+        self.assertEqual((strip.open, strip.buckets, strip.unit), (2, window.count_strip.buckets, "day"))
+        self.assertTrue(strip.in_thread)
+        bounds = lambda widget: widget.compute_bounds(window.thread_head)[1]
+        # Under the counts line, at the insets of the head (from the x of the back button to the end of the titles), above the list.
+        self.assertEqual(bounds(strip).get_x(), bounds(window.thread_back).get_x())
+        titles = window.thread_route.get_parent().get_parent()
+        self.assertEqual(bounds(strip).get_x() + bounds(strip).get_width(), bounds(titles).get_x() + bounds(titles).get_width())
+        self.assertGreaterEqual(bounds(strip).get_y(), bounds(window.thread_counts).get_y() + bounds(window.thread_counts).get_height())
+        self.assertEqual((strip.plot, strip.get_height()), (24, 40))
+        # N2: a 2 px accent line at the bucket x on device pixels, and the not-sent mark of Oct 22 with a 1.5 px accent ring.
+        self.assertEqual(strip.buckets[2][1:], (95, 1))
+        _snapshot, strokes, circles, rects = self.strip_calls(strip)
+        line = [call.args for call in rects.call_args_list if asb.hex_color(call.args[5]) == palette["accent"]]
+        self.assertEqual([args[1:5] for args in line], [(round(strip.x(2)) - 1, 0, 2, strip.plot)])
+        point = (strip.snap(strip.x(2)), strip.snap(strip.y(95)))
+        ring = [call.args for call in strokes.call_args_list if call.args[2] == 1.5 and asb.hex_color(call.args[3]) == palette["accent"]]
+        self.assertEqual([args[1].to_string() for args in ring], [asb.circle_path(*point, strip.dot_radius() + 1.75).to_string()])
+        bad = asb.message_status_colors(palette)["not-sent"]
+        self.assertIn((*point, strip.dot_radius()), [call.args[1:4] for call in circles.call_args_list if asb.hex_color(call.args[4]) == bad])
+        # A bucket with no not-sent message: an accent dot of 3 px over a 1 px window casing.
+        window.open_time(1, True); self.drain(.5)
+        self.assertEqual(strip.open, 1)
+        _snapshot, _strokes, circles, _rects = self.strip_calls(strip)
+        point = (strip.snap(strip.x(1)), strip.snap(strip.y(strip.buckets[1][1])))
+        dots = [(call.args[3], asb.hex_color(call.args[4])) for call in circles.call_args_list if call.args[1:3] == point]
+        self.assertEqual(dots, [(4, palette["win"]), (3, palette["accent"])])
+        # The keyboard cursor starts on the open bucket, and draws over the mark as on other buckets.
+        window.set_focus_visible(True)
+        strip.grab_focus(); self.drain(.1)
+        self.assertEqual((strip.hover, strip.keyboard), (1, True))
+        _snapshot, strokes, circles, _rects = self.strip_calls(strip)
+        self.assertEqual([(call.args[3], asb.hex_color(call.args[4])) for call in circles.call_args_list if call.args[1:3] == point][-2:],
+                         [(4, palette["win"]), (3, palette["text"])])
+
+    def test_M6b_D19_N3_to_N7_buckets_and_steps_change_the_time_thread_in_place(self):
+        window = self.window()
+        strip, starts = window.thread_strip, window.data["buckets"]["startsMs"]
+        window.open_thread("all", "all"); self.drain(.4)
+        window.open_time(2); self.drain(.5)
+        self.assertEqual(len(window.thread_stack), 1)
+        # N3: a click on another bucket shows its thread in place; the stack keeps its depth and Back its target.
+        click = next(item for item in strip.observe_controllers() if isinstance(item, asb.Gtk.GestureClick))
+        click.emit("released", 1, strip.x(3), 4); self.drain(.5)
+        self.assertEqual((window.thread["key"], len(window.thread_stack)), ((starts[3], starts[4]), 1))
+        self.assertEqual(window.thread_back.get_tooltip_text(), "Back to All messages (Esc)")
+        self.assertTrue(window.thread_stick)
+        # The open bucket does nothing; Left and Enter go to the bucket before it.
+        before = len(self.routes)
+        click.emit("released", 1, strip.x(3), 4); self.drain(.3)
+        self.assertEqual((window.thread["key"], len(self.routes)), ((starts[3], starts[4]), before))
+        strip.grab_focus(); self.drain(.1)
+        self.assertEqual(strip.hover, 3)
+        strip.key_pressed(None, asb.Gdk.KEY_Left, 0, 0)
+        self.assertTrue(strip.key_pressed(None, asb.Gdk.KEY_Return, 0, 0)); self.drain(.5)
+        self.assertEqual((window.thread["key"], len(window.thread_stack)), ((starts[2], starts[3]), 1))
+        self.assertEqual(strip.hover, 2)
+        # N4: the step buttons, their tooltips and names with the fixture counts.
+        up, down = window.thread_up, window.thread_down
+        self.assertEqual((up.get_icon_name(), down.get_icon_name(), up.get_has_frame(), down.get_has_frame()),
+                         ("go-up-symbolic", "go-down-symbolic", False, False))
+        self.assertEqual((up.get_width(), up.get_height(), down.get_width()), (24, 24, 24))
+        self.assertEqual(round(down.compute_bounds(up)[1].get_x() - up.get_width()), 4)
+        self.assertIs(window.thread_steps.get_parent(), window.thread_route.get_parent())
+        self.assertEqual(strip.buckets[1][1:], (94, 0))
+        self.assertEqual(strip.buckets[3][1], 91)
+        self.assertEqual(up.get_tooltip_text(), f"{asb.format_day(starts[1])}: 94 messages (Alt+Up)")
+        self.assertEqual(down.get_tooltip_text(), f"{asb.message_bucket_tip(*strip.buckets[3], 'day')} (Alt+Down)")
+        self.assert_accessible_label(up, f"Previous day: {asb.format_day(starts[1])}, 94 messages")
+        self.assert_accessible_label(down, f"Next day: {asb.format_day(starts[3])}, 91 messages")
+        # A step changes the thread in place; the focus stays on the pressed button, and moves at an end.
+        up.grab_focus()
+        up.emit("clicked"); self.drain(.5)
+        self.assertEqual((window.thread["key"], len(window.thread_stack)), ((starts[1], starts[2]), 1))
+        self.assertTrue(up.has_focus())
+        up.emit("clicked"); self.drain(.5)
+        self.assertEqual(window.thread["key"], (starts[0], starts[1]))
+        self.assertFalse(up.get_sensitive())
+        self.assertTrue(down.has_focus())
+        # The current bucket says so far; the last bucket ends the steps.
+        for _index in range(len(starts) - 1):
+            down.emit("clicked"); self.drain(.3)
+        self.assertEqual(window.thread["key"], (starts[-1], asb.message_bucket_end(window.data)))
+        self.assertFalse(down.get_sensitive())
+        self.assertTrue(up.has_focus())
+        # N5: Alt+Up and Alt+Down step while a time thread is open.
+        self.assertTrue(self.shortcut(window, "<Alt>Up")); self.drain(.4)
+        self.assertEqual(window.thread["key"], (starts[-2], starts[-1]))
+        self.assertTrue(self.shortcut(window, "<Alt>Down")); self.drain(.4)
+        self.assertEqual(window.thread["key"][0], starts[-1])
+        self.assertTrue(self.shortcut(window, "<Alt>Down")); self.drain(.2)
+        self.assertEqual(window.thread["key"][0], starts[-1])
+        self.assertEqual(len(window.thread_stack), 1)
+        # N6: the first Escape clears the strip cursor, the next goes back to All messages, then to the overview.
+        strip.grab_focus(); self.drain(.1)
+        self.assertIsNotNone(strip.hover)
+        window.window_key(None, asb.Gdk.KEY_Escape, 0, 0); self.drain(.2)
+        self.assertIsNone(strip.hover)
+        self.assertEqual(window.thread["kind"], "time")
+        window.window_key(None, asb.Gdk.KEY_Escape, 0, 0); self.drain(.4)
+        self.assertEqual(window.thread["kind"], "all")
+        # Nothing happens in another thread.
+        self.assertFalse(self.shortcut(window, "<Alt>Up"))
+        self.assertEqual(window.thread["kind"], "all")
+        # In 24 hours the steps skip the empty hours, and an empty bucket is no target.
+        window.set_period("24h"); self.drain(.5)
+        hours, overview = window.data["buckets"]["startsMs"], window.count_strip
+        empty = [index for index, bucket in enumerate(overview.buckets) if not bucket[1]]
+        self.assertIn(4, empty)
+        window.open_time(5); self.drain(.5)
+        self.assertEqual(window.time_steps(), (3, 15))
+        self.assertEqual(window.thread_up.get_tooltip_text(), f"{asb.format_clock(hours[3])}: 3 messages (Alt+Up)")
+        self.assert_accessible_label(window.thread_down, f"Next hour: {asb.format_clock(hours[15])}, 5 messages")
+        window.close_thread(); self.drain(.3)
+        motion = next(item for item in overview.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
+        motion.emit("motion", overview.x(4), 4); self.drain(.05)
+        self.assertEqual(overview.hover, 4)
+        self.assertIsNone(overview.get_cursor())
+        tooltip = Mock()
+        overview.query_tooltip(overview, 0, 0, False, tooltip)
+        self.assertEqual(tooltip.set_text.call_args.args[0], f"{asb.format_clock(hours[4])}: 0 messages")
+        self.assertEqual(overview.hover_names()[4], 0)
+        _snapshot, _strokes, _circles, rects = self.strip_calls(overview)
+        self.assertFalse([call for call in rects.call_args_list if round(call.args[5].alpha, 2) == .06])
+        overview_click = next(item for item in overview.observe_controllers() if isinstance(item, asb.Gtk.GestureClick))
+        overview_click.emit("released", 1, overview.x(4), 4); self.drain(.3)
+        self.assertIsNone(window.thread)
+        overview.grab_focus()
+        overview.key_pressed(None, asb.Gdk.KEY_Home, 0, 0)
+        for _step in range(4):
+            overview.key_pressed(None, asb.Gdk.KEY_Right, 0, 0)
+        self.assertEqual(overview.hover, 4)
+        overview.key_pressed(None, asb.Gdk.KEY_Return, 0, 0); self.drain(.3)
+        self.assertIsNone(window.thread)
+        # N7: the Older messages row opens a time thread stacked on All messages, with the strip and the steps.
+        window.set_period("7d"); self.drain(.5)
+        window.open_thread("all", "all"); self.drain(.4)
+        record = window.data["messages"][-1]
+        window.thread["limit"] = 600
+        window.thread_reply = {"total": 700, "messages": [dict(record, id=f"m-cap-{number}", atMs=starts[1] + number, text=None)
+                                                          for number in range(600)]}
+        window.thread_shown = None
+        window.render_thread_list(); self.drain(.3)
+        window.thread_top.emit("clicked"); self.drain(.5)
+        self.assertEqual((window.thread["key"], len(window.thread_stack), strip.open), ((starts[1], starts[2]), 1, 1))
+        self.assertTrue(window.thread_up.get_sensitive())
+
     def test_D15_S3_the_all_messages_thread_has_a_row_to_older_messages_after_600(self):
         window = self.window()
         window.open_thread("all", "all"); self.drain(.4)
@@ -18685,7 +18851,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
 
     def thread_page_back(self, window):
         head = window.ledger.get_child_by_name("thread").get_first_child()
-        return head.get_first_child()
+        return head.get_first_child().get_first_child()
 
     def all_labels(self, window):
         return [widget.get_label() for widget in self.tree(window) if isinstance(widget, asb.Gtk.Label) and widget.get_mapped()]

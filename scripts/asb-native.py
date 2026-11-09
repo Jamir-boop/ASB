@@ -14547,6 +14547,11 @@ class CountStrip(Gtk.Widget):
         self.window, self.buckets, self.unit, self.hover, self.partial = window, [], "hour", None, False
         # True while the cursor came from the keyboard: the tooltip then names Enter.
         self.keyboard, self.chevron = False, None
+        # The strip of a time thread: the bucket of the thread (open), which a bucket replaces in place.
+        self.in_thread, self.open = False, None
+        focus = Gtk.EventControllerFocus()
+        focus.connect("enter", self.focus_entered)
+        self.add_controller(focus)
         self.set_has_tooltip(True)
         self.connect("query-tooltip", self.query_tooltip)
         self.connect("state-flags-changed", lambda *_args: self.queue_draw())
@@ -14565,14 +14570,25 @@ class CountStrip(Gtk.Widget):
 
     def pointer_moved(self, _controller, x, _y):
         self.keyboard = False
-        self.set_hover(self.bucket_at(x))
-        self.set_cursor_from_name("pointer" if self.buckets else None)
+        index = self.bucket_at(x)
+        self.set_hover(index)
+        self.set_cursor_from_name("pointer" if index is not None and self.target(index) else None)
 
     def clicked(self, _gesture, _count, x, _y):
         # The plot and the name row under a bucket open its messages.
         index = self.bucket_at(x)
-        if index is not None:
-            self.window.open_time(index)
+        if index is not None and self.target(index):
+            self.window.open_time(index, self.in_thread)
+
+    def target(self, index):
+        """A bucket that opens its messages: it has messages, and it is not the open bucket of a time thread."""
+        return self.buckets[index][1] > 0 and index != self.open
+
+    def focus_entered(self, *_args):
+        # In a time thread the keyboard cursor starts on the open bucket.
+        if self.open is not None and self.hover is None:
+            self.keyboard = True
+            self.set_hover(self.open)
 
     def set_scale(self):
         scale = self.window.text_scale
@@ -14636,7 +14652,8 @@ class CountStrip(Gtk.Widget):
         if index is None:
             self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         else:
-            self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [f"{self.tip(index)}. Press Enter to read these messages"])
+            self.update_property([Gtk.AccessibleProperty.DESCRIPTION],
+                                 [f"{self.tip(index)}. Press Enter to read these messages" if self.target(index) else self.tip(index)])
         self.trigger_tooltip_query()
         self.queue_draw()
 
@@ -14645,7 +14662,8 @@ class CountStrip(Gtk.Widget):
         steps = {Gdk.KEY_Left: -1, Gdk.KEY_KP_Left: -1, Gdk.KEY_Right: 1, Gdk.KEY_KP_Right: 1}
         ends = {Gdk.KEY_Home: 0, Gdk.KEY_KP_Home: 0, Gdk.KEY_End: last, Gdk.KEY_KP_End: last}
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter, Gdk.KEY_space, Gdk.KEY_KP_Space) and self.hover is not None:
-            self.window.open_time(self.hover)
+            if self.target(self.hover):
+                self.window.open_time(self.hover, self.in_thread)
             return True
         if last < 0 or (keyval not in steps and keyval not in ends):
             return False
@@ -14658,7 +14676,7 @@ class CountStrip(Gtk.Widget):
         if self.hover is None:
             return False
         action = "Press Enter" if self.keyboard else "Click"
-        tooltip.set_text(f"{self.tip(self.hover)}\n{action} to read these messages")
+        tooltip.set_text(f"{self.tip(self.hover)}\n{action} to read these messages" if self.target(self.hover) else self.tip(self.hover))
         return True
 
     def hover_names(self):
@@ -14667,7 +14685,8 @@ class CountStrip(Gtk.Widget):
         scale, width = self.window.text_scale, self.get_width()
         ends = self.names()[0]
         layout = activity_layout(self, self.readout(self.hover), 11 * scale)
-        icon, gap = round(12 * scale), 4 * scale
+        # A bucket that opens nothing has no chevron.
+        icon, gap = (round(12 * scale), 4 * scale) if self.target(self.hover) else (0, 0)
         wide = layout.get_pixel_extents()[1].width
         if len(ends) > 1:
             left = ends[0][0].get_pixel_extents()[1].width + 12 * scale
@@ -14744,12 +14763,17 @@ class CountStrip(Gtk.Widget):
         points = [(self.snap(self.x(index)), self.snap(self.y(count))) for index, (_start, count, _bad) in enumerate(self.buckets)]
         partial = self.partial and len(points) > 1
         radius = self.dot_radius()
-        if self.hover is not None:
+        if self.hover is not None and self.target(self.hover):
             # The slot of the bucket at the cursor has the ledger row hover fill, under the baseline, the line, and the dots.
             left, right = self.slot(self.hover)
             usage_rect(snapshot, left, 0, right - left, self.plot, alpha_color(text, .06))
         # The zero baseline under the line, as the Usage chart baseline.
         usage_rect(snapshot, points[0][0], self.snap(self.y(0)) - .5, points[-1][0] - points[0][0], 1, rgba(palette["rule"]))
+        accent = rgba(palette["accent"])
+        if self.open is not None:
+            # The open bucket of a time thread: a 2 px accent line over the plot height, on device pixels.
+            factor = self.get_scale_factor()
+            usage_rect(snapshot, round(self.x(self.open) * factor) / factor - 1, 0, 2, self.plot, accent)
         if self.hover is not None:
             builder = Gsk.PathBuilder.new()
             builder.move_to(points[self.hover][0], 0)
@@ -14782,6 +14806,16 @@ class CountStrip(Gtk.Widget):
         for index, ((x, y), (_start, _count, failed)) in enumerate(zip(points, self.buckets)):
             if failed and not (ring and index == len(points) - 1):
                 snapshot_circle(snapshot, x, y, radius, rgba(bad_color))
+        if self.open is not None:
+            x, y = points[self.open]
+            if self.buckets[self.open][2]:
+                # A not-sent mark keeps its color and form, with a 1.5 px accent ring around it (a 1 px gap).
+                edge = radius + (.75 if ring and self.open == len(points) - 1 else 0)
+                snapshot_stroke(snapshot, circle_path(x, y, edge + 1.75), 1.5, accent)
+            else:
+                # An accent dot of 3 px on the count line, over a 1 px casing in the window color.
+                snapshot_circle(snapshot, x, y, 3 * scale + 1, rgba(win))
+                snapshot_circle(snapshot, x, y, 3 * scale, accent)
         if self.hover is not None:
             x, y = points[self.hover]
             if self.buckets[self.hover][2]:
@@ -14798,7 +14832,8 @@ class CountStrip(Gtk.Widget):
             ends, layout, x, icon_x, icon = self.hover_names()
             caption, dot_x = [], None
             snapshot_layout(snapshot, layout, x, top, rgba(text))
-            self.snapshot_chevron(snapshot, icon_x, top + (layout.get_pixel_size()[1] - icon) / 2, icon, dim)
+            if icon:
+                self.snapshot_chevron(snapshot, icon_x, top + (layout.get_pixel_size()[1] - icon) / 2, icon, dim)
         for layout, x in ends + caption:
             snapshot_layout(snapshot, layout, x, top, dim)
         if dot_x is not None:
@@ -15017,6 +15052,9 @@ class MessagesWindow(ActivityWindow):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.window_key)
         self.add_controller(keys)
+        time_open = lambda: self.thread is not None and self.thread["kind"] == "time"  # noqa: E731
+        self.add_window_shortcut(self.shortcuts, "<Alt>Up", lambda: self.step_time(-1), time_open)
+        self.add_window_shortcut(self.shortcuts, "<Alt>Down", lambda: self.step_time(1), time_open)
 
     def watch_scroll_edges(self, *args):
         super().watch_scroll_edges(*args)
@@ -15072,6 +15110,7 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-recent label {{ font-weight: normal; font-size: {px(12)}; }}
 {scope} .asb-msg-thead {{ background: {palette['win']}; border-bottom: 2px solid {palette['accent']}; padding: 16px 18px 10px; }}
 {scope} .asb-msg-back {{ min-width: 28px; min-height: {px(28)}; padding: 0; }}
+{scope} .asb-msg-step {{ min-width: {px(24)}; min-height: {px(24)}; padding: 0; }}
 {scope} .asb-msg-route {{ font-size: {px(13)}; font-weight: 600; min-height: {px(28)}; }}
 {scope} .asb-msg-tlist {{ padding: 0 18px {px(16)}; }}
 {scope} .asb-msg-tmore {{ margin-top: 10px; }}
@@ -15832,18 +15871,32 @@ class MessagesWindow(ActivityWindow):
     # The thread.
     def build_thread(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        head = self.thread_head = Gtk.Box(spacing=10)
+        # The back button and the titles, and under both the count strip of a time thread.
+        head = self.thread_head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         head.add_css_class("asb-msg-thead")
+        top = Gtk.Box(spacing=10)
+        head.append(top)
         back = self.thread_back = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back to the overview (Esc)", valign=Gtk.Align.START)
         back.add_css_class("asb-msg-back")
         back.update_property([Gtk.AccessibleProperty.LABEL], ["Back to the overview"])
         back.connect("clicked", lambda *_: self.back_thread())
-        head.append(back)
+        top.append(back)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
-        self.thread_route = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.thread_route = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, hexpand=True)
         self.thread_route.add_css_class("asb-msg-route")
         self.thread_route.set_attributes(no_hyphens(self.thread_route.get_attributes()))
-        titles.append(self.thread_route)
+        line = Gtk.Box(spacing=8)
+        line.append(self.thread_route)
+        # A time thread: two flat 24 px buttons to the previous and the next bucket with messages, 4 px apart.
+        self.thread_steps = Gtk.Box(spacing=round(4 * self.text_scale), valign=Gtk.Align.CENTER, visible=False)
+        for name, icon, direction in (("thread_up", "go-up-symbolic", -1), ("thread_down", "go-down-symbolic", 1)):
+            button = Gtk.Button(icon_name=icon, has_frame=False)
+            button.add_css_class("asb-msg-step")
+            button.connect("clicked", lambda item, step=direction: self.step_time(step, item))
+            setattr(self, name, button)
+            self.thread_steps.append(button)
+        line.append(self.thread_steps)
+        titles.append(line)
         self.thread_counts = label("", "asb-msg-small")
         # Wrapped, with its natural width the widest group, so the counts never make the column wider (render_thread).
         self.thread_counts.set_wrap(True)
@@ -15861,7 +15914,14 @@ class MessagesWindow(ActivityWindow):
         self.thread_tip.set_ellipsize(Pango.EllipsizeMode.END)
         self.thread_tip.set_visible(False)
         titles.append(self.thread_tip)
-        head.append(titles)
+        top.append(titles)
+        # A time thread: the count strip of the period with its bucket marked, at the insets of the head.
+        self.thread_strip = CountStrip(self)
+        self.thread_strip.in_thread = True
+        self.thread_strip.set_visible(False)
+        self.thread_strip.set_margin_top(10)
+        self.thread_strip.set_margin_bottom(6)
+        head.append(self.thread_strip)
         page.append(head)
         self.thread_list = Gtk.Grid(column_homogeneous=True)
         self.thread_list.add_css_class("asb-msg-tlist")
@@ -15880,7 +15940,7 @@ class MessagesWindow(ActivityWindow):
         self.add_controller(mouse_back)
         return page
 
-    def open_thread(self, kind, key, message_id=None, title="", toggle=False):
+    def open_thread(self, kind, key, message_id=None, title="", toggle=False, replace=False):
         if self.data is None:
             return
         key = tuple(key) if kind == "pair" else key
@@ -15889,7 +15949,8 @@ class MessagesWindow(ActivityWindow):
             self.close_thread()
             return
         opened = self.thread is not None
-        if self.thread and not same:
+        # A step between time threads replaces the open one: the Back stack does not grow.
+        if self.thread and not same and not replace:
             self.thread_stack.append((dict(self.thread), self.thread_view_place(), self.narrow_scroll.get_vadjustment().get_value()))
         self.thread_shown = None
         self.thread_blocks = {}
@@ -15917,13 +15978,64 @@ class MessagesWindow(ActivityWindow):
         self.ledger.set_visible_child_name("stats")
         self.scroll_page(pins)
 
-    def open_time(self, index):
-        """A count strip bucket opens its hour or day as a time thread, stacked like the other threads."""
+    def open_time(self, index, replace=False):
+        """A count strip bucket opens its hour or day as a time thread, stacked like the other threads; from the strip or the step
+        buttons of a time thread (replace) it shows in place of that thread. The open bucket and a bucket with no message do nothing."""
         starts = ((self.data or {}).get("buckets") or {}).get("startsMs") or []
-        if not 0 <= index < len(starts):
+        if not 0 <= index < len(starts) or not message_buckets(self.data)[index][1]:
             return
         end = starts[index + 1] if index + 1 < len(starts) else message_bucket_end(self.data)
-        self.open_thread("time", (int(starts[index]), int(end)))
+        key = (int(starts[index]), int(end))
+        if self.thread is not None and self.thread["kind"] == "time" and self.thread["key"] == key:
+            return
+        self.open_thread("time", key, replace=replace and self.thread is not None and self.thread["kind"] == "time")
+
+    def time_steps(self):
+        """The buckets with messages before and after the open bucket of a time thread: (previous, next), each an index or None."""
+        strip = self.thread_strip
+        if self.thread is None or self.thread["kind"] != "time" or strip.open is None:
+            return None, None
+        full = [index for index, bucket in enumerate(strip.buckets) if bucket[1]]
+        return (next((index for index in reversed(full) if index < strip.open), None),
+                next((index for index in full if index > strip.open), None))
+
+    def step_time(self, direction, button=None):
+        """Alt+Up, Alt+Down, and the step buttons: the previous or the next bucket with messages, in place."""
+        index = self.time_steps()[0 if direction < 0 else 1]
+        if index is None:
+            return
+        self.open_time(index, True)
+        if button is not None and not button.get_sensitive():
+            # The focus stays on the pressed button; at an end it moves to the other one.
+            (self.thread_down if button is self.thread_up else self.thread_up).grab_focus()
+
+    def render_steps(self):
+        """The strip and the step buttons of a time thread head; the other threads have none."""
+        time_thread = self.thread["kind"] == "time"
+        self.thread_strip.set_visible(time_thread)
+        self.thread_steps.set_visible(time_thread)
+        if not time_thread:
+            self.thread_strip.open = None
+            return
+        strip = self.thread_strip
+        strip.set_scale()
+        strip.update(self.data)
+        starts = [bucket[0] for bucket in strip.buckets]
+        strip.open = next((index for index, start in enumerate(starts) if start == self.thread["key"][0]), None)
+        if strip.has_focus() and strip.open is not None:
+            # After a step from the strip the keyboard cursor stays on the open bucket.
+            strip.keyboard = True
+            strip.set_hover(strip.open)
+        unit = "hour" if strip.unit == "hour" else "day"
+        for button, index, side, key in zip((self.thread_up, self.thread_down), self.time_steps(), ("Previous", "Next"), ("Alt+Up", "Alt+Down")):
+            button.set_sensitive(index is not None)
+            if index is None:
+                button.set_tooltip_text(None)
+                button.update_property([Gtk.AccessibleProperty.LABEL], [f"{side} {unit}"])
+                continue
+            tip = strip.tip(index)
+            button.set_tooltip_text(f"{tip} ({key})")
+            button.update_property([Gtk.AccessibleProperty.LABEL], [f"{side} {unit}: {tip.replace(': ', ', ', 1)}"])
 
     def back_thread(self):
         # Escape closes the window only 400 ms or more after an Escape or Back that closed a thread.
@@ -16008,7 +16120,7 @@ class MessagesWindow(ActivityWindow):
         return False
 
     def escape_cursors(self):
-        return (self.count_strip,)
+        return (self.count_strip, self.thread_strip)
 
     def escape_back(self):
         if self.thread is None:
@@ -16034,6 +16146,7 @@ class MessagesWindow(ActivityWindow):
         # The first word of each sentence stays with the next word, so no line ends with a one-word start.
         self.thread_tip.set_label(re.sub(r"(^|\. )(\S+) ", "\\1\\2\u00a0", sentence))
         self.thread_tip.set_visible(thread["kind"] == "status")
+        self.render_steps()
         previous = self.thread_stack[-1][0] if self.thread_stack else None
         back = ("All messages" if previous["kind"] == "all" else ACTIVITY_STATUS_LABELS[previous["key"]] if previous["kind"] == "status" else
                 message_time_name(previous["key"], partial=False) if previous["kind"] == "time" else
