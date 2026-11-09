@@ -14,7 +14,8 @@ import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
 import { createRateLoader } from './usage-rates.mjs';
 import { suggestName, validName } from './machine-group.mjs';
 import { encodeLedger, exportDocument, loadLedger, MACHINE_ID, mergeRecord, mergeRecords, readExport, recordKey, validRecord } from './usage-ledger.mjs';
-import { createYielder, loadUsageCache, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, readPrivateJson, saveUsageCache, scanFile, SCAN_REST_RATIO, writePrivateJson } from './usage-scan-cache.mjs';
+import { createYielder, encodeUsageSessions, loadUsageCache, loadUsageSessions, MAX_CACHE_FILES, pathKey, QUARTER_HOUR_MS, readPrivateJson, saveUsageCache,
+  saveUsageSessions, scanFile, SCAN_REST_RATIO, writePrivateJson } from './usage-scan-cache.mjs';
 
 export { USAGE_PERIODS };
 const HOUR_MS = 60 * 60 * 1000;
@@ -156,11 +157,19 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   fetch = globalThis.fetch, homeDir = os.homedir(), env = process.env, platform = process.platform, refreshMs = REFRESH_MS,
   log = console.error, maxCacheFiles = MAX_CACHE_FILES, ledgerFile = '', members = null, busy = () => false, changes = null, timers = { setTimeout, clearTimeout } } = {}) {
   const cacheFile = path.join(cacheDir, 'usage', 'usage-cache.json.gz');
+  const sessionsFile = path.join(cacheDir, 'usage', 'usage-sessions.json.gz');
   const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0, memberBuilds: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
   let cache = null;
-  // The session ID of each cache key (pathKey of the transcript).
+  // The session ID of each cache key (pathKey of the transcript), only in memory.
   const sessionOf = new Map();
+  // The parts with a session ID of the last completed scan. A release keeps them, and ready() loads them from the sessions
+  // file, so the session sums need no scan cache in memory and no scan while a local session works.
+  let kept = null;
+  let keptText = null;
+  let keptSaved = false;
+  let keptFile = false;
+  let keptLoad = null;
   let openCode = [];
   let antigravity = [];
   const antigravityCache = new Map();
@@ -273,12 +282,17 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     for (const key of sessionOf.keys()) if (!seen.has(key)) sessionOf.delete(key);
     Object.assign(progress, { complete: true, files: files.length, scannedFiles: files.length });
     stats.scans += 1;
+    const sessionParts = allParts().filter((part) => part.session);
+    const text = JSON.stringify(encodeUsageSessions(sessionParts));
+    if (text !== keptText) { kept = sessionParts; keptText = text; keptSaved = false; }
     dirty ||= changed;
     if (dirty && (lastSavedAtMs === null || now() - lastSavedAtMs >= SAVE_INTERVAL_MS)) {
       lastSavedAtMs = now();
       dirty = false;
       try { await saveUsageCache(cacheFile, cache, cacheOptions()); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
+      await saveKept();
     }
+    if (!keptFile) await saveKept();
     if (ledgerFile) {
       const nowMs = now();
       if (mergeRecords(ledger.self.records, liveHourly().filter((record) => validRecord(record, nowMs)))) changeLedger();
@@ -524,11 +538,22 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       lastSavedAtMs = now();
       try { await saveUsageCache(cacheFile, cache, cacheOptions()); stats.saves += 1; } catch { log('ASB cannot save its usage cache. It keeps the old file.'); }
     }
+    await saveKept();
     if (!running && cache && (lastAskMs === null || now() - lastAskMs >= RELEASE_AFTER_MS)) {
       cache = null;
       parts = null;
       version += 1;
       stats.releases += 1;
+    }
+  }
+
+  // Saves the kept session parts when the file does not hold them yet.
+  async function saveKept() {
+    if (!kept || keptSaved) return;
+    keptSaved = true;
+    try { await saveUsageSessions(sessionsFile, kept, cacheOptions()); keptFile = true; } catch {
+      keptSaved = false;
+      log('ASB cannot save its usage sessions. It keeps the old file.');
     }
   }
 
@@ -614,7 +639,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const imported = importedOnly(members);
       for (const machine of imported) addMachine(machine.machineId, [...machine.records.values()]);
       // One pricing for all sessions: the table and function of the records. Member sessions come with their models and no cost.
-      const sessionLists = [[machineId, priceSessions(named(sessionSums(localParts(), startsMs[0], endMs).sessions, title), table)],
+      const sessionLists = [[machineId, priceSessions(named(sessionSums(kept || allParts(), startsMs[0], endMs).sessions, title), table)],
         ...members.map((member) => [member.machineId, priceSessions(validSessions(member.sessions)
           .map((item) => ({ ...item, title: item.title || UNLISTED_SESSION })), table)])];
       return {
@@ -640,7 +665,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const usage = ledgerFile ? ledgerViews().hourly.filter((record) => record.hourMs >= sinceMs && record.hourMs < nowMs + HOUR_MS)
         : aggregateHourly(allParts(), sinceMs, nowMs + HOUR_MS);
       // No price table: the asking side prices the models of each session with the table of its records.
-      const sessions = memberSessions(named(sessionSums(allParts(), sinceMs, nowMs + HOUR_MS).sessions, title))
+      const sessions = memberSessions(named(sessionSums(kept || allParts(), sinceMs, nowMs + HOUR_MS).sessions, title))
         .map(({ id, app, title: name, models }) => ({ id, app, title: name, models }));
       return { usage: usage.slice(-MAX_HOURLY_RECORDS), sessions, scan: scanState() };
     },
@@ -710,7 +735,19 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       await running;
       await saveLedger();
     },
-    ready: () => ledgerFile ? ensureLedger() : Promise.resolve(),
+    // Loads the kept session parts one time, before the first report (no scan, no scan cache).
+    async ready() {
+      if (!kept && !keptLoad) {
+        keptLoad = loadUsageSessions(sessionsFile, cacheOptions()).then((loaded) => {
+          if (!loaded || kept) return;
+          kept = loaded;
+          keptText = JSON.stringify(encodeUsageSessions(loaded));
+          keptSaved = keptFile = true;
+        });
+      }
+      await keptLoad;
+      if (ledgerFile) await ensureLedger();
+    },
     flush: () => ledgerFile ? saveLedger() : Promise.resolve(),
     // For tests and the engine: start a scan now (or join the running one) and wait for it.
     refresh: () => ensureScan(true),

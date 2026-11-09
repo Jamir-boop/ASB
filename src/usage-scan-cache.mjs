@@ -262,6 +262,55 @@ export async function saveUsageCache(file, cache, options) {
   await fs.rm(file.replace(/\.gz$/, ''), { force: true });
 }
 
+export const USAGE_SESSIONS_VERSION = 1;
+export const MAX_SESSION_PARTS = 500_000;
+const USAGE_APPS = new Set([...Object.keys(FORMATS), 'opencode', 'antigravity']);
+const TOKEN_KEYS = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
+
+// The session parts of the last completed scan: the app, model, and session ID strings once each, then per part their
+// indexes, the quarter hour, and the four token counts. No title, path, or transcript text.
+export function encodeUsageSessions(parts) {
+  const lists = { apps: [], models: [], sessions: [] };
+  const indexes = { apps: new Map(), models: new Map(), sessions: new Map() };
+  const intern = (name, value) => {
+    let index = indexes[name].get(value);
+    if (index === undefined) { index = lists[name].push(value) - 1; indexes[name].set(value, index); }
+    return index;
+  };
+  return { version: USAGE_SESSIONS_VERSION, ...lists, parts: parts.map(({ app, model, session, atMs, tokens }) => [intern('apps', app),
+    intern('models', model), intern('sessions', session), Math.floor(atMs / QUARTER_HOUR_MS), ...TOKEN_KEYS.map((key) => tokens[key])]) };
+}
+
+// The parts of a valid file, else null.
+export function decodeUsageSessions(document) {
+  const plain = (value) => typeof value === 'string' && value.length <= 300;
+  const list = (value, check) => Array.isArray(value) && value.length <= MAX_SESSION_PARTS && value.every(check);
+  if (document?.version !== USAGE_SESSIONS_VERSION || !list(document.apps, (app) => USAGE_APPS.has(app))
+    || !list(document.models, plain) || !list(document.sessions, (session) => plain(session) && session !== '')
+    || !Array.isArray(document.parts) || document.parts.length > MAX_SESSION_PARTS) return null;
+  const index = (value, values) => Number.isSafeInteger(value) && value >= 0 && value < values.length;
+  const parts = [];
+  for (const part of document.parts) {
+    if (!Array.isArray(part) || part.length !== 8) return null;
+    const [app, model, session, quarter, ...counts] = part;
+    if (!index(app, document.apps) || !index(model, document.models) || !index(session, document.sessions)
+      || !Number.isSafeInteger(quarter) || quarter < 0 || !counts.every((value) => Number.isFinite(value) && value >= 0)) return null;
+    parts.push({ app: document.apps[app], model: document.models[model], atMs: quarter * QUARTER_HOUR_MS,
+      tokens: Object.fromEntries(TOKEN_KEYS.map((key, at) => [key, counts[at]])), session: document.sessions[session] });
+  }
+  return parts;
+}
+
+export async function saveUsageSessions(file, parts, options) {
+  const text = JSON.stringify(encodeUsageSessions(parts));
+  await writePrivateFile(file, () => Readable.from(slices(text)).pipe(zlib.createGzip()), options);
+}
+
+// A missing, damaged, or invalid file gives null.
+export async function loadUsageSessions(file, options) {
+  try { return decodeUsageSessions(JSON.parse(await readPrivateFile(file, options, gunzipText))); } catch { return null; }
+}
+
 // Mode 0600 in a 0700 folder, written atomically (a temporary file and a rename).
 export const writePrivateJson = async (file, value, options) => writePrivateFile(file, JSON.stringify(value), options);
 
