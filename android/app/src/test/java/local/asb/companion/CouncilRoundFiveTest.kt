@@ -88,6 +88,25 @@ class CouncilRoundFiveTest {
         assertEquals("hour 25 of 25", bucketProgress("day", autumn, autumn + 24 * 3_600_000L + 1, berlin))
     }
 
+    private fun s(zone: String, y: Int, m: Int, d: Int) = LocalDate.of(y, m, d).atStartOfDay(ZoneId.of(zone)).toInstant().toEpochMilli()
+
+    private fun t(zone: String, y: Int, m: Int, d: Int, h: Int, min: Int) =
+        java.time.LocalDateTime.of(y, m, d, h, min).atZone(ZoneId.of(zone)).toInstant().toEpochMilli()
+
+    @Test fun aPhoneInAnotherTimeZoneCountsThePcDays() {
+        val (berlin, lima, tokyo, auckland) = listOf("Europe/Berlin", "America/Lima", "Asia/Tokyo", "Pacific/Auckland")
+        val berlinNow = t(berlin, 2026, 10, 26, 16, 40)
+        assertEquals("day 26 of 31", bucketProgress("month", s(berlin, 2026, 10, 1), berlinNow, ZoneId.of(lima)))
+        assertEquals("day 1 of 7", bucketProgress("week", s(berlin, 2026, 10, 26), berlinNow, ZoneId.of(lima)))
+        assertEquals("hour 17 of 24", bucketProgress("day", s(berlin, 2026, 10, 26), berlinNow, ZoneId.of(lima)))
+        assertEquals("day 26 of 31", bucketProgress("month", s(lima, 2026, 10, 1), t(lima, 2026, 10, 26, 16, 40), ZoneId.of(tokyo)))
+        assertEquals("day 7 of 7", bucketProgress("week", s(lima, 2026, 10, 26), t(lima, 2026, 11, 1, 23, 59), ZoneId.of(tokyo)))
+        assertEquals("day 3 of 28", bucketProgress("month", s(lima, 2026, 2, 1), t(lima, 2026, 2, 3, 0, 0), ZoneId.of(auckland)))
+        assertEquals("day 1 of 31", bucketProgress("month", s(auckland, 2026, 10, 1), t(auckland, 2026, 10, 1, 0, 1), ZoneId.of(lima)))
+        assertEquals("day 31 of 31", bucketProgress("month", s(auckland, 2026, 10, 1), t(auckland, 2026, 10, 31, 23, 59), ZoneId.of(lima)))
+        assertEquals("hour 17 of 24", bucketProgress("day", s(lima, 2026, 10, 26), t(lima, 2026, 10, 26, 16, 40), ZoneId.of(tokyo)))
+    }
+
     @Test fun theLastTooltipTitleIsTheHeader() = inUtc {
         val now = at("2026-10-26T16:40:00Z")
         assertEquals("This hour so far · minute 41 of 60", tooltipTitle(at("2026-10-26T16:00:00Z"), "hour", last = true, nowMs = now))

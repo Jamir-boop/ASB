@@ -204,20 +204,28 @@ fun partialFirstLabel(unit: String, starts: List<Long>, firstMs: Long?): String?
 
 /**
  * Port of usage_bucket_progress: the running part of the current bucket that starts at [startMs], as `minute 29 of 60`,
- * `hour 17 of 24`, `day 1 of 7`, or `day 26 of 31`: the whole elapsed units at [nowMs] plus 1, of the units in the bucket in
- * local time (a daylight saving day has 23 or 25 hours, a month its own day count).
+ * `hour 17 of 24`, `day 1 of 7`, or `day 26 of 31`: the whole elapsed units at [nowMs] plus 1, of the units in the bucket. A day,
+ * week, or month bucket starts at the PC's local midnight; the days are counted on the [zone] calendar from the [zone] midnight
+ * nearest to that start (a daylight saving day has 23 or 25 hours, a month its own day count).
  */
 fun bucketProgress(unit: String, startMs: Long, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String {
-    val start = Instant.ofEpochMilli(startMs).atZone(zone)
-    val days = { ChronoUnit.DAYS.between(start.toLocalDate(), Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()) }
-    val (word, done, total) = when (unit) {
-        "hour" -> Triple("minute", Math.floorDiv(nowMs - startMs, 60_000L), 60L)
-        "day" -> {
-            val following = start.toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-            Triple("hour", Math.floorDiv(nowMs - startMs, 3_600_000L), Math.round((following - startMs) / 3_600_000.0))
+    val (word, done, total) = if (unit == "hour") Triple("minute", Math.floorDiv(nowMs - startMs, 60_000L), 60L) else {
+        // The phone zone can differ from the PC zone: both times move to the phone midnight nearest to the PC midnight, so the
+        // phone calendar counts the PC days.
+        val date = Instant.ofEpochMilli(startMs).atZone(zone).toLocalDate()
+        val before = date.atStartOfDay(zone).toInstant().toEpochMilli()
+        val after = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val shift = if (startMs - before <= after - startMs) before - startMs else after - startMs
+        val start = Instant.ofEpochMilli(startMs + shift).atZone(zone).toLocalDate()
+        val days = ChronoUnit.DAYS.between(start, Instant.ofEpochMilli(nowMs + shift).atZone(zone).toLocalDate())
+        when (unit) {
+            "day" -> {
+                val following = start.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                Triple("hour", Math.floorDiv(nowMs - startMs, 3_600_000L), Math.round((following - startMs - shift) / 3_600_000.0))
+            }
+            "week" -> Triple("day", days, 7L)
+            else -> Triple("day", days, Instant.ofEpochMilli(startMs + 14 * 86_400_000L).atZone(zone).toLocalDate().lengthOfMonth().toLong())
         }
-        "week" -> Triple("day", days(), 7L)
-        else -> Triple("day", days(), ChronoUnit.DAYS.between(start.toLocalDate(), start.toLocalDate().withDayOfMonth(1).plusMonths(1)))
     }
     return "$word ${(done + 1).coerceIn(1, total)} of $total"
 }
