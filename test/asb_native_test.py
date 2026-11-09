@@ -14576,6 +14576,9 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         # The small layout: four columns.
         small = self.window(size=(600, 760), period="all")
         self.assertTrue(small.small)
+        # The small tables have no Machines column, so no machine key stands above them.
+        self.assertEqual([keys.get_visible() for keys in (small.model_keys, small.session_keys)], [False, False])
+        self.assertEqual([keys.get_visible() for keys in (window.model_keys, window.session_keys)], [True, True])
         self.assertEqual(len(self.column_edges(small.sessions, small)), 4)
         self.assert_shared_columns(small)
         # Large Text, wide and small.

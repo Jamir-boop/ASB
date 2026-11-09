@@ -17872,6 +17872,9 @@ class UsageWindow(ActivityWindow):
         self.content.set_margin_bottom(32 if self.small else 40)
         for side in ("start", "end"):
             getattr(self.content, f"set_margin_{side}")(14 if self.small else 24)
+        # The small tables have no Machines column: no machine key stands above them.
+        for keys in (self.model_keys, self.session_keys):
+            keys.set_visible(not self.small)
         self.overview.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
         self.round_cell.set_size_request(-1 if self.narrow else 340, -1)
         self.round_cell.set_valign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
