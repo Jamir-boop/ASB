@@ -14332,6 +14332,21 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(window.closed or not window.get_visible())
         self.assert_no_new_warnings()
 
+    def test_R1_one_escape_closes_the_usage_window_after_a_reopen(self):
+        # R1: a hidden window gets no key release, so one Escape press closes it again after the next open.
+        window = self.window()
+        # An open board: closing hides the window instead of ending it.
+        board = Mock(spec=asb.SwitchboardWindow, closed=False)
+        self.enterContext(patch.object(window.application, "get_windows", return_value=[board, window]))
+        for _round in range(2):
+            self.assertTrue(window.get_visible())
+            window.escape_pressed(); self.drain(.1)
+            self.assertFalse(window.get_visible())
+            window.present(); self.drain(.2)
+            # The pointer of the hidden display can rest on a chart: no cursor, so Escape has only the window to close.
+            for widget in window.escape_cursors():
+                widget.set_hover(None)
+
     def test_usage_hover_survives_changed_numbers_and_clears_on_leave(self):
         window = self.window()
         chart, ring = window.chart, window.round
@@ -17717,6 +17732,59 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertIn(call(palette["win"], offline_hues[0]), band.call_args_list)
             self.assertGreaterEqual(asb.contrast(asb.offline_band_color(palette["win"], offline_hues[0]), palette["win"]), 3)
 
+    def test_R2_a_whole_name_takes_the_exit_of_its_widest_chord_last(self):
+        settings = asb.Gtk.Settings.get_default()
+        font = settings.get_property("gtk-font-name")
+        self.addCleanup(settings.set_property, "gtk-font-name", font)
+
+        def near(box, x, y):
+            return math.hypot(min(max(x, box[0]), box[2]) - x, min(max(y, box[1]), box[3]) - y)
+
+        def widest(table, seat):
+            exits = table.kept_off[0][seat]
+            top = max((radius for _x, _y, radius in exits), default=0)
+            return [shape for shape in exits if shape[2] >= top - 1e-6]
+
+        def on_widest(table, seat, box):
+            return any(near(box, x, y) < radius for x, y, radius in widest(table, seat))
+        for name in ("Cascadia Code NF 11", "Cantarell 11"):
+            settings.set_property("gtk-font-name", name)
+            for period in ("24h", "7d", "30d"):
+                window = self.window(period=period)
+                table = window.table
+                candidate, free = table.label_rules
+                if name.startswith("Cascadia"):
+                    # a: the one-line parser-review fits only on the exit of its widest chord (the busiest pair): it takes its two
+                    # lines inward, off that exit, so the open chord shows whole at the pin.
+                    item, pin = table.labels["parser-review"], table.pins["parser-review"]
+                    self.assertEqual((item["text"], item["place"]), (1, 0), period)
+                    self.assertLess(item["text"], pin["whole"])
+                    self.assertFalse(on_widest(table, "parser-review", item["box"]), period)
+                    self.assertFalse(any(free("parser-review", candidate("parser-review", 0, place)) and
+                                         not on_widest(table, "parser-review", candidate("parser-review", 0, place)["box"]) for place in range(9)))
+                # b: no shown whole name is on its widest exit while a whole-name place off it is free.
+                for seat, item in table.labels.items():
+                    pin = table.pins[seat]
+                    if item["shown"] and item["text"] < pin["whole"] and on_widest(table, seat, item["box"]):
+                        others = [candidate(seat, text, place) for text in range(pin["whole"]) for place in range(9)]
+                        self.assertFalse(any(free(seat, other) and not on_widest(table, seat, other["box"]) for other in others), (name, period, seat))
+                window.destroy()
+
+    def test_R1_one_escape_closes_the_messages_window_after_a_reopen(self):
+        # R1: a hidden window gets no key release, so one Escape press closes it again after the next open.
+        window = self.window(period="7d")
+        # An open board: closing hides the window instead of ending it.
+        board = Mock(spec=asb.SwitchboardWindow, closed=False)
+        self.enterContext(patch.object(window.application, "get_windows", return_value=[board, window]))
+        for _round in range(2):
+            self.assertTrue(window.get_visible())
+            window.escape_pressed(); self.drain(.1)
+            self.assertFalse(window.get_visible())
+            window.present(); self.drain(.2)
+            # The pointer of the hidden display can rest on a chart: no cursor, so Escape has only the window to close.
+            for widget in window.escape_cursors():
+                widget.set_hover(None)
+
     def test_W5_M19_escape_steps_in_messages(self):
         window = self.window(period="7d")
         strip = window.count_strip
@@ -19805,7 +19873,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 table = window.table
                 geometry = table.geometry
                 for seat in ("ui-polish", "parser-review", "render-farm", "sync-check"):
-                    self.assertEqual((table.labels[seat]["shown"], table.labels[seat]["text"]), (True, 0), seat)
+                    # R2: in Cascadia the one-line parser-review fits only on the exit of its widest chord: it takes two lines.
+                    whole = 1 if seat == "parser-review" and font.startswith("Cascadia") else 0
+                    self.assertEqual((table.labels[seat]["shown"], table.labels[seat]["text"]), (True, whole), seat)
                 ends = [(x, y, chord["end_width"] / 2) for chord in table.chords for points in chord["fails"] for x, y in points]
                 for seat, label in table.labels.items():
                     if not label["shown"]:

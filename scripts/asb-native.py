@@ -12956,6 +12956,7 @@ class ActivityWindow(Adw.Window):
         for icon in (self.error_icon, getattr(self, "empty_icon", None)):
             if icon is not None:
                 icon.set_pixel_size(round((96 if compact else 128) * self.text_scale))
+
     def escape_key_released(self, _controller, keyval, _code, _state):
         if keyval == Gdk.KEY_Escape:
             self.escape_released = True
@@ -13256,6 +13257,8 @@ class ActivityWindow(Adw.Window):
 
     def close_to_hidden(self):
         self.stop_live()
+        # A hidden window gets no key release: the first Escape after the next open is a new press.
+        self.escape_released = True
         self.set_visible(False)
         self.application.trim_heap_later()
 
@@ -13703,8 +13706,11 @@ class RoundTable(Gtk.Overlay):
         pin circle than every other pin circle by 4 px times the text scale or more. Each pin counts with the largest ring that it
         can get (pin_ring), so a label keeps its place when its seat lights.
 
-        For each text, the nine places that touch none of the seat's own chord exits (the first 28 px of each of its chords past
-        the pin rim) and no all-not-sent chord try first, then the nine places that touch one.
+        The texts go in two groups, the whole names (one line, then two lines) and then the cut ones. In a group, each text tries
+        its nine places that touch none of the seat's own chord exits (the first 28 px of each of its chords past the pin rim) and
+        no all-not-sent chord, then its nine places that touch one but no exit of the seat's widest chord; then each text of the
+        group tries its places on that widest exit. So a whole name covers the exit of its widest chord only when no other whole
+        name place is free, and still before a cut text.
 
         With preserve, a label first tries its current text and place, so a selection or a refresh does not move a valid label.
         When no place is free, the repair step moves the one other (not chosen) label that blocks a place to a free place of its
@@ -13783,8 +13789,20 @@ class RoundTable(Gtk.Overlay):
         for seat_id in order:
             pin, found = self.pins[seat_id], None
             texts = range(pin["whole"] if seat_id in chosen else len(pin["texts"]))
-            # For each text, the places off the kept-off shapes first, then the others.
-            options = [(text, place, strict) for text in texts for strict in (True, False) for place in range(9)]
+            # The exits of the widest chords of the seat (the largest circles): a whole name takes them last.
+            top = max((radius for _x, _y, radius in exits[seat_id]), default=0)
+            widest = [shape for shape in exits[seat_id] if shape[2] >= top - 1e-6]
+
+            def wide(text, place):
+                box = candidate(seat_id, text, place)["box"]
+                return any(near(box, x, y) < radius for x, y, radius in widest)
+
+            def tiers(group):
+                # For each text, the places off the kept-off shapes, then the places off the widest exits; then the rest.
+                both = [(text, place, strict) for text in group for strict in (True, False) for place in range(9)]
+                return ([option for option in both if option[2] or not wide(*option[:2])]
+                        + [option for option in both if not option[2] and wide(*option[:2])])
+            options = tiers([text for text in texts if text < pin["whole"]]) + tiers([text for text in texts if text >= pin["whole"]])
             old = previous.get(seat_id)
             if old and old["shown"] and old["text"] in texts:
                 options.insert(0, (old["text"], old["place"], False))
@@ -13829,6 +13847,8 @@ class RoundTable(Gtk.Overlay):
         if self.key and self.key["shown"] and any(item["shown"] and hit(item["box"], self.key["box"]) for item in self.labels.values()):
             self.key["shown"] = False
             self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+        # The rules of this pass, for the checks: a place free with the final labels was free when its seat placed.
+        self.label_rules = candidate, free
         self.label_tips()
 
     def pin_ring(self, _seat_id):
