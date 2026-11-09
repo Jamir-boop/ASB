@@ -16426,20 +16426,101 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
     def test_M10_double_press_leaves_the_thread_open_and_later_activation_closes_it(self):
         window = self.window()
         table = window.table
+        click = next(controller for controller in table.observe_controllers() if isinstance(controller, asb.Gtk.GestureClick))
         point = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"]["docs"])
-        table.clicked(None, 1, *point)
-        table.clicked(None, 2, *point)
+        # The table acts on release, as GTK buttons do: a press alone opens nothing.
+        click.emit("pressed", 1, *point)
+        self.assertIsNone(window.thread)
+        click.emit("released", 1, *point)
+        click.emit("released", 2, *point)
         self.assertEqual(window.thread["key"], "docs")
-        table.clicked(None, 1, *point)
+        click.emit("released", 1, *point)
         self.assertIsNone(window.thread)
         chord = table.chords[0]
         point = asb.curve_point(chord["table"], .5)
         with patch.object(table, "hit", return_value=(None, chord["key"])):
-            table.clicked(None, 1, *point)
-            table.clicked(None, 2, *point)
+            click.emit("released", 1, *point)
+            click.emit("released", 2, *point)
             self.assertEqual(window.thread["key"], chord["key"])
         table.proxies[("chord", chord["key"])].key_pressed(None, asb.Gdk.KEY_space, 0, 0)
         self.assertIsNone(window.thread)
+
+    def test_R1_long_titles_keep_the_24_character_cap(self):
+        window = self.window()
+        table = window.table
+        broken, plain = "fix-the-session-list-scroll-on-small-screens", "a" * 40
+        for title, texts in ((broken, [broken[:24] + "…", "fix-the-se…", "fix-the…"]),
+                             (plain, ["a" * 24 + "…", "a" * 10 + "…", "a" * 7 + "…"]),
+                             ("abcdefghijklmnopqrst-uvwxyzabcdef", ["abcdefghijklmnopqrst-uvw…", "abcdefghijklmnopqrst-\nuvwxyzabcdef", "abcdefghij…", "abcdefg…"])):
+            window.view["seats"]["docs"]["title"] = title
+            pin = table.pin_info("docs")
+            self.assertEqual([item["layout"].get_text() for item in pin["texts"]], texts)
+            self.assertEqual(pin["whole"], 2 if "\n" in texts[1] else 1)
+        window.view["seats"]["docs"]["title"] = broken
+        window.show_session("docs"); self.drain(.3)
+        table.pins["docs"] = table.pin_info("docs")
+        # A chosen seat that finds no free place shows its capped one-line name inward.
+        with patch.object(table, "label_place_with", return_value=(-500, -500)):
+            table.place_labels(False)
+        label = table.labels["docs"]
+        self.assertEqual((label["shown"], label["text"], label["place"]), (True, 0, 0))
+        self.assertEqual(table.pins["docs"]["texts"][0]["layout"].get_text(), asb.seat_label_text(broken))
+
+    def test_R3_a_crowded_label_uses_the_2_px_own_pin_margin_before_it_hides(self):
+        window = self.window(period="7d")
+        table = window.table
+        window.open_thread("status", "written"); self.drain(.5)
+        ring = table.pin_ring
+
+        def margin():
+            box, opened = table.labels["ui-polish"]["box"], table.open_lit()[1]
+
+            def gap(seat):
+                x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"][seat])
+                return math.hypot(x - min(max(x, box[0]), box[2]), y - min(max(y, box[1]), box[3])) - 16 - table.pin_ring(seat, opened)
+            return min(gap(other) for other in table.pins if other != "ui-polish") - gap("ui-polish")
+        self.assertGreaterEqual(margin(), 4 * window.text_scale)
+        # The other pins grow until ui-polish has no place with the 4 px rule: it then shows with the 2 px rule.
+        crowded = None
+        for step in range(1, 200):
+            grow = step / 4
+            with patch.object(table, "pin_ring", lambda seat, opened, grow=grow: ring(seat, opened) + (0 if seat == "ui-polish" else grow)):
+                table.place_labels(False)
+                if not table.labels["ui-polish"]["shown"]:
+                    break
+                if margin() < 4 * window.text_scale:
+                    crowded = margin()
+                    break
+        self.assertIsNotNone(crowded)
+        self.assertGreaterEqual(crowded, 2 * window.text_scale)
+
+    def test_R4_status_thread_routes_open_their_pair_thread(self):
+        window = self.window(period="7d")
+        window.open_thread("status", "written"); self.drain(.5)
+        block_id, block = next(iter(window.thread_blocks.items()))
+        route = next(widget for widget in self.tree(block) if isinstance(widget, asb.Gtk.Button))
+        self.assertTrue(route.has_css_class("asb-msg-route-link"))
+        record = next(record for record in self.records() if record[0] == block_id)
+        self.assertEqual(route.get_child().get_label(), f"{record[1]} → {record[2]}")
+        route.emit("clicked"); self.drain(.4)
+        self.assertEqual((window.thread["kind"], set(window.thread["key"])), ("pair", set(record[1:3])))
+        self.assertEqual(window.thread_back.get_tooltip_text(), "Back to No receipt (Esc)")
+        window.window_key(None, asb.Gdk.KEY_Escape, 0, 0); self.drain(.4)
+        self.assertEqual((window.thread["kind"], window.thread["key"]), ("status", "written"))
+
+    def test_R5_session_counts_do_not_widen_the_column_or_cut_the_center_sub_line(self):
+        now = self.sample["nowMs"]
+        self.extra = [["m-out", "docs", "release-plan", now - 3000, "not-sent", "Refused", None],
+                      ["m-in", "unknown:laptop", "docs", now - 2000, "not-sent", "Machine offline", None, "beta-helper", ""]]
+        window = self.window(period="7d")
+        width = window.table.get_width()
+        window.show_session("docs", "docs"); self.drain(.5)
+        self.assertEqual(window.table.get_width(), width)
+        self.assertRegex(window.thread_counts.get_text(), r"^Sent \d+ · 1 not sent   Received \d+ · 1 not sent$")
+        minimum, natural = window.thread_counts.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[:2]
+        self.assertEqual(minimum, natural)
+        sub = next(widget for widget in self.tree(window.table.center) if isinstance(widget, asb.Gtk.Label) and widget.get_label().startswith("Claude Code · "))
+        self.assertFalse(sub.get_layout().is_ellipsized())
 
     def test_M11_M12_focus_casing_and_dim_app_glyph(self):
         window = self.window()
@@ -16877,7 +16958,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         # A card with no message in the period.
         window.show_session("not-in-reply", "Write the API examples")
         self.assertEqual(window.thread_route.get_label(), "Write the API examples")
-        self.assertEqual(window.thread_counts.get_label(), "Sent 0   Received 0")
+        self.assertEqual(window.thread_counts.get_text(), "Sent 0   Received 0")
         self.assertEqual(self.labels(window.thread_list), ["No messages in 7 days."])
         window.show_session("not-in-reply")
         self.assertEqual(window.thread_route.get_label(), "This session")

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Native GNOME view for the local ASB session API."""
+import bisect
 from datetime import datetime, timedelta
 import functools
 import gzip
 import json
-import bisect
 import math
 import ntpath
 from http.client import HTTPConnection, HTTPException
@@ -13266,7 +13266,7 @@ class RoundTable(Gtk.Overlay):
         motion.connect("leave", self.pointer_left)
         self.add_controller(motion)
         click = Gtk.GestureClick()
-        click.connect("pressed", self.clicked)
+        click.connect("released", self.clicked)
         self.add_controller(click)
         self.connect("unmap", lambda *_: self.stop_motion())
 
@@ -13309,9 +13309,11 @@ class RoundTable(Gtk.Overlay):
         counts = view["counts"].get(seat_id, {"sent": 0, "received": 0})
         title = seat.get("title") or "Unlisted sessions"
         size = 12 * self.window.text_scale
-        names = [title]
+        # The whole name on one line (at most 24 characters), on two lines at its last break (each line at most 24 characters),
+        # then cut to 10 and to 7 characters.
+        names = [seat_label_text(title)]
         split = max((match.end() for match in re.finditer(r"[-_. ]", title) if match.end() < len(title)), default=0)
-        if split and title[:split].strip("-_. "):
+        if split and title[:split].strip("-_. ") and split <= 24 and len(title) - split <= 24:
             names.append(title[:split] + "\n" + title[split:])
         whole = len(names)
         names += [title[:length].rstrip("-_. ") + "…" for length in (10, 7) if len(title) > length]
@@ -13484,7 +13486,21 @@ class RoundTable(Gtk.Overlay):
         return [seat_id for seat_id in dict.fromkeys(seats) if seat_id in self.pins]
 
     def place_labels(self, preserve=True):
-        """Place names near their own pins; keep valid places on selection and move one blocker before hiding a label."""
+        """Each seat label takes the first free place of nine, in this order: inward, under, over, left, or right of its pin, then
+        under-right, under-left, over-right, or over-left. It tries its texts in this order: the whole name on one line (at most 24
+        characters, then …), on two lines at its last break (each line at most 24 characters), then cut to 10, then to 7 characters.
+        The chosen seats place first, then the seats lit by an open thread or by the keyboard focus, then the others; within each
+        group by message count, then the newest, then circle order.
+
+        A free place stays 2 px inside the table, off the center disc and the machine band, and touches no pin ring, machine label,
+        not-sent end, the key line, or other label (6 px times the text scale wider at each side). Its box is also nearer its own
+        pin circle than every other pin circle by 4 px times the text scale or more.
+
+        With preserve, a label first tries its current text and place, so a selection or a refresh does not move a valid label.
+        When no place is free, the repair step moves the one other (not chosen) label that blocks a place to a free place of its
+        own. When that also fails, the seat tries all its texts and places again with 2 px times the text scale for the own-pin
+        rule. A chosen seat that still finds no place shows its one-line whole name inward; another seat hides its label. Pointer
+        hover never moves or widens a label."""
         geometry, scale = self.geometry, self.window.text_scale
         disc = geometry["S"] >= 480
         cx, cy = geometry["cx"], geometry["cy"]
@@ -13519,7 +13535,7 @@ class RoundTable(Gtk.Overlay):
             return {"box": (x - 1, y, x + pin["texts"][text]["w"] + 1, y + pin["texts"][text]["h"]),
                     "text": text, "place": place, "shown": True}
 
-        def free(seat_id, item, labels=True):
+        def free(seat_id, item, labels=True, margin=4):
             box = item["box"]
             far = max(math.hypot(x - cx, y - cy) for x in (box[0], box[2]) for y in (box[1], box[3]))
             own = near(box, *circles[seat_id][:2]) - circles[seat_id][2]
@@ -13528,7 +13544,7 @@ class RoundTable(Gtk.Overlay):
                     and not (near(box) < geometry["Ro"] + 2 and far > geometry["Ri"] - 2)
                     and not any(hit(box, other) for other in obstacles)
                     and all(near(box, x, y) > radius - .5 for x, y, radius in circles.values())
-                    and all(other == seat_id or near(box, x, y) - radius >= own + 4 * scale for other, (x, y, radius) in circles.items())
+                    and all(other == seat_id or near(box, x, y) - radius >= own + margin * scale for other, (x, y, radius) in circles.items())
                     and all(near(box, x, y) >= radius for x, y, radius in ends)
                     and (not labels or not blockers(seat_id, box)))
 
@@ -13569,6 +13585,9 @@ class RoundTable(Gtk.Overlay):
                         break
                     self.labels[other] = old
                     self.labels.pop(seat_id, None)
+            if found is None:
+                # A crowded seat: its own pin may be nearer by 2 px only.
+                found = next((item for item in (candidate(seat_id, text, place) for text, place in options) if free(seat_id, item, margin=2)), None)
             if found is None and seat_id in chosen:
                 found = candidate(seat_id, 0, 0)
             self.labels[seat_id] = found or {"box": (0, 0, 0, 0), "shown": False, "text": 0, "place": 0}
@@ -15256,6 +15275,9 @@ class MessagesWindow(ActivityWindow):
         self.thread_route.set_attributes(no_hyphens(self.thread_route.get_attributes()))
         titles.append(self.thread_route)
         self.thread_counts = label("", "asb-msg-small")
+        # Wrapped, with its natural width the widest group, so the counts never make the column wider (render_thread).
+        self.thread_counts.set_wrap(True)
+        self.thread_counts.set_max_width_chars(1)
         self.thread_counts.add_css_class("asb-mono")
         self.thread_counts.add_css_class("asb-dim")
         titles.append(self.thread_counts)
@@ -15420,9 +15442,10 @@ class MessagesWindow(ActivityWindow):
         self.thread_back.set_tooltip_text(f"Back to {back} (Esc)")
         self.thread_back.update_property([Gtk.AccessibleProperty.LABEL], [f"Back to {back}"])
         color = status_text_on(self.palette, "not-sent", self.palette["win"])
-        counts = GLib.markup_escape_text(header["counts"])
-        counts = re.sub(r" · (\d+ not sent)", lambda match: f' · <span foreground="{color}">{match[1]}</span>', counts)
-        self.thread_counts.set_markup(counts)
+        groups = [re.sub(r" · (\d+ not sent)", lambda match: f' · <span foreground="{color}">{match[1]}</span>', GLib.markup_escape_text(group))
+                  for group in header["counts"].split("   ")]
+        # The counts break only between Sent and Received.
+        self.thread_counts.set_markup("   ".join(f'<span allow_breaks="false">{group}</span>' for group in groups) if len(groups) > 1 else groups[0])
         self.render_thread_list()
 
     def fetch_thread(self):
@@ -15644,8 +15667,8 @@ class MessagesWindow(ActivityWindow):
         name_label = Gtk.Label(label=who, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
         name_label.set_attributes(no_hyphens(name_label.get_attributes()))
         name_label.add_css_class("asb-msg-who")
-        if not run and thread["kind"] == "all":
-            # A route in All messages opens its pair thread over this one.
+        if not run and thread["kind"] in ("status", "all"):
+            # A route in All messages or a status thread opens its pair thread over this one.
             pair = tuple(sorted((record["from"], record["to"]), key=lambda seat_id: (self.view["circle"].index(seat_id)
                          if seat_id in self.view["circle"] else len(self.view["circle"]), seat_id)))
             route = Gtk.Button(has_frame=False, child=name_label, tooltip_text=f"Show the messages of {who}")
