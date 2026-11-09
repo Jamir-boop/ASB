@@ -2118,7 +2118,7 @@ ACTIVITY_STATUS_LABELS = {"accepted": "Accepted", "written": "No receipt", "held
 ACTIVITY_STATUS_COLORS = {"accepted": "#c9ccd1", "written": "#8c929a", "held": "#e0b45a", "not-sent": "#f5a090", "unknown": "#5d6268"}
 ACTIVITY_STATUS_ICONS = {"accepted": "object-select-symbolic", "written": "mail-send-symbolic", "held": "media-playback-pause-symbolic",
                          "not-sent": "action-unavailable-symbolic", "unknown": "dialog-question-symbolic"}
-MACHINE_HUES = ("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c")
+MACHINE_HUES = ("#b692c3", "#7cc48a", "#00898a", "#d6a15e", "#e38fb0", "#b4b86c")
 MESSAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"))
 USAGE_PERIODS = (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days"), ("90d", "90 days"), ("all", "All time"))
 
@@ -13054,6 +13054,10 @@ class ActivityWindow(Adw.Window):
         scope, s = ".asb-activity" + self.css_scope, self.text_scale
         self.size_status_pages()
         ring = palette["accent"] if colors else "@accent_color"
+        # D17 A: a checked linked toggle has the neutral raised fill of a button (10 % text in the window) and its label in the
+        # accent, moved toward the text where it has less than 4.5:1 on that fill.
+        raised = mix_color(palette["win"], palette["text"], .10)
+        checked = contrast_floor(palette["accent"], palette["text"], raised)
         hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {self.machine_hue(index)}; }}\n"
                        f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {self.machine_hue(index)}; min-width: 4px; min-height: 4px; }}\n"
                        for index in range(len(MACHINE_HUES)))
@@ -13062,7 +13066,7 @@ class ActivityWindow(Adw.Window):
 {scope}.asb-custom .top-bar {{ background: {palette['win']}; color: {palette['text']}; box-shadow: none; }}
 {scope}.asb-custom .linked > button {{ background: alpha({palette['text']}, .08); color: {palette['text']}; }}
 {scope}.asb-custom .linked > button:hover:not(:checked) {{ background: alpha({palette['text']}, .14); }}
-{scope} .linked > button:checked {{ background: {palette['accent']}; color: {palette['win']}; }}
+{scope} .linked > button:checked {{ background: {raised}; color: {checked}; font-weight: 700; }}
 {scope}.asb-custom :focus-visible {{ outline-color: {palette['accent']}; }}
 {scope} button:focus-visible, {scope} checkbutton:focus-visible,
 {scope} expander-widget:focus-visible > box > title {{ outline: 2px solid {ring}; outline-offset: 1px; }}

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
 import * as model from '../gnome-shell/model.js';
 import {runtimeDir} from '../src/platform-paths.mjs';
 
@@ -19,9 +20,16 @@ test('the model has exactly the contract exports', () => {
 });
 
 test('machine hues repeat in board order and reject non-indices', () => {
-  assert.deepEqual(model.MACHINE_HUES, ['#a28caa', '#7cc48a', '#5fb3b3', '#d6a15e', '#e38fb0', '#b4b86c']);
+  assert.deepEqual(model.MACHINE_HUES, ['#b692c3', '#7cc48a', '#00898a', '#d6a15e', '#e38fb0', '#b4b86c']);
   for (let i = 0; i < 100; i++) assert.equal(model.machineHue(i), model.MACHINE_HUES[i % 6]);
   for (const value of [-1, 0.5, '1', undefined, null, NaN, Infinity]) assert.equal(model.machineHue(value), null);
+});
+
+test('the top bar and the board have the same six machine hues', () => {
+  const board = readFileSync(new URL('../scripts/asb-native.py', import.meta.url), 'utf8');
+  const line = board.match(/^MACHINE_HUES = \((.*)\)$/m);
+  assert.ok(line);
+  assert.deepEqual([...line[1].matchAll(/"(#[0-9a-f]{6})"/g)].map((match) => match[1]), model.MACHINE_HUES);
 });
 
 test('provider icons follow the board fallback', () => {

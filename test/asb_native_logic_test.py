@@ -263,9 +263,45 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual([asb.format_day(self.utc(2026, month, 1)) for month in range(1, 13)],
                          [f"{name} 1" for name in "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()])
 
+    # Machado, Oliveira, and Fernandes (2009), severity 1.0, on linear sRGB.
+    MACHADO = {
+        "normal": ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+        "protan": ((0.152286, 1.052583, -0.204868), (0.114503, 0.786281, 0.099216), (-0.003882, -0.048116, 1.051998)),
+        "deutan": ((0.367322, 0.860646, -0.227968), (0.280085, 0.672501, 0.047413), (-0.011820, 0.042940, 0.968881)),
+        "tritan": ((1.255528, -0.076749, -0.178779), (-0.078411, 0.930809, 0.147602), (0.004733, 0.691367, 0.303900)),
+    }
+
+    @classmethod
+    def seen_oklab(cls, color, kind):
+        """The OKLab color that a viewer with this color vision sees for an sRGB hex color."""
+        rgb = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+        rgb = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in rgb]
+        r, g, b = (min(1, max(0, sum(weight * value for weight, value in zip(row, rgb)))) for row in cls.MACHADO[kind])
+        l, m, s = (math.copysign(abs(value) ** (1 / 3), value) for value in (
+            0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b,
+            0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b,
+            0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b))
+        return (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+                1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+                0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s)
+
+    def test_machine_hues_hold_for_color_vision_and_dark_windows(self):
+        self.assertEqual(asb.MACHINE_HUES, ("#b692c3", "#7cc48a", "#00898a", "#d6a15e", "#e38fb0", "#b4b86c"))
+        first = asb.MACHINE_HUES[:3]
+        distances = {(kind, a, b): math.dist(self.seen_oklab(a, kind), self.seen_oklab(b, kind))
+                     for kind in self.MACHADO for index, a in enumerate(first) for b in first[index + 1:]}
+        for key, distance in distances.items():
+            self.assertGreaterEqual(distance, .09, key)
+        smallest = min(distances, key=distances.get)
+        self.assertEqual((smallest, round(distances[smallest], 3)), (("protan", "#b692c3", "#00898a"), .102))
+        for hue in asb.MACHINE_HUES:
+            for window in ("#000000", "#222226", "#10141c"):
+                self.assertGreaterEqual(asb.contrast(hue, window), 3, (hue, window))
+        self.assertEqual(round(asb.contrast("#00898a", "#222226"), 2), 3.73)
+
     def test_machines(self):
         self.assertEqual([asb.machine_hue(index) for index in (0, 1, 2, 5, 6, 13)],
-                         ["#a28caa", "#7cc48a", "#5fb3b3", "#b4b86c", "#a28caa", "#7cc48a"])
+                         ["#b692c3", "#7cc48a", "#00898a", "#b4b86c", "#b692c3", "#7cc48a"])
         self.assertEqual([asb.machine_state_text({"state": state}) for state in ("local", "online", "offline")], ["Local", "Connected", "Offline"])
         at = self.utc(2026, 10, 25, 14, 30)
         self.assertEqual(asb.machine_last_report({"state": "online", "lastReportAtMs": at}), "")
@@ -327,7 +363,7 @@ class ActivityHelperChecks(unittest.TestCase):
                  "yellow": {"app:grok": "#979201", "status:held": "#b18727", "machine:3": "#b78440"},
                  "orange": {"status:held": "#efc269", "status:not-sent": "#b56658", "machine:3": "#a4722d"},
                  "red": {"app:claude": "#b75939", "status:not-sent": "#ad5f51", "machine:4": "#aa5c7c"},
-                 "pink": {"machine:4": "#bb6b8b"},
+                 "pink": {"machine:0": "#9a77a6", "machine:4": "#bb6b8b"},
                  "purple": {"machine:4": "#c06f90"},
                  "slate": {"app:codex": "#b0b3b7", "status:accepted": "#b0b3b7"}}
         accents = {"blue": "#81d0ff", "teal": "#7bdff4", "green": "#8de698", "yellow": "#ffc057", "orange": "#ff9c5b",
@@ -1498,7 +1534,7 @@ class UsageLogicChecks(unittest.TestCase):
         arcs = asb.usage_round_arcs(view, machines, "cost")
         rings = [arc for arc in arcs if arc["kind"] == "machine"]
         self.assertEqual([(arc["id"], arc["r0"], arc["r1"], arc["color"]) for arc in rings],
-                         [("desk", 109, 131, "#a28caa"), ("laptop", 109, 131, "#7cc48a"), ("studio", 109, 131, "#5fb3b3")])
+                         [("desk", 109, 131, "#b692c3"), ("laptop", 109, 131, "#7cc48a"), ("studio", 109, 131, "#00898a")])
         self.assertEqual(rings[0]["a0"], -90)
         self.assertAlmostEqual(sum(arc["a1"] - arc["a0"] for arc in rings), 360 - 3 * 1.5)
         self.assertAlmostEqual(rings[1]["a0"] - rings[0]["a1"], 1.5)

@@ -13392,11 +13392,12 @@ class ActivityFixture:
         found, bounds = spacer.compute_bounds(window)
         self.assertTrue(found)
         self.assert_pixel(window, bounds.get_x() + bounds.get_width() // 2, bounds.get_y() + bounds.get_height() // 2, self.THEME["background"])
-        # A checked linked toggle of the row shows the accent.
+        # A checked linked toggle of the row has the neutral raised fill (D17 A).
         if hasattr(window, "metric_buttons"):
             found, bounds = window.metric_buttons[window.metric].compute_bounds(window)
             self.assertTrue(found)
-            self.assert_pixel(window, bounds.get_x() + 7, bounds.get_y() + bounds.get_height() // 2, self.THEME["accent"])
+            self.assert_pixel(window, bounds.get_x() + 7, bounds.get_y() + bounds.get_height() // 2,
+                              asb.mix_color(self.THEME["background"], self.THEME["text"], .10))
         window.set_palette(None)
         self.drain(.2)
         self.assertFalse(window.has_css_class("asb-custom"))
@@ -14957,17 +14958,41 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(window.narrow)
         self.assert_no_new_warnings()
 
-    def test_gnome_checked_toggles_use_the_accent(self):
-        window = self.window()
-        self.assertFalse(window.has_css_class("asb-custom"))
-        button = window.metric_buttons["cost"]
-        found, accent = button.get_style_context().lookup_color("accent_color")
-        self.assertTrue(found)
-        found, bounds = button.compute_bounds(window)
-        self.assertTrue(found)
-        self.assert_pixel(window, bounds.get_x() + 4, bounds.get_y() + bounds.get_height() // 2,
-                          window.palette["accent"])
-        self.assertEqual(button.get_color().to_string(), asb.rgba(window.palette["win"]).to_string())
+    # The user, gnome, and blue looks of the round 5 captures.
+    LOOKS = {"user": {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"},
+             "gnome": None,
+             "blue": {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}}
+
+    def test_checked_toggles_have_a_neutral_fill_and_an_accent_label(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)
+        for look, colors in self.LOOKS.items():
+            window = self.window()
+            window.set_palette(colors)
+            palette = window.palette
+            raised = asb.mix_color(palette["win"], palette["text"], .10)
+            for button in (window.metric_buttons["cost"], window.split_buttons["app"]):
+                for hover in (False, True):
+                    with self.subTest(look=look, button=button.get_label(), hover=hover):
+                        if hover:
+                            button.set_state_flags(asb.Gtk.StateFlags.PRELIGHT, False)
+                        self.drain(.1)
+                        bounds = button.compute_bounds(window)[1]
+                        self.assert_pixel(window, bounds.get_x() + 4, bounds.get_y() + bounds.get_height() // 2, raised)
+                        self.assertNotEqual(raised, palette["accent"])
+                        label = asb.hex_color(button.get_color())
+                        self.assertEqual(label, asb.contrast_floor(palette["accent"], palette["text"], raised))
+                        self.assertGreaterEqual(asb.contrast(label, raised), 4.5)
+                        self.assertEqual(button.get_child().get_pango_context().get_font_description().get_weight(), asb.Pango.Weight.BOLD)
+                        button.unset_state_flags(asb.Gtk.StateFlags.PRELIGHT)
+            # The accent stays as it is where it has 4.5:1 on the fill.
+            if look != "gnome":
+                self.assertEqual(asb.hex_color(window.metric_buttons["cost"].get_color()), palette["accent"])
+            # An unchecked toggle keeps the text color and the normal weight; the suggested pill keeps the accent fill.
+            self.assertEqual(asb.hex_color(window.metric_buttons["tokens"].get_color()), palette["text"])
+            self.assertIn("button.suggested-action", window.css.to_string())
+            self.assertIn(f"background-color:{asb.rgba(palette['accent']).to_string()}", window.css.to_string().replace(" ", ""))
         self.assert_no_new_warnings()
 
     def ring_pixels(self, window, widget, color):
@@ -15463,22 +15488,6 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIn("min-height: 12px", rules.split(".asb-usage-key-dot {")[1].split("}")[0])
         self.assert_no_new_warnings()
 
-    def test_checked_toggles_keep_accent_on_hover(self):
-        settings = asb.Gtk.Settings.get_default()
-        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
-        settings.set_property("gtk-enable-animations", False)
-        for colors in (None, asb.validate_theme(CUSTOM)):
-            window = self.window()
-            window.set_palette(colors)
-            for button in (window.metric_buttons["cost"], window.split_buttons["app"]):
-                button.set_state_flags(asb.Gtk.StateFlags.PRELIGHT, False)
-                self.drain(.1)
-                bounds = button.compute_bounds(window)[1]
-                self.assert_pixel(window, bounds.get_x() + 4, bounds.get_y() + bounds.get_height() // 2, window.palette["accent"])
-                self.assertEqual(asb.hex_color(button.get_color()), window.palette["win"])
-                button.unset_state_flags(asb.Gtk.StateFlags.PRELIGHT)
-        self.assert_no_new_warnings()
-
     def test_unchecked_machine_ring_and_native_button_contrast(self):
         settings = asb.Gtk.Settings.get_default()
         self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
@@ -15501,7 +15510,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             background = "#" + data[offset:offset + 3].hex()
             self.assertGreaterEqual(asb.contrast(window.palette["dim"], background), 3)
             window.machine_filter.popdown()
-        # The nine stock GNOME dark accents all have readable window-colored button text.
+        # The nine stock GNOME dark accents: the suggested pills have readable window-colored text, and a checked toggle has
+        # its label in the accent with 4.5:1 or more on its neutral fill.
         if hasattr(asb.Adw, "AccentColor"):
             window = self.window()
             native = asb.native_colors(window)
@@ -15511,8 +15521,12 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                     window.set_palette(None)
                 self.drain(.01)
                 self.assertGreaterEqual(asb.contrast(window.palette["win"], accent), 4.5)
-                for button in (window.metric_buttons["cost"], window.split_buttons["app"], window.retry_button, window.empty_all_time):
+                for button in (window.retry_button, window.empty_all_time):
                     self.assertEqual(asb.hex_color(button.get_color()), window.palette["win"])
+                raised = asb.mix_color(window.palette["win"], window.palette["text"], .10)
+                for button in (window.metric_buttons["cost"], window.split_buttons["app"]):
+                    self.assertEqual(asb.hex_color(button.get_color()), asb.contrast_floor(accent, window.palette["text"], raised))
+                    self.assertGreaterEqual(asb.contrast(asb.hex_color(button.get_color()), raised), 4.5)
         self.assert_no_new_warnings()
 
 
@@ -16323,10 +16337,12 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
             mono = rules.split(".asb-mono {")[1].split("}")[0]
             self.assertIn('font-feature-settings: "tnum"', mono)
             self.assertNotIn("font-family", mono)
-            # GNOME colors: a checked linked toggle is the accent, as the board's filter pills.
+            # A checked linked toggle has the neutral raised fill and its label in the accent at weight 700 (D17 A).
             checked = rules.split(".asb-activity .linked > button:checked {")[1].split("}")[0]
-            self.assertIn(f"background-color: {asb.rgba(window.palette['accent']).to_string()};", checked)
-            self.assertIn(f"color: {asb.rgba(window.palette['win']).to_string()};", checked)
+            raised = asb.mix_color(window.palette["win"], window.palette["text"], .10)
+            self.assertIn(f"background-color: {asb.rgba(raised).to_string()};", checked)
+            self.assertIn(f"color: {asb.rgba(asb.contrast_floor(window.palette['accent'], window.palette['text'], raised)).to_string()};", checked)
+            self.assertIn("font-weight: 700;", checked)
         # The message proxy of Messages keeps no outline of its own: the table draws its rings.
         def fail(_route):
             raise RuntimeError("No engine.")

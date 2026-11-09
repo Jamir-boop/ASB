@@ -1,4 +1,4 @@
-export const MACHINE_HUES = ['#a28caa', '#7cc48a', '#5fb3b3', '#d6a15e', '#e38fb0', '#b4b86c'];
+export const MACHINE_HUES = ['#b692c3', '#7cc48a', '#00898a', '#d6a15e', '#e38fb0', '#b4b86c'];
 
 export const ST_ACCENTS = ['#3584e4', '#2190a4', '#3a944a', '#c88800', '#ed5b00', '#e62d42', '#d56199', '#9141ac', '#6f8396'];
 
