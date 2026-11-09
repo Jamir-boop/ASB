@@ -11414,6 +11414,69 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertGreater(asb.ease_bars(.5), .85)
         self.assertLess(asb.ease_flight(.25), .25)
 
+    # The three looks of the round 6 captures (user, stock GNOME dark, blue): the window, the text, and the accent.
+    LOOKS = (("#000000", "#ffffff", "#ffb900"), ("#222226", "#ffffff", "#78aeed"), ("#10141c", "#e8eaee", "#7cc4ff"))
+
+    def test_W6_T2_offline_dashes_fit_a_whole_number(self):
+        geometry = {"Ri": 190, "Ro": 200}
+        for start, end in ((-90, 30), (10, 11), (0, 359)):
+            dashes = asb.offline_dashes(geometry, {"start": start, "end": end})
+            length = math.radians(end - start) * 195
+            count = max(1, round((length + 4) / 16))
+            self.assertEqual(len(dashes), count)
+            self.assertAlmostEqual(dashes[0][0], start)
+            self.assertAlmostEqual(dashes[-1][1], end)
+            dash = (length + 4) / count - 4
+            for (first, last), following in zip(dashes, [item[0] for item in dashes[1:]] + [None]):
+                self.assertAlmostEqual(math.radians(last - first) * 195, dash)
+                if following is not None:
+                    self.assertAlmostEqual(math.radians(following - last) * 195, 4)
+        # About 12 px dashes: a 120 degree arc at 195 px has 26 dashes of 11.86 px.
+        dashes = asb.offline_dashes(geometry, {"start": -90, "end": 30})
+        self.assertEqual(len(dashes), 26)
+        self.assertAlmostEqual(math.radians(dashes[0][1] - dashes[0][0]) * 195, 11.86, places=2)
+
+    def test_W6_T3_offline_pin_rings_have_3_to_1_on_their_sector_tint(self):
+        for win, text, accent in self.LOOKS:
+            for raw in asb.MACHINE_HUES:
+                hue = asb.accent_guard(raw, accent, win)
+                ring = asb.offline_ring_color(win, text, hue)
+                self.assertGreaterEqual(asb.contrast(ring, asb.mix_color(win, hue, .03)), 3, (win, raw))
+                # The full hue when it already has 3:1.
+                if asb.contrast(hue, asb.mix_color(win, hue, .03)) >= 3:
+                    self.assertEqual(ring, hue)
+        # A hue with less than 3:1 moves toward the text color.
+        self.assertEqual(asb.offline_ring_color("#ffffff", "#000000", "#ffff00"),
+                         asb.contrast_floor("#ffff00", "#000000", asb.mix_color("#ffffff", "#ffff00", .03), 3))
+        self.assertNotEqual(asb.offline_ring_color("#ffffff", "#000000", "#ffff00"), "#ffff00")
+
+    def test_W6_T5_dimmed_marks_keep_65_percent_and_3_to_1(self):
+        bad = asb.ACTIVITY_STATUS_COLORS["not-sent"]
+        for win, text, accent in self.LOOKS:
+            # The pin rings of the m07 table (Desk, Laptop, and the offline Studio), the pin glyph, and a not-sent end.
+            for index, offline in ((0, False), (1, False), (2, True)):
+                hue = asb.accent_guard(asb.MACHINE_HUES[index], accent, win)
+                ring = asb.offline_ring_color(win, text, hue) if offline else hue
+                fills = (win, asb.mix_color(win, hue, .03 if offline else .05))
+                color = asb.dim_mark(win, ring, fills)
+                self.assertGreaterEqual(min(asb.contrast(color, fill) for fill in fills), 3, (win, index))
+                self.assertIn(color, [asb.mix_color(win, ring, percent / 100) for percent in range(65, 101)])
+            end = asb.dim_mark(win, bad, (win,))
+            self.assertEqual(end, asb.mix_color(win, bad, .65))
+            self.assertGreaterEqual(asb.contrast(end, win), 3)
+        # 65% when that has 3:1, else the weakest stronger mix; the full color when no mix has 3:1.
+        self.assertEqual(asb.dim_mark("#000000", "#ffffff", ("#000000",)), asb.mix_color("#000000", "#ffffff", .65))
+        self.assertEqual(asb.dim_mark("#ffffff", "#ffff00", ("#ffffff",)), "#ffff00")
+
+    def test_W6_T6_a_status_chord_adds_at_most_1_px_per_message(self):
+        self.assertEqual([asb.status_chord_width(count, 2) for count in (1, 2)], [2.5, 3.5])
+        self.assertEqual([asb.status_chord_width(count, 7) for count in range(1, 8)], [2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5])
+        self.assertEqual(asb.status_chord_width(139, 139), 8.5)
+        for largest in (1, 3, 20, 139):
+            widths = [asb.status_chord_width(count, largest) for count in range(1, largest + 1)]
+            self.assertTrue(all(0 < later - earlier <= 1 + 1e-9 for earlier, later in zip(widths, widths[1:])))
+            self.assertLessEqual(widths[-1], 8.5)
+
 
 class BoardWindowsLogicChecks(unittest.TestCase):
     """The Board side of the Messages and Usage windows: the saved sizes, the tray event, and the start variable."""

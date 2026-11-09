@@ -17255,7 +17255,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             snapshot = Mock()
             table.snapshot_chord(snapshot, chord, 1, "lit" if count else "rest", window.palette, table.chord_gray(window.palette), "stroke")
             self.assertAlmostEqual(snapshot.append_stroke.call_args_list[0].args[1].get_line_width(),
-                                   1.5 + 7 * math.sqrt(count / max(counts)) if count else chord["width"], places=5)
+                                   1.5 + min(count, 7 * count / max(counts)) if count else chord["width"], places=5)
         window.close_thread(); self.drain(.2)
         self.assertEqual(table.key["items"][0]["layout"].get_text(), totals)
 
@@ -17480,6 +17480,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.thread_stack, [])
         window.open_thread("pair", ("release-plan", "parser-review")); self.drain(.3)
         window.table.activate_item(("chord", ("release-plan", "parser-review")))
+        self.assertEqual((window.thread["kind"], window.thread["key"]), ("session", "docs"))
+        window.table.activate_item(("pin", "docs"))
         self.assertIsNone(window.thread)
         self.assertEqual(window.thread_stack, [])
 
@@ -17507,10 +17509,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(len(table.key["items"]), 1)
         snapshot = Mock()
         table.snapshot_key(snapshot, window.palette, table.chord_gray(window.palette))
-        self.assertEqual(len(snapshot.append_color.call_args_list), 1)
+        self.assertEqual(len(snapshot.append_color.call_args_list), 2)
         hue = next(hue for hue, offline in table.machine_info.values() if offline)
         self.assertEqual(asb.hex_color(snapshot.append_color.call_args.args[0]), asb.offline_band_color(window.palette["win"], hue))
-        self.assertEqual(snapshot.append_stroke.call_args.args[1].get_dash(), [4., 3.])
+        self.assertFalse(snapshot.append_stroke.call_args_list)
 
     def test_D9_count_strip_place_size_cursor_tooltip_and_no_draw_on_same_reply(self):
         window = self.window()
@@ -18488,9 +18490,11 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         # It draws after the thread chords.
         with patch.object(table, "snapshot_chord") as draws:
             table.draw(asb.Gtk.Snapshot())
-        tones = [call.args[3] for call in draws.call_args_list]
-        self.assertEqual(tones[-1], "hover")
-        self.assertLess(max(index for index, tone in enumerate(tones) if tone == "lit"), len(tones) - 1)
+        tones = [(call.args[3], call.args[6] if len(call.args) > 6 else "all") for call in draws.call_args_list]
+        hovered = [index for index, (tone, part) in enumerate(tones) if tone == "hover" and part != "ends"]
+        self.assertEqual(len(hovered), 2)
+        self.assertLess(max(hovered), min(index for index, (tone, part) in enumerate(tones) if tone == "lit"))
+        self.assertTrue(all(part == "ends" for _tone, part in tones[max(index for index, (tone, part) in enumerate(tones) if part != "ends") + 1:]))
         # Its pins get a 2 px ring in the same mix.
         with patch.object(asb, "snapshot_stroke") as strokes:
             table.snapshot_pin(asb.Gtk.Snapshot(), table.pins[other[0]], 100, 100, other[0], table.lit(state), 1, 0, palette)
@@ -18532,7 +18536,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         low, high = min(counts), max(counts)
         text = f"Line width: {low} to {high} messages (No receipt)" if low != high else f"Line width: {high} message{'' if high == 1 else 's'} (No receipt)"
         self.assertEqual(table.key["items"][0]["layout"].get_text(), text)
-        self.assertEqual(table.key["widths"], (1.5 + 7 * math.sqrt(low / high), 8.5))
+        self.assertEqual(table.key["widths"], (1.5 + min(low, 7 * low / high), 1.5 + min(high, 7)))
         self.assertTrue(table.key["accent"])
         with patch.object(table, "update_property") as update:
             table.place_labels(False)
@@ -18541,7 +18545,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         with patch.object(asb, "snapshot_stroke") as strokes:
             table.snapshot_key(Mock(), palette, table.chord_gray(palette))
         samples = [(call.args[2], asb.hex_color(call.args[3])) for call in strokes.call_args_list[:2]]
-        self.assertEqual(samples, [(table.key["widths"][0], palette["accent"]), (8.5, palette["accent"])])
+        self.assertEqual(samples, [(table.key["widths"][0], palette["accent"]), (table.key["widths"][1], palette["accent"])])
         self.assertTrue(window.thread_tip.get_visible())
         self.assertEqual(window.thread_tip.get_label(), "ASB\u00a0sent these messages to the receiver. No\u00a0receipt came back.")
         self.assertEqual((window.thread_tip.get_lines(), window.thread_tip.get_ellipsize()), (2, asb.Pango.EllipsizeMode.END))
@@ -18552,7 +18556,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(table.ring_pins(), {"release-plan", "parser-review"})
         self.assertFalse(window.thread_tip.get_visible())
         self.assertFalse(table.key["accent"])
-        self.assertRegex(table.key["items"][0]["layout"].get_text(), r"^Line width: [\d,]+ to [\d,]+ messages$")
+        self.assertEqual(table.key["items"][0]["layout"].get_text(), "Line width:")
+        self.assertRegex(table.key["items"][0]["groups"][-1]["layout"].get_text(), r"^[\d,]+ messages$")
 
     def test_W5_M11_M14_M15_thread_edges_empty_block_and_narrow_layouts(self):
         window = self.window(period="7d")
@@ -18608,35 +18613,29 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         table, palette = window.table, window.palette
         geometry = table.geometry
         arcs = geometry["mach"]
-        machine, arc = next(iter(arcs.items()))
-        hue, offline = table.machine_info[machine]
-        x, y = asb.table_point(geometry, (geometry["Rc"] + geometry["Ri"]) / 2, (arc["start"] + arc["end"]) / 2)
-        self.assertEqual(table.region_fill(x, y, arcs, palette), asb.mix_color(palette["win"], hue, .03 if offline else .05))
-        self.assertEqual(table.region_fill(geometry["cx"], geometry["cy"], arcs, palette), palette["win"])
-        self.assertEqual(table.region_fill(1, 1, arcs, palette), palette["win"])
         with patch.object(table, "snapshot_label") as labels:
             table.draw(asb.Gtk.Snapshot())
         self.assertTrue(labels.call_args_list)
+        # Each label draws over its plate with the arcs of the frame.
         for call in labels.call_args_list:
-            layout, left, top = call.args[1:4]
-            extents = layout.get_pixel_extents()[1]
-            self.assertEqual(call.args[7], table.region_fill(left + extents.width / 2, top + extents.height / 2, arcs, palette))
-        # The key: two 16 px butt-capped samples at 1.5 and 8.5 px, and a 20 px straight piece of the offline band.
+            self.assertEqual(call.args[7], arcs)
+        # The key: three 16 px butt-capped samples, and a 20 px straight piece of the offline band.
         self.assertTrue(table.key)
         snapshot = Mock()
         with patch.object(asb, "snapshot_stroke") as strokes:
             table.snapshot_key(snapshot, palette, table.chord_gray(palette))
-        first, second = strokes.call_args_list[:2]
-        for call, width in ((first, 1.5), (second, 8.5)):
+        groups = table.key["items"][0]["groups"]
+        for call, group in zip(strokes.call_args_list[:3], groups):
             bounds = call.args[1].get_bounds()[1]
-            self.assertEqual((call.args[2], bounds.get_width(), call.args[5]), (width, 16, asb.Gsk.LineCap.BUTT))
+            self.assertEqual((call.args[2], bounds.get_width(), call.args[5]), (group["width"], 16, asb.Gsk.LineCap.BUTT))
+        self.assertEqual((groups[0]["width"], groups[-1]["width"]), (1.5 + 7 * math.sqrt(4 / 139), 8.5))
         offline_hues = [item[0] for item in table.machine_info.values() if item[1]]
         if offline_hues:
             band = snapshot.append_color.call_args.args
             self.assertEqual(asb.hex_color(band[0]), asb.offline_band_color(palette["win"], offline_hues[0] if len(offline_hues) == 1 else palette["dim"]))
-            self.assertEqual((band[1].get_width(), band[1].get_height()), (20, geometry["Ro"] - geometry["Ri"]))
-            edges = [call for call in strokes.call_args_list[2:] if call.args[2] == 1 and call.args[4] == [4, 3]]
-            self.assertEqual(len(edges), 2)
+            self.assertEqual((band[1].get_width(), band[1].get_height()), (8, geometry["Ro"] - geometry["Ri"]))
+            edges = [call for call in strokes.call_args_list[3:] if call.args[2] == 1 and call.args[4] == [4, 3]]
+            self.assertEqual(len(edges), 0)
             # The offline band fill keeps 3:1 on the window, and an offline sector draws no dashed radial edges.
             with patch.object(table, "snapshot_key"), patch.object(asb, "snapshot_stroke") as strokes, \
                  patch.object(asb, "offline_band_color", wraps=asb.offline_band_color) as band:
@@ -18682,6 +18681,394 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                         others = [candidate(seat, text, place) for text in range(pin["whole"]) for place in range(9)]
                         self.assertFalse(any(free(seat, other) and not on_widest(table, seat, other["box"]) for other in others), (name, period, seat))
                 window.destroy()
+
+    def table_pixels(self, table):
+        """The drawn table over the window color as RGB rows (Cairo renderer): rows[y][x] is (r, g, b)."""
+        width, height = table.canvas.get_width(), table.canvas.get_height()
+        snapshot = asb.Gtk.Snapshot()
+        snapshot.append_color(asb.rgba(table.window.palette["win"]), asb.Graphene.Rect().init(0, 0, width, height))
+        table.draw(snapshot)
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), asb.Graphene.Rect().init(0, 0, width, height)))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        renderer.unrealize()
+        data = data.get_data()
+        return [[tuple(data[y * stride + x * 4:y * stride + x * 4 + 3]) for x in range(width)] for y in range(height)]
+
+    def test_W6_T1_one_plate_behind_each_label_hides_the_chords(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        geometry = table.geometry
+        # The plate of a two-line label: one rounded rectangle 3 px outside the ink of both lines, with 3 px corners and the alpha
+        # of its label; inside it the window color, each sector tint, and the center disc with its 1 px rule; no halo copies.
+        pin = table.pins["parser-review"]
+        two = next(text for text in pin["texts"] if "\n" in text["layout"].get_text())
+        ink = two["layout"].get_pixel_extents()[0]
+        snapshot, radii, init = Mock(), [], asb.Gsk.RoundedRect.init_from_rect
+        with patch.object(asb, "snapshot_layout") as layouts, \
+             patch.object(asb.Gsk.RoundedRect, "init_from_rect", new=lambda rounded, rect, radius: radii.append(radius) or init(rounded, rect, radius)):
+            table.snapshot_label(snapshot, two["layout"], 100, 50, .5, palette, False, geometry["mach"])
+        self.assertEqual(snapshot.push_opacity.call_args_list, [call(.5)])
+        rounded = snapshot.push_rounded_clip.call_args.args[0]
+        bounds = rounded.bounds
+        self.assertEqual((bounds.get_x(), bounds.get_y(), bounds.get_width(), bounds.get_height()),
+                         (100 + ink.x - 3, 50 + ink.y - 3, ink.width + 6, ink.height + 6))
+        self.assertEqual(table.label_plate(two["layout"], 100, 50),
+                         (100 + ink.x - 3, 50 + ink.y - 3, 100 + ink.x + ink.width + 3, 50 + ink.y + ink.height + 3))
+        self.assertEqual(radii, [3])
+        self.assertEqual(asb.hex_color(snapshot.append_color.call_args.args[0]), palette["win"])
+        fills = [call.args[2] for call in snapshot.append_fill.call_args_list]
+        # One sector tint for each machine, then the disc.
+        self.assertEqual(len(fills), len(geometry["mach"]) + 1)
+        self.assertEqual(sorted(round(fill.alpha, 3) for fill in fills[:-1]),
+                         sorted(.03 if table.machine_info[machine][1] else .05 for machine in geometry["mach"]))
+        self.assertEqual(asb.hex_color(fills[-1]), palette["win"])
+        self.assertEqual(asb.hex_color(snapshot.append_stroke.call_args.args[2]), palette["rule"])
+        self.assertEqual([(call.args[1], call.args[2], call.args[3], asb.hex_color(call.args[4])) for call in layouts.call_args_list],
+                         [(two["layout"], 100, 50, palette["text"])])
+        self.assertEqual(snapshot.pop.call_count, 2)
+        # Each label draws with the arcs of the frame.
+        with patch.object(table, "snapshot_label") as labels:
+            table.draw(asb.Gtk.Snapshot())
+        self.assertTrue(labels.call_args_list)
+        self.assertTrue(all(call.args[7] == geometry["mach"] for call in labels.call_args_list))
+        # In the drawing, the 3 px margin of each plate shows only the window, a sector tint, or the disc rule: no chord pixel, also
+        # with the accent chord of an open thread.
+        window.open_thread("pair", ("release-plan", "parser-review")); self.drain(.4)
+        rows = self.table_pixels(table)
+        cx, cy = geometry["cx"], geometry["cy"]
+        allowed = [palette["win"], palette["rule"]] + [asb.mix_color(palette["win"], hue, .03 if offline else .05) for hue, offline in table.machine_info.values()]
+        allowed = [tuple(int(color[index:index + 2], 16) for index in (1, 3, 5)) for color in allowed]
+        plates = {seat: table.label_plate(table.pins[seat]["texts"][item["text"]]["layout"], item["box"][0] + 1, item["box"][1])
+                  for seat, item in table.labels.items() if item["shown"]}
+        others = [(item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]) for entries in table.machine_items.values() for item in entries]
+        if table.key["shown"]:
+            others.append(table.key["box"])
+        pins = [asb.table_point(geometry, geometry["Rp"], geometry["seat"][seat]) for seat in table.pins]
+        checked = 0
+        for seat, (left, top, right, bottom) in plates.items():
+            item = table.labels[seat]
+            ink = table.pins[seat]["texts"][item["text"]]["layout"].get_pixel_extents()[0]
+            x0, y0 = item["box"][0] + 1 + ink.x, item["box"][1] + ink.y
+            inner = (x0 - 1, y0 - 1, x0 + ink.width + 1, y0 + ink.height + 1)
+            for y in range(math.ceil(top + 1), math.floor(bottom - 1)):
+                for x in range(math.ceil(left + 1), math.floor(right - 1)):
+                    px, py = x + .5, y + .5
+                    if inner[0] <= px <= inner[2] and inner[1] <= py <= inner[3]:
+                        continue
+                    if any(other != seat and box[0] - 1 <= px <= box[2] + 1 and box[1] - 1 <= py <= box[3] + 1 for other, box in plates.items()):
+                        continue
+                    if any(box[0] - 2 <= px <= box[2] + 2 and box[1] - 2 <= py <= box[3] + 2 for box in others):
+                        continue
+                    if any(math.hypot(px - pin_x, py - pin_y) <= 28 for pin_x, pin_y in pins):
+                        continue
+                    radius = math.hypot(px - cx, py - cy)
+                    if abs(radius - geometry["Rc"]) <= 2 or abs(radius - geometry["Ri"]) <= 2:
+                        continue
+                    pixel = rows[y][x]
+                    self.assertLessEqual(min(max(abs(a - b) for a, b in zip(pixel, color)) for color in allowed), 3, (seat, x, y, pixel))
+                    checked += 1
+        self.assertGreater(checked, 500)
+
+    def test_W6_T2_the_offline_band_is_dashes(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        geometry = table.geometry
+        machine = next(machine for machine, (_hue, offline) in table.machine_info.items() if offline and machine in geometry["mach"])
+        hue, arc = table.machine_info[machine][0], geometry["mach"][machine]
+        dashes = asb.offline_dashes(geometry, arc)
+        middle = (geometry["Ri"] + geometry["Ro"]) / 2
+        length = math.radians(arc["end"] - arc["start"]) * middle
+        count = max(1, round((length + 4) / 16))
+        self.assertEqual(len(dashes), count)
+        self.assertAlmostEqual(dashes[0][0], arc["start"])
+        self.assertAlmostEqual(dashes[-1][1], arc["end"])
+        for (start, end), (following, _end) in zip(dashes, dashes[1:]):
+            self.assertAlmostEqual(math.radians(following - end) * middle, 4)
+            self.assertAlmostEqual(math.radians(end - start) * middle, (length + 4) / count - 4)
+        self.assertLess(abs((length + 4) / count - 4 - 12), 4)
+        # The band draws its dashes in the color of now and no 1 px dashed edge lines.
+        snapshot = Mock()
+        with patch.object(table, "snapshot_key"), patch.object(table, "snapshot_label"), patch.object(table, "snapshot_pin"), \
+             patch.object(asb, "sector_path", wraps=asb.sector_path) as sectors, patch.object(asb, "snapshot_stroke") as strokes:
+            table.draw(snapshot)
+        band = [tuple(call.args[4:6]) for call in sectors.call_args_list if tuple(call.args[2:4]) == (geometry["Ri"], geometry["Ro"])]
+        self.assertEqual(len(band), len(geometry["mach"]) - 1 + count)
+        self.assertIn(dashes[0], band)
+        colors = [asb.hex_color(call.args[2]) for call in snapshot.append_fill.call_args_list]
+        self.assertEqual(colors.count(asb.offline_band_color(palette["win"], hue)), count)
+        self.assertFalse([call for call in strokes.call_args_list if call.args[2] == 1 and call.args[4:5] == ([4, 3],)])
+        self.assertFalse([call for call in snapshot.append_stroke.call_args_list if call.args[1].get_line_width() == 1 and call.args[1].get_dash()])
+        # The Offline key sample: two 8 px dashes with a 4 px gap at the band width.
+        table.key["items"] = [item for item in table.key["items"] if item["kind"] == "offline"]
+        snapshot = Mock()
+        table.snapshot_key(snapshot, palette, table.chord_gray(palette))
+        rects = [call.args[1] for call in snapshot.append_color.call_args_list]
+        x = table.key["items"][0]["x"]
+        self.assertEqual([(rect.get_x() - x, rect.get_width(), rect.get_height()) for rect in rects],
+                         [(0, 8, geometry["Ro"] - geometry["Ri"]), (12, 8, geometry["Ro"] - geometry["Ri"])])
+        self.assertTrue(all(asb.hex_color(call.args[0]) == asb.offline_band_color(palette["win"], hue) for call in snapshot.append_color.call_args_list))
+        self.assertFalse(snapshot.append_stroke.call_args_list)
+        # The table of an empty period draws the same dashes.
+        self.sample = dict(self.sample, messages=[])
+        window = self.window(period="24h")
+        table = window.table
+        self.assertEqual(table.pins, {})
+        with patch.object(asb, "offline_dashes", wraps=asb.offline_dashes) as drawn:
+            table.draw(asb.Gtk.Snapshot())
+        self.assertEqual(drawn.call_count, 1)
+
+    def test_W6_T3_offline_pins_keep_their_dashes_in_every_state(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        seat = next(seat for seat, pin in table.pins.items() if pin["offline"])
+        pin = table.pins[seat]
+        x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"][seat])
+
+        def rings(lit, focus=False):
+            proxy = table.proxies[("pin", seat)]
+            with patch.object(asb, "snapshot_stroke") as strokes, patch.object(proxy, "has_focus", return_value=focus):
+                table.snapshot_pin(asb.Gtk.Snapshot(), pin, x, y, seat, lit, 1, 0, palette)
+            return [(round(call.args[1].get_bounds()[1].get_width() / 2, 2), call.args[2], asb.hex_color(call.args[3]), call.args[4] if len(call.args) > 4 else None)
+                    for call in strokes.call_args_list]
+        # a: the rest ring is the full hue (3:1 on the sector tint), dashed.
+        ring = asb.offline_ring_color(palette["win"], palette["text"], pin["hue"])
+        self.assertGreaterEqual(asb.contrast(ring, asb.mix_color(palette["win"], pin["hue"], .03)), 3)
+        self.assertEqual(rings((set(), set())), [(16, 1.5, ring, [4, 3])])
+        # b: the 2 px accent ring of a lit pin is dashed; the focus ring stays solid.
+        self.assertEqual(rings((set(), {seat})), [(16, 2, palette["accent"], [4, 3])])
+        self.assertEqual(rings((set(), {seat}), True)[1:], [(20, 4, palette["win"], None), (20, 2, palette["accent"], None)])
+        # The 40% hover mix: a hovered chord outside an open pair thread.
+        opened = next(key for key in table.chord_keys if seat not in key)
+        window.open_thread("pair", opened); self.drain(.4)
+        other = next(key for key in table.chord_keys if seat in key and not set(key) & set(opened))
+        table.hover["chord"] = other
+        self.assertEqual(rings(table.lit(table.state())), [(16, 2, asb.mix_color(palette["win"], palette["accent"], .6), [4, 3])])
+        table.hover["chord"] = None
+        # The open pin of a session thread keeps its dashed hue ring and its solid 3 px accent ring.
+        window.open_thread("session", seat); self.drain(.4)
+        self.assertEqual(rings(table.lit(table.state())), [(16, 1.5, ring, [4, 3]), (17.75, 2, palette["win"], None), (20.25, 3, palette["accent"], None)])
+
+    def test_W6_T4_each_chord_draws_once_and_the_open_chord_crosses_a_hover_chord(self):
+        window = self.window(period="7d")
+        table = window.table
+        pair = ("release-plan", "parser-review")
+        other = next(key for key in table.chord_keys if not set(key) & set(pair))
+        for thread, hover, expected in ((("pair", pair), other, "hover"), (("session", "release-plan"), pair, "top")):
+            window.open_thread(*thread); self.drain(.4)
+            table.hover["chord"] = hover
+            drawn = []
+            with patch.object(table, "snapshot_chord", side_effect=lambda _s, chord, _f, tone, _p, _g, part="all": drawn.append((chord["key"], tone, part))):
+                table.draw(asb.Gtk.Snapshot())
+            parts = [(key, part) for key, _tone, part in drawn]
+            self.assertEqual(len(parts), len(set(parts)))
+            self.assertEqual(sorted({key for key, _part in parts}), sorted(table.chord_keys))
+            rest = [index for index, (_key, tone, _part) in enumerate(drawn) if tone in ("rest", "dim")]
+            lit = [index for index, (_key, tone, part) in enumerate(drawn) if tone == "lit" and part != "ends"]
+            self.assertEqual([part for key, tone, part in drawn if key == hover and tone == expected], ["casing", "stroke", "ends"])
+            first, second = drawn.index((hover, expected, "casing")), drawn.index((hover, expected, "stroke"))
+            if expected == "hover":
+                # Under the open chord: after the rest chords, before the lit chords.
+                self.assertTrue(max(rest) < first < second < min(lit))
+            else:
+                self.assertTrue(max(lit) < first < second)
+            ends = [index for index, (_key, _tone, part) in enumerate(drawn) if part == "ends"]
+            self.assertEqual(ends, list(range(len(drawn) - len(ends), len(drawn))))
+        table.hover["chord"] = None
+
+    def test_W6_T5_pointer_dim_keeps_rings_and_ends_readable(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        win = palette["win"]
+        table.hover["chord"] = ("release-plan", "parser-review")
+        state = table.state()
+        self.assertTrue(table.hover_dims(state))
+        dimmed = 0
+        for seat, pin in table.pins.items():
+            if seat in table.lit(state)[1]:
+                continue
+            x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"][seat])
+            table.icons[pin["app"]] = Mock()
+            with patch.object(asb, "snapshot_stroke") as strokes:
+                table.snapshot_pin(asb.Gtk.Snapshot(), pin, x, y, seat, table.lit(state), 1, 0, palette)
+            color = asb.hex_color(strokes.call_args_list[0].args[3])
+            fills = (win, asb.mix_color(win, pin["hue"], .03 if pin["offline"] else .05))
+            self.assertEqual(color, asb.dim_mark(win, table.pin_hue(pin, palette), fills), seat)
+            self.assertGreaterEqual(min(asb.contrast(color, fill) for fill in fills), 3, seat)
+            self.assertEqual(asb.hex_color(table.icons[pin["app"]].snapshot_symbolic.call_args.args[3][0]), asb.dim_mark(win, palette["dim"], fills))
+            dimmed += 1
+        self.assertGreater(dimmed, 3)
+        bad = asb.message_status_colors(palette)["not-sent"]
+        chord = next(chord for chord in table.chords if chord["fails"] and chord["key"] not in table.lit(state)[0])
+        self.assertEqual(table.chord_tone(chord, state, table.lit(state)), "dim")
+        with patch.object(asb, "snapshot_stroke") as strokes:
+            table.snapshot_chord(asb.Gtk.Snapshot(), chord, 1, "dim", palette, table.chord_gray(palette))
+        ends = [asb.hex_color(call.args[3]) for call in strokes.call_args_list if call.args[4:5] == ([4, 3],)]
+        self.assertEqual(ends, [asb.dim_mark(win, bad, (win,))] * len(chord["fails"]))
+        self.assertGreaterEqual(asb.contrast(ends[0], win), 3)
+        # A keyboard focus dims no mark.
+        table.hover["chord"] = None
+        table.hover["chord_focus"] = ("release-plan", "parser-review")
+        self.assertFalse(table.hover_dims(table.state()))
+        table.hover["chord_focus"] = None
+
+    def test_W6_T6_status_chords_add_at_most_1_px_per_message(self):
+        window = self.window(period="7d")
+        table = window.table
+        window.open_thread("status", "written"); self.drain(.4)
+        counts = {key: window.view["pairs"][key]["by"].get("written", 0) for key in table.chord_keys}
+        largest = max(counts.values())
+        for chord in table.chords:
+            if chord["bad"] or not counts[chord["key"]]:
+                continue
+            snapshot = Mock()
+            table.snapshot_chord(snapshot, chord, 1, "lit", window.palette, table.chord_gray(window.palette), "stroke")
+            self.assertAlmostEqual(snapshot.append_stroke.call_args_list[0].args[1].get_line_width(),
+                                   1.5 + min(counts[chord["key"]], 7 * counts[chord["key"]] / largest), places=5)
+        low = min(count for count in counts.values() if count)
+        self.assertEqual(table.key["widths"], (asb.status_chord_width(low, largest), asb.status_chord_width(largest, largest)))
+        self.assertEqual(table.key["items"][0]["kind"], "chords")
+
+    def test_W6_T7_the_table_is_one_tab_stop_with_arrow_keys_inside(self):
+        window = self.window(period="7d")
+        table = window.table
+        seats = list(table.pins)
+        for index, seat in enumerate(seats):
+            self.assert_accessible_label(table.proxies[("pin", seat)], f"{table.pins[seat]['label']}, seat {index + 1} of {len(seats)}")
+
+        def press(key):
+            focus = window.get_focus()
+            self.assertIsInstance(focus, asb.MessageProxy)
+            self.assertTrue(focus.key_pressed(None, key, 0, 0))
+            self.drain(.02)
+            return window.get_focus().key
+        # a: Tab enters at the first seat in circle order.
+        window.set_focus(None)
+        self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+        self.assertEqual(window.get_focus().key, ("pin", seats[0]))
+        # b: Right and Left wrap; Home and End; the keypad keys do the same.
+        self.assertEqual(press(asb.Gdk.KEY_Left), ("pin", seats[-1]))
+        self.assertEqual(press(asb.Gdk.KEY_KP_Right), ("pin", seats[0]))
+        self.assertEqual(press(asb.Gdk.KEY_Right), ("pin", seats[1]))
+        self.assertEqual(press(asb.Gdk.KEY_End), ("pin", seats[-1]))
+        self.assertEqual(press(asb.Gdk.KEY_KP_Home), ("pin", seats[0]))
+        # Up on a seat and Down on a seat with no chord do nothing.
+        self.assertEqual(press(asb.Gdk.KEY_Up), ("pin", seats[0]))
+        with patch.object(table, "seat_chords", return_value=[]):
+            self.assertEqual(press(asb.Gdk.KEY_Down), ("pin", seats[0]))
+        # c: Down goes to the widest chord of the seat; Right and Left step through its chords, the widest first.
+        table.proxies[("pin", "release-plan")].grab_focus()
+        chords = table.seat_chords("release-plan")
+        widths = {chord["key"]: chord["width"] for chord in table.chords}
+        self.assertEqual(sorted(chords, key=lambda key: -widths[key]), chords)
+        self.assertEqual(len(chords), sum("release-plan" in key for key in table.chord_keys))
+        self.assertEqual(press(asb.Gdk.KEY_KP_Down), ("chord", chords[0]))
+        name = table.proxies[("chord", chords[0])].name
+        self.assert_accessible_label(table.proxies[("chord", chords[0])], f"{name}, line 1 of {len(chords)}")
+        self.assertEqual(press(asb.Gdk.KEY_Right), ("chord", chords[1]))
+        self.assert_accessible_label(table.proxies[("chord", chords[1])], f"{table.proxies[('chord', chords[1])].name}, line 2 of {len(chords)}")
+        self.assertEqual(press(asb.Gdk.KEY_Left), ("chord", chords[0]))
+        self.assertEqual(press(asb.Gdk.KEY_KP_Left), ("chord", chords[-1]))
+        self.assertEqual(press(asb.Gdk.KEY_Home), ("chord", chords[0]))
+        self.assertEqual(press(asb.Gdk.KEY_End), ("chord", chords[-1]))
+        # The lit state follows the focused chord as before.
+        self.assertEqual(table.hover["chord_focus"], chords[-1])
+        self.assertEqual(press(asb.Gdk.KEY_KP_Up), ("pin", "release-plan"))
+        # Leave from any item, and enter again at the last focused item.
+        self.assertEqual(press(asb.Gdk.KEY_Down), ("chord", chords[0]))
+        self.assertFalse(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+        window.set_focus(None); self.drain(.02)
+        self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_BACKWARD))
+        self.assertEqual(window.get_focus().key, ("chord", chords[0]))
+        # A chord that got the focus another way names no line and uses its first seat.
+        self.assert_accessible_label(table.proxies[("chord", chords[0])], name)
+        self.assertEqual(press(asb.Gdk.KEY_Up), ("pin", chords[0][0]))
+        # When the last focused item is gone, Tab enters at the first seat.
+        window.set_focus(None)
+        table.last_focus = ("pin", "gone")
+        self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
+        self.assertEqual(window.get_focus().key, ("pin", seats[0]))
+        # d: other keys are not handled; Enter opens the thread as before.
+        self.assertFalse(window.get_focus().key_pressed(None, asb.Gdk.KEY_a, 0, 0))
+        self.assertTrue(window.get_focus().key_pressed(None, asb.Gdk.KEY_Return, 0, 0)); self.drain(.3)
+        self.assertEqual((window.thread["kind"], window.thread["key"]), ("session", seats[0]))
+
+    def test_W6_T8_a_second_click_goes_back_one_thread(self):
+        window = self.window(period="7d")
+        table = window.table
+        pair = ("release-plan", "parser-review")
+        window.open_thread("session", "docs"); self.drain(.3)
+        window.open_thread("pair", pair); self.drain(.3)
+        table.activate_item(("chord", pair)); self.drain(.3)
+        self.assertEqual((window.thread["kind"], window.thread["key"]), ("session", "docs"))
+        table.activate_item(("pin", "docs")); self.drain(.3)
+        self.assertIsNone(window.thread)
+        # A click on an empty part of the table closes all threads; a double click acts one time.
+        window.open_thread("session", "docs"); self.drain(.3)
+        window.open_thread("pair", pair); self.drain(.3)
+        table.clicked(None, 2, table.geometry["cx"], table.geometry["cy"])
+        self.assertEqual(window.thread["kind"], "pair")
+        table.clicked(None, 1, table.geometry["cx"], table.geometry["cy"]); self.drain(.3)
+        self.assertIsNone(window.thread)
+        self.assertEqual(window.thread_stack, [])
+
+    def test_W6_T9_the_key_names_the_middle_of_the_width_scale(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        counts = [window.view["pairs"][key]["n"] for key in table.chord_keys]
+        low, high = min(counts), max(counts)
+        middle = round(high / 4)
+        self.assertEqual((low, middle, high), (4, 35, 139))
+        item = table.key["items"][0]
+        self.assertEqual(item["kind"], "scale")
+        self.assertEqual(item["layout"].get_text(), "Line width:")
+        groups = item["groups"]
+        self.assertEqual([group["layout"].get_text() for group in groups], ["4", "35", "139 messages"])
+        for group, count in zip(groups, (low, middle, high)):
+            self.assertAlmostEqual(group["width"], 1.5 + 7 * math.sqrt(count / high))
+            self.assertEqual(group["tx"] - group["x"], 20)
+        self.assertAlmostEqual(groups[1]["width"], 5, delta=.05)
+        for first, second in zip(groups, groups[1:]):
+            self.assertEqual(second["x"] - first["tx"] - first["layout"].get_pixel_extents()[1].width, 10)
+        self.assertEqual(groups[0]["x"], item["x"] + item["layout"].get_pixel_extents()[1].width + 6)
+        with patch.object(table, "update_property") as update:
+            table.place_labels(False)
+        self.assertTrue(update.call_args.args[1][0].startswith("Line width: 4, 35, and 139 messages, Not sent"))
+        with patch.object(asb, "snapshot_stroke") as strokes, patch.object(asb, "snapshot_layout") as layouts:
+            table.snapshot_key(Mock(), palette, table.chord_gray(palette))
+        samples = [(call.args[1].get_bounds()[1].get_x(), call.args[1].get_bounds()[1].get_width(), call.args[2], asb.hex_color(call.args[3]))
+                   for call in strokes.call_args_list[:3]]
+        gray = table.chord_gray(palette)
+        self.assertEqual(samples, [(group["x"], 16, group["width"], gray) for group in groups])
+        self.assertEqual([call.args[1].get_text() for call in layouts.call_args_list[:4]], ["4", "35", "139 messages", "Line width:"])
+        # The pair, session, All messages, and time threads keep the three counts; a status thread keeps its two accent samples.
+        for kind, key in (("pair", ("release-plan", "parser-review")), ("session", "docs"), ("all", "all")):
+            window.open_thread(kind, key); self.drain(.3)
+            self.assertEqual(table.key["items"][0]["kind"], "scale", kind)
+        window.open_time(len(window.data["buckets"]["startsMs"]) - 2); self.drain(.3)
+        self.assertEqual(window.thread["kind"], "time")
+        self.assertEqual(table.key["items"][0]["kind"], "scale")
+        window.open_thread("status", "written"); self.drain(.3)
+        self.assertEqual(table.key["items"][0]["kind"], "chords")
+        self.assertRegex(table.key["items"][0]["layout"].get_text(), r"^Line width: [\d,]+ to [\d,]+ messages \(No receipt\)$")
+        window.close_thread(); self.drain(.3)
+        # The two-sample form when the middle count is not between the two ends.
+        view = table.view
+        table.view = dict(view, pairs={key: dict(pair, n=max(pair["n"], 100)) for key, pair in view["pairs"].items()})
+        table.place_labels(False)
+        self.assertEqual(table.key["items"][0]["kind"], "chords")
+        self.assertEqual(table.key["items"][0]["layout"].get_text(), "Line width: 100 to 139 messages")
+        table.view = view
+        table.place_labels(False)
+        self.assertEqual(table.key["items"][0]["kind"], "scale")
+        # The two-sample form when the longer item does not fit on the key line: a box that touches only its end.
+        box = table.key["box"]
+        table.layout_key([(box[2] - 2, box[1], box[2] - 1, box[3])])
+        self.assertTrue(table.key["shown"])
+        self.assertEqual(table.key["items"][0]["kind"], "chords")
+        self.assertEqual(table.key["items"][0]["layout"].get_text(), "Line width: 4 to 139 messages")
 
     def test_R1_one_escape_closes_the_messages_window_after_a_reopen(self):
         # R1: a hidden window gets no key release, so one Escape press closes it again after the next open.
@@ -18895,23 +19282,21 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         for _kind, seat_id in pins:
             seat, counts = view["seats"][seat_id], view["counts"][seat_id]
             self.assert_accessible_label(table.proxies[("pin", seat_id)], f"{seat_id}, {asb.ACTIVITY_APP_LABELS[seat['app']]}, {names[seat['machineId']]}: "
-                                                                          f"{counts['sent']} outgoing, {counts['received']} incoming")
+                                                                          f"{counts['sent']} outgoing, {counts['received']} incoming, "
+                                                                          f"seat {view['seated'].index(seat_id) + 1} of 12")
         parser = view["counts"]["parser-review"]
-        self.assert_accessible_label(table.proxies[("pin", "parser-review")], f"parser-review, Claude Code, Laptop: {parser['sent']} outgoing, {parser['received']} incoming")
+        self.assert_accessible_label(table.proxies[("pin", "parser-review")], f"parser-review, Claude Code, Laptop: {parser['sent']} outgoing, "
+                                                                                f"{parser['received']} incoming, seat {view['seated'].index('parser-review') + 1} of 12")
         pair = view["pairs"][("release-plan", "parser-review")]
         self.assert_accessible_label(table.proxies[("chord", ("release-plan", "parser-review"))], f"release-plan and parser-review: {pair['n']} messages")
         self.assertEqual(pair["n"], 139)
         for proxy in table.proxy_order:
             self.assertTrue(proxy.get_focusable())
             self.assertEqual(proxy.get_accessible_role(), asb.Gtk.AccessibleRole.BUTTON)
-        # Tab goes through the pins in circle order, then the chords.
-        table.proxy_order[0].grab_focus()
-        for proxy in table.proxy_order[1:4]:
-            self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
-            self.assertTrue(proxy.has_focus())
-        table.proxy_order[11].grab_focus()
-        self.assertTrue(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
-        self.assertIs(window.get_focus(), table.proxy_order[12])
+        # The table is one Tab stop: Tab leaves it from a pin and from a chord.
+        for proxy in (table.proxy_order[0], table.proxy_order[12]):
+            proxy.grab_focus()
+            self.assertFalse(table.child_focus(asb.Gtk.DirectionType.TAB_FORWARD))
         self.assertEqual(table.proxy_order[12].key[0], "chord")
         # A chord takes the pointer only near its curve.
         chord = table.proxies[("chord", ("release-plan", "parser-review"))]
@@ -19911,7 +20296,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 window.close()
                 self.drain(.05)
 
-    def test_pins_are_opaque_and_seat_labels_have_a_3_px_halo(self):
+    def test_pins_are_opaque_and_seat_labels_have_a_plate(self):
         window = self.window()
         table = window.table
         seat, other = list(table.pins)[:2]
@@ -19926,18 +20311,17 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((asb.hex_color(fill), fill.alpha), (palette["win"], 1))
         stroke = snapshot.append_stroke.call_args.args[2]
         self.assertEqual(stroke.alpha, 1)
-        self.assertEqual(asb.hex_color(stroke), asb.mix_color(palette["win"], pin["hue"], .35))
+        self.assertEqual(asb.hex_color(stroke), asb.dim_mark(palette["win"], pin["hue"], (palette["win"], asb.mix_color(palette["win"], pin["hue"], .05))))
         # A lit pin has a 2 px accent ring.
         snapshot = Mock()
         table.snapshot_pin(snapshot, pin, x, y, seat, (set(), {seat}), 1, 0, palette)
         ring = snapshot.append_stroke.call_args_list[0]
         self.assertEqual((ring.args[1].get_line_width(), asb.hex_color(ring.args[2])), (2, palette["accent"]))
-        # The halo: copies of the text up to 3 px around it.
+        # No halo: the text draws one time, over its plate.
         snapshot = Mock()
         table.snapshot_label(snapshot, pin["layout"], 100, 50, 1, palette)
-        offsets = [math.hypot(call.args[0].x - 100, call.args[0].y - 50) for call in snapshot.translate.call_args_list]
-        self.assertAlmostEqual(max(offsets), 3, places=4)
-        self.assertEqual(offsets[-1], 0)
+        self.assertEqual([(call.args[0].x, call.args[0].y) for call in snapshot.translate.call_args_list], [(100, 50)])
+        self.assertEqual(snapshot.push_rounded_clip.call_count, 1)
 
     def test_the_outlined_chord_draws_after_the_other_chords(self):
         window = self.window()
@@ -20074,8 +20458,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.wait_for(lambda: window.table.geometry is not None and window.table.geometry["W"] == window.table.canvas.get_width())
         table = window.table
         counts = [window.view["pairs"][key]["n"] for key in table.chord_keys]
-        self.assertEqual([item["layout"].get_text() for item in table.key["items"]],
-                         [f"Line width: {min(counts)} to {max(counts)} messages", "Not sent", "Offline"])
+        self.assertEqual([item["layout"].get_text() for item in table.key["items"]], ["Line width:", "Not sent", "Offline"])
+        self.assertEqual([group["layout"].get_text() for group in table.key["items"][0]["groups"]],
+                         [str(min(counts)), str(round(max(counts) / 4)), f"{max(counts)} messages"])
         self.assertTrue(table.key["shown"])
         box = table.key["box"]
         self.assertEqual((box[0], round(box[3])), (12, table.geometry["H"] - 12))
@@ -20892,7 +21277,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         centers = [widget.compute_bounds(window)[1] for widget in (icon, text)]
         self.assertAlmostEqual(centers[0].get_y() + centers[0].get_height() / 2, centers[1].get_y() + centers[1].get_height() / 2, delta=1)
 
-    def test_RoundTable_a_second_activation_closes_the_open_thread(self):
+    def test_RoundTable_a_second_activation_goes_back_one_thread(self):
         window = self.window()
         table = window.table
         pair = ("release-plan", "parser-review")
@@ -20913,6 +21298,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         table.clicked(None, 1, *pin); self.drain(.2)
         self.assertEqual(window.thread["key"], "docs")
         table.clicked(None, 1, *pin); self.drain(.2)
+        self.assertEqual(window.thread["key"], pair)
+        table.clicked(None, 1, table.geometry["cx"], table.geometry["cy"]); self.drain(.2)
         self.assertIsNone(window.thread)
         self.assertEqual(window.ledger.get_visible_child_name(), "stats")
 

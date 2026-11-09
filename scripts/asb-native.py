@@ -2676,6 +2676,16 @@ def chord_gray(win, text, fills):
     return text
 
 
+def dim_mark(win, color, fills):
+    """A mark dimmed by pointer hover (a pin ring, a pin glyph, a not-sent end): 65% of its color, or more, as far as keeps 3:1 on
+    each fill under it, in steps of 1%."""
+    for percent in range(65, 101):
+        value = mix_color(win, color, percent / 100)
+        if all(contrast(value, fill) >= 3 for fill in fills):
+            return value
+    return color
+
+
 def seat_label_offset(angle, half_width, scale=1):
     """How far a seat label sits inward from its pin: 30px, or more where a wide label would touch its own pin.
     scale is the text scale: a taller label keeps the same room."""
@@ -2924,6 +2934,28 @@ def offline_band_color(win, hue):
         if contrast(value, win) >= 3:
             return value
     return hue
+
+
+def offline_ring_color(win, text, hue):
+    """The rest ring of an offline pin: the full machine hue, moved toward the text color until it has 3:1 on the sector tint of its
+    machine (the hue 3% into the window)."""
+    return contrast_floor(hue, text, mix_color(win, hue, .03), 3)
+
+
+def offline_dashes(geometry, arc):
+    """The dashes of an offline band as (start, end) angles: about 12 px dashes and 4 px gaps at the middle radius of the band (not
+    times the text scale), a whole number of them, so that the arc starts and ends with a whole dash."""
+    middle = (geometry["Ri"] + geometry["Ro"]) / 2
+    length = math.radians(arc["end"] - arc["start"]) * middle
+    count = max(1, round((length + 4) / 16))
+    dash = (length + 4) / count - 4
+    degrees = lambda pixels: math.degrees(pixels / middle) if middle > 0 else 0  # noqa: E731
+    return [(arc["start"] + degrees(index * (dash + 4)), arc["start"] + degrees(index * (dash + 4) + dash)) for index in range(count)]
+
+
+def status_chord_width(count, largest):
+    """The width of a chord lit by a status thread: linear up to 7 messages, so one message adds at most 1 px."""
+    return 1.5 + min(count, 7 * count / largest)
 
 
 def message_arrivals(previous, reply):
@@ -13417,6 +13449,12 @@ def remove_children(widget):
         child = widget.get_first_child()
 
 
+# The keys that move the focus inside the round table, with the keypad keys.
+TABLE_KEYS = {Gdk.KEY_Right: "next", Gdk.KEY_KP_Right: "next", Gdk.KEY_Left: "previous", Gdk.KEY_KP_Left: "previous",
+              Gdk.KEY_Home: "first", Gdk.KEY_KP_Home: "first", Gdk.KEY_End: "last", Gdk.KEY_KP_End: "last",
+              Gdk.KEY_Down: "down", Gdk.KEY_KP_Down: "down", Gdk.KEY_Up: "up", Gdk.KEY_KP_Up: "up"}
+
+
 class MessageProxy(Gtk.Widget):
     """An invisible focusable stand-in for a pin or a chord of the round table: keyboard focus, activation, and the screen reader name."""
     __gtype_name__ = "AsbMessageProxy"
@@ -13437,7 +13475,11 @@ class MessageProxy(Gtk.Widget):
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space, Gdk.KEY_KP_Space):
             self.table.activate_item(self.key)
             return True
-        return False
+        step = TABLE_KEYS.get(keyval)
+        if step is None:
+            return False
+        self.table.step_focus(self.key, step)
+        return True
 
     def do_contains(self, x, y):
         if self.curve is None:
@@ -13569,6 +13611,8 @@ class RoundTable(Gtk.Overlay):
         # A Busiest pairs row with the pointer or the focus lights its chord as a hover does.
         self.hover = {"seat": None, "chord": None, "focus": None, "chord_focus": None, "row": None}
         self.proxies, self.proxy_order = {}, []
+        # The item that had the keyboard focus last (the Tab stop enters there), and the seat that a focused chord was reached from.
+        self.last_focus = self.chord_from = None
         self.flights, self.rings, self.send_until = [], [], {}
         self.icons = {}
         # The reader under a small table: its top, the height it adds to the table, and the tooltip of the center disc.
@@ -13660,7 +13704,7 @@ class RoundTable(Gtk.Overlay):
                 self.add_overlay(self.proxies[key])
             proxy = self.proxies[key]
             if key[0] == "pin":
-                text = self.pins[key[1]]["label"]
+                text = f"{self.pins[key[1]]['label']}, seat {list(self.pins).index(key[1]) + 1} of {len(self.pins)}"
             else:
                 pair = self.view["pairs"][key[1]]
                 text = f"{self.title(pair['a'])} and {self.title(pair['b'])}: {format_count(pair['n'])} message{'' if pair['n'] == 1 else 's'}"
@@ -13673,6 +13717,7 @@ class RoundTable(Gtk.Overlay):
                     # A chord lit by a status thread names its count of that status.
                     tip += f"\n{ACTIVITY_STATUS_LABELS[thread['key']]}: {format_count(pair['by'][thread['key']])}"
                 proxy.set_tooltip_text(tip)
+            proxy.name = text
             proxy.update_property([Gtk.AccessibleProperty.LABEL], [text])
         self.proxy_order = [self.proxies[key] for key in wanted]
 
@@ -13991,32 +14036,65 @@ class RoundTable(Gtk.Overlay):
         if not counts:
             return
         low, high = min(counts), max(counts)
+        middle = round(high / 4)
         text = (f"{format_count(low)} to {format_count(high)}" if low != high else format_count(high)) + (" messages" if high != 1 else " message")
         if status:
             text += f" ({ACTIVITY_STATUS_LABELS[status]})"
-        parts = [("chords", f"Line width: {text}"), ("bad", "Not sent")]
+        rest = [("bad", "Not sent")]
         if any(chord["fails"] for chord in self.chords):
-            parts.append(("mixed", "Some not sent"))
+            rest.append(("mixed", "Some not sent"))
         if any(self.machine_info.get(machine, ("", False))[1] for machine in geometry["mach"]):
-            parts.append(("offline", "Offline"))
-        x, items = 12, []
-        for kind, words in parts:
-            layout = activity_layout(self, words, 11 * scale)
-            _ink, logical = layout.get_pixel_extents()
-            sample = {"chords": 36, "offline": 20}.get(kind, 18) * scale
-            items.append({"kind": kind, "x": x, "layout": layout, "tx": x + sample + 6, "w": logical.width, "h": logical.height})
-            x += sample + 6 + logical.width + 14
-        height = max(item["h"] for item in items)
-        box = (12, geometry["KH"] - 12 - height, x - 14, geometry["KH"] - 12)
-        near_x, near_y = min(max(geometry["cx"], box[0]), box[2]), min(max(geometry["cy"], box[1]), box[3])
-        clear = box[2] <= geometry["W"] - 12 and math.hypot(near_x - geometry["cx"], near_y - geometry["cy"]) > geometry["Ro"] + 2
+            rest.append(("offline", "Offline"))
         others = boxes + [(item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
-        touches = any(box[0] < other[2] and other[0] < box[2] and box[1] < other[3] and other[1] < box[3] for other in others)
+
+        def build(scale_item):
+            """The key items and their box. scale_item names three counts of the width scale (the smallest, a quarter of the
+            largest, the largest) instead of two samples."""
+            x, items = 12, []
+            if scale_item:
+                # `Line width:`, then three groups of a 16 px sample, 4 px, and its count, 10 px apart, then ` messages`.
+                layout = activity_layout(self, "Line width:", 11 * scale)
+                logical = layout.get_pixel_extents()[1]
+                groups, left, height = [], x + logical.width + 6, logical.height
+                for index, count in enumerate((low, middle, high)):
+                    words = format_count(count) + (" messages" if index == 2 else "")
+                    count_layout = activity_layout(self, words, 11 * scale)
+                    extents = count_layout.get_pixel_extents()[1]
+                    groups.append({"x": left, "width": 1.5 + 7 * math.sqrt(count / high), "layout": count_layout, "tx": left + 20 * scale, "h": extents.height})
+                    height = max(height, extents.height)
+                    left += 20 * scale + extents.width + (10 * scale if index < 2 else 0)
+                items.append({"kind": "scale", "x": x, "layout": layout, "tx": x, "w": left - x, "h": height, "groups": groups})
+                x = left + 14
+                words = [f"Line width: {format_count(low)}, {format_count(middle)}, and {format_count(high)} messages"]
+            else:
+                layout = activity_layout(self, f"Line width: {text}", 11 * scale)
+                logical = layout.get_pixel_extents()[1]
+                items.append({"kind": "chords", "x": x, "layout": layout, "tx": x + 36 * scale + 6, "w": logical.width, "h": logical.height})
+                x += 36 * scale + 6 + logical.width + 14
+                words = [f"Line width: {text}"]
+            for kind, part in rest:
+                layout = activity_layout(self, part, 11 * scale)
+                _ink, logical = layout.get_pixel_extents()
+                sample = {"offline": 20}.get(kind, 18) * scale
+                items.append({"kind": kind, "x": x, "layout": layout, "tx": x + sample + 6, "w": logical.width, "h": logical.height})
+                x += sample + 6 + logical.width + 14
+                words.append(part)
+            height = max(item["h"] for item in items)
+            box = (12, geometry["KH"] - 12 - height, x - 14, geometry["KH"] - 12)
+            near_x, near_y = min(max(geometry["cx"], box[0]), box[2]), min(max(geometry["cy"], box[1]), box[3])
+            clear = box[2] <= geometry["W"] - 12 and math.hypot(near_x - geometry["cx"], near_y - geometry["cy"]) > geometry["Ro"] + 2
+            touches = any(box[0] < other[2] and other[0] < box[2] and box[1] < other[3] and other[1] < box[3] for other in others)
+            return items, box, height, clear and not touches, words
+        # The width scale is a square root, so the key also names a middle count; a status thread keeps its two accent samples (its
+        # scale is linear up to 7), and so does a key whose middle count is not between its ends or whose longer item does not fit.
+        items, box, height, shown, words = build(True) if not status and low < middle < high else (None, None, 0, False, None)
+        if not shown:
+            items, box, height, shown, words = build(False)
         # A status thread draws the two width samples in the accent at its smallest and largest lit widths.
-        widths = (1.5 + 7 * math.sqrt(low / high), 8.5) if status else (1.5, 8.5)
-        self.key = {"items": items, "box": box, "middle": box[1] + height / 2, "shown": clear and not touches, "widths": widths, "accent": bool(status)}
+        widths = (status_chord_width(low, high), status_chord_width(high, high)) if status else (1.5, 8.5)
+        self.key = {"items": items, "box": box, "middle": box[1] + height / 2, "shown": shown, "widths": widths, "accent": bool(status)}
         if self.key["shown"]:
-            self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [", ".join(words for _kind, words in parts)])
+            self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [", ".join(words)])
 
     def child_position(self, _overlay, widget, rectangle):
         geometry = self.geometry
@@ -14049,17 +14127,51 @@ class RoundTable(Gtk.Overlay):
             self.layout_table()
 
     def do_focus(self, direction):
-        # Pins in circle order, then chords; GTK would sort the proxies by their places.
+        # The table is one Tab stop: Tab and Shift+Tab enter it at its last focused item (else the first seat in circle order) and
+        # leave it from any item; the arrow keys move inside it (step_focus).
         order = [proxy for proxy in self.proxy_order if proxy.get_child_visible() and proxy.get_mapped()]
-        if direction not in (Gtk.DirectionType.TAB_FORWARD, Gtk.DirectionType.TAB_BACKWARD) or not order:
+        if not order:
             return Gtk.Overlay.do_focus(self, direction)
-        step = 1 if direction == Gtk.DirectionType.TAB_FORWARD else -1
-        current = self.get_focus_child()
-        index = order.index(current) + step if current in order else 0 if step == 1 else len(order) - 1
-        if 0 <= index < len(order):
-            order[index].grab_focus()
-            return True
-        return False
+        if self.get_focus_child() in order:
+            return False
+        last, self.chord_from = self.proxies.get(self.last_focus), None
+        (last if last in order else order[0]).grab_focus()
+        return True
+
+    def seat_chords(self, seat_id):
+        """The chords of a seat for the arrow keys: the widest first, ties in the circle order of the partner."""
+        circle = list(self.pins)
+        chords = [chord for chord in self.chords if seat_id in chord["key"]]
+        return [chord["key"] for chord in sorted(chords, key=lambda chord: (-chord["width"], circle.index(chord["b"] if chord["a"] == seat_id else chord["a"])))]
+
+    def step_focus(self, key, step):
+        """An arrow key, Home, or End on a seat or a chord. On a seat: the next or previous seat (they wrap), the first or last seat, or
+        down to its widest chord. On a chord: the chords of the seat that it was reached from (else its first seat), or up to that seat."""
+        seats = list(self.pins)
+        if key[0] == "pin":
+            if step == "down":
+                chords = self.seat_chords(key[1])
+                if chords:
+                    self.chord_from = key[1]
+                    self.proxies[("chord", chords[0])].grab_focus()
+                return
+            if step == "up" or not seats:
+                return
+            index = seats.index(key[1])
+            target = {"next": (index + 1) % len(seats), "previous": (index - 1) % len(seats), "first": 0, "last": len(seats) - 1}[step]
+            self.proxies[("pin", seats[target])].grab_focus()
+            return
+        seat_id = self.chord_from if self.chord_from in key[1] else key[1][0]
+        if step == "up":
+            self.proxies[("pin", seat_id)].grab_focus()
+            return
+        if step == "down":
+            return
+        chords = self.seat_chords(seat_id)
+        index = chords.index(key[1])
+        target = {"next": (index + 1) % len(chords), "previous": (index - 1) % len(chords), "first": 0, "last": len(chords) - 1}[step]
+        self.chord_from = seat_id
+        self.proxies[("chord", chords[target])].grab_focus()
 
     # Pointer, keyboard, and focus.
     def hit(self, x, y):
@@ -14107,10 +14219,10 @@ class RoundTable(Gtk.Overlay):
             self.window.close_thread()
 
     def activate_item(self, key):
-        """Open the thread of a pin or a chord; a second activation of the open pin or chord closes it, as Back does."""
+        """Open the thread of a pin or a chord; a second activation of the open pin or chord goes back one thread, as Back does."""
         kind, thread = "session" if key[0] == "pin" else "pair", self.window.thread
         if thread and thread["kind"] == kind and thread["key"] == key[1]:
-            self.window.close_thread()
+            self.window.back_thread()
         else:
             self.window.open_thread(kind, key[1])
 
@@ -14125,6 +14237,16 @@ class RoundTable(Gtk.Overlay):
         slot = "focus" if proxy.key[0] == "pin" else "chord_focus"
         if entered:
             self.hover[slot] = proxy.key[1]
+            self.last_focus = proxy.key
+            if proxy.key[0] == "chord":
+                # A chord reached from a seat names its place in the chords of that seat; one that got the focus another way does not.
+                pending, self.chord_from = self.chord_from, None
+                if pending in proxy.key[1]:
+                    self.chord_from = pending
+                    chords = self.seat_chords(pending)
+                    proxy.update_property([Gtk.AccessibleProperty.LABEL], [f"{proxy.name}, line {chords.index(proxy.key[1]) + 1} of {len(chords)}"])
+                else:
+                    proxy.update_property([Gtk.AccessibleProperty.LABEL], [proxy.name])
         elif self.hover[slot] == proxy.key[1]:
             self.hover[slot] = None
         if self.geometry is not None:
@@ -14321,28 +14443,27 @@ class RoundTable(Gtk.Overlay):
                                  alpha_color(hue, .03 if offline else .05))
         for machine, arc in arcs.items():
             hue, offline = self.machine_info.get(machine, (self.window.machine_hue(0), False))
-            band = sector_path(cx, cy, geometry["Ri"], geometry["Ro"], arc["start"], arc["end"])
-            snapshot.append_fill(band, Gsk.FillRule.WINDING, rgba(offline_band_color(palette["win"], hue)) if offline else alpha_color(hue, .85))
             if offline:
-                line = Gsk.Stroke.new(1)
-                line.set_dash([4, 3])
-                snapshot.append_stroke(band, line, rgba(hue))
+                for start, end in offline_dashes(geometry, arc):
+                    snapshot.append_fill(sector_path(cx, cy, geometry["Ri"], geometry["Ro"], start, end), Gsk.FillRule.WINDING,
+                                         rgba(offline_band_color(palette["win"], hue)))
+            else:
+                snapshot.append_fill(sector_path(cx, cy, geometry["Ri"], geometry["Ro"], arc["start"], arc["end"]), Gsk.FillRule.WINDING,
+                                     alpha_color(hue, .85))
         for chords, fade in chord_sets:
             if fade > 0:
                 tones = [(chord, self.chord_tone(chord, state, lit)) for chord in chords]
+                # Each chord draws one time: the rest and dim chords, the hovered or focused chord outside the open thread, the lit
+                # chords (all casings, then all strokes, so that the casing of one lit chord never cuts another), the hovered or
+                # focused chord of the thread, and last the not-sent ends of all lit chords.
                 for chord, tone in tones:
-                    if tone != "lit":
+                    if tone in ("rest", "dim"):
                         self.snapshot_chord(snapshot, chord, fade, tone, palette, gray)
-                # The lit chords last, so that no chord crosses them: first all casings (with the casings of their not-sent ends),
-                # then all strokes, then the not-sent dashes, so that the casing of one lit chord never cuts another.
-                for part in ("casing", "stroke", "ends"):
+                for group, part in ((("hover",), "casing"), (("hover",), "stroke"), (("lit",), "casing"), (("lit",), "stroke"),
+                                    (("top",), "casing"), (("top",), "stroke"), (("hover", "lit", "top"), "ends")):
                     for chord, tone in tones:
-                        if tone == "lit":
+                        if tone in group:
                             self.snapshot_chord(snapshot, chord, fade, tone, palette, gray, part)
-                # With a thread open, the hovered or focused chord draws after the thread chords.
-                for chord, tone in tones:
-                    if tone in ("hover", "top"):
-                        self.snapshot_chord(snapshot, chord, fade, tone, palette, gray)
         if geometry["S"] >= 480:
             snapshot_circle(snapshot, cx, cy, geometry["Rc"], rgba(palette["win"]))
             snapshot_stroke(snapshot, circle_path(cx, cy, geometry["Rc"]), 1, rgba(palette["rule"]))
@@ -14358,9 +14479,7 @@ class RoundTable(Gtk.Overlay):
                 pin = self.pins[seat_id]
                 x, y = self.label_place_with(pin, angle, geometry, text, place, scale, label.get("ring", self.pin_ring(seat_id)))
                 dim = seat_id not in hover[1] if hover and hover[0] == "lit" else dims and seat_id not in lit[1]
-                layout = pin["texts"][text]["layout"]
-                self.snapshot_label(snapshot, layout, x, y, enter.get(seat_id, 1), palette, dim,
-                                    self.region_fill(x + pin["texts"][text]["w"] / 2, y + pin["texts"][text]["h"] / 2, arcs, palette))
+                self.snapshot_label(snapshot, pin["texts"][text]["layout"], x, y, enter.get(seat_id, 1), palette, dim, arcs)
         for seat_id, angle in seats.items():
             self.snapshot_pin(snapshot, self.pins[seat_id], *table_point(geometry, geometry["Rp"], angle), seat_id, lit, enter.get(seat_id, 1), now, palette)
         if self.move:
@@ -14372,9 +14491,7 @@ class RoundTable(Gtk.Overlay):
                 old = previous["labels"].get(seat_id, {})
                 if old.get("shown"):
                     x, y = self.label_place_with(pin, angle, previous["geometry"], old["text"], old["place"], scale, old.get("ring", self.pin_ring(seat_id)))
-                    text = pin["texts"][old["text"]]
-                    self.snapshot_label(snapshot, text["layout"], x, y, alpha, palette,
-                                        halo=self.region_fill(x + text["w"] / 2, y + text["h"] / 2, arcs, palette))
+                    self.snapshot_label(snapshot, pin["texts"][old["text"]]["layout"], x, y, alpha, palette, False, arcs)
                 self.snapshot_pin(snapshot, pin, *table_point(previous["geometry"], previous["geometry"]["Rp"], angle), None, (set(), set()), alpha, now, palette)
         for ring in self.rings:
             angle = geometry["seat"].get(ring["seat"])
@@ -14399,7 +14516,12 @@ class RoundTable(Gtk.Overlay):
 
         for item in self.key["items"]:
             x = item["x"]
-            if item["kind"] == "chords":
+            if item["kind"] == "scale":
+                # Three 16 px butt-capped samples at the widths of the smallest, the middle, and the largest count, each before its count.
+                for group in item["groups"]:
+                    segment(group["x"], group["x"] + 16 * scale, group["width"], gray)
+                    snapshot_layout(snapshot, group["layout"], group["tx"], middle - group["h"] / 2, dim)
+            elif item["kind"] == "chords":
                 # Two 16 px butt-capped segments at the smallest and the largest width, 4 px apart.
                 color = palette["accent"] if self.key["accent"] else gray
                 for left, width in zip((x, x + 20 * scale), self.key["widths"]):
@@ -14413,15 +14535,11 @@ class RoundTable(Gtk.Overlay):
             else:
                 offline = [hue for hue, state in self.machine_info.values() if state]
                 color = offline[0] if len(offline) == 1 else palette["dim"]
-                # A 20 px straight piece of the offline band at its real width, with its fill and its dashed long edges.
+                # A 20 px straight piece of the offline band at its real width: two 8 px dashes with a 4 px gap.
                 half = (self.geometry["Ro"] - self.geometry["Ri"]) / 2
-                snapshot.append_color(rgba(offline_band_color(palette["win"], color)),
-                                      Graphene.Rect().init(x, middle - half, 20 * scale, 2 * half))
-                for edge in (middle - half + .5, middle + half - .5):
-                    builder = Gsk.PathBuilder.new()
-                    builder.move_to(x, edge)
-                    builder.line_to(x + 20 * scale, edge)
-                    snapshot_stroke(snapshot, builder.to_path(), 1, rgba(color), [4, 3], Gsk.LineCap.BUTT)
+                for left in (x, x + 12 * scale):
+                    snapshot.append_color(rgba(offline_band_color(palette["win"], color)),
+                                          Graphene.Rect().init(left, middle - half, 8 * scale, 2 * half))
             snapshot_layout(snapshot, item["layout"], item["tx"], middle - item["h"] / 2, dim)
 
     @staticmethod
@@ -14474,7 +14592,7 @@ class RoundTable(Gtk.Overlay):
             count = self.view["pairs"][chord["key"]]["by"].get(thread["key"], 0)
             if count:
                 largest = max(self.view["pairs"][key]["by"].get(thread["key"], 0) for key in self.chord_keys)
-                width = 1.5 + 7 * math.sqrt(count / largest)
+                width = status_chord_width(count, largest)
         if tone == "top":
             width += 1.5
         if lit and part in ("all", "casing"):
@@ -14499,31 +14617,46 @@ class RoundTable(Gtk.Overlay):
             for points in chord["fails"]:
                 snapshot_stroke(snapshot, polyline(points), chord["end_width"] + 2 * scale, rgba(win), cap=Gsk.LineCap.BUTT)
         if part in ("all", "ends"):
+            # A dimmed not-sent end keeps 65% of its color or more (dim_mark) on its window-colored casing; a dimmed chord keeps 35%.
+            end = rgba(dim_mark(win, bad, (win,))) if tone == "dim" else rgba(bad)
             for points in chord["fails"]:
-                snapshot_stroke(snapshot, polyline(points), chord["end_width"], tone_color(bad), [4 * scale, 3 * scale], Gsk.LineCap.BUTT)
+                snapshot_stroke(snapshot, polyline(points), chord["end_width"], end, [4 * scale, 3 * scale], Gsk.LineCap.BUTT)
         snapshot.pop()
 
-    def region_fill(self, x, y, arcs, palette):
-        """The fill that the table draws at a point: the sector tint of the machine sector there, else the window color (also the
-        center disc fill)."""
-        geometry = self.geometry
-        radius = math.hypot(x - geometry["cx"], y - geometry["cy"])
-        if (geometry["Rc"] if geometry["S"] >= 480 else 0) < radius < geometry["Ri"]:
-            angle = math.degrees(math.atan2(y - geometry["cy"], x - geometry["cx"]))
-            for machine, arc in arcs.items():
-                if (angle - arc["start"]) % 360 < arc["end"] - arc["start"]:
-                    hue, offline = self.machine_info.get(machine, (self.window.machine_hue(0), False))
-                    return mix_color(palette["win"], hue, .03 if offline else .05)
-        return palette["win"]
+    @staticmethod
+    def label_plate(layout, x, y):
+        """The plate of a seat label: 3 px outside the ink box of all its lines, as (left, top, right, bottom)."""
+        ink = layout.get_pixel_extents()[0]
+        return x + ink.x - 3, y + ink.y - 3, x + ink.x + ink.width + 3, y + ink.y + ink.height + 3
 
-    def snapshot_label(self, snapshot, layout, x, y, alpha, palette, dim=False, halo=None):
-        halo, text = alpha_color(halo or palette["win"], alpha), alpha_color(palette["dim" if dim else "text"], alpha)
-        # A 3 px halo in the fill under the label (region_fill) under the glyphs: copies of the text around it.
-        for radius, steps in ((1.5, 8), (3, 16)):
-            for step in range(steps):
-                angle = 2 * math.pi * step / steps
-                snapshot_layout(snapshot, layout, x + radius * math.cos(angle), y + radius * math.sin(angle), halo)
-        snapshot_layout(snapshot, layout, x, y, text)
+    def snapshot_label(self, snapshot, layout, x, y, alpha, palette, dim=False, arcs=None):
+        """A seat label over its plate: a rounded rectangle with 3 px corners in which the table draws its background again (the
+        window color, each sector tint, and the center disc with its 1 px rule), so that no chord shows under the label."""
+        geometry = self.geometry
+        left, top, right, bottom = self.label_plate(layout, x, y)
+        rectangle = Graphene.Rect().init(left, top, right - left, bottom - top)
+        rounded = Gsk.RoundedRect()
+        rounded.init_from_rect(rectangle, 3)
+        snapshot.push_opacity(alpha)
+        snapshot.push_rounded_clip(rounded)
+        snapshot.append_color(rgba(palette["win"]), rectangle)
+        cx, cy = geometry["cx"], geometry["cy"]
+        disc = geometry["S"] >= 480
+        for machine, arc in (geometry["mach"] if arcs is None else arcs).items():
+            hue, offline = self.machine_info.get(machine, (self.window.machine_hue(0), False))
+            snapshot.append_fill(sector_path(cx, cy, geometry["Rc"] if disc else 0, geometry["Ri"], arc["start"], arc["end"]),
+                                 Gsk.FillRule.WINDING, alpha_color(hue, .03 if offline else .05))
+        if disc:
+            snapshot_circle(snapshot, cx, cy, geometry["Rc"], rgba(palette["win"]))
+            snapshot_stroke(snapshot, circle_path(cx, cy, geometry["Rc"]), 1, rgba(palette["rule"]))
+        snapshot.pop()
+        snapshot_layout(snapshot, layout, x, y, rgba(palette["dim" if dim else "text"]))
+        snapshot.pop()
+
+    def pin_hue(self, pin, palette):
+        """The rest ring color of a pin: its machine hue; on an offline machine moved toward the text color until it has 3:1 on the
+        sector tint of the machine."""
+        return offline_ring_color(palette["win"], palette["text"], pin["hue"]) if pin["offline"] else pin["hue"]
 
     def snapshot_pin(self, snapshot, pin, x, y, seat_id, lit, alpha, now, palette):
         # A pin is opaque: it fills with the window color, and a dimmed pin mixes its colors toward the window, so no chord shows
@@ -14533,27 +14666,31 @@ class RoundTable(Gtk.Overlay):
         # The pins of a hovered chord outside an open thread get their ring in the hover mix.
         hover = self.thread_hover(self.state())
         mixed = hover is not None and hover[0] == "other" and seat_id in hover[1] and seat_id not in self.open_lit()[1]
-        dim = (.75 if pin["offline"] else 1) * (.35 if self.hover_dims(self.state()) and not chosen else 1)
+        # Under pointer hover a dimmed pin keeps 65% of its colors or more (dim_mark), so that its ring and glyph stay readable.
+        dim = self.hover_dims(self.state()) and not chosen
         win = palette["win"]
+        fills = (win, mix_color(win, pin["hue"], .03 if pin["offline"] else .05))
+        tone = lambda color: dim_mark(win, color, fills) if dim else color  # noqa: E731
+        dashes = [4, 3] if pin["offline"] else None
         snapshot.push_opacity(alpha)
         snapshot_circle(snapshot, x, y, 16, rgba(win))
         sending = seat_id is not None and self.send_until.get(seat_id, 0) > now >= self.send_until[seat_id] - 160_000
         if opened:
-            # The open pin keeps its rest ring, then a 2 px window-colored gap and a 3 px accent ring (18.75 to 21.75 px).
-            snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(pin["hue"]), [4, 3] if pin["offline"] else None)
+            # The open pin keeps its rest ring, then a 2 px window-colored gap and a solid 3 px accent ring (18.75 to 21.75 px).
+            snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(self.pin_hue(pin, palette)), dashes)
             snapshot_stroke(snapshot, circle_path(x, y, 17.75), 2, rgba(win))
             snapshot_stroke(snapshot, circle_path(x, y, 20.25), 3, rgba(palette["accent"]))
         elif chosen:
-            snapshot_stroke(snapshot, circle_path(x, y, 16), 2, rgba(mix_color(win, palette["accent"], .6) if mixed else palette["accent"]))
+            # The 2 px accent ring of a lit pin is dashed when its machine is offline.
+            snapshot_stroke(snapshot, circle_path(x, y, 16), 2, rgba(mix_color(win, palette["accent"], .6) if mixed else palette["accent"]), dashes)
         else:
-            snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(mix_color(win, palette["light"] if sending else pin["hue"], dim)),
-                            [4, 3] if pin["offline"] else None)
+            snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(tone(palette["light"] if sending else self.pin_hue(pin, palette))), dashes)
         proxy = self.proxies.get(("pin", seat_id))
         if proxy is not None and proxy.has_focus():
             # On an open pin the focus ring is outermost: a 2 px gap outside the open ring (18.75 to 21.75 px).
             path = circle_path(x, y, 24.75 if opened else 20)
             snapshot_stroke(snapshot, path, 4, rgba(win))
-            snapshot_stroke(snapshot, path, 2, rgba(mix_color(win, palette["accent"], dim)))
+            snapshot_stroke(snapshot, path, 2, rgba(tone(palette["accent"])))
         icon = self.icons.get(pin["app"])
         if icon is None:
             theme = Gtk.IconTheme.get_for_display(self.get_display())
@@ -14561,7 +14698,7 @@ class RoundTable(Gtk.Overlay):
                                                             Gtk.TextDirection.NONE, 0)
         snapshot.save()
         snapshot.translate(Graphene.Point().init(x - 7, y - 7))
-        icon.snapshot_symbolic(snapshot, 14, 14, [rgba(mix_color(win, palette["dim"], dim))])
+        icon.snapshot_symbolic(snapshot, 14, 14, [rgba(tone(palette["dim"]))])
         snapshot.restore()
         snapshot.pop()
 
