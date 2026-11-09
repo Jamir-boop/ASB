@@ -12,7 +12,7 @@
 - **All your machines:** an optional machine group adds the sessions of your other computers.
 - **Your phone:** an optional Android app shows your sessions and notifications.
 - **Messages:** the Messages window shows the messages that your agents send each other on all machines, with their text. The optional ASB Bridge lets Codex, Claude Code, and OpenCode sessions send messages to each other.
-- **Usage:** the Usage window shows the tokens and the API price of your Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines. ASB keeps this history with daily backups, also after the apps delete old transcripts. For the prices, the window downloads the LiteLLM price list (prices only) while you use it.
+- **Usage:** the Usage window shows the tokens and the API price of your Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines, and the sessions that cost the most. ASB keeps this history with daily backups, also after the apps delete old transcripts. For the prices, the window downloads the LiteLLM price list (prices only) while you use it.
 - **GNOME top bar:** an optional extension shows how many sessions need you and how many work, with no count of all sessions.
 
 When a session sends a message to another session, a light flies from its card to the other card:
