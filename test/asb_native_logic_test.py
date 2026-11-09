@@ -10870,6 +10870,46 @@ class MessagesLogicChecks(unittest.TestCase):
                                                                  "received": sum(record["to"] == seat["id"] for record in records)})
                 self.assertEqual(view["recent"], sorted(records, key=lambda record: record["atMs"])[-6:][::-1])
 
+    def test_M6b_strip_readout_older_row_names_day_names_status_heads_and_icon_contrast(self):
+        day = datetime(2026, 10, 22).timestamp() * 1000
+        hour = datetime(2026, 10, 26, 16, 0).timestamp() * 1000
+        # S1: the name row readout of a bucket.
+        self.assertEqual(asb.message_bucket_readout(day, 84, 2, "day"), "Oct 22 · 84 messages · 2 not sent")
+        self.assertEqual(asb.message_bucket_readout(hour, 4, 0, "hour", True), "16:00 so far · 4 messages")
+        self.assertEqual(asb.message_bucket_readout(datetime(2026, 10, 26).timestamp() * 1000, 1, 1, "day", True), "Oct 26 so far · 1 message · 1 not sent")
+        self.assertEqual(asb.message_bucket_readout(day, 1234, 0, "day"), "Oct 22 · 1,234 messages")
+        # S3: the bucket name of the row to the older messages.
+        self.assertEqual(asb.message_bucket_name(datetime(2026, 10, 19).timestamp() * 1000, "day", hour), "Oct 19")
+        self.assertEqual(asb.message_bucket_name(datetime(2026, 10, 25, 17, 0).timestamp() * 1000, "hour", hour), "Sun 17:00")
+        self.assertEqual(asb.message_bucket_name(datetime(2026, 10, 26, 9, 0).timestamp() * 1000, "hour", hour), "09:00")
+        # S6: a day thread names its weekday.
+        self.assertEqual(asb.message_time_name((day, day + 86_400_000)), "Thu, Oct 22")
+        monday = datetime(2026, 10, 26).timestamp() * 1000
+        self.assertEqual(asb.message_time_name((monday, monday + 86_400_000), hour), "Mon, Oct 26 so far")
+        self.assertEqual(asb.message_time_name((monday, monday + 86_400_000), hour, partial=False), "Mon, Oct 26")
+        self.assertEqual(asb.message_thread([], {}, "time", (day, day + 86_400_000))["route"], "Thu, Oct 22")
+        # S5: the head sentences of the status threads; the legend tooltips keep theirs, and only `written` says `sent`.
+        self.assertEqual(asb.MESSAGE_STATUS_HEADS, {
+            "accepted": ("The receiving sessions took these messages.", "The receiving session took this message."),
+            "written": ("ASB sent these messages to the receiver. No receipt came back.", "ASB sent this message to the receiver. No receipt came back."),
+            "held": ("The receiver holds these messages until its receive setting accepts them.",
+                     "The receiver holds this message until its receive setting accepts it."),
+            "not-sent": ("ASB did not send these messages. Each one shows the reason, when ASB has it.",
+                         "ASB did not send this message. It shows the reason, when ASB has it."),
+            "unknown": ("These messages can have gone out, but ASB has no proof.", "This message can have gone out, but ASB has no proof.")})
+        self.assertEqual(asb.MESSAGE_STATUS_TIPS["written"], "ASB sent the message to the receiver. No receipt came back.")
+        # S7: the status icon of a thread block has the color of its status word: 3:1 or more on each machine tint.
+        looks = {"user": {"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"},
+                 "stock": {"background": "#222226", "text": "#ffffff", "accent": "#81d0ff", "muted": asb.mix_color("#222226", "#ffffff", .72), "divider": "#6e6e71"},
+                 "navy": {"background": "#10141c", "text": "#e8eaee", "accent": "#7cc4ff", "muted": "#9aa4b2", "divider": "#232a36"}}
+        for look, colors in looks.items():
+            palette = asb.activity_palette(colors)
+            for index in range(len(asb.MACHINE_HUES)):
+                surface = asb.message_block_surface(palette, asb.accent_guard(asb.machine_hue(index), palette["accent"], palette["win"]))
+                for status in asb.ACTIVITY_STATUSES:
+                    with self.subTest(look=look, tint=index, status=status):
+                        self.assertGreaterEqual(asb.contrast(asb.status_text_on(palette, status, surface), surface), 3)
+
     def test_messages_ignore_time_buckets(self):
         reply = self.reply()
         view = asb.messages_view(reply)
@@ -11184,7 +11224,7 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.message_time_name((hour, hour + 3_600_000)), "16:00")
         self.assertEqual(asb.message_time_name((hour, hour + 3_600_000), hour + 60_000), "16:00 so far")
         self.assertEqual(asb.message_time_name((hour, hour + 3_600_000), hour + 60_000, partial=False), "16:00")
-        self.assertEqual(asb.message_time_name((day, next_day), next_day), "Oct 24")
+        self.assertEqual(asb.message_time_name((day, next_day), next_day), "Sat, Oct 24")
         reply = {"buckets": {"unit": "day", "startsMs": [day]}}
         self.assertEqual(asb.message_bucket_end(reply), next_day)
         self.assertIsInstance(asb.message_bucket_end(reply), int)
@@ -11195,7 +11235,7 @@ class MessagesLogicChecks(unittest.TestCase):
                    {"from": "b", "to": "a", "atMs": next_day - 1, "status": "not-sent"},
                    {"from": "a", "to": "b", "atMs": next_day, "status": "accepted"}]
         header = asb.message_thread(records, {}, "time", (day, next_day))
-        self.assertEqual((header["route"], header["counts"], header["total"]), ("Oct 24", "2 messages · 1 not sent", 2))
+        self.assertEqual((header["route"], header["counts"], header["total"]), ("Sat, Oct 24", "2 messages · 1 not sent", 2))
         self.assertEqual(asb.message_thread(records[:2], {}, "time", (day, next_day))["counts"], "1 message")
         self.assertEqual(asb.message_block(header, records[1], {})[0], True)
 

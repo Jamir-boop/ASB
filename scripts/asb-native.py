@@ -2831,6 +2831,23 @@ def message_bucket_tip(start, count, bad, unit, partial=False):
     return text + (f", {format_count(bad)} not sent" if bad else "")
 
 
+def message_bucket_readout(start, count, bad, unit, partial=False):
+    """The name row text of the count strip bucket at the cursor: `Oct 22 · 84 messages · 2 not sent`."""
+    when = (format_clock(start) if unit == "hour" else format_day(start)) + (" so far" if partial else "")
+    text = f"{when} · {format_count(count)} message{'' if count == 1 else 's'}"
+    return text + (f" · {format_count(bad)} not sent" if bad else "")
+
+
+def message_bucket_name(start, unit, now_ms):
+    """The name of a bucket in the row to the older messages: `Oct 19` for a day; `17:00` for an hour, with its weekday
+    (`Sun 17:00`) when the hour is not on the day of now_ms."""
+    if unit != "hour":
+        return format_day(start)
+    day = datetime.fromtimestamp(start / 1000)
+    same = day.date() == datetime.fromtimestamp(now_ms / 1000).date()
+    return format_clock(start) if same else f"{ACTIVITY_WEEKDAYS[day.weekday()]} {format_clock(start)}"
+
+
 def message_bucket_end(reply):
     """The end of the last reply bucket: an hour after its start, or the next local midnight; None with no buckets."""
     buckets = reply.get("buckets") or {}
@@ -2851,10 +2868,11 @@ def message_bucket_partial(reply):
 
 
 def message_time_name(key, now_ms=None, partial=True):
-    """The name of a time thread (key = (start, end) of a count strip bucket): `16:00` for an hour, `Oct 24` for a day, then
-    ` so far` while the bucket holds now_ms (with partial)."""
+    """The name of a time thread (key = (start, end) of a count strip bucket): `16:00` for an hour, `Sat, Oct 24` for a day,
+    then ` so far` while the bucket holds now_ms (with partial)."""
     start, end = key
-    name = format_clock(start) if end - start == 3_600_000 else format_day(start)
+    weekday = ACTIVITY_WEEKDAYS[datetime.fromtimestamp(start / 1000).weekday()]
+    name = format_clock(start) if end - start == 3_600_000 else f"{weekday}, {format_day(start)}"
     return name + (" so far" if partial and now_ms is not None and start <= now_ms < end else "")
 
 
@@ -2928,10 +2946,19 @@ MESSAGE_NO_TEXT_TIP = "ASB has no copy of this text."
 
 
 MESSAGE_STATUS_TIPS = {"accepted": "The receiving session took the message.",
-                       "written": "ASB wrote the message to the receiver. No receipt came back.",
+                       "written": "ASB sent the message to the receiver. No receipt came back.",
                        "held": "The receiver holds the message until its receive setting accepts it.",
                        "not-sent": "ASB did not send the message. The thread shows the reason.",
                        "unknown": "The message can have gone out, but ASB has no proof."}
+# The sentence under the count of a status thread head: (more messages, one message).
+MESSAGE_STATUS_HEADS = {
+    "accepted": ("The receiving sessions took these messages.", "The receiving session took this message."),
+    "written": ("ASB sent these messages to the receiver. No receipt came back.", "ASB sent this message to the receiver. No receipt came back."),
+    "held": ("The receiver holds these messages until its receive setting accepts them.",
+             "The receiver holds this message until its receive setting accepts it."),
+    "not-sent": ("ASB did not send these messages. Each one shows the reason, when ASB has it.",
+                 "ASB did not send this message. It shows the reason, when ASB has it."),
+    "unknown": ("These messages can have gone out, but ASB has no proof.", "This message can have gone out, but ASB has no proof.")}
 MESSAGE_NEXT_PERIOD = {"24h": "7d", "7d": "30d"}
 
 
@@ -14518,6 +14545,8 @@ class CountStrip(Gtk.Widget):
     def __init__(self, window):
         super().__init__(accessible_role=Gtk.AccessibleRole.IMG, hexpand=True, focusable=True)
         self.window, self.buckets, self.unit, self.hover, self.partial = window, [], "hour", None, False
+        # True while the cursor came from the keyboard: the tooltip then names Enter.
+        self.keyboard, self.chevron = False, None
         self.set_has_tooltip(True)
         self.connect("query-tooltip", self.query_tooltip)
         self.connect("state-flags-changed", lambda *_args: self.queue_draw())
@@ -14534,13 +14563,15 @@ class CountStrip(Gtk.Widget):
         self.add_controller(click)
         self.set_scale()
 
-    def pointer_moved(self, _controller, x, y):
+    def pointer_moved(self, _controller, x, _y):
+        self.keyboard = False
         self.set_hover(self.bucket_at(x))
-        self.set_cursor_from_name("pointer" if self.buckets and y <= self.plot else None)
+        self.set_cursor_from_name("pointer" if self.buckets else None)
 
-    def clicked(self, _gesture, _count, x, y):
+    def clicked(self, _gesture, _count, x, _y):
+        # The plot and the name row under a bucket open its messages.
         index = self.bucket_at(x)
-        if index is not None and y <= self.plot:
+        if index is not None:
             self.window.open_time(index)
 
     def set_scale(self):
@@ -14580,6 +14611,24 @@ class CountStrip(Gtk.Widget):
         start, count, bad = self.buckets[index]
         return message_bucket_tip(start, count, bad, self.unit, self.partial and index == len(self.buckets) - 1)
 
+    def readout(self, index):
+        start, count, bad = self.buckets[index]
+        return message_bucket_readout(start, count, bad, self.unit, self.partial and index == len(self.buckets) - 1)
+
+    def pitch(self):
+        return self.x(1) - self.x(0) if len(self.buckets) > 1 else math.inf
+
+    def dot_radius(self):
+        """A not-sent dot: 2 px when two buckets are less than 14 px apart, else 3 px."""
+        return (2 if self.pitch() < 14 * self.window.text_scale else 3) * self.window.text_scale
+
+    def slot(self, index):
+        """The hover slot of a bucket: from the middle to the bucket before it to the middle to the bucket after it; the first and
+        the last slot end at the plot edge."""
+        left = (self.x(index - 1) + self.x(index)) / 2 if index > 0 else 0
+        right = (self.x(index) + self.x(index + 1)) / 2 if index < len(self.buckets) - 1 else self.get_width()
+        return left, right
+
     def set_hover(self, index):
         if index == self.hover:
             return
@@ -14587,7 +14636,7 @@ class CountStrip(Gtk.Widget):
         if index is None:
             self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         else:
-            self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [f"{self.tip(index)}. Enter opens these messages"])
+            self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [f"{self.tip(index)}. Press Enter to read these messages"])
         self.trigger_tooltip_query()
         self.queue_draw()
 
@@ -14601,14 +14650,38 @@ class CountStrip(Gtk.Widget):
         if last < 0 or (keyval not in steps and keyval not in ends):
             return False
         index = ends[keyval] if keyval in ends else last if self.hover is None else self.hover + steps[keyval]
+        self.keyboard = True
         self.set_hover(max(0, min(last, index)))
         return True
 
     def query_tooltip(self, _widget, _x, _y, _keyboard, tooltip):
         if self.hover is None:
             return False
-        tooltip.set_text(self.tip(self.hover))
+        action = "Press Enter" if self.keyboard else "Click"
+        tooltip.set_text(f"{self.tip(self.hover)}\n{action} to read these messages")
         return True
+
+    def hover_names(self):
+        """The name row while a bucket has the cursor: (the end names to show, the readout layout and x, the chevron x and size).
+        The readout keeps 12 px from each end name; when it does not fit, the end names hide, and then it ellipsizes at its end."""
+        scale, width = self.window.text_scale, self.get_width()
+        ends = self.names()[0]
+        layout = activity_layout(self, self.readout(self.hover), 11 * scale)
+        icon, gap = round(12 * scale), 4 * scale
+        wide = layout.get_pixel_extents()[1].width
+        if len(ends) > 1:
+            left = ends[0][0].get_pixel_extents()[1].width + 12 * scale
+            right = ends[1][1] - 12 * scale
+            if wide + gap + icon <= right - left:
+                x = left + (right - left - wide - gap - icon) / 2
+                return ends, layout, x, x + wide + gap, icon
+        free = width - gap - icon
+        if wide > free:
+            layout.set_width(max(1, int(free * Pango.SCALE)))
+            layout.set_ellipsize(Pango.EllipsizeMode.END)
+            wide = layout.get_pixel_extents()[1].width
+        x = (width - wide - gap - icon) / 2
+        return [], layout, x, x + wide + gap, icon
 
     def names(self):
         """The bucket name row: [(layout, x)] of the first and the last name, [(layout, x)] of the caption, and the x of its
@@ -14644,6 +14717,17 @@ class CountStrip(Gtk.Widget):
                 return ends, placed, dot_x
         return ends, [], None
 
+    def snapshot_chevron(self, snapshot, x, y, size, color):
+        """The row chevron (go-next-symbolic) at x, y."""
+        if self.chevron is None or self.chevron[0] != (size, self.get_scale_factor()):
+            theme = Gtk.IconTheme.get_for_display(self.get_display())
+            self.chevron = ((size, self.get_scale_factor()), theme.lookup_icon("go-next-symbolic", None, size, self.get_scale_factor(),
+                                                                               Gtk.TextDirection.NONE, 0))
+        snapshot.save()
+        snapshot.translate(Graphene.Point().init(x, y))
+        self.chevron[1].snapshot_symbolic(snapshot, size, size, [color])
+        snapshot.restore()
+
     def content_box(self):
         """The box of the plot (its end dots included) and the bucket name row."""
         names = self.names()[0] if self.buckets and self.get_width() else []
@@ -14659,6 +14743,11 @@ class CountStrip(Gtk.Widget):
         # Each point on a device pixel center.
         points = [(self.snap(self.x(index)), self.snap(self.y(count))) for index, (_start, count, _bad) in enumerate(self.buckets)]
         partial = self.partial and len(points) > 1
+        radius = self.dot_radius()
+        if self.hover is not None:
+            # The slot of the bucket at the cursor has the ledger row hover fill, under the baseline, the line, and the dots.
+            left, right = self.slot(self.hover)
+            usage_rect(snapshot, left, 0, right - left, self.plot, alpha_color(text, .06))
         # The zero baseline under the line, as the Usage chart baseline.
         usage_rect(snapshot, points[0][0], self.snap(self.y(0)) - .5, points[-1][0] - points[0][0], 1, rgba(palette["rule"]))
         if self.hover is not None:
@@ -14666,37 +14755,50 @@ class CountStrip(Gtk.Widget):
             builder.move_to(points[self.hover][0], 0)
             builder.line_to(points[self.hover][0], self.plot)
             snapshot_stroke(snapshot, builder.to_path(), 1, rgba(palette["dim"]), cap=Gsk.LineCap.BUTT)
-        solid = points[:-1] if partial else points
-        if len(solid) > 1:
+        # The monotone curve of the Usage chart through the points.
+        segments = smooth_curve(points)
+        solid = segments[:-1] if partial else segments
+        if solid:
             builder = Gsk.PathBuilder.new()
-            builder.move_to(*solid[0])
-            for point in solid[1:]:
-                builder.line_to(*point)
+            builder.move_to(*points[0])
+            for _from, first, second, to in solid:
+                builder.cubic_to(*first, *second, *to)
             line = Gsk.Stroke.new(2)
             line.set_line_cap(Gsk.LineCap.ROUND)
             line.set_line_join(Gsk.LineJoin.ROUND)
             snapshot.append_stroke(builder.to_path(), line, rgba(gray))
+        ring = partial and self.buckets[-1][2]
         if partial:
-            # The current bucket is not complete: a dashed segment into a hollow point.
+            # The current bucket is not complete: a dashed segment into a hollow point; with a not-sent message the point is a
+            # ring in the not-sent color, so a hollow point always means so far.
+            start, first, second, end = segments[-1]
             builder = Gsk.PathBuilder.new()
-            builder.move_to(*points[-2])
-            builder.line_to(*points[-1])
+            builder.move_to(*start)
+            builder.cubic_to(*first, *second, *end)
             snapshot_stroke(snapshot, builder.to_path(), 2, rgba(gray), [3, 3], Gsk.LineCap.BUTT)
-            snapshot_circle(snapshot, *points[-1], 3 * scale, rgba(win))
-            snapshot_stroke(snapshot, circle_path(*points[-1], 3 * scale), 1.5, rgba(gray))
-        for (x, y), (_start, _count, failed) in zip(points, self.buckets):
-            if failed:
-                snapshot_circle(snapshot, x, y, 3 * scale, rgba(bad_color))
+            size = radius if ring else 3 * scale
+            snapshot_circle(snapshot, *points[-1], size, rgba(win))
+            snapshot_stroke(snapshot, circle_path(*points[-1], size), 1.5, rgba(bad_color if ring else gray))
+        for index, ((x, y), (_start, _count, failed)) in enumerate(zip(points, self.buckets)):
+            if failed and not (ring and index == len(points) - 1):
+                snapshot_circle(snapshot, x, y, radius, rgba(bad_color))
         if self.hover is not None:
             x, y = points[self.hover]
             if self.buckets[self.hover][2]:
-                # A not-sent dot keeps its color and gets a 1 px ring in the text color.
-                snapshot_stroke(snapshot, circle_path(x, y, 3 * scale + .5), 1, rgba(text))
+                # A not-sent mark keeps its color and gets a 1 px ring in the text color just outside it.
+                edge = radius + (.75 if ring and self.hover == len(points) - 1 else 0)
+                snapshot_stroke(snapshot, circle_path(x, y, edge + .5), 1, rgba(text))
             else:
                 snapshot_circle(snapshot, x, y, 3 * scale + 1, rgba(win))
                 snapshot_circle(snapshot, x, y, 3 * scale, rgba(text))
         ends, caption, dot_x = self.names()
         top, dim = self.plot + 2 * scale, rgba(palette["dim"])
+        if self.hover is not None:
+            # The readout of the bucket at the cursor stands in place of the caption, with the row chevron after it.
+            ends, layout, x, icon_x, icon = self.hover_names()
+            caption, dot_x = [], None
+            snapshot_layout(snapshot, layout, x, top, rgba(text))
+            self.snapshot_chevron(snapshot, icon_x, top + (layout.get_pixel_size()[1] - icon) / 2, icon, dim)
         for layout, x in ends + caption:
             snapshot_layout(snapshot, layout, x, top, dim)
         if dot_x is not None:
@@ -14916,6 +15018,13 @@ class MessagesWindow(ActivityWindow):
         keys.connect("key-pressed", self.window_key)
         self.add_controller(keys)
 
+    def watch_scroll_edges(self, *args):
+        super().watch_scroll_edges(*args)
+        # The thread list scrolls under the pinned day line, which has its own rule, not under the toolbar.
+        if getattr(self, "thread_scroll", None) in self.edge_scrolls:
+            self.edge_scrolls.remove(self.thread_scroll)
+            self.update_scroll_edge()
+
     def palette_css(self, palette):
         scope, scale = self.css_scope, self.text_scale
 
@@ -14956,6 +15065,8 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-legend label {{ font-weight: normal; }}
 {scope} .asb-msg-cell {{ min-height: {px(24)}; padding: 0 4px; border-top: 1px solid {palette['rule']}; font-feature-settings: "tnum"; font-size: {px(12)}; }}
 {scope} .asb-msg-head {{ min-height: {px(24)}; padding: 0 4px; }}
+{scope} .asb-msg-head.asb-msg-row-head {{ padding-left: 0; }}
+{scope} .asb-msg-head.asb-msg-row-head.asb-msg-ruled {{ border-top: 1px solid {palette['rule']}; }}
 {scope} .asb-msg-recent {{ min-height: {px(24)}; padding: 0; border-radius: 4px; font-size: {px(12)}; }}
 {scope} .asb-msg-recent:hover {{ background: alpha({palette['text']}, .06); }}
 {scope} .asb-msg-recent label {{ font-weight: normal; font-size: {px(12)}; }}
@@ -14993,8 +15104,8 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-ledger-row .asb-msg-busy-fail label {{ font-size: {px(11)}; color: {palette['dim']}; }}
 {scope} asb-message-strip {{ outline: none; }}
 {scope} .asb-msg-route-link {{ min-height: 0; padding: 0; border-radius: 4px; outline: none; }}
-{scope} .asb-msg-route-link:hover label, {scope} .asb-msg-route-link:focus-visible label {{ text-decoration-line: underline;
-  text-decoration-color: {palette['text']}; }}
+{scope} .asb-msg-route-link:focus-visible {{ outline: 2px solid {palette['accent']}; outline-offset: 2px; }}
+{scope} .asb-msg-route-link:hover label {{ text-decoration-line: underline; text-decoration-color: {palette['text']}; }}
 {scope} .asb-msg-sticky-day {{ font-size: {px(11)}; color: {palette['dim']}; background: {palette['win']}; padding: 6px 0;
   border-bottom: 1px solid {palette['divider']}; }}
 {scope} .asb-msg-head-tip {{ font-size: {px(12)}; }}
@@ -15251,9 +15362,10 @@ class MessagesWindow(ActivityWindow):
             self.legend_rows[status] = item
         remove_children(self.matrix)
         self.matrix_cells = {}
-        corner = label("From → To", "asb-msg-tiny")
+        corner = label("From ↓  To →", "asb-msg-tiny")
         corner.add_css_class("asb-dim")
         corner.add_css_class("asb-msg-head")
+        corner.add_css_class("asb-msg-row-head")
         corner.set_size_request(118, -1)
         self.matrix.attach(corner, 0, 0, 1, 1)
         apps = view["apps"]
@@ -15265,6 +15377,9 @@ class MessagesWindow(ActivityWindow):
         for row, app in enumerate(apps):
             name = Gtk.Box(spacing=6)
             name.add_css_class("asb-msg-head")
+            # The row head starts at the section edge, and the row rule runs from there.
+            name.add_css_class("asb-msg-row-head")
+            name.add_css_class("asb-msg-ruled")
             name.append(Gtk.Image(icon_name=ACTIVITY_APP_ICONS[app], pixel_size=14))
             app_name = label(ACTIVITY_APP_LABELS[app], "asb-msg-small")
             app_name.set_attributes(no_hyphens(app_name.get_attributes()))
@@ -15276,7 +15391,8 @@ class MessagesWindow(ActivityWindow):
                 cell.add_css_class("asb-msg-cell")
                 if not value:
                     cell.add_css_class("asb-dim")
-                    cell.update_property([Gtk.AccessibleProperty.LABEL], ["none"])
+                cell.update_property([Gtk.AccessibleProperty.LABEL],
+                                     [f"{ACTIVITY_APP_LABELS[app]} to {ACTIVITY_APP_LABELS[apps[column]]}: {format_count(value) if value else 'none'}"])
                 self.matrix.attach(cell, column + 1, row + 1, 1, 1)
                 self.matrix_cells[(apps[row], apps[column])] = cell
         self.matrix.attach(Gtk.Box(width_request=round(24 * scale)), len(apps) + 1, 0, 1, len(apps) + 1)
@@ -15312,8 +15428,7 @@ class MessagesWindow(ActivityWindow):
             bars = Gtk.Box(spacing=round(6 * scale), margin_top=round(4 * scale),
                            margin_bottom=max(0, round(30 * scale) - top - line - round(4 * scale) - round(3 * scale)))
             bars.add_css_class("asb-msg-bar-row")
-            # The bar starts under the name: the two-dot slot (two 7 px dots, 3 px apart) and the row gap come first.
-            bars.append(Gtk.Box(width_request=round(7 * scale) * 2 + round(3 * scale)))
+            # The track starts at the section edge, under the dot slot, as the Busiest pairs track.
             bars.append(bar)
             bars.append(Gtk.Box(width_request=round(18 * scale)))
             share = f"{format_share(item['count'] / total)} of all messages"
@@ -15525,6 +15640,7 @@ class MessagesWindow(ActivityWindow):
         remove_children(self.table.center)
         remove_children(self.reader)
         self.table.center.get_layout_manager().widths = {}
+        self.empty_hint = None
         empty = self.view["total"] == 0
         self.table.center.set_visible(ACTIVITY_PATHS and not self.table.small)
         # Only the empty center has a button.
@@ -15640,10 +15756,9 @@ class MessagesWindow(ActivityWindow):
                 title.add_css_class("asb-msg-large")
             title.set_lines(2)
             title.set_ellipsize(Pango.EllipsizeMode.END)
-            # The hint wraps at 260 px or less.
-            inner = Gtk.Box(halign=align)
-            text("When an agent sends a message to another session with ASB Bridge, it shows here.", "asb-msg-small", wrap=True, dim=True, parent=inner)
-            box.append(Adw.Clamp(maximum_size=260, tightening_threshold=260, halign=align, child=inner))
+            # The hint has the width of the Usage empty hint (52 characters), in the disc chord at its height less 12 px at each side.
+            self.empty_hint = text("When an agent sends a message to another session with ASB\u00a0Bridge, it shows here.", "asb-msg-small", wrap=True, dim=True)
+            self.empty_hint.set_max_width_chars(52)
             following = MESSAGE_NEXT_PERIOD.get(self.period)
             if following:
                 show = Gtk.Button(label=f"Show the last {dict(self.PERIODS)[following]}", halign=align)
@@ -15690,6 +15805,9 @@ class MessagesWindow(ActivityWindow):
                 for child, height in zip(lines, sizes):
                     far = max(abs(y), abs(y + height))
                     chord = 2 * math.sqrt(radius * radius - far * far) - 16 if far < radius else 0
+                    if child is getattr(self, "empty_hint", None):
+                        disc = geometry["Rc"]
+                        chord = 2 * math.sqrt(disc * disc - far * far) - 24 * self.text_scale if far < disc else 0
                     widths[child] = max(1, chord)
                     fits = fits and chord >= child.measure(Gtk.Orientation.HORIZONTAL, -1)[0]
                     y += height + gap
@@ -15716,9 +15834,9 @@ class MessagesWindow(ActivityWindow):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         head = self.thread_head = Gtk.Box(spacing=10)
         head.add_css_class("asb-msg-thead")
-        back = self.thread_back = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back to totals (Esc)", valign=Gtk.Align.START)
+        back = self.thread_back = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back to the overview (Esc)", valign=Gtk.Align.START)
         back.add_css_class("asb-msg-back")
-        back.update_property([Gtk.AccessibleProperty.LABEL], ["Back to totals"])
+        back.update_property([Gtk.AccessibleProperty.LABEL], ["Back to the overview"])
         back.connect("clicked", lambda *_: self.back_thread())
         head.append(back)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
@@ -15911,14 +16029,16 @@ class MessagesWindow(ActivityWindow):
         header = message_thread(records, seats, thread["kind"], thread["key"], self.data.get("nowMs"))
         route = f"{header['route']} · {dict(self.PERIODS)[self.period]}" if thread["kind"] in ("status", "all") else header["route"]
         self.thread_route.set_label(route)
-        self.thread_route.set_tooltip_text(MESSAGE_STATUS_TIPS[thread["key"]] if thread["kind"] == "status" else route)
-        self.thread_tip.set_label(MESSAGE_STATUS_TIPS[thread["key"]] if thread["kind"] == "status" else "")
+        sentence = MESSAGE_STATUS_HEADS[thread["key"]][header["total"] == 1] if thread["kind"] == "status" else ""
+        self.thread_route.set_tooltip_text(sentence or route)
+        # The first word of each sentence stays with the next word, so no line ends with a one-word start.
+        self.thread_tip.set_label(re.sub(r"(^|\. )(\S+) ", "\\1\\2\u00a0", sentence))
         self.thread_tip.set_visible(thread["kind"] == "status")
         previous = self.thread_stack[-1][0] if self.thread_stack else None
         back = ("All messages" if previous["kind"] == "all" else ACTIVITY_STATUS_LABELS[previous["key"]] if previous["kind"] == "status" else
                 message_time_name(previous["key"], partial=False) if previous["kind"] == "time" else
                 self.seat_title(previous["key"]) if previous["kind"] == "session" else
-                " ⇄ ".join(self.seat_title(seat) for seat in previous["key"])) if previous else "totals"
+                " ⇄ ".join(self.seat_title(seat) for seat in previous["key"])) if previous else "the overview"
         self.thread_back.set_tooltip_text(f"Back to {back} (Esc)")
         self.thread_back.update_property([Gtk.AccessibleProperty.LABEL], [f"Back to {back}"])
         color = status_text_on(self.palette, "not-sent", self.palette["win"])
@@ -16059,26 +16179,26 @@ class MessagesWindow(ActivityWindow):
             more = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
             more.add_css_class("asb-msg-tmore")
             self.thread_older = Gtk.Button(label="Show older", has_frame=False, visible=shown < 600)
-            if thread["kind"] == "all" and shown >= 600:
-                # The engine sends at most 600 messages: an hour or a day of the count strip reads the older ones.
-                caption = label("Choose an hour or day in the count strip to read older messages", "asb-msg-head-tip")
-                caption.set_wrap(True)
-                caption.set_justify(Gtk.Justification.CENTER)
-            else:
-                caption = label(f"Newest {shown} of {format_count(total)}")
-            caption.add_css_class("asb-dim")
-            more.append(caption)
             self.thread_older.add_css_class("asb-msg-older")
             self.thread_older.add_css_class("asb-msg-ledger-row")
             self.thread_older.connect("clicked", self.show_older)
-            more.append(self.thread_older)
+            if thread["kind"] == "all" and shown >= 600:
+                # The engine sends at most 600 messages: a row opens the hour or day of the oldest block shown.
+                more = self.older_row(reply["messages"][0]["atMs"])
+            else:
+                caption = label(f"Newest {shown} of {format_count(total)}")
+                caption.add_css_class("asb-dim")
+                more.append(caption)
+                more.append(self.thread_older)
             self.thread_list.attach(more, 0, row, 50, 1)
             self.thread_top = more
             row += 1
         # Each message has its rows now, so a block built later goes in at its place: an empty grid row has no height.
         entries, day = [], None
+        # A time thread of one day names its day in the head, so it has no day lines.
+        one_day = thread["kind"] == "time" and thread["key"][1] - thread["key"][0] != 3_600_000
         for record in reply.get("messages") or []:
-            name = day_line(record["atMs"], self.data.get("nowMs") or self.clock())
+            name = None if one_day else day_line(record["atMs"], self.data.get("nowMs") or self.clock())
             first = name != day
             day = name
             entries.append((record, name if first else None, row + first))
@@ -16132,6 +16252,48 @@ class MessagesWindow(ActivityWindow):
         elif self.thread_steps_left():
             self.watch_thread_layout()
 
+    def older_row(self, at_ms):
+        """The row to the older messages of All messages, in the Recent row style: it opens the time thread of the bucket that
+        holds at_ms, stacked on All messages."""
+        buckets = self.data.get("buckets") or {}
+        starts = buckets.get("startsMs") or []
+        index = max(0, bisect.bisect_right(starts, at_ms) - 1)
+        name = message_bucket_name(starts[index] if starts else at_ms, buckets.get("unit", "hour"), self.data.get("nowMs") or self.clock())
+        row = Gtk.Button(has_frame=False, tooltip_text=f"Read the messages of {name}", margin_top=10)
+        row.add_css_class("asb-msg-recent")
+        row.add_css_class("asb-msg-ledger-row")
+        content = Gtk.Box(spacing=round(8 * self.text_scale))
+        content.append(Gtk.Label(label=f"Older messages: {name}", xalign=0, hexpand=True))
+        content.append(self.chevron())
+        row.set_child(content)
+        row.connect("clicked", lambda *_: self.open_time(index))
+        return row
+
+    def reveal_link(self, link):
+        """A focused route link and its focus ring (4 px outside it) in view, below the pinned day line."""
+        if self.thread is None or link.get_parent() is None:
+            return False
+        found, bounds = link.compute_bounds(self.thread_list)
+        if not found:
+            return False
+        adjustment = self.thread_scroll.get_vadjustment()
+        value, page = adjustment.get_value(), adjustment.get_page_size()
+        band = self.sticky_day.measure(Gtk.Orientation.VERTICAL, max(1, self.thread_scroll.get_width()))[1] if self.thread_days else 0
+        top, bottom = bounds.get_y() - 4, bounds.get_y() + bounds.get_height() + 4
+        if top < value + band:
+            adjustment.set_value(max(0, top - band))
+        elif bottom > value + page:
+            adjustment.set_value(bottom - page)
+        return False
+
+    def seat_with_machine(self, record, seat_id, end):
+        """The name of a route end with its machine in parentheses (`docs (Desk)`); an end with no machine has none."""
+        seat = self.view["seats"].get(seat_id) or {}
+        machine_id = seat.get("machineId") or (seat_id[8:] if seat_id.startswith("unknown:") else None)
+        machine = next((item.get("name") for item in self.view["machines"] if item["machineId"] == machine_id), None)
+        name = message_end_title(record, end, self.view["seats"])
+        return f"{name} ({machine})" if machine else name
+
     def add_thread_block(self, index, front, width=0):
         """Build the block of one message with its day line; with a width, return their height at that list width."""
         thread, seats = self.thread, self.view["seats"]
@@ -16160,7 +16322,7 @@ class MessagesWindow(ActivityWindow):
             # this one: a link with a dim chevron, underlined on hover and focus.
             pair = tuple(sorted((record["from"], record["to"]), key=lambda seat_id: (self.view["circle"].index(seat_id)
                          if seat_id in self.view["circle"] else len(self.view["circle"]), seat_id)))
-            names = " ⇄ ".join(message_end_title(record, "from" if seat_id == record["from"] else "to", seats) for seat_id in pair)
+            names = " ⇄ ".join(self.seat_with_machine(record, seat_id, "from" if seat_id == record["from"] else "to") for seat_id in pair)
             content = Gtk.Box(spacing=round(2 * self.text_scale))
             content.append(name_label)
             chevron = Gtk.Image(icon_name="go-next-symbolic", pixel_size=round(12 * self.text_scale), valign=Gtk.Align.CENTER)
@@ -16172,6 +16334,10 @@ class MessagesWindow(ActivityWindow):
             route.update_property([Gtk.AccessibleProperty.LABEL], [f"Open {names}"])
             route.add_css_class("asb-msg-route-link")
             route.connect("clicked", lambda *_: self.open_thread("pair", pair))
+            # The focus scrolls the whole link and its ring into view, after the scroll to the focus.
+            focus = Gtk.EventControllerFocus()
+            focus.connect("enter", lambda *_args, link=route: GLib.idle_add(self.reveal_link, link))
+            route.add_controller(focus)
             top.append(route)
         elif not run:
             top.append(name_label)
@@ -16185,7 +16351,10 @@ class MessagesWindow(ActivityWindow):
             mark.add_css_class(f"asb-msg-stt-{status}")
             # In its own status thread a not-sent block keeps only its reason, with no icon.
             if not (thread["kind"] == "status" and status == thread["key"]):
-                mark.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=round(12 * self.text_scale)))
+                # The icon has the color of its status word on this block.
+                icon = Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS[status], pixel_size=round(12 * self.text_scale))
+                icon.add_css_class(f"asb-msg-stw-{status}")
+                mark.append(icon)
             reason = label(word, "asb-msg-tiny")
             reason.add_css_class(f"asb-msg-stw-{status}")
             reason.set_wrap(True)
