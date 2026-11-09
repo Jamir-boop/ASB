@@ -74,14 +74,16 @@ class CouncilRoundTwoTest {
     @Test fun tokenRampHasEvenSteps() {
         val keys = listOf("cacheRead", "cacheWrite", "uncached", "output")
         val ramp = { accent: String, background: String -> usageTokenRamp(accent, background).let { r -> keys.map { r.getValue(it) } } }
-        assertEquals(listOf("#6e572b", "#9c762b", "#cd9723", "#ffb900"), ramp("#ffb900", "#000000"))
-        assertEquals(listOf("#557081", "#648fa9", "#73afd3", "#81d0ff"), ramp("#81d0ff", "#222226"))
-        assertEquals(listOf("#4c657a", "#5c83a4", "#6ca3d1", "#7cc4ff"), ramp("#7cc4ff", "#10141c"))
+        // Round 4: each step's chroma scales with its lightness.
+        assertEquals(listOf("#765400", "#a27400", "#cf9600", "#ffb900"), ramp("#ffb900", "#000000"))
+        assertEquals(listOf("#44728d", "#5890b2", "#6cafd8", "#81d0ff"), ramp("#81d0ff", "#222226"))
+        assertEquals(listOf("#3e6687", "#5284ad", "#67a3d5", "#7cc4ff"), ramp("#7cc4ff", "#10141c"))
     }
 
     @Test fun ringNoteBreaksOnlyBetweenParts() {
-        assertEquals("so\u00a0far · 2\u00a0of\u00a03\u00a0machines · 1\u00a0model\u00a0unpriced", usageRingNote(true, 2, 3, true, 10, 1))
-        assertEquals("3\u00a0models\u00a0unpriced", usageRingNote(false, 3, 3, true, 10, 3))
+        assertEquals("still\u00a0reading · 2\u00a0of\u00a03\u00a0machines · without\u00a01\u00a0unpriced\u00a0model",
+            usageRingNote(true, 2, 3, true, 10, 1))
+        assertEquals("without\u00a03\u00a0unpriced\u00a0models", usageRingNote(false, 3, 3, true, 10, 3))
         assertEquals("", usageRingNote(false, 3, 3, false, 10, 1))
     }
 

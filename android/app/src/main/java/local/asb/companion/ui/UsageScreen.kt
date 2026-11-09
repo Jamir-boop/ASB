@@ -44,6 +44,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -209,7 +211,7 @@ private fun UsageEmpty(period: String, colors: ActivityColors, onAllTime: () -> 
     Column(Modifier.fillMaxWidth().padding(48.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
         EmptyBlock(R.drawable.ic_usage, if (period == "all") "No usage yet" else "No usage in the last ${periodLabel(period)}",
-            "Usage shows here after an agent app runs.", colors)
+            USAGE_EMPTY_HINT, colors)
         if (period != "all") AccentButton("Show all time", colors, Modifier.padding(top = 4.dp), onClick = onAllTime)
     }
 }
@@ -235,7 +237,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
                 }
             }) {
                 MachineDot(hues[row.key] ?: colors.text, machineOffline(machine))
-                Text(machine?.name.orEmpty(), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text,
+                Text(machine?.name.orEmpty(), fontSize = 13.sp, color = colors.text,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -247,7 +249,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
                     .background(appColor(row.key, colors), RoundedCornerShape(2.dp)))
             }) {
                 Icon(painterResource(appMark(row.key)), contentDescription = null, tint = colors.text, modifier = Modifier.size(14.dp))
-                Text(appLabel(row.key), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text,
+                Text(appLabel(row.key), fontSize = 13.sp, color = colors.text,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -258,7 +260,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
                 Box(Modifier.fillMaxWidth(row.share.toFloat().coerceIn(0f, 1f)).height(10.dp)
                     .background(colors.accent, RoundedCornerShape(2.dp)))
             }) {
-                Text(row.key, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text,
+                Text(row.key, fontSize = 13.sp, color = colors.text,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -268,7 +270,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         Spacer(Modifier.height(28.dp))
         UsageChart(reply, totals, metric, byMachine, onSplit, hues, colors)
         Spacer(Modifier.height(28.dp))
-        SectionTitle(if (reply.scan.complete) "Totals" else "Totals so far", colors)
+        SectionTitle(usageTotalsTitle(!reply.scan.complete), colors)
         Spacer(Modifier.height(6.dp))
         usageFigures(totals).chunked(2).forEach { pair ->
             Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -276,6 +278,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
                     Text(figure.label, fontSize = 12.sp, color = colors.muted)
                     Text(figure.tokens?.let(::formatTokens) ?: formatCost(figure.cost ?: 0.0), fontSize = 20.sp, style = figures,
                         color = colors.text)
+                    if (figure.label == "Cache savings") Text(CACHE_SAVINGS_NOTE, fontSize = 11.sp, color = colors.muted)
                 }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
@@ -301,7 +304,13 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { name() }
                 sub?.let { FactsText(it, TextStyle(fontSize = 11.sp, color = colors.muted)) }
             }
-            Box(Modifier.weight(1f).height(10.dp).background(colors.track, RoundedCornerShape(2.dp))) { bar() }
+            // The track starts 1 dp after the filled part, so a background-colored gap separates them.
+            val fraction = row.share.toFloat().coerceIn(0f, 1f)
+            Box(Modifier.weight(1f).height(10.dp).drawBehind {
+                val start = trackStart(size.width, fraction, 1.dp.toPx())
+                if (start < size.width) drawRoundRect(colors.track, Offset(start, 0f), Size(size.width - start, size.height),
+                    CornerRadius(2.dp.toPx()))
+            }) { bar() }
             Text(if (row.unpriced) formatCost(null) else formatValue(row.value, metric), fontSize = 13.sp, style = figures,
                 color = if (row.unpriced) colors.muted else colors.text, textAlign = TextAlign.End,
                 maxLines = 1, modifier = Modifier.width(84.dp))
@@ -311,6 +320,13 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
         HorizontalDivider(thickness = 1.dp, color = colors.rule)
     }
 }
+
+/** Port of the UsageBar track start: [gap] after the filled part; a full bar has no track, an empty bar is all track. */
+internal fun trackStart(width: Float, fraction: Float, gap: Float): Float = min(width, width * fraction + if (fraction > 0) gap else 0f)
+
+/** The share of a ring arc, as its tooltip: an app arc of its machine (`27.4% of Desk`), a machine arc of the total. */
+internal fun arcShare(arc: RoundArc, names: Map<String, String>): String =
+    "${formatShare(arc.share)} of ${if (arc.app != null) names[arc.machineId].orEmpty() else "total"}"
 
 /** A machine state that breaks only between its facts ([factLines]) and never ellipsizes. */
 @Composable
@@ -334,9 +350,9 @@ private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     val arcLabel = { arc: RoundArc -> arc.app?.let { "${appLabel(it)} on ${names[arc.machineId].orEmpty()}" } ?: names[arc.machineId].orEmpty() }
     val total = if (metric == Metric.COST) totals.cost else totals.tokens.toDouble()
     val value = tapped?.let { formatValue(it.value, metric) } ?: formatValue(total, metric)
-    val sub = tapped?.let(arcLabel) ?: if (metric == Metric.COST) "at API prices" else "processed tokens"
-    // The third center line, only when nothing is tapped.
-    val note = if (tapped != null) "" else usageRingNote(!reply.scan.complete, totals.machineIds.size, reply.machines.size,
+    val sub = tapped?.let(arcLabel) ?: if (metric == Metric.COST) "if paid at API prices" else "processed tokens"
+    // The third center line: the share of the tapped arc, else the ring note.
+    val note = tapped?.let { arcShare(it, names) } ?: usageRingNote(!reply.scan.complete, totals.machineIds.size, reply.machines.size,
         metric == Metric.COST, totals.unpricedTokens, totals.unpricedModels.size)
     val hues = remember(reply, colors) { reply.machines.mapIndexed { i, m -> m.machineId to colors.hue(i) }.toMap() }
     val arcColor = { arc: RoundArc -> arc.app?.let { appColor(it, colors) } ?: hues[arc.machineId] ?: colors.hue(0) }
@@ -361,7 +377,13 @@ private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             for (arc in arcs) {
                 val mid = Math.toRadians((arc.a0 + arc.a1) / 2)
                 val shift = if (arc == tapped) Offset((4 * cos(mid)).toFloat(), (4 * sin(mid)).toFloat()) * k else Offset.Zero
-                drawPath(sectorPath(c + shift, arc.r0 * k, arc.r1 * k, arc.a0.toFloat(), arc.a1.toFloat()), arcColor(arc))
+                val path = sectorPath(c + shift, arc.r0 * k, arc.r1 * k, arc.a0.toFloat(), arc.a1.toFloat())
+                if (arc == tapped) {
+                    // Strokes centered on the outline: a 2 dp accent ring outside a 1 dp background gap, then the fill.
+                    drawPath(path, colors.accent, style = Stroke(6 * density))
+                    drawPath(path, colors.background, style = Stroke(2 * density))
+                }
+                drawPath(path, arcColor(arc))
             }
             val big = measurer.measure(value, TextStyle(color = colors.text, fontSize = 26.sp, fontFeatureSettings = "tnum", fontWeight = FontWeight.Bold),
                 maxLines = 1)
@@ -408,7 +430,8 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     var tapped by remember(bars) { mutableStateOf<Int?>(null) }
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    Text((when (unit) { "hour" -> "Hourly "; "month" -> "Monthly "; else -> "Daily " }) + if (metric == Metric.COST) "cost" else "tokens", fontSize = 13.sp,
+    val first = partialFirstLabel(unit, starts, reply.buckets.firstMs)
+    Text(usageChartTitle(unit, metric == Metric.COST, !reply.scan.complete), fontSize = 13.sp,
         fontWeight = FontWeight.SemiBold, color = colors.text)
     Spacer(Modifier.height(6.dp))
     ChoiceRow(listOf("app" to "By app", "machine" to "By machine"), if (byMachine) "machine" else "app") { onSplit(it == "machine") }
@@ -465,7 +488,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                 }
             }
             val centers = List(n) { left + it * (bw + gap) + bw / 2 }
-            for (label in axisLabels(starts, unit, centers, size.width, 4 * dp) { measurer.measure(it, axis, maxLines = 1).size.width.toFloat() }) {
+            for (label in axisLabels(starts, unit, centers, size.width, 4 * dp, { measurer.measure(it, axis, maxLines = 1).size.width.toFloat() }, first)) {
                 val layout = measurer.measure(label.text, axis, maxLines = 1)
                 val w = layout.size.width.toFloat()
                 // The last label ends at the right edge of the chart.
@@ -490,7 +513,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             Column(Modifier.offset { IntOffset(tipLeft.roundToInt(), tipTop.roundToInt()) }.onSizeChanged { tipSize = it }
                 .widthIn(min = 150.dp).background(colors.background, RoundedCornerShape(4.dp)).border(1.dp, colors.edge, RoundedCornerShape(4.dp))
                 .padding(horizontal = 10.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
-                Text(tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1), fontSize = 12.sp,
+                Text(tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1, first.takeIf { i == 0 }), fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
                 TipRow("Total", formatValue(sums[i], metric), colors.accent, colors)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp), thickness = 1.dp, color = colors.rule)

@@ -21,6 +21,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 data class ActivityBuckets(
     val unit: String = "day",
     val startsMs: List<@Serializable(with = MillisSerializer::class) Long> = emptyList(),
+    // The hour of the first record; only the All time reply has it.
+    @Serializable(with = MillisSerializer::class) val firstMs: Long? = null,
 )
 
 @Serializable
@@ -571,9 +573,12 @@ fun unpricedNote(totals: UsageTotals, formatTokens: (Long) -> String): String? {
 
 /** One arc of the round chart; angles in degrees from -90 (top), clockwise. */
 data class RoundArc(val machineId: String, val app: String?, val value: Double, val r0: Float, val r1: Float,
-    val a0: Double, val a1: Double, val color: String)
+    val a0: Double, val a1: Double, val color: String, val share: Double = 0.0)
 
-/** Inner ring machines (r 109 to 131), outer ring apps (134 to 146) inside each machine's range; arcs below 0.5° are skipped. */
+/**
+ * Inner ring machines (r 109 to 131), outer ring apps (134 to 146) inside each machine's range; arcs below 0.5° are skipped. The
+ * share of a machine arc is of the total, of an app arc of its machine.
+ */
 fun roundArcs(reply: ActivityUsage, totals: UsageTotals, metric: Metric): List<RoundArc> {
     val hues = reply.machines.mapIndexed { index, machine -> machine.machineId to machineHue(index) }.toMap()
     val shown = totals.machineIds.filter { totals.byMachine[it].orZero().value(metric) > 0 }
@@ -585,14 +590,16 @@ fun roundArcs(reply: ActivityUsage, totals: UsageTotals, metric: Metric): List<R
     for (id in shown) {
         val machineValue = totals.byMachine.getValue(id).value(metric)
         val span = if (total > 0) available * machineValue / total else 0.0
-        if (span >= .5) arcs += RoundArc(id, null, machineValue, 109f, 131f, a0, a0 + span, hues[id] ?: machineHue(0))
+        if (span >= .5) arcs += RoundArc(id, null, machineValue, 109f, 131f, a0, a0 + span, hues[id] ?: machineHue(0),
+            machineValue / total)
         val apps = totals.apps.filter { totals.byMachineApp[id]?.get(it).orZero().value(metric) > 0 }
         val appAvailable = span - .6 * max(0, apps.size - 1)
         var b0 = a0
         for (app in apps) {
             val value = totals.byMachineApp.getValue(id).getValue(app).value(metric)
             val appSpan = appAvailable * value / machineValue
-            if (appSpan >= .5) arcs += RoundArc(id, app, value, 134f, 146f, b0, b0 + appSpan, APP_COLORS.getValue(app))
+            if (appSpan >= .5) arcs += RoundArc(id, app, value, 134f, 146f, b0, b0 + appSpan, APP_COLORS.getValue(app),
+                value / machineValue)
             b0 += appSpan + .6
         }
         a0 += span + gap
@@ -623,12 +630,12 @@ fun usageAxis(maxValue: Double): Pair<Double, Int> {
     return step to if (step * 3 >= maxValue - 1e-9) 3 else 4
 }
 
-/** Port of usage_ring_note: so far, 2 of 3 machines, and 1 model unpriced (Cost only), joined by " · ". */
+/** Port of usage_ring_note: still reading, 2 of 3 machines, and without 1 unpriced model (Cost only), joined by " · ". */
 fun usageRingNote(scanning: Boolean, shown: Int, total: Int, cost: Boolean, unpricedTokens: Long, unpricedModels: Int): String {
     val parts = mutableListOf<String>()
-    if (scanning) parts += "so far"
+    if (scanning) parts += "still reading"
     if (shown < total) parts += "$shown of $total machines"
-    if (cost && unpricedTokens > 0) parts += "$unpricedModels model${if (unpricedModels == 1) "" else "s"} unpriced"
+    if (cost && unpricedTokens > 0) parts += "without $unpricedModels unpriced model${if (unpricedModels == 1) "" else "s"}"
     // No-break spaces inside a part, so the note breaks only between parts.
     return parts.joinToString(" · ") { it.replace(' ', '\u00a0') }
 }
@@ -670,17 +677,17 @@ internal fun oklchColor(lightness: Double, startChroma: Double, hue: Double): St
 
 /**
  * Port of usage_token_ramp: the token type colors, a ramp of the accent in OKLCH in even lightness steps from the floor to the
- * accent. The floor is the lowest lightness from 0.30 up (0.005 steps) at which cache read has 3:1 on the background; output is
- * the accent itself.
+ * accent. The floor is the lowest lightness from 0.30 up (0.005 steps) at which the floor step has 3:1 on the background. Each
+ * step keeps the accent hue, and its chroma scales with its lightness; output is the accent itself.
  */
 fun usageTokenRamp(accent: String, background: String): Map<String, String> {
     val (lightness, a, b) = oklab(accent)
     val chroma = hypot(a, b)
     val hue = (Math.toDegrees(atan2(b, a)) % 360 + 360) % 360
+    val step = { l: Double -> oklchColor(l, if (lightness > 0) chroma * l / lightness else 0.0, hue) }
     var floor = .30
-    while (contrast(oklchColor(floor, chroma * .40, hue), background) < 3 && floor < 1) floor = Math.rint((floor + .005) * 1000) / 1000
-    val shares = listOf(.40, .60, .80)
-    return TOKEN_TYPES.take(3).mapIndexed { i, (key, _) -> key to oklchColor(floor + i * (lightness - floor) / 3, chroma * shares[i], hue) }
+    while (contrast(step(floor), background) < 3 && floor < 1) floor = Math.rint((floor + .005) * 1000) / 1000
+    return TOKEN_TYPES.take(3).mapIndexed { i, (key, _) -> key to step(floor + i * (lightness - floor) / 3) }
         .toMap() + ("output" to accent)
 }
 
@@ -688,9 +695,10 @@ fun usageTokenRamp(accent: String, background: String): Map<String, String> {
 fun chartLabelShown(count: Int, unit: String, index: Int): Boolean {
     val every = when {
         unit == "month" -> when { count <= 12 -> 1; count <= 36 -> 3; else -> 12 }
+        unit == "week" -> when { count <= 8 -> 1; count <= 52 -> 4; else -> 8 }
         unit == "hour" -> 3
-        count == 7 -> 1
-        count == 30 -> 5
+        count <= 7 -> 1
+        count <= 31 -> 5
         else -> 15
     }
     return (count - 1 - index) % every == 0
@@ -698,7 +706,7 @@ fun chartLabelShown(count: Int, unit: String, index: Int): Boolean {
 
 data class UsageFigure(val label: String, val tokens: Long?, val cost: Double?)
 
-/** The three totals: Cost (at API prices), Processed tokens, Cache savings; the token types are in their own block. */
+/** The three totals: Cost (if paid at API prices), Processed tokens, Cache savings; the token types are in their own block. */
 fun usageFigures(totals: UsageTotals): List<UsageFigure> = listOf(
     UsageFigure("Cost", null, totals.cost),
     UsageFigure("Processed tokens", totals.tokens, null),

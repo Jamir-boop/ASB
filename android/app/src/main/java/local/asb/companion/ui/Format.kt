@@ -150,9 +150,14 @@ fun dayText(ms: Long, nowMs: Long): String = when (ChronoUnit.DAYS.between(local
     else -> formatDate(ms)
 }
 
-/** Short labels name the current bucket; month labels add the year at the first bucket and January. */
+/** Short labels name the current bucket; month labels add the year at the first bucket and January; a week names its start. */
 fun bucketLabel(startMs: Long, unit: String, last: Boolean, short: Boolean, first: Boolean = false): String = when (unit) {
     "hour" -> if (short && last) "Now" else formatTime(startMs)
+    "week" -> when {
+        !short -> "Week of ${formatDate(startMs)}"
+        last -> "This week"
+        else -> formatDate(startMs)
+    }
     "month" -> {
         val month = monthOf(startMs)
         when {
@@ -164,37 +169,72 @@ fun bucketLabel(startMs: Long, unit: String, last: Boolean, short: Boolean, firs
     else -> if (short && last) "Today" else formatDate(startMs)
 }
 
+/** The Usage chart title from the bucket unit (`Weekly cost`); a running scan adds ` (still reading)`. */
+fun usageChartTitle(unit: String, cost: Boolean, scanning: Boolean): String =
+    (when (unit) { "hour" -> "Hourly"; "week" -> "Weekly"; "month" -> "Monthly"; else -> "Daily" }) + (if (cost) " cost" else " tokens") +
+        if (scanning) " (still reading)" else ""
+
+/** The Usage Totals title: `Totals (still reading)` while a scan runs. */
+fun usageTotalsTitle(scanning: Boolean): String = if (scanning) "Totals (still reading)" else "Totals"
+
+const val USAGE_EMPTY_HINT = "Usage shows here after Codex, Claude Code, OpenCode, or another agent app runs on one of your machines."
+
+/** The muted line under the Cache savings value. */
+const val CACHE_SAVINGS_NOTE = "vs. uncached input price"
+
 data class AxisLabel(val index: Int, val text: String)
 
-/** The tooltip title of a chart bucket: the long name; the current bucket is not complete (`October 2026 · so far`). */
-fun tooltipTitle(startMs: Long, unit: String, last: Boolean): String =
-    bucketLabel(startMs, unit, last, short = false) + if (last) " · so far" else ""
+/**
+ * Port of usage_partial_first and usage_first_label: `From Jul 16` (months: `From Jul 16, 2024`) when the local day of the first
+ * record ([firstMs]) is after the start day of the first week or month bucket, else null. A daily chart has no partial bucket.
+ */
+fun partialFirstLabel(unit: String, starts: List<Long>, firstMs: Long?): String? {
+    if (unit !in setOf("week", "month") || firstMs == null || starts.isEmpty()) return null
+    if (!local(firstMs).toLocalDate().isAfter(local(starts[0]).toLocalDate())) return null
+    return "From ${formatDate(firstMs)}" + if (unit == "month") ", ${local(firstMs).year}" else ""
+}
+
+/**
+ * The tooltip title of a chart bucket: the long name, or [first] (the partial first bucket); the current bucket is not complete
+ * (`October 2026 · so far`).
+ */
+fun tooltipTitle(startMs: Long, unit: String, last: Boolean, first: String? = null): String =
+    (first ?: bucketLabel(startMs, unit, last, short = false)) + if (last) " · so far" else ""
 
 /**
  * The x labels of the Usage chart (port of usage_axis_labels): candidates from [chartLabelShown], each centered under its bar
  * and kept inside [width]; from the last bar to the first, a label is shown only when it ends [gap] before the label to its
  * right. Each label names its bucket, the last one too. Month labels are measured with the year, then show it on the leftmost
- * label and where the year changes.
+ * label and where the year changes. A partial first bucket has the label [first] (`From Jul 16`), which always shows when it
+ * fits beside the last label; labels between them make room for it.
  */
-fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Float, gap: Float, measure: (String) -> Float): List<AxisLabel> {
+fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Float, gap: Float, measure: (String) -> Float,
+    first: String? = null): List<AxisLabel> {
     val n = centers.size
+    val text = { i: Int -> if (i == 0 && first != null) first else bucketLabel(starts.getOrElse(i) { 0L }, unit, last = false, short = true, first = true) }
+    // The left x of a label: the last label ends at the right edge of the chart, the others are centered inside it.
+    val place = { i: Int, w: Float -> if (i == n - 1) width - w else centers[i].coerceIn(w / 2, maxOf(w / 2, width - w / 2)) - w / 2 }
     val shown = mutableListOf<Int>()
     var nextLeft = Float.POSITIVE_INFINITY
     for (i in n - 1 downTo 0) {
         if (!chartLabelShown(n, unit, i)) continue
-        val start = starts.getOrElse(i) { 0L }
-        val last = i == n - 1
-        val w = measure(bucketLabel(start, unit, last = false, short = true, first = true))
-        // The last label ends at the right edge of the chart.
-        val cx = if (last) width - w / 2 else centers[i].coerceIn(w / 2, maxOf(w / 2, width - w / 2))
-        if (last || cx + w / 2 <= nextLeft - gap) {
+        val w = measure(text(i))
+        if (i == n - 1 || place(i, w) + w <= nextLeft - gap) {
             shown += i
-            nextLeft = cx - w / 2
+            nextLeft = place(i, w)
+        }
+    }
+    if (first != null && n > 1 && shown.last() != 0) {
+        val end = place(0, measure(first)) + measure(first)
+        if (end <= place(n - 1, measure(text(n - 1))) - gap) {
+            while (place(shown.last(), measure(text(shown.last()))) < end + gap) shown.removeAt(shown.lastIndex)
+            shown += 0
         }
     }
     var year: Int? = null
     return shown.reversed().map { i ->
         val start = starts.getOrElse(i) { 0L }
+        if (i == 0 && first != null) return@map AxisLabel(0, first).also { year = monthOf(start).year }
         if (unit != "month") return@map AxisLabel(i, bucketLabel(start, unit, last = false, short = true))
         val y = monthOf(start).year
         AxisLabel(i, bucketLabel(start, unit, last = false, short = true, first = y != year)).also { year = y }
