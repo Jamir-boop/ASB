@@ -11177,6 +11177,28 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.message_bucket_tip(hour, 4, 0, "hour", True), "16:00 so far: 4 messages")
         self.assertEqual(asb.message_bucket_tip(day, 27, 1, "day", True), "Oct 26 so far: 27 messages, 1 not sent")
 
+    def test_D15_time_threads_name_their_bucket_and_count_its_messages(self):
+        hour = int(datetime(2026, 10, 26, 16, 0).timestamp() * 1000)
+        day = int(datetime(2026, 10, 24).timestamp() * 1000)
+        next_day = int(datetime(2026, 10, 25).timestamp() * 1000)
+        self.assertEqual(asb.message_time_name((hour, hour + 3_600_000)), "16:00")
+        self.assertEqual(asb.message_time_name((hour, hour + 3_600_000), hour + 60_000), "16:00 so far")
+        self.assertEqual(asb.message_time_name((hour, hour + 3_600_000), hour + 60_000, partial=False), "16:00")
+        self.assertEqual(asb.message_time_name((day, next_day), next_day), "Oct 24")
+        reply = {"buckets": {"unit": "day", "startsMs": [day]}}
+        self.assertEqual(asb.message_bucket_end(reply), next_day)
+        self.assertIsInstance(asb.message_bucket_end(reply), int)
+        self.assertEqual(asb.message_bucket_end({"buckets": {"unit": "hour", "startsMs": [hour]}}), hour + 3_600_000)
+        self.assertIsNone(asb.message_bucket_end({}))
+        records = [{"from": "a", "to": "b", "atMs": day - 1, "status": "accepted"},
+                   {"from": "a", "to": "b", "atMs": day, "status": "accepted"},
+                   {"from": "b", "to": "a", "atMs": next_day - 1, "status": "not-sent"},
+                   {"from": "a", "to": "b", "atMs": next_day, "status": "accepted"}]
+        header = asb.message_thread(records, {}, "time", (day, next_day))
+        self.assertEqual((header["route"], header["counts"], header["total"]), ("Oct 24", "2 messages · 1 not sent", 2))
+        self.assertEqual(asb.message_thread(records[:2], {}, "time", (day, next_day))["counts"], "1 message")
+        self.assertEqual(asb.message_block(header, records[1], {})[0], True)
+
     def test_M18_the_offline_band_keeps_3_to_1_on_the_window(self):
         # #5fb3b3 on black: 46 % toward the window (3.0:1), not the old 55 % (#2a5050, 2.3:1).
         self.assertEqual(asb.offline_band_color("#000000", "#5fb3b3"), "#336161")

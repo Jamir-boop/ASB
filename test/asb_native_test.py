@@ -16739,7 +16739,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                                  for record in records]}
         self.assertEqual(path, "/api/activity/thread")
         if "all" in args:
-            mine = list(records)
+            mine = [record for record in records if int(args.get("from", 0)) <= record[3] < int(args.get("to", 2 ** 63))]
         elif "seat" in args:
             mine = [record for record in records if args["seat"] in record[1:3]]
         elif "status" in args:
@@ -17132,10 +17132,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         window = self.window()
         view, scale = window.view, window.text_scale
         bounds = lambda widget: widget.compute_bounds(window)[1]
-        largest = view["busiest"][0]["n"]
         for row, pair in zip(window.busiest_rows, view["busiest"]):
             bar = row.asb_bar
-            self.assertEqual((bar.get_height(), bar.track, bar.fraction), (3, window.palette["track"], pair["n"] / largest))
+            self.assertEqual((bar.get_height(), bar.track, bar.fraction), (3, window.palette["track"], pair["n"] / view["total"]))
             self.assertEqual(bar.segments, [(pair["n"], window.palette["accent"])])
             self.assertFalse(bar.get_has_tooltip())
             main = row.get_child().get_first_child()
@@ -17152,15 +17151,177 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertEqual(row.get_height(), 32 if not line else 26 + 2 + line.get_height() + 7)
         tops = [bounds(row).get_y() for row in window.busiest_rows]
         self.assertEqual([round(b - a - row.get_height()) for a, b, row in zip(tops, tops[1:], window.busiest_rows)], [2] * (len(tops) - 1))
-        largest = max(item["count"] for item in view["machine_rows"])
         for item in view["machine_rows"]:
             bar, count = window.machine_bars[item["ids"]], window.machine_counts[item["ids"]]
             name = count.get_prev_sibling()
-            self.assertEqual(bar.fraction, item["count"] / largest)
+            self.assertEqual(bar.fraction, item["count"] / view["total"])
             self.assertEqual(bounds(bar).get_x(), bounds(name).get_x())
             self.assertEqual(round(bounds(bar).get_x() + bounds(bar).get_width()), round(bounds(count).get_x() + bounds(count).get_width()))
             self.assertEqual(bar.get_parent().get_parent().get_height(), 30)
         self.assertFalse(any(isinstance(widget, asb.UsageBar) for widget in self.tree(window.matrix)))
+
+    def test_D13_keyboard_focus_lights_its_marks_and_dims_no_other_mark(self):
+        window = self.window()
+        table, palette = window.table, window.palette
+        window.set_focus_visible(True)
+        table.proxies[("pin", "release-plan")].grab_focus(); self.drain(.2)
+        state = table.state()
+        lit = table.lit(state)
+        self.assertIn("release-plan", lit[1])
+        self.assertFalse(table.hover_dims(state))
+        win, gray, bad = palette["win"], table.chord_gray(palette), asb.message_status_colors(palette)["not-sent"]
+
+        def strokes(chord):
+            snapshot = Mock()
+            with patch.object(asb, "snapshot_stroke", wraps=asb.snapshot_stroke) as calls:
+                table.snapshot_chord(snapshot, chord, 1, table.chord_tone(chord, state, lit), palette, gray)
+            return [asb.hex_color(call.args[2]) for call in snapshot.append_stroke.call_args_list], calls
+        # An unlit chord keeps its rest gray at 3:1 or more.
+        unlit = next(chord for chord in table.chords if chord["key"] not in lit[0] and not chord["bad"] and not chord["fails"])
+        self.assertEqual(table.chord_tone(unlit, state, lit), "rest")
+        self.assertEqual(strokes(unlit)[0], [gray])
+        self.assertGreaterEqual(asb.contrast(gray, win), 3)
+        # A not-sent end of an unlit chord keeps the not-sent color.
+        mixed = next(chord for chord in table.chords if chord["fails"] and chord["key"] not in lit[0])
+        _colors, calls = strokes(mixed)
+        ends = [asb.hex_color(call.args[3]) for call in calls.call_args_list if call.args[4:5] and call.args[4]]
+        self.assertTrue(ends and set(ends) == {bad})
+        self.assertGreaterEqual(asb.contrast(bad, win), 3)
+        # An unlit pin keeps its hue ring.
+        seat = next(seat for seat in table.pins if seat not in lit[1] and not table.pins[seat]["offline"])
+        snapshot = Mock()
+        table.icons[table.pins[seat]["app"]] = Mock()
+        table.snapshot_pin(snapshot, table.pins[seat], 100, 100, seat, lit, 1, 0, palette)
+        ring = snapshot.append_stroke.call_args_list[0]
+        self.assertEqual((ring.args[1].get_line_width(), asb.hex_color(ring.args[2])), (1.5, table.pins[seat]["hue"]))
+        self.assertGreaterEqual(asb.contrast(table.pins[seat]["hue"], win), 3)
+        # Only the labels of the unlit seats dim.
+        drawn = {}
+        with patch.object(table, "snapshot_label", side_effect=lambda _s, layout, _x, _y, _alpha, _palette, dim=False, halo=None: drawn.update({layout.get_text(): dim})):
+            table.draw(asb.Gtk.Snapshot())
+        for other, label in table.labels.items():
+            if label["shown"]:
+                self.assertEqual(drawn[table.pins[other]["texts"][label["text"]]["layout"].get_text()], other not in lit[1], other)
+        # The pointer on another chord while the focus shows: the hover rule, until the pointer leaves.
+        table.hover["chord"] = unlit["key"]
+        hovered = table.state()
+        self.assertEqual(hovered[0], unlit["key"])
+        self.assertTrue(table.hover_dims(hovered))
+        self.assertEqual(table.chord_tone(mixed, hovered, table.lit(hovered)), "dim")
+        table.hover["chord"] = None
+        self.assertEqual(table.state()[1], "release-plan")
+        self.assertFalse(table.hover_dims(table.state()))
+
+    def test_D14_share_bars_measure_the_share_of_all_messages(self):
+        window = self.window(period="24h")
+        view = window.view
+        # m01: 19 of 65 messages fill 29.2% of the track.
+        first, pair = window.busiest_rows[0], view["busiest"][0]
+        self.assertEqual((pair["n"], view["total"]), (19, 65))
+        self.assertEqual(first.get_tooltip_text(), f"{window.seat_title(pair['a'])} ⇄ {window.seat_title(pair['b'])}, 29.2% of all messages")
+        for period in ("24h", "7d"):
+            window.set_period(period); self.drain(.4)
+            view = window.view
+            for row, pair in zip(window.busiest_rows, view["busiest"]):
+                share = f"{asb.format_share(pair['n'] / view['total'])} of all messages"
+                self.assertEqual(row.asb_bar.fraction, pair["n"] / view["total"])
+                self.assertEqual(row.get_tooltip_text().count("% of all messages"), 1)
+                self.assertTrue(row.get_tooltip_text().endswith(share))
+            # The Between machines bars add up to one full track.
+            self.assertAlmostEqual(sum(window.machine_bars[item["ids"]].fraction for item in view["machine_rows"]), 1)
+            for item in view["machine_rows"]:
+                barred = window.machine_bars[item["ids"]].get_parent().get_parent()
+                name = window.machine_counts[item["ids"]].get_prev_sibling().get_label()
+                share = f"{asb.format_share(item['count'] / view['total'])} of all messages"
+                self.assertEqual(barred.get_tooltip_text(), f"{name}, {share}")
+                self.assert_accessible_label(barred, f"{name}, {asb.format_count(item['count'])} message{'' if item['count'] == 1 else 's'}, {share}")
+
+    def test_D15_a_strip_bucket_opens_its_day_or_hour_as_a_time_thread(self):
+        window = self.window()
+        strip, starts = window.count_strip, window.data["buckets"]["startsMs"]
+        # The pointer cursor over the plot only.
+        motion = next(item for item in strip.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
+        index = next(number for number, bucket in enumerate(strip.buckets[:-1]) if bucket[2] and bucket[1] > 1)
+        motion.emit("motion", strip.x(index), 4); self.drain(.05)
+        self.assertEqual(strip.get_cursor().get_name(), "pointer")
+        self.assert_accessible_label(strip, f"{strip.tip(index)}. Enter opens these messages", asb.Gtk.AccessibleProperty.DESCRIPTION)
+        motion.emit("motion", strip.x(index), strip.plot + 4); self.drain(.05)
+        self.assertIsNone(strip.get_cursor())
+        # A click on the plot opens the day.
+        click = next(item for item in strip.observe_controllers() if isinstance(item, asb.Gtk.GestureClick))
+        before = len(self.routes)
+        click.emit("released", 1, strip.x(index), 4); self.drain(.5)
+        key = (starts[index], starts[index + 1])
+        self.assertEqual((window.thread["kind"], window.thread["key"]), ("time", key))
+        self.assertIn(f"/api/activity/thread?period=7d&all=1&from={key[0]}&to={key[1]}", self.routes[before:])
+        _start, count, bad = strip.buckets[index]
+        name = asb.format_day(key[0])
+        self.assertEqual(window.thread_route.get_label(), name)
+        self.assertEqual(window.thread_counts.get_text(), f"{count} messages · {bad} not sent")
+        color = asb.status_text_on(window.palette, "not-sent", window.palette["win"])
+        self.assertIn(f'<span foreground="{color}">{bad} not sent</span>', window.thread_counts.get_label())
+        self.assertEqual(window.thread_back.get_tooltip_text(), "Back to totals (Esc)")
+        mine = [record for record in window.data["messages"] if key[0] <= record["atMs"] < key[1]]
+        self.assertEqual(set(window.thread_blocks), {record["id"] for record in mine[-60:]})
+        # The blocks of All messages: both ends, and no chord lights.
+        record = mine[-1]
+        self.assertEqual(asb.message_block(window.thread, record, window.view["seats"])[0], True)
+        self.assertEqual(window.table.open_lit(), (set(), set()))
+        self.assertEqual(window.selected_ids(), ())
+        # The center counts the day as the All messages center counts the period.
+        pairs = len({frozenset((item["from"], item["to"])) for item in mine})
+        texts = [widget.get_label() for widget in self.tree(window.table) if isinstance(widget, asb.Gtk.Label)]
+        self.assertIn(name, texts)
+        self.assertIn(f"{count} messages · {pairs} pair{'' if pairs == 1 else 's'}", texts)
+        # A route opens its pair over the time thread; Back names the day, then comes back to it.
+        window.open_thread("pair", tuple(sorted((record["from"], record["to"]), key=window.view["circle"].index))); self.drain(.4)
+        self.assertEqual(window.thread_back.get_tooltip_text(), f"Back to {name} (Esc)")
+        window.back_thread(); self.drain(.4)
+        self.assertEqual((window.thread["kind"], window.thread["key"]), ("time", key))
+        window.back_thread(); self.drain(.4)
+        self.assertIsNone(window.thread)
+        self.assertEqual(window.ledger.get_visible_child_name(), "stats")
+        # Enter on the cursor bucket opens it: the last day is not over, so it says so far.
+        strip.grab_focus()
+        strip.key_pressed(None, asb.Gdk.KEY_End, 0, 0)
+        self.assertTrue(strip.key_pressed(None, asb.Gdk.KEY_Return, 0, 0)); self.drain(.4)
+        self.assertEqual(window.thread["key"], (starts[-1], asb.message_bucket_end(window.data)))
+        self.assertEqual(window.thread_route.get_label(), f"{asb.format_day(starts[-1])} so far")
+        self.assertEqual(window.thread_back.get_tooltip_text(), "Back to totals (Esc)")
+        window.window_key(None, asb.Gdk.KEY_Escape, 0, 0); self.drain(.3)
+        self.assertIsNone(window.thread)
+        # In 24 hours a bucket is an hour; Space opens it too. A new period closes a time thread.
+        window.set_period("24h"); self.drain(.5)
+        strip.grab_focus()
+        strip.key_pressed(None, asb.Gdk.KEY_Home, 0, 0)
+        self.assertTrue(strip.key_pressed(None, asb.Gdk.KEY_space, 0, 0)); self.drain(.4)
+        hour = window.data["buckets"]["startsMs"][0]
+        self.assertEqual(window.thread["key"], (hour, hour + 3_600_000))
+        self.assertEqual(window.thread_route.get_label(), asb.format_clock(hour))
+        window.set_period("7d"); self.drain(.5)
+        self.assertIsNone(window.thread)
+
+    def test_D15_the_all_messages_thread_points_to_the_strip_after_600_messages(self):
+        window = self.window()
+        window.open_thread("all", "all"); self.drain(.4)
+        record = window.data["messages"][-1]
+        many = [dict(record, id=f"m-many-{number}", text=None) for number in range(600)]
+        window.thread["limit"] = 600
+        window.thread_reply = {"total": 700, "messages": many}
+        window.thread_shown = None
+        window.render_thread_list(); self.drain(.3)
+        texts = [widget.get_label() for widget in self.tree(window.thread_top) if isinstance(widget, asb.Gtk.Label) and widget.get_mapped()]
+        self.assertEqual(texts, ["Choose an hour or day in the count strip to read older messages"])
+        caption = next(widget for widget in self.tree(window.thread_top) if isinstance(widget, asb.Gtk.Label))
+        self.assertTrue(caption.has_css_class("asb-dim") and caption.has_css_class("asb-msg-head-tip"))
+        self.assertFalse(window.thread_older.get_visible())
+        # Below 600 the row keeps Show older.
+        window.thread_reply = {"total": 700, "messages": many[:540]}
+        window.thread["limit"] = 540
+        window.thread_shown = None
+        window.render_thread_list(); self.drain(.3)
+        self.assertTrue(window.thread_older.get_visible())
+        self.assertIn("Newest 540 of 700", [widget.get_label() for widget in self.tree(window.thread_top) if isinstance(widget, asb.Gtk.Label)])
 
     def strip_calls(self, strip):
         snapshot = Mock()
@@ -19706,7 +19867,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         drawn = {}
         with patch.object(table, "snapshot_label", side_effect=lambda _s, layout, _x, _y, _alpha, _palette, dim=False, halo=None: drawn.update({layout.get_text(): dim})):
             table.draw(asb.Gtk.Snapshot())
-        self.assertTrue(table.hover_dims(table.state()))
+        # A keyboard focus dims only the labels of the seats that it does not light (D13 A).
+        self.assertFalse(table.hover_dims(table.state()))
+        self.assertTrue(table.hover_dims(table.state(), pointer=False))
         for seat, label in table.labels.items():
             if label["shown"]:
                 self.assertEqual(drawn[table.pins[seat]["texts"][label["text"]]["layout"].get_text()], seat not in partners, seat)
@@ -19778,8 +19941,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(len(window.busiest_rows), 5)
         first = window.busiest_rows[0]
         self.assertEqual(self.labels(first), ["release-plan", "⇄", "parser-review", "139"])
-        self.assert_accessible_label(first, "release-plan and parser-review, 139 messages")
-        self.assertEqual(first.get_tooltip_text(), "release-plan ⇄ parser-review")
+        share = f"{asb.format_share(139 / view['total'])} of all messages"
+        self.assert_accessible_label(first, f"release-plan and parser-review, 139 messages, {share}")
+        self.assertEqual(first.get_tooltip_text(), f"release-plan ⇄ parser-review, {share}")
         self.assertTrue(first.has_css_class("asb-msg-busy") and first.has_css_class("asb-msg-recent"))
         self.assertIn(".asb-msg-busy { min-height: 26px; }", window.palette_css(window.palette))
         # A pair with not-sent messages adds a second line in the error text color.
@@ -19787,7 +19951,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         line = bad[0].get_child().get_last_child().get_prev_sibling()
         self.assertTrue(line.get_first_child().has_css_class("asb-msg-stw-not-sent"))
         self.assertEqual((line.get_first_child().get_icon_name(), self.labels(line)), (asb.ACTIVITY_STATUS_ICONS["not-sent"], [f"{bad[1]['bad']} not sent"]))
-        self.assert_accessible_label(bad[0], f"{window.seat_title(bad[1]['a'])} and {window.seat_title(bad[1]['b'])}, {bad[1]['n']} messages, {bad[1]['bad']} not sent")
+        self.assert_accessible_label(bad[0], f"{window.seat_title(bad[1]['a'])} and {window.seat_title(bad[1]['b'])}, {bad[1]['n']} messages, "
+                                     f"{bad[1]['bad']} not sent, {asb.format_share(bad[1]['n'] / view['total'])} of all messages")
         # The counts end at the x of the status counts.
         found, count = first.get_child().get_first_child().get_last_child().get_prev_sibling().compute_bounds(window.stats)
         found, legend = window.legend_counts["accepted"].compute_bounds(window.stats)

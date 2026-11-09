@@ -231,7 +231,7 @@ export function createAsbServer({
       }
       let query = null;
       if (activityRoute === 'thread') {
-        const names = [...new Set(params.keys())].filter((name) => name !== 'period' && name !== 'limit').sort().join(',');
+        const names = [...new Set(params.keys())].filter((name) => !['period', 'limit', 'from', 'to'].includes(name)).sort().join(',');
         const seat = (name) => params.getAll(name).length === 1 && SEAT.test(params.get(name));
         // A status thread: the messages of one status group that the ledger legend opens.
         const status = names === 'status' && params.getAll('status').length === 1 && ['written', 'held', 'not-sent', 'unknown'].includes(params.get('status'));
@@ -252,13 +252,24 @@ export function createAsbServer({
           }
           query.limit = limit;
         }
+        // A time thread: the all-messages thread of one hour or day of the count strip, from <= atMs < to.
+        if (params.has('from') || params.has('to')) {
+          const time = (name) => params.getAll(name).length === 1 && /^(0|[1-9][0-9]{0,15})$/.test(params.get(name)) ? Number(params.get(name)) : null;
+          const [from, to] = [time('from'), time('to')];
+          if (!query.all || from === null || to === null || from >= to) {
+            sendJson(response, 400, { error: 'Invalid query.' });
+            return;
+          }
+          Object.assign(query, { from, to });
+        }
       }
       // Read-only: the bridge databases, the cached rows, and the member replies.
       try {
         const report = activityRoute === 'usage' ? await activityUsage.report(period)
           : activityRoute === 'thread' ? await activityMessages.thread(period, query)
           : textless ? await activityMessages.report(period, { text: false }) : await activityMessages.report(period);
-        if (activityRoute === 'thread') { sendJson(response, 200, report); return; }
+        // A time thread outside the period has no reply.
+        if (activityRoute === 'thread') { sendJson(response, report ? 200 : 400, report ?? { error: 'Invalid query.' }); return; }
         const { nowMs: _, ...content } = report;
         const etag = `"${createHash('sha256').update(JSON.stringify(content)).digest('base64url')}"`;
         const headers = { etag, 'cache-control': 'no-store' };

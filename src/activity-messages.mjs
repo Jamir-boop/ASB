@@ -274,9 +274,12 @@ export function createActivityMessages({ readSources = async () => [], dashboard
     },
 
     // One pair, one session, one status group, or all messages: the newest limit messages (default 60) oldest first, the total, and the text of each.
-    async thread(period, { a, b, seat, status, all: every = false, limit = THREAD_SIZE } = {}) {
-      const { messages } = await merged(period);
-      const all = every ? messages : messages.filter((item) => status !== undefined ? item.status === status
+    // All messages with from and to: only from <= atMs < to; null when that span is not inside the period.
+    async thread(period, { a, b, seat, status, all: every = false, from, to, limit = THREAD_SIZE } = {}) {
+      const { buckets, messages } = await merged(period);
+      if (from !== undefined && !(buckets.startsMs[0] <= from && from < to && to <= buckets.endMs)) return null;
+      const timed = from === undefined ? messages : messages.filter((item) => from <= item.atMs && item.atMs < to);
+      const all = every ? timed : messages.filter((item) => status !== undefined ? item.status === status
         : seat !== undefined ? item.from === seat || item.to === seat
           : (item.from === a && item.to === b) || (item.from === b && item.to === a));
       const shown = all.slice(-limit);

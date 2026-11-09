@@ -751,6 +751,46 @@ test('the thread route takes an optional limit from 1 to 600', async (t) => {
   assert.equal(calls.length, 4);
 });
 
+test('the thread route takes from and to with all=1: whole numbers, from before to; the service says when they leave the period', async (t) => {
+  const calls = [];
+  const activityMessages = { report: async () => ({}),
+    thread: async (period, query) => { calls.push(query); return query.from === 0 ? null : { total: 0, messages: [] }; } };
+  const base = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), activityMessages }));
+  for (const query of ['all=1&from=1000&to=2000', 'from=1000&all=1&to=2000&limit=600']) {
+    const response = await fetch(`${base}/api/activity/thread?period=24h&${query}`);
+    assert.deepEqual([response.status, await response.json()], [200, { total: 0, messages: [] }], query);
+  }
+  assert.deepEqual(calls, [{ all: true, from: 1000, to: 2000 }, { all: true, from: 1000, to: 2000, limit: 600 }]);
+  // Outside the period: the service gives no reply.
+  const outside = await fetch(`${base}/api/activity/thread?period=24h&all=1&from=0&to=1`);
+  assert.deepEqual([outside.status, await outside.json()], [400, { error: 'Invalid query.' }]);
+  assert.equal(calls.length, 3);
+  for (const query of ['all=1&from=1000', 'all=1&to=2000', 'all=1&from=2000&to=1000', 'all=1&from=1000&to=1000', 'all=1&from=-1&to=2000',
+    'all=1&from=1.5&to=2000', 'all=1&from=01000&to=2000', 'all=1&from=&to=2000', 'all=1&from=1e3&to=2000', 'all=1&from=1000&from=1000&to=2000',
+    'all=1&from=1000&to=2000&to=3000', 'all=1&from=10000000000000000&to=20000000000000000', 'seat=x&from=1000&to=2000',
+    'a=x&b=y&from=1000&to=2000', 'status=held&from=1000&to=2000']) {
+    const response = await fetch(`${base}/api/activity/thread?period=7d&${query}`);
+    assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid query.' }], query);
+  }
+  assert.equal((await fetch(`${base}/api/activity/thread?period=7d&from=1000&to=2000`)).status, 400);
+  assert.equal(calls.length, 3);
+});
+
+test('a time thread has the messages from <= atMs < to of the period, with the limit, and none outside the period', async (t) => {
+  const { bridge, service } = await home(t);
+  await bridge('codex', X, Array.from({ length: 4 }, (_, index) => ({ id: msg(950 + index), peer: Y, direction: 'out', status: 'delivered',
+    atMs: nowMs - (4 - index) * 60_000 })));
+  const activity = service();
+  const ids = (reply) => [reply.total, reply.messages.map((item) => item.id)];
+  assert.deepEqual(ids(await activity.thread('24h', { all: true, from: nowMs - 3 * 60_000, to: nowMs - 60_000 })), [2, [msg(951), msg(952)]]);
+  assert.deepEqual(ids(await activity.thread('24h', { all: true, from: nowMs - 3 * 60_000, to: nowMs - 60_000 + 1 })), [3, [msg(951), msg(952), msg(953)]]);
+  assert.deepEqual(ids(await activity.thread('24h', { all: true, from: nowMs - 5 * 60_000, to: nowMs, limit: 1 })), [4, [msg(953)]]);
+  assert.ok((await activity.thread('24h', { all: true, from: nowMs - 60_000, to: nowMs })).messages.every((item) => item.text === `Synthetic text ${item.id}.`));
+  // Both ends inside the period: from the first bucket start to the end of the last bucket.
+  assert.equal(await activity.thread('24h', { all: true, from: nowMs - 25 * 3_600_000, to: nowMs }), null);
+  assert.equal(await activity.thread('24h', { all: true, from: nowMs - 60_000, to: nowMs + 2 * 3_600_000 }), null);
+});
+
 test('the all-messages thread returns the newest messages of the period with their texts and the limit', async (t) => {
   const { bridge, service } = await home(t);
   await bridge('codex', X, Array.from({ length: 4 }, (_, index) => ({ id: msg(900 + index), peer: Y, direction: 'out', status: 'delivered',
