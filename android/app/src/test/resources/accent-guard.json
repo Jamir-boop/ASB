@@ -100,8 +100,8 @@
   "background": "#000000",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#ffb900",
@@ -116,8 +116,8 @@
   "background": "#000000",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#ffb900",
@@ -244,8 +244,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#81d0ff",
@@ -260,8 +260,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#81d0ff",
@@ -388,8 +388,8 @@
   "background": "#10141c",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#7cc4ff",
@@ -404,8 +404,8 @@
   "background": "#10141c",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#7cc4ff",
@@ -532,8 +532,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#81d0ff",
@@ -548,8 +548,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#81d0ff",
@@ -676,8 +676,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#7bdff4",
@@ -692,8 +692,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#7bdff4",
@@ -820,8 +820,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#8de698",
@@ -836,8 +836,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#8de698",
@@ -964,8 +964,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#ffc057",
@@ -980,8 +980,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#ffc057",
@@ -1108,8 +1108,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#ff9c5b",
@@ -1124,8 +1124,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#ff9c5b",
@@ -1252,8 +1252,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#ff888c",
@@ -1268,8 +1268,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#ff888c",
@@ -1396,8 +1396,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#9a77a6"
  },
  {
   "accent": "#ffa0d8",
@@ -1412,8 +1412,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#ffa0d8",
@@ -1540,8 +1540,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#fba7ff",
@@ -1556,8 +1556,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#fba7ff",
@@ -1684,8 +1684,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "0",
-  "color": "#a28caa",
-  "guarded": "#a28caa"
+  "color": "#b692c3",
+  "guarded": "#b692c3"
  },
  {
   "accent": "#bbd1e5",
@@ -1700,8 +1700,8 @@
   "background": "#222226",
   "kind": "hue",
   "key": "2",
-  "color": "#5fb3b3",
-  "guarded": "#5fb3b3"
+  "color": "#00898a",
+  "guarded": "#00898a"
  },
  {
   "accent": "#bbd1e5",

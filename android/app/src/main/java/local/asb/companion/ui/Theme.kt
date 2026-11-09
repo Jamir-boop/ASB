@@ -78,6 +78,7 @@ internal fun mixToward(base: Color, color: Color, fraction: Double): Color = hex
 internal fun activityColorsOf(palette: Palette): ActivityColors {
     val floor = contrastFloor(APP_COLORS.getValue(""), palette.text, palette.background, 3.0)
     val guard = { color: String -> hexColor(accentGuard(color, palette.accent, palette.background)) }
+    val track = mixColor(palette.background, palette.text, .17)
     val status = STATUS_COLORS.mapValues { (key, color) -> guard(if (key == "unknown") floor else color) }
     val statusText = status + mapOf("accepted" to guard(palette.muted), "written" to guard("#959ba3"))
     return ActivityColors(
@@ -89,7 +90,8 @@ internal fun activityColorsOf(palette: Palette): ActivityColors {
         hues = MACHINE_HUES.map(guard),
         tokens = usageTokenRamp(palette.accent, palette.background).mapValues { hexColor(it.value) },
         background = hexColor(palette.background),
-        track = hexColor(mixColor(palette.background, palette.text, .17)),
+        track = hexColor(track),
+        choice = hexColor(contrastFloor(palette.accent, palette.text, track)),
         edge = hexColor(edgeColor(palette.background, palette.text, .36, listOf(palette.background))),
         rule = hexColor(mixColor(palette.background, palette.text, .13)),
         text = hexColor(palette.text),

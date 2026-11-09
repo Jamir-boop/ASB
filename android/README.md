@@ -153,7 +153,7 @@ main menu of the sessions screen (**Messages**, **Usage**, **Settings**).
 selected. Messages counts the Claude Code and ASB Bridge messages and gets no
 text. It shows the round table of the 12 most recent sessions
 (TalkBack reaches each seat in circle order), the selected seat or pair, and
-the ledger. Usage shows the cost and the tokens by machine, app, model, and provider,
+the ledger. Usage shows the cost and the tokens by machine, app, model, provider, and session,
 for periods up to `All time`, with the price line in the top bar and `Reading usage` while the PC reads the transcripts.
 Messages first opens on `24 hours`, and Usage on `All time`. Each screen keeps
 the chosen period over a rotation.

@@ -204,7 +204,7 @@ class ActivityTest {
     }
 
     @Test fun machineHuesRepeatInMachineOrder() {
-        assertEquals(listOf("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c", "#a28caa"), (0..6).map(::machineHue))
+        assertEquals(listOf("#b692c3", "#7cc48a", "#00898a", "#d6a15e", "#e38fb0", "#b4b86c", "#b692c3"), (0..6).map(::machineHue))
     }
 
     private val usageJson = """
@@ -303,7 +303,7 @@ class ActivityTest {
         assertEquals(-90.0, machineArcs[0].a0, 1e-9)
         assertEquals(357.0, machineArcs.sumOf { it.a1 - it.a0 }, 1e-6)
         assertEquals(357.0 * 3.5 / 4.25, machineArcs[0].a1 - machineArcs[0].a0, 1e-6)
-        assertEquals(listOf("#a28caa", "#7cc48a"), machineArcs.map { it.color })
+        assertEquals(listOf("#b692c3", "#7cc48a"), machineArcs.map { it.color })
         // Apps sit inside their machine's range, 0.6° apart.
         val m1Apps = arcs.filter { it.machineId == "m1" && it.app != null }
         assertEquals(listOf("codex", "claude"), m1Apps.map { it.app })

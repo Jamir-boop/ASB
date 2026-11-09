@@ -203,21 +203,53 @@ fun partialFirstLabel(unit: String, starts: List<Long>, firstMs: Long?): String?
 }
 
 /**
- * The tooltip title of a chart bucket: the long name, or [first] (the partial first bucket); the current bucket is not complete
- * (`October 2026 · so far`).
+ * Port of usage_bucket_progress: the running part of the current bucket that starts at [startMs], as `minute 29 of 60`,
+ * `hour 17 of 24`, `day 1 of 7`, or `day 26 of 31`: the whole elapsed units at [nowMs] plus 1, of the units in the bucket in
+ * local time (a daylight saving day has 23 or 25 hours, a month its own day count).
  */
-fun tooltipTitle(startMs: Long, unit: String, last: Boolean, first: String? = null): String =
-    (first ?: bucketLabel(startMs, unit, last, short = false)) + if (last) " · so far" else ""
+fun bucketProgress(unit: String, startMs: Long, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    val start = Instant.ofEpochMilli(startMs).atZone(zone)
+    val days = { ChronoUnit.DAYS.between(start.toLocalDate(), Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()) }
+    val (word, done, total) = when (unit) {
+        "hour" -> Triple("minute", Math.floorDiv(nowMs - startMs, 60_000L), 60L)
+        "day" -> {
+            val following = start.toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+            Triple("hour", Math.floorDiv(nowMs - startMs, 3_600_000L), Math.round((following - startMs) / 3_600_000.0))
+        }
+        "week" -> Triple("day", days(), 7L)
+        else -> Triple("day", days(), ChronoUnit.DAYS.between(start.toLocalDate(), start.toLocalDate().withDayOfMonth(1).plusMonths(1)))
+    }
+    return "$word ${(done + 1).coerceIn(1, total)} of $total"
+}
+
+/** The name of the current bucket, as the PC chart header: `This week so far`. */
+fun currentBucketName(unit: String): String = when (unit) {
+    "hour" -> "This hour so far"
+    "week" -> "This week so far"
+    "month" -> "This month so far"
+    else -> "Today so far"
+}
+
+/**
+ * The tooltip title of a chart bucket: the long name, or [first] (the partial first bucket). The current (last) bucket names its
+ * running part at [nowMs], as the PC header: `This week so far · day 1 of 7` (without [nowMs]: `This week so far`).
+ */
+fun tooltipTitle(startMs: Long, unit: String, last: Boolean, first: String? = null, nowMs: Long? = null): String = when {
+    !last -> first ?: bucketLabel(startMs, unit, last, short = false)
+    nowMs == null -> currentBucketName(unit)
+    else -> "${currentBucketName(unit)} · ${bucketProgress(unit, startMs, nowMs)}"
+}
 
 /**
  * The x labels of the Usage chart (port of usage_axis_labels): candidates from [chartLabelShown], each centered under its bar
  * and kept inside [width]; from the last bar to the first, a label is shown only when it ends [gap] before the label to its
  * right. Each label names its bucket, the last one too. Month labels are measured with the year, then show it on the leftmost
  * label and where the year changes. A partial first bucket has the label [first] (`From Jul 16`), which always shows when it
- * fits beside the last label; labels between them make room for it.
+ * fits beside the last label; labels between them make room for it. A regular label keeps [endGap] (not [gap]) before an end
+ * label: the last label, and the kept [first] label.
  */
 fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Float, gap: Float, measure: (String) -> Float,
-    first: String? = null): List<AxisLabel> {
+    first: String? = null, endGap: Float = gap): List<AxisLabel> {
     val n = centers.size
     val text = { i: Int -> if (i == 0 && first != null) first else bucketLabel(starts.getOrElse(i) { 0L }, unit, last = false, short = true, first = true) }
     // The left x of a label: the last label ends at the right edge of the chart, the others are centered inside it.
@@ -227,15 +259,15 @@ fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Fl
     for (i in n - 1 downTo 0) {
         if (!chartLabelShown(n, unit, i)) continue
         val w = measure(text(i))
-        if (i == n - 1 || place(i, w) + w <= nextLeft - gap) {
+        if (i == n - 1 || place(i, w) + w <= nextLeft - if (shown.size == 1 || (i == 0 && first != null)) endGap else gap) {
             shown += i
             nextLeft = place(i, w)
         }
     }
     if (first != null && n > 1 && shown.last() != 0) {
         val end = place(0, measure(first)) + measure(first)
-        if (end <= place(n - 1, measure(text(n - 1))) - gap) {
-            while (place(shown.last(), measure(text(shown.last()))) < end + gap) shown.removeAt(shown.lastIndex)
+        if (end <= place(n - 1, measure(text(n - 1))) - endGap) {
+            while (place(shown.last(), measure(text(shown.last()))) < end + endGap) shown.removeAt(shown.lastIndex)
             shown += 0
         }
     }

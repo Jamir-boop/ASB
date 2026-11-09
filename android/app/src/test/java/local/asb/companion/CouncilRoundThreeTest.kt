@@ -233,7 +233,7 @@ class CouncilRoundThreeTest {
         assertEquals("23:00", axisLabels(hours, "hour", List(24) { 60f + it * 39f }, 1000f, 4f, measure).last().text)
         val months = List(3) { at(java.time.YearMonth.parse("2026-09").plusMonths(it.toLong()).atDay(1).toString() + "T00:00:00Z") }
         assertEquals(listOf("Sep 2026", "Oct", "Nov"), axisLabels(months, "month", List(3) { 100f + it * 400f }, 1000f, 4f, measure).map { it.text })
-        assertEquals("October 2026 · so far", tooltipTitle(at("2026-10-01T00:00:00Z"), "month", last = true))
+        assertEquals("This month so far", tooltipTitle(at("2026-10-01T00:00:00Z"), "month", last = true))
         assertEquals("Oct 31", tooltipTitle(days.last(), "day", last = false))
     }
 

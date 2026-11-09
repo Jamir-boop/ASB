@@ -117,7 +117,7 @@ class CouncilRoundFourTest {
         assertEquals("This week", bucketLabel(start, "week", last = true, short = true))
         assertEquals("Week of Jul 13", bucketLabel(start, "week", last = false, short = false))
         assertEquals("Week of Jul 13", tooltipTitle(start, "week", last = false))
-        assertEquals("Week of Jul 13 · so far", tooltipTitle(start, "week", last = true))
+        assertEquals("This week so far", tooltipTitle(start, "week", last = true))
     }
 
     @Test fun labelSteps() {

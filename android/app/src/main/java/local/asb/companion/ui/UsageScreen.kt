@@ -98,7 +98,10 @@ import local.asb.companion.data.costShares
 import local.asb.companion.data.makerRows
 import local.asb.companion.data.machineRows
 import local.asb.companion.data.modelRows
+import local.asb.companion.data.SessionsView
 import local.asb.companion.data.usageAxis
+import local.asb.companion.data.usageCostBasis
+import local.asb.companion.data.usageSessions
 import local.asb.companion.data.usageRingNote
 import local.asb.companion.data.periodLabel
 import local.asb.companion.data.periodShortLabel
@@ -279,6 +282,8 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
                     Text(figure.tokens?.let(::formatTokens) ?: formatCost(figure.cost ?: 0.0), fontSize = 20.sp, style = figures,
                         color = colors.text)
                     if (figure.label == "Cache savings") Text(CACHE_SAVINGS_NOTE, fontSize = 11.sp, color = colors.muted)
+                    // The cost basis, as in the ring center; it breaks only between its parts.
+                    if (figure.label == "Cost") Text(usageCostBasis(totals), fontSize = 11.sp, color = colors.muted)
                 }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
@@ -289,6 +294,11 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         Spacer(Modifier.height(28.dp))
         SectionTitle("Models", colors)
         ModelsTable(totals, metric, colors)
+        usageSessions(reply, totals, metric)?.let { sessions ->
+            Spacer(Modifier.height(28.dp))
+            SectionTitle("Sessions", colors)
+            SessionsTable(sessions, reply.machines.associate { it.machineId to it.name }, metric, colors)
+        }
     }
 }
 
@@ -488,7 +498,8 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                 }
             }
             val centers = List(n) { left + it * (bw + gap) + bw / 2 }
-            for (label in axisLabels(starts, unit, centers, size.width, 4 * dp, { measurer.measure(it, axis, maxLines = 1).size.width.toFloat() }, first)) {
+            for (label in axisLabels(starts, unit, centers, size.width, 4 * dp, { measurer.measure(it, axis, maxLines = 1).size.width.toFloat() }, first,
+                    endGap = 16 * dp)) {
                 val layout = measurer.measure(label.text, axis, maxLines = 1)
                 val w = layout.size.width.toFloat()
                 // The last label ends at the right edge of the chart.
@@ -513,7 +524,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             Column(Modifier.offset { IntOffset(tipLeft.roundToInt(), tipTop.roundToInt()) }.onSizeChanged { tipSize = it }
                 .widthIn(min = 150.dp).background(colors.background, RoundedCornerShape(4.dp)).border(1.dp, colors.edge, RoundedCornerShape(4.dp))
                 .padding(horizontal = 10.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
-                Text(tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1, first.takeIf { i == 0 }), fontSize = 12.sp,
+                Text(tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1, first.takeIf { i == 0 }, reply.nowMs), fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
                 TipRow("Total", formatValue(sums[i], metric), colors.accent, colors)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp), thickness = 1.dp, color = colors.rule)
@@ -561,15 +572,20 @@ private fun TypeBlock(title: String, shares: List<TypeShare>, format: (Double) -
 }
 
 @Composable
-private fun ModelsTable(totals: UsageTotals, metric: Metric, colors: ActivityColors) {
+private fun TableHeader(first: String, colors: ActivityColors) {
     val header = TextStyle(fontSize = 11.sp, color = colors.muted)
     Row(Modifier.fillMaxWidth().height(30.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Model", style = header, modifier = Modifier.weight(1f))
+        Text(first, style = header, modifier = Modifier.weight(1f))
         Text("App", style = header, modifier = Modifier.width(32.dp))
         Text("Cost", style = header, textAlign = TextAlign.End, modifier = Modifier.width(80.dp))
         Text("Tokens", style = header, textAlign = TextAlign.End, modifier = Modifier.width(64.dp))
     }
     HorizontalDivider(thickness = 1.dp, color = colors.rule)
+}
+
+@Composable
+private fun ModelsTable(totals: UsageTotals, metric: Metric, colors: ActivityColors) {
+    TableHeader("Model", colors)
     for (row in modelRows(totals, metric)) {
         key(row.model, row.app) {
             Row(Modifier.fillMaxWidth().height(34.dp).semantics(mergeDescendants = true) {},
@@ -588,4 +604,42 @@ private fun ModelsTable(totals: UsageTotals, metric: Metric, colors: ActivityCol
             HorizontalDivider(thickness = 1.dp, color = colors.rule)
         }
     }
+}
+
+/** The TalkBack text of a Sessions row: `<title>, <app>, <machine>, <value>, <percent> of the total`; the rest row has no app. */
+internal fun sessionSpoken(title: String, app: String?, machine: String?, value: String, share: Double): String =
+    (listOf(title) + listOfNotNull(app, machine) + listOf(value, "${formatShare(share)} of the total")).joinToString(", ")
+
+/** The Sessions table, in the Models columns: the top sessions, then the muted rest row; each row is one TalkBack node. */
+@Composable
+private fun SessionsTable(sessions: SessionsView, names: Map<String, String>, metric: Metric, colors: ActivityColors) {
+    TableHeader("Session", colors)
+    for (row in sessions.rows) {
+        key(row.machineId, row.app, row.id) {
+            SessionLine(row.title, row.app, if (row.unpriced && row.cost == 0.0) null else row.cost, row.tokens, false, colors,
+                sessionSpoken(row.title, appLabel(row.app), names[row.machineId].orEmpty(), formatValue(row.value, metric), row.share))
+        }
+    }
+    sessions.other?.let {
+        SessionLine(it.label, null, it.cost, it.tokens, true, colors, sessionSpoken(it.label, null, null, formatValue(it.value, metric), it.share))
+    }
+}
+
+@Composable
+private fun SessionLine(title: String, app: String?, cost: Double?, tokens: Long, rest: Boolean, colors: ActivityColors, spoken: String) {
+    val ink = if (rest) colors.muted else colors.text
+    Row(Modifier.fillMaxWidth().height(34.dp).clearAndSetSemantics { contentDescription = spoken },
+        horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        // A title is a name, so it is cut in the middle.
+        Text(title, fontSize = 12.sp, color = ink, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = Modifier.weight(1f))
+        Box(Modifier.width(32.dp)) {
+            if (app != null) Icon(painterResource(appMark(app)), contentDescription = appLabel(app), tint = colors.text, modifier = Modifier.size(14.dp))
+        }
+        // An unpriced session with no priced part shows Unpriced (null), as an unpriced model.
+        Text(formatCost(cost), fontSize = 12.sp, style = figures, color = if (cost == null) colors.muted else ink, textAlign = TextAlign.End,
+            maxLines = 1, modifier = Modifier.width(80.dp))
+        Text(formatTokens(tokens), fontSize = 12.sp, style = figures, color = ink, textAlign = TextAlign.End,
+            maxLines = 1, modifier = Modifier.width(64.dp))
+    }
+    HorizontalDivider(thickness = 1.dp, color = colors.rule)
 }

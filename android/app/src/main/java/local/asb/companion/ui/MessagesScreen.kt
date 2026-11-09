@@ -166,7 +166,9 @@ import local.asb.companion.net.AsbError
 /** The surfaces of the Messages and Usage screens, from the Board palette. */
 internal class ActivityColors(val background: Color, val track: Color, val edge: Color, val rule: Color, val text: Color,
     val muted: Color, val accent: Color, val divider: Color, val status: Map<String, Color>, val statusText: Map<String, Color>,
-    val statusWords: Map<String, Color>, val apps: Map<String, Color>, val hues: List<Color>, val tokens: Map<String, Color>) {
+    val statusWords: Map<String, Color>, val apps: Map<String, Color>, val hues: List<Color>, val tokens: Map<String, Color>,
+    /** The label of a selected choice on the [track] fill: the accent with 4.5:1 on it (D17 A). */
+    val choice: Color) {
     /** The hue of the machine at [index] in machine order; the list repeats. */
     fun hue(index: Int): Color = hues[index.coerceAtLeast(0) % hues.size]
 }
@@ -215,9 +217,10 @@ internal fun ActivityTopBar(title: String, onBack: () -> Unit, subtitle: String 
 internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, modifier: Modifier = Modifier,
     descriptions: Map<String, String> = emptyMap(), enabled: Boolean = true, onSelect: (String) -> Unit) {
     val colors = activityColors()
-    // A selected disabled choice draws the track color with muted text, not the accent.
-    val buttons = SegmentedButtonDefaults.colors(disabledActiveContainerColor = colors.track, disabledActiveContentColor = colors.muted,
-        disabledInactiveContentColor = colors.muted)
+    // D17 A: a selected choice has the neutral track fill and its label in the accent at weight 700; a selected disabled choice
+    // keeps the track fill with muted text.
+    val buttons = SegmentedButtonDefaults.colors(activeContainerColor = colors.track, activeContentColor = colors.choice,
+        disabledActiveContainerColor = colors.track, disabledActiveContentColor = colors.muted, disabledInactiveContentColor = colors.muted)
     SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
         choices.forEachIndexed { index, (value, label) ->
             SegmentedButton(
@@ -229,7 +232,7 @@ internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, mo
                 modifier = Modifier.heightIn(min = 48.dp)
                     .then(descriptions[value]?.let { Modifier.semantics { contentDescription = it } } ?: Modifier),
                 icon = {},
-            ) { Text(label, maxLines = 1) }
+            ) { Text(label, maxLines = 1, fontWeight = if (selected == value) FontWeight.Bold else null) }
         }
     }
 }

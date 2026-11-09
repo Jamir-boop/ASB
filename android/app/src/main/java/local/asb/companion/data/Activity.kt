@@ -120,6 +120,32 @@ data class ActivityUsage(
     val records: List<UsageRecord> = emptyList(),
     val prices: UsagePrices = UsagePrices(),
     val scan: UsageScan = UsageScan(),
+    // An older engine has no sessions part; the screen then shows no Sessions section.
+    val sessions: UsageSessions? = null,
+)
+
+/** One session of the reply: its tokens, its priced cost, and [unpriced] when a model of it has no price. */
+@Serializable
+data class UsageSession(
+    val machineId: String = "",
+    val id: String = "",
+    val app: String = "",
+    val title: String = "",
+    val tokens: TokenParts = TokenParts(),
+    val cost: Double = 0.0,
+    val unpriced: Boolean = false,
+)
+
+/** The usage of a machine that no session holds. */
+@Serializable
+data class UsageNone(val tokens: TokenParts = TokenParts(), val cost: Double = 0.0)
+
+/** The sessions part of the Usage reply: the top sessions of each machine, the session count, and the usage with no session. */
+@Serializable
+data class UsageSessions(
+    val rows: List<UsageSession> = emptyList(),
+    val counts: Map<String, Int> = emptyMap(),
+    val none: Map<String, UsageNone> = emptyMap(),
 )
 
 val MESSAGE_PERIODS = listOf("24h", "7d", "30d")
@@ -132,7 +158,7 @@ val APP_ORDER = listOf("codex", "claude", "opencode")
 val USAGE_APP_ORDER = APP_ORDER + listOf("antigravity", "grok", "pi")
 val STATUS_ORDER = listOf("accepted", "written", "held", "not-sent", "unknown")
 
-val MACHINE_HUES = listOf("#a28caa", "#7cc48a", "#5fb3b3", "#d6a15e", "#e38fb0", "#b4b86c")
+val MACHINE_HUES = listOf("#b692c3", "#7cc48a", "#00898a", "#d6a15e", "#e38fb0", "#b4b86c")
 val APP_COLORS = mapOf("codex" to "#c9ccd1", "claude" to "#d97757", "opencode" to "#7d848c",
     "antigravity" to "#4f8fe0", "grok" to "#e8e46a", "pi" to "#c678dd", "" to "#5d6268")
 val STATUS_COLORS = mapOf("accepted" to "#c9ccd1", "written" to "#8c929a", "held" to "#e0b45a",
@@ -671,6 +697,54 @@ fun usageRingNote(scanning: Boolean, shown: Int, total: Int, cost: Boolean, unpr
     if (cost && unpricedTokens > 0) parts += "without $unpricedModels unpriced model${if (unpricedModels == 1) "" else "s"}"
     // No-break spaces inside a part, so the note breaks only between parts.
     return parts.joinToString(" · ") { it.replace(' ', '\u00a0') }
+}
+
+/** Port of usage_cost_basis: the line under the Totals Cost, `if paid at API prices`, then `without 1 unpriced model` (both metrics). */
+fun usageCostBasis(totals: UsageTotals): String {
+    val parts = mutableListOf("if paid at API prices")
+    val count = totals.unpricedModels.size
+    if (totals.unpricedTokens > 0) parts += "without $count unpriced model${if (count == 1) "" else "s"}"
+    // No-break spaces inside a part, so the line breaks only between parts.
+    return parts.joinToString(" · ") { it.replace(' ', '\u00a0') }
+}
+
+const val USAGE_SESSION_ROWS = 8
+
+/** One Sessions row: [value] is the cost in Cost and the processed tokens in Tokens; [share] is of the filtered total. */
+data class SessionRow(val id: String, val app: String, val title: String, val machineId: String, val value: Double, val cost: Double,
+    val tokens: Long, val share: Double, val unpriced: Boolean = false)
+
+/** The rest row: [label] is `Other sessions (N)`, or `Usage with no session` when no other session is left. */
+data class SessionRest(val label: String, val value: Double, val cost: Double, val tokens: Long, val share: Double)
+
+data class SessionsView(val rows: List<SessionRow>, val other: SessionRest?)
+
+/**
+ * Port of usage_sessions: the [USAGE_SESSION_ROWS] sessions of the machines that are on with the highest value (ties go to the
+ * title, then the ID), then a rest row with the rest of the filtered totals, so the rows add up to the totals. Null when the
+ * machines that are on have no session in the period (or the reply has no sessions part).
+ */
+fun usageSessions(reply: ActivityUsage, totals: UsageTotals, metric: Metric): SessionsView? {
+    val sessions = reply.sessions ?: return null
+    val on = totals.machineIds.toSet()
+    val count = on.sumOf { sessions.counts[it] ?: 0 }
+    if (count <= 0) return null
+    val total = if (metric == Metric.COST) totals.cost else totals.tokens.toDouble()
+    val share = { value: Double -> if (total > 0) value / total else 0.0 }
+    val rows = sessions.rows.filter { it.machineId in on }.map {
+        val value = if (metric == Metric.COST) it.cost else it.tokens.processed.toDouble()
+        SessionRow(it.id, usageAppKey(it.app), it.title, it.machineId, value, it.cost, it.tokens.processed, share(value), it.unpriced)
+    }.sortedWith(compareByDescending<SessionRow> { it.value }.thenBy { it.title }.thenBy { it.id })
+    val shown = rows.filter { it.value > 0 }.take(USAGE_SESSION_ROWS)
+    val more = count - shown.size
+    // The member sessions cover the member's own hours, so the rest is never below 0.
+    val cost = max(0.0, totals.cost - shown.sumOf { it.cost })
+    val tokens = max(0L, totals.tokens - shown.sumOf { it.tokens })
+    val value = if (metric == Metric.COST) cost else tokens.toDouble()
+    val untied = on.any { (sessions.none[it]?.tokens?.processed ?: 0) > 0 }
+    val other = if (more > 0 || (untied && value > 0))
+        SessionRest(if (more > 0) "Other sessions ($more)" else "Usage with no session", value, cost, tokens, share(value)) else null
+    return SessionsView(shown, other)
 }
 
 /** Port of oklab: Björn Ottosson's OKLab (L, a, b) of an sRGB hex color. */
