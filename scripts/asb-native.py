@@ -2718,8 +2718,8 @@ def message_thread(records, seats, kind, key):
     sent = sum(1 for record in mine if record["from"] == key)
     bad_sent = sum(1 for record in mine if record["from"] == key and message_status(record) == "not-sent")
     bad_received = sum(1 for record in mine if record["to"] == key and message_status(record) == "not-sent")
-    sent_text = f"Sent {sent}" + (f" · {bad_sent} not sent" if bad_sent else "")
-    received_text = f"Received {len(mine) - sent}" + (f" · {bad_received} not sent" if bad_received else "")
+    sent_text = f"Outgoing {sent}" + (f" · {bad_sent} not sent" if bad_sent else "")
+    received_text = f"Incoming {len(mine) - sent}" + (f" · {bad_received} not sent" if bad_received else "")
     return {"kind": kind, "key": key, "route": title(key), "counts": f"{sent_text}   {received_text}", "total": len(mine), "forward": sent,
             "bad_sent": bad_sent, "bad_received": bad_received}
 
@@ -2775,7 +2775,7 @@ def message_status_word(thread, record, seats=None, machines=()):
     if status == "accepted":
         return None
     if thread["kind"] == "status" and status == thread["key"]:
-        return message_status_label(record, seats, machines) if status == "not-sent" and record.get("reason") else None
+        return message_failure_reason(record, seats, machines) if status == "not-sent" and record.get("reason") else None
     return message_status_label(record, seats, machines)
 
 
@@ -2817,10 +2817,34 @@ def message_buckets(reply):
     return [tuple(item) for item in counts]
 
 
-def message_bucket_tip(start, count, bad, unit):
-    when = format_clock(start) if unit == "hour" else format_day(start)
+def message_bucket_tip(start, count, bad, unit, partial=False):
+    """The tooltip of a count strip bucket; the current bucket (partial) says `so far`."""
+    when = (format_clock(start) if unit == "hour" else format_day(start)) + (" so far" if partial else "")
     text = f"{when}: {format_count(count)} message{'' if count == 1 else 's'}"
     return text + (f", {format_count(bad)} not sent" if bad else "")
+
+
+def message_bucket_partial(reply):
+    """True when the last reply bucket holds nowMs: the current hour or day, which is not complete."""
+    starts = (reply.get("buckets") or {}).get("startsMs") or []
+    now = reply.get("nowMs")
+    if not starts or now is None:
+        return False
+    start = datetime.fromtimestamp(starts[-1] / 1000)
+    if (reply.get("buckets") or {}).get("unit", "hour") == "hour":
+        end = starts[-1] + 3_600_000
+    else:
+        end = datetime.combine(start.date() + timedelta(days=1), datetime.min.time()).timestamp() * 1000
+    return starts[-1] <= now < end
+
+
+def offline_band_color(win, hue):
+    """The offline machine band: the hue mixed 55% toward the window, or less, as far as keeps 3:1 on the window."""
+    for percent in range(45, 101):
+        value = mix_color(win, hue, percent / 100)
+        if contrast(value, win) >= 3:
+            return value
+    return hue
 
 
 def message_arrivals(previous, reply):
@@ -12871,6 +12895,11 @@ class ActivityWindow(Adw.Window):
         self.shortcuts = shortcuts
         # The status pages: a 128 px icon and a 26 px title, a 96 px icon and a 20 px title in the small layout (under 640 px).
         self.connect("notify::current-breakpoint", lambda *_: self.size_status_pages())
+        # Escape closes the window only on a new press: a key release came after the previous Escape press.
+        self.escape_released, self.thread_closed_at = True, -math.inf
+        releases = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        releases.connect("key-released", self.escape_key_released)
+        self.add_controller(releases)
         # Tests give fetch and start the live refresh themselves.
         if fetch is None:
             self.connect("map", self.on_map)
@@ -12907,6 +12936,33 @@ class ActivityWindow(Adw.Window):
         for icon in (self.error_icon, getattr(self, "empty_icon", None)):
             if icon is not None:
                 icon.set_pixel_size(round((96 if compact else 128) * self.text_scale))
+    def escape_key_released(self, _controller, keyval, _code, _state):
+        if keyval == Gdk.KEY_Escape:
+            self.escape_released = True
+
+    def escape_cursors(self):
+        """The widgets whose cursor (hover) Escape clears first."""
+        return ()
+
+    def escape_back(self):
+        """One step back (Messages: the previous thread); True when it took the Escape."""
+        return False
+
+    def escape_pressed(self, *_args):
+        """Escape in steps, in both windows: it first clears an active cursor and hides its tooltip (the focus stays), then goes back
+        (escape_back), then closes the window, but only on a press that is not a key repeat and that comes 400 ms or more after an
+        Escape or Back that closed a thread."""
+        fresh, self.escape_released = self.escape_released, False
+        for widget in self.escape_cursors():
+            if widget.hover is not None:
+                widget.set_hover(None)
+                widget.trigger_tooltip_query()
+                return True
+        if self.escape_back():
+            return True
+        if fresh and time.monotonic() - self.thread_closed_at >= .4:
+            self.close()
+        return True
 
     def period_item_setup(self, _factory, item):
         row = Gtk.Box(spacing=12)
@@ -13439,11 +13495,11 @@ class RoundTable(Gtk.Overlay):
         counts = view["counts"].get(seat_id, {"sent": 0, "received": 0})
         title = seat.get("title") or "Unlisted sessions"
         size = 12 * self.window.text_scale
-        # The whole name on one line (at most 24 characters), on two lines at its last break (each line at most 24 characters),
+        # The whole name on one line (at most 24 characters), on two lines at its last break (each line 4 to 24 characters),
         # then cut to 10 and to 7 characters.
         names = [seat_label_text(title)]
         split = max((match.end() for match in re.finditer(r"[-_. ]", title) if match.end() < len(title)), default=0)
-        if split and title[:split].strip("-_. ") and split <= 24 and len(title) - split <= 24:
+        if split and title[:split].strip("-_. ") and 4 <= split <= 24 and 4 <= len(title) - split <= 24:
             names.append(title[:split] + "\n" + title[split:])
         whole = len(names)
         names += [title[:length].rstrip("-_. ") + "…" for length in (10, 7) if len(title) > length]
@@ -13457,7 +13513,7 @@ class RoundTable(Gtk.Overlay):
         return {"title": title, "tip": f"{title}\n{unlisted_tip(labels)}" if len(labels) > 1 else title,
                 "app": message_app(seat), "machine": seat.get("machineId", ""), "hue": self.window.machine_hue(index if index is not None else 0),
                 "offline": machine.get("state") == "offline", "whole": whole, "texts": texts, "layout": texts[0]["layout"], "w": texts[0]["w"], "h": texts[0]["h"],
-                "label": f"{title}, {ACTIVITY_APP_LABELS[message_app(seat)]}, {machine.get('name', '')}: {counts['sent']} sent, {counts['received']} received"}
+                "label": f"{title}, {ACTIVITY_APP_LABELS[message_app(seat)]}, {machine.get('name', '')}: {counts['sent']} outgoing, {counts['received']} incoming"}
 
     def sync_proxies(self):
         wanted = [("pin", seat_id) for seat_id in self.pins] + [("chord", key) for key in self.chord_keys]
@@ -13586,7 +13642,7 @@ class RoundTable(Gtk.Overlay):
         if self.narrow and self.small and reader.get_visible():
             bottoms = [geometry["cy"] + geometry["Ro"]] + [item["y"] + item["h"] for entries in self.machine_items.values() for item in entries]
             bottoms += [label["box"][3] for label in self.labels.values() if label["shown"]]
-            self.reader_top = round(max(bottoms) + 8)
+            self.reader_top = round(max(bottoms) + 12 * self.window.text_scale)
             key = self.key["box"][3] - self.key["box"][1] if self.key else 0
             need = self.reader_top + reader.measure(Gtk.Orientation.VERTICAL, geometry["W"])[1] + 8 + key + 12
             extra = max(0, math.ceil(need - (geometry["KH"] - self.reader_extra)))
@@ -13624,13 +13680,17 @@ class RoundTable(Gtk.Overlay):
 
         A free place stays 2 px inside the table, off the center disc and the machine band, and touches no pin ring, machine label,
         not-sent end, the key line, or other label (6 px times the text scale wider at each side). Its box is also nearer its own
-        pin circle than every other pin circle by 4 px times the text scale or more.
+        pin circle than every other pin circle by 4 px times the text scale or more. Each pin counts with the largest ring that it
+        can get (pin_ring), so a label keeps its place when its seat lights.
+
+        For each text, the nine places that touch none of the seat's own chord exits (the first 28 px of each of its chords past
+        the pin rim) and no all-not-sent chord try first, then the nine places that touch one.
 
         With preserve, a label first tries its current text and place, so a selection or a refresh does not move a valid label.
         When no place is free, the repair step moves the one other (not chosen) label that blocks a place to a free place of its
         own. When that also fails, the seat tries all its texts and places again with 2 px times the text scale for the own-pin
-        rule. A chosen seat that still finds no place shows its one-line whole name inward; another seat hides its label. Pointer
-        hover never moves or widens a label."""
+        rule, then from the 16 px pin itself (no rings). A chosen seat that still finds no place shows its one-line whole name
+        inward; another seat hides its label. Pointer hover never moves or widens a label."""
         geometry, scale = self.geometry, self.window.text_scale
         disc = geometry["S"] >= 480
         cx, cy = geometry["cx"], geometry["cy"]
@@ -13642,7 +13702,7 @@ class RoundTable(Gtk.Overlay):
             return math.hypot(min(max(x, box[0]), box[2]) - x, min(max(y, box[1]), box[3]) - y)
 
         opened = self.open_lit()[1]
-        circles = {seat_id: (*table_point(geometry, geometry["Rp"], geometry["seat"][seat_id]), 16 + self.pin_ring(seat_id, opened))
+        circles = {seat_id: (*table_point(geometry, geometry["Rp"], geometry["seat"][seat_id]), 16 + self.pin_ring(seat_id))
                    for seat_id in self.pins}
         self.layout_key([(x - r, y - r, x + r, y + r) for x, y, r in circles.values()])
         obstacles = [(item["x"] - 1, item["y"], item["x"] + item["w"] + 1, item["y"] + item["h"])
@@ -13650,6 +13710,23 @@ class RoundTable(Gtk.Overlay):
         if self.key and self.key["shown"]:
             obstacles.append(self.key["box"])
         ends = [(x, y, chord["end_width"] / 2 + 1) for chord in self.chords for points in chord["fails"] for x, y in points]
+        # Kept-off shapes, as circles: the own exits of each seat (its chords from the pin rim, 16 px from the pin center, to 28 px
+        # farther, every 4 px, at the rest width plus 2 px at each side), and every all-not-sent chord (its width plus 3 px at
+        # each side) for every label.
+        exits, dashed = {seat_id: [] for seat_id in self.pins}, []
+        for chord in self.chords:
+            length = chord["table"][1][-1]
+            if not length:
+                continue
+            steps = 7
+            for seat_id, forward in ((chord["a"], True), (chord["b"], False)):
+                for index in range(steps + 1):
+                    fraction = min(1, (16 + 28 * index / steps) * scale / length)
+                    exits[seat_id].append((*curve_point(chord["table"], fraction if forward else 1 - fraction), chord["width"] / 2 + 2 * scale))
+            if chord["bad"]:
+                steps = max(1, math.ceil(length / 4))
+                dashed += [(*curve_point(chord["table"], index / steps), chord["width"] / 2 + 3 * scale) for index in range(steps + 1)]
+        self.kept_off = exits, dashed
         room, chosen = 6 * scale, self.chosen_seats()
         counts, activity = self.view["counts"], self.view["activity"]
         circle = {seat_id: index for index, seat_id in enumerate(self.pins)}
@@ -13659,23 +13736,24 @@ class RoundTable(Gtk.Overlay):
                        -sum(counts.get(seat_id, {}).values()), -activity.get(seat_id, 0), circle[seat_id]))
         previous, self.labels = self.labels if preserve else {}, {}
 
-        def candidate(seat_id, text, place):
-            pin = self.pins[seat_id]
-            x, y = self.label_place_with(pin, geometry["seat"][seat_id], geometry, text, place, scale, self.pin_ring(seat_id, opened))
+        def candidate(seat_id, text, place, ring=None):
+            pin, ring = self.pins[seat_id], self.pin_ring(seat_id) if ring is None else ring
+            x, y = self.label_place_with(pin, geometry["seat"][seat_id], geometry, text, place, scale, ring)
             return {"box": (x - 1, y, x + pin["texts"][text]["w"] + 1, y + pin["texts"][text]["h"]),
-                    "text": text, "place": place, "shown": True}
+                    "text": text, "place": place, "shown": True, "ring": ring}
 
-        def free(seat_id, item, labels=True, margin=4):
+        def free(seat_id, item, labels=True, margin=4, strict=False, shrink=0):
             box = item["box"]
             far = max(math.hypot(x - cx, y - cy) for x in (box[0], box[2]) for y in (box[1], box[3]))
-            own = near(box, *circles[seat_id][:2]) - circles[seat_id][2]
+            own = near(box, *circles[seat_id][:2]) - circles[seat_id][2] + shrink
             return (box[0] >= 2 and box[1] >= 2 and box[2] <= geometry["W"] - 2 and box[3] <= geometry["H"] - 2
                     and not (disc and near(box) < geometry["Rc"] + 2)
                     and not (near(box) < geometry["Ro"] + 2 and far > geometry["Ri"] - 2)
                     and not any(hit(box, other) for other in obstacles)
-                    and all(near(box, x, y) > radius - .5 for x, y, radius in circles.values())
-                    and all(other == seat_id or near(box, x, y) - radius >= own + margin * scale for other, (x, y, radius) in circles.items())
+                    and all(near(box, x, y) > radius - shrink - .5 for x, y, radius in circles.values())
+                    and all(other == seat_id or near(box, x, y) - radius + shrink >= own + margin * scale for other, (x, y, radius) in circles.items())
                     and all(near(box, x, y) >= radius for x, y, radius in ends)
+                    and not (strict and any(near(box, x, y) < radius for x, y, radius in exits[seat_id] + dashed))
                     and (not labels or not blockers(seat_id, box)))
 
         def blockers(seat_id, box):
@@ -13685,27 +13763,28 @@ class RoundTable(Gtk.Overlay):
         for seat_id in order:
             pin, found = self.pins[seat_id], None
             texts = range(pin["whole"] if seat_id in chosen else len(pin["texts"]))
-            options = [(text, place) for text in texts for place in range(9)]
+            # For each text, the places off the kept-off shapes first, then the others.
+            options = [(text, place, strict) for text in texts for strict in (True, False) for place in range(9)]
             old = previous.get(seat_id)
             if old and old["shown"] and old["text"] in texts:
-                options.insert(0, (old["text"], old["place"]))
-            for text, place in options:
+                options.insert(0, (old["text"], old["place"], False))
+            for text, place, strict in options:
                 item = candidate(seat_id, text, place)
-                if free(seat_id, item):
+                if free(seat_id, item, strict=strict):
                     found = item
                     break
             if found is None:
-                for text, place in options:
+                for text, place, strict in options:
                     item = candidate(seat_id, text, place)
                     blocked = blockers(seat_id, item["box"])
-                    if not free(seat_id, item, False) or len(blocked) != 1 or blocked[0] in chosen:
+                    if not free(seat_id, item, False, strict=strict) or len(blocked) != 1 or blocked[0] in chosen:
                         continue
                     other = blocked[0]
                     old = self.labels[other]
                     self.labels[seat_id] = item
-                    for move in range(9):
+                    for move, keep_off in [(move, True) for move in range(9)] + [(move, False) for move in range(9)]:
                         moved = candidate(other, old["text"], move)
-                        if free(other, moved):
+                        if free(other, moved, strict=keep_off):
                             self.labels[other] = moved
                             if free(seat_id, item):
                                 found = item
@@ -13717,18 +13796,25 @@ class RoundTable(Gtk.Overlay):
                     self.labels.pop(seat_id, None)
             if found is None:
                 # A crowded seat: its own pin may be nearer by 2 px only.
-                found = next((item for item in (candidate(seat_id, text, place) for text, place in options) if free(seat_id, item, margin=2)), None)
+                found = next((item for item, strict in ((candidate(seat_id, text, place), strict) for text, place, strict in options)
+                              if free(seat_id, item, margin=2, strict=strict)), None)
+            if found is None:
+                # The last try before a hidden label: places from the 16 px pin itself, as if no pin had rings. The label still does
+                # not move when a seat lights; a ring that it gets can then draw under the label.
+                found = next((item for item, strict in ((candidate(seat_id, text, place, 0), strict) for text, place, strict in options)
+                              if free(seat_id, item, margin=2, strict=strict, shrink=11)), None)
             if found is None and seat_id in chosen:
                 found = candidate(seat_id, 0, 0)
-            self.labels[seat_id] = found or {"box": (0, 0, 0, 0), "shown": False, "text": 0, "place": 0}
+            self.labels[seat_id] = found or {"box": (0, 0, 0, 0), "shown": False, "text": 0, "place": 0, "ring": 0}
         if self.key and self.key["shown"] and any(item["shown"] and hit(item["box"], self.key["box"]) for item in self.labels.values()):
             self.key["shown"] = False
+            self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         self.label_tips()
 
-    def pin_ring(self, seat_id, opened):
-        """How far the rings of a pin reach past its 16 px: 6 px for an open pin, 10 px when it also has the focus."""
-        focused = self.hover["focus"] == seat_id
-        return (11 if focused else 6) if seat_id in opened else 6 if focused else 0
+    def pin_ring(self, _seat_id):
+        """How far the largest rings that a pin can get reach past its 16 px, in every state: the focus ring of an open pin (its
+        2 px ring at radius 24.75 and its 1 px casing). Labels place from there, so a lit or focused seat moves no label."""
+        return 11
 
     def label_tips(self):
         # A pin whose label is cut or hidden keeps the whole title as its tooltip; a seat of several unlisted sessions names them.
@@ -13742,6 +13828,7 @@ class RoundTable(Gtk.Overlay):
         """The key line at the bottom left: chord widths with the smallest and the largest seated pair counts, a not-sent chord,
         and an offline arc when a machine is offline. It shows only when it touches no pin, label, or arc."""
         self.key = None
+        self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         geometry, scale = self.geometry, self.window.text_scale
         if not self.chords:
             return
@@ -13752,8 +13839,9 @@ class RoundTable(Gtk.Overlay):
         if not counts:
             return
         low, high = min(counts), max(counts)
-        unit = ACTIVITY_STATUS_LABELS[status] if status else "messages" if high != 1 else "message"
-        text = (f"{format_count(low)} to {format_count(high)}" if low != high else format_count(high)) + f" {unit}"
+        text = (f"{format_count(low)} to {format_count(high)}" if low != high else format_count(high)) + (" messages" if high != 1 else " message")
+        if status:
+            text += f" ({ACTIVITY_STATUS_LABELS[status]})"
         parts = [("chords", f"Line width: {text}"), ("bad", "Not sent")]
         if any(chord["fails"] for chord in self.chords):
             parts.append(("mixed", "Some not sent"))
@@ -13763,7 +13851,7 @@ class RoundTable(Gtk.Overlay):
         for kind, words in parts:
             layout = activity_layout(self, words, 11 * scale)
             _ink, logical = layout.get_pixel_extents()
-            sample = (32 if kind == "chords" else 18) * scale
+            sample = {"chords": 36, "offline": 20}.get(kind, 18) * scale
             items.append({"kind": kind, "x": x, "layout": layout, "tx": x + sample + 6, "w": logical.width, "h": logical.height})
             x += sample + 6 + logical.width + 14
         height = max(item["h"] for item in items)
@@ -13772,7 +13860,11 @@ class RoundTable(Gtk.Overlay):
         clear = box[2] <= geometry["W"] - 12 and math.hypot(near_x - geometry["cx"], near_y - geometry["cy"]) > geometry["Ro"] + 2
         others = boxes + [(item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
         touches = any(box[0] < other[2] and other[0] < box[2] and box[1] < other[3] and other[1] < box[3] for other in others)
-        self.key = {"items": items, "box": box, "middle": box[1] + height / 2, "shown": clear and not touches}
+        # A status thread draws the two width samples in the accent at its smallest and largest lit widths.
+        widths = (1.5 + 7 * math.sqrt(low / high), 8.5) if status else (1.5, 8.5)
+        self.key = {"items": items, "box": box, "middle": box[1] + height / 2, "shown": clear and not touches, "widths": widths, "accent": bool(status)}
+        if self.key["shown"]:
+            self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [", ".join(words for _kind, words in parts)])
 
     def child_position(self, _overlay, widget, rectangle):
         geometry = self.geometry
@@ -13914,6 +14006,19 @@ class RoundTable(Gtk.Overlay):
             return chords, {seat_id for key in chords for seat_id in key}
         return set(), set()
 
+    def ring_pins(self):
+        """The pins with the open ring (a 2 px gap and a 3 px accent ring): the chosen seats of an open pair or session thread.
+        The lit pins of a status thread get the 2 px partner ring of a hover."""
+        thread = self.window.thread
+        return self.open_lit()[1] if thread and thread["kind"] in ("pair", "session") else set()
+
+    def thread_hover(self, state):
+        """With a thread open, the hovered or focused chord: ("lit", key) when the thread lights it, else ("other", key)."""
+        chord = state[0]
+        if not self.window.thread or not chord:
+            return None
+        return ("lit" if chord in self.open_lit()[0] else "other"), chord
+
     def lit(self, state):
         chord, seat, _thread, _flying, _pin = state
         chords, pins = self.open_lit()
@@ -13934,7 +14039,11 @@ class RoundTable(Gtk.Overlay):
         return bool(chord or seat)
 
     def chord_tone(self, chord, state, lit):
-        """rest (the neutral gray), lit (the accent), or dim (35% toward the window)."""
+        """rest (the neutral gray), lit (the accent), dim (35% toward the window), or with a thread open the hovered or focused
+        chord: hover (outside the thread: the accent 40% toward the window) or top (lit by the thread: drawn last and wider)."""
+        hover = self.thread_hover(state)
+        if hover and hover[1] == chord["key"]:
+            return "hover" if hover[0] == "other" else "top"
         if chord["key"] in lit[0]:
             return "lit"
         if self.hover_dims(state) or (state[3] and chord["key"] not in state[3]):
@@ -14041,20 +14150,15 @@ class RoundTable(Gtk.Overlay):
         seats, arcs, items, chord_sets, leaving, enter = self.frame(now)
         cx, cy = geometry["cx"], geometry["cy"]
         inner = geometry["Rc"] if geometry["S"] >= 480 else 0
+        # An offline sector has no dashed radial edges: its dashed band, its dashed pin rings, and its Offline label say it.
         for machine, arc in arcs.items():
             hue, offline = self.machine_info.get(machine, (self.window.machine_hue(0), False))
             snapshot.append_fill(sector_path(cx, cy, inner, geometry["Ri"], arc["start"], arc["end"]), Gsk.FillRule.WINDING,
                                  alpha_color(hue, .03 if offline else .05))
-            if offline:
-                for angle in (arc["start"], arc["end"]):
-                    builder = Gsk.PathBuilder.new()
-                    builder.move_to(*table_point(geometry, inner, angle))
-                    builder.line_to(*table_point(geometry, geometry["Ri"], angle))
-                    snapshot_stroke(snapshot, builder.to_path(), 1, rgba(hue), [4, 3])
         for machine, arc in arcs.items():
             hue, offline = self.machine_info.get(machine, (self.window.machine_hue(0), False))
             band = sector_path(cx, cy, geometry["Ri"], geometry["Ro"], arc["start"], arc["end"])
-            snapshot.append_fill(band, Gsk.FillRule.WINDING, alpha_color(hue, .45 if offline else .85))
+            snapshot.append_fill(band, Gsk.FillRule.WINDING, rgba(offline_band_color(palette["win"], hue)) if offline else alpha_color(hue, .85))
             if offline:
                 line = Gsk.Stroke.new(1)
                 line.set_dash([4, 3])
@@ -14071,21 +14175,28 @@ class RoundTable(Gtk.Overlay):
                     for chord, tone in tones:
                         if tone == "lit":
                             self.snapshot_chord(snapshot, chord, fade, tone, palette, gray, part)
+                # With a thread open, the hovered or focused chord draws after the thread chords.
+                for chord, tone in tones:
+                    if tone in ("hover", "top"):
+                        self.snapshot_chord(snapshot, chord, fade, tone, palette, gray)
         if geometry["S"] >= 480:
             snapshot_circle(snapshot, cx, cy, geometry["Rc"], rgba(palette["win"]))
             snapshot_stroke(snapshot, circle_path(cx, cy, geometry["Rc"]), 1, rgba(palette["rule"]))
         self.snapshot_lights(snapshot, now, palette)
         shown, scale = state[1], self.window.text_scale
-        opened, dims = self.open_lit()[1], self.hover_dims(state)
+        dims, hover = self.hover_dims(state), self.thread_hover(state)
         for seat_id, angle in seats.items():
             label = self.labels.get(seat_id)
             if label and label["shown"]:
-                # The hovered or focused seat shows its whole label; while the table dims, the labels of seats that are not lit dim too.
+                # While the table dims, the labels of seats that are not lit dim too; a hovered chord of the open thread keeps only
+                # its two labels in the text color.
                 text, place = label["text"], label["place"]
                 pin = self.pins[seat_id]
-                self.snapshot_label(snapshot, pin["texts"][text]["layout"], *self.label_place_with(pin, angle, geometry, text, place, scale,
-                                                                                                  self.pin_ring(seat_id, opened)),
-                                    enter.get(seat_id, 1), palette, dims and seat_id not in lit[1])
+                x, y = self.label_place_with(pin, angle, geometry, text, place, scale, label.get("ring", self.pin_ring(seat_id)))
+                dim = seat_id not in hover[1] if hover and hover[0] == "lit" else dims and seat_id not in lit[1]
+                layout = pin["texts"][text]["layout"]
+                self.snapshot_label(snapshot, layout, x, y, enter.get(seat_id, 1), palette, dim,
+                                    self.region_fill(x + pin["texts"][text]["w"] / 2, y + pin["texts"][text]["h"] / 2, arcs, palette))
         for seat_id, angle in seats.items():
             self.snapshot_pin(snapshot, self.pins[seat_id], *table_point(geometry, geometry["Rp"], angle), seat_id, lit, enter.get(seat_id, 1), now, palette)
         if self.move:
@@ -14096,8 +14207,10 @@ class RoundTable(Gtk.Overlay):
                 angle, pin = previous["geometry"]["seat"][seat_id], previous["pins"][seat_id]
                 old = previous["labels"].get(seat_id, {})
                 if old.get("shown"):
-                    self.snapshot_label(snapshot, pin["texts"][old["text"]]["layout"],
-                                        *self.label_place_with(pin, angle, previous["geometry"], old["text"], old["place"], scale), alpha, palette)
+                    x, y = self.label_place_with(pin, angle, previous["geometry"], old["text"], old["place"], scale, old.get("ring", self.pin_ring(seat_id)))
+                    text = pin["texts"][old["text"]]
+                    self.snapshot_label(snapshot, text["layout"], x, y, alpha, palette,
+                                        halo=self.region_fill(x + text["w"] / 2, y + text["h"] / 2, arcs, palette))
                 self.snapshot_pin(snapshot, pin, *table_point(previous["geometry"], previous["geometry"]["Rp"], angle), None, (set(), set()), alpha, now, palette)
         for ring in self.rings:
             angle = geometry["seat"].get(ring["seat"])
@@ -14123,8 +14236,10 @@ class RoundTable(Gtk.Overlay):
         for item in self.key["items"]:
             x = item["x"]
             if item["kind"] == "chords":
-                for left, width in ((x, 1.5), (x + 18 * scale, 8.5)):
-                    segment(left + width / 2, left + 14 * scale - width / 2, width, gray, cap=Gsk.LineCap.ROUND)
+                # Two 16 px butt-capped segments at the smallest and the largest width, 4 px apart.
+                color = palette["accent"] if self.key["accent"] else gray
+                for left, width in zip((x, x + 20 * scale), self.key["widths"]):
+                    segment(left, left + 16 * scale, width, color)
             elif item["kind"] == "bad":
                 segment(x, x + 18 * scale, 2, message_status_colors(palette)["not-sent"], [5, 5])
             elif item["kind"] == "mixed":
@@ -14134,10 +14249,15 @@ class RoundTable(Gtk.Overlay):
             else:
                 offline = [hue for hue, state in self.machine_info.values() if state]
                 color = offline[0] if len(offline) == 1 else palette["dim"]
-                # A short annular sector has the same fill and dashed boundary as the offline machine band.
-                band = sector_path(x + 9 * scale, middle + 17 * scale, 14 * scale, 20 * scale, -118, -62)
-                snapshot.append_fill(band, Gsk.FillRule.WINDING, alpha_color(color, .45))
-                snapshot_stroke(snapshot, band, 1, rgba(color), [4, 3], Gsk.LineCap.BUTT)
+                # A 20 px straight piece of the offline band at its real width, with its fill and its dashed long edges.
+                half = (self.geometry["Ro"] - self.geometry["Ri"]) / 2
+                snapshot.append_color(rgba(offline_band_color(palette["win"], color)),
+                                      Graphene.Rect().init(x, middle - half, 20 * scale, 2 * half))
+                for edge in (middle - half + .5, middle + half - .5):
+                    builder = Gsk.PathBuilder.new()
+                    builder.move_to(x, edge)
+                    builder.line_to(x + 20 * scale, edge)
+                    snapshot_stroke(snapshot, builder.to_path(), 1, rgba(color), [4, 3], Gsk.LineCap.BUTT)
             snapshot_layout(snapshot, item["layout"], item["tx"], middle - item["h"] / 2, dim)
 
     @staticmethod
@@ -14170,6 +14290,10 @@ class RoundTable(Gtk.Overlay):
 
         def tone_color(value):
             return rgba(mix_color(win, value, .35) if tone == "dim" else value)
+        # The hovered chord outside an open thread: the accent mixed 40% toward the window; the hovered chord of the thread is 1.5 px
+        # wider over a 2 px casing at each side.
+        accent = mix_color(win, palette["accent"], .6) if tone == "hover" else palette["accent"]
+        lit = tone in ("lit", "hover", "top")
 
         def polyline(points):
             builder = Gsk.PathBuilder.new()
@@ -14180,15 +14304,17 @@ class RoundTable(Gtk.Overlay):
         # fade is only the cross-fade of a seat move.
         snapshot.push_opacity(fade)
         scale = self.window.text_scale
-        width = (3 if tone == "lit" else 2) if chord["bad"] else chord["width"]
+        width = (3 if lit else 2) if chord["bad"] else chord["width"]
         thread = self.window.thread
         if not chord["bad"] and thread and thread["kind"] == "status":
             count = self.view["pairs"][chord["key"]]["by"].get(thread["key"], 0)
             if count:
                 largest = max(self.view["pairs"][key]["by"].get(thread["key"], 0) for key in self.chord_keys)
                 width = 1.5 + 7 * math.sqrt(count / largest)
-        if tone == "lit" and part in ("all", "casing"):
-            snapshot_stroke(snapshot, path, width + 2, rgba(win))
+        if tone == "top":
+            width += 1.5
+        if lit and part in ("all", "casing"):
+            snapshot_stroke(snapshot, path, width + (4 if tone == "top" else 2), rgba(win))
         if part in ("all", "stroke"):
             line = Gsk.Stroke.new(width)
             line.set_line_cap(Gsk.LineCap.BUTT if chord["bad"] else Gsk.LineCap.ROUND)
@@ -14197,14 +14323,14 @@ class RoundTable(Gtk.Overlay):
                 line.set_dash([5, 5])
                 snapshot.append_stroke(path, line, tone_color(bad))
             elif not chord["fails"]:
-                snapshot.append_stroke(path, line, tone_color(palette["accent"] if tone == "lit" else gray))
+                snapshot.append_stroke(path, line, tone_color(accent if lit else gray))
             elif chord["trim"][1] > chord["trim"][0]:
                 low, high = chord["trim"]
                 gap = (2 * scale + width / 2) / chord["table"][1][-1]
                 low, high = low + (gap if low else 0), high - (gap if high < 1 else 0)
                 steps = max(2, math.ceil((high - low) * chord["table"][1][-1] / 4))
                 snapshot.append_stroke(polyline([curve_point(chord["table"], low + (high - low) * index / steps) for index in range(steps + 1)]),
-                                       line, tone_color(palette["accent"] if tone == "lit" else gray))
+                                       line, tone_color(accent if lit else gray))
         if part in ("all", "casing"):
             for points in chord["fails"]:
                 snapshot_stroke(snapshot, polyline(points), chord["end_width"] + 2 * scale, rgba(win), cap=Gsk.LineCap.BUTT)
@@ -14213,9 +14339,22 @@ class RoundTable(Gtk.Overlay):
                 snapshot_stroke(snapshot, polyline(points), chord["end_width"], tone_color(bad), [4 * scale, 3 * scale], Gsk.LineCap.BUTT)
         snapshot.pop()
 
-    def snapshot_label(self, snapshot, layout, x, y, alpha, palette, dim=False):
-        halo, text = alpha_color(palette["win"], alpha), alpha_color(palette["dim" if dim else "text"], alpha)
-        # A 3 px halo in the window color under the glyphs: copies of the text around it.
+    def region_fill(self, x, y, arcs, palette):
+        """The fill that the table draws at a point: the sector tint of the machine sector there, else the window color (also the
+        center disc fill)."""
+        geometry = self.geometry
+        radius = math.hypot(x - geometry["cx"], y - geometry["cy"])
+        if (geometry["Rc"] if geometry["S"] >= 480 else 0) < radius < geometry["Ri"]:
+            angle = math.degrees(math.atan2(y - geometry["cy"], x - geometry["cx"]))
+            for machine, arc in arcs.items():
+                if (angle - arc["start"]) % 360 < arc["end"] - arc["start"]:
+                    hue, offline = self.machine_info.get(machine, (self.window.machine_hue(0), False))
+                    return mix_color(palette["win"], hue, .03 if offline else .05)
+        return palette["win"]
+
+    def snapshot_label(self, snapshot, layout, x, y, alpha, palette, dim=False, halo=None):
+        halo, text = alpha_color(halo or palette["win"], alpha), alpha_color(palette["dim" if dim else "text"], alpha)
+        # A 3 px halo in the fill under the label (region_fill) under the glyphs: copies of the text around it.
         for radius, steps in ((1.5, 8), (3, 16)):
             for step in range(steps):
                 angle = 2 * math.pi * step / steps
@@ -14226,7 +14365,10 @@ class RoundTable(Gtk.Overlay):
         # A pin is opaque: it fills with the window color, and a dimmed pin mixes its colors toward the window, so no chord shows
         # through it. alpha is only the fade of a seat that comes or goes. A lit pin has a 2 px accent ring.
         chosen = seat_id is not None and seat_id in lit[1]
-        opened = seat_id is not None and seat_id in self.open_lit()[1]
+        opened = seat_id is not None and seat_id in self.ring_pins()
+        # The pins of a hovered chord outside an open thread get their ring in the hover mix.
+        hover = self.thread_hover(self.state())
+        mixed = hover is not None and hover[0] == "other" and seat_id in hover[1] and seat_id not in self.open_lit()[1]
         dim = (.75 if pin["offline"] else 1) * (.35 if self.hover_dims(self.state()) and not chosen else 1)
         win = palette["win"]
         snapshot.push_opacity(alpha)
@@ -14238,7 +14380,7 @@ class RoundTable(Gtk.Overlay):
             snapshot_stroke(snapshot, circle_path(x, y, 17.75), 2, rgba(win))
             snapshot_stroke(snapshot, circle_path(x, y, 20.25), 3, rgba(palette["accent"]))
         elif chosen:
-            snapshot_stroke(snapshot, circle_path(x, y, 16), 2, rgba(palette["accent"]))
+            snapshot_stroke(snapshot, circle_path(x, y, 16), 2, rgba(mix_color(win, palette["accent"], .6) if mixed else palette["accent"]))
         else:
             snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(mix_color(win, palette["light"] if sending else pin["hue"], dim)),
                             [4, 3] if pin["offline"] else None)
@@ -14315,15 +14457,18 @@ class StatusShare(Gtk.Widget):
 
 
 class CountStrip(Gtk.Widget):
-    """Messages over time: a 1.5 px line of the bucket counts in the rest chord gray, with a not-sent dot on each bucket that has a
-    not-sent message, and the first and the last bucket name under it. One Tab stop: Left, Right, Home, and End move a cursor."""
+    """Messages over time: a 2 px line of the bucket counts in the rest chord gray over a 1 px zero baseline, with a not-sent dot on
+    each bucket that has a not-sent message, and the bucket name row under it (the first and the last name and a caption). The
+    current bucket (the last one, when it holds nowMs) has a dashed segment into a hollow point. One Tab stop: Left, Right, Home, and
+    End move a cursor. The focus ring is drawn here, 4 px outside the plot and the name row; the margins keep its room at rest."""
     __gtype_name__ = "AsbCountStrip"
 
     def __init__(self, window):
         super().__init__(accessible_role=Gtk.AccessibleRole.IMG, hexpand=True, focusable=True)
-        self.window, self.buckets, self.unit, self.hover = window, [], "hour", None
+        self.window, self.buckets, self.unit, self.hover, self.partial = window, [], "hour", None, False
         self.set_has_tooltip(True)
         self.connect("query-tooltip", self.query_tooltip)
+        self.connect("state-flags-changed", lambda *_args: self.queue_draw())
         motion = Gtk.EventControllerMotion()
         motion.connect("motion", lambda _event, x, _y: self.set_hover(self.bucket_at(x)))
         motion.connect("leave", lambda *_args: self.set_hover(None))
@@ -14341,6 +14486,7 @@ class CountStrip(Gtk.Widget):
     def update(self, reply):
         self.unit = (reply.get("buckets") or {}).get("unit", "hour")
         self.buckets = message_buckets(reply)
+        self.partial = message_bucket_partial(reply)
         self.update_property([Gtk.AccessibleProperty.LABEL], [f"Messages per {'hour' if self.unit == 'hour' else 'day'}"])
         self.hover = None
         self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
@@ -14354,6 +14500,11 @@ class CountStrip(Gtk.Widget):
         largest = max([1] + [item[1] for item in self.buckets])
         return self.plot - self.inset - (24 - 6) * self.window.text_scale * count / largest
 
+    def snap(self, value):
+        """The center of the device pixel at value."""
+        factor = self.get_scale_factor()
+        return (math.floor(value * factor) + .5) / factor
+
     def bucket_at(self, x):
         if not self.buckets:
             return None
@@ -14362,7 +14513,7 @@ class CountStrip(Gtk.Widget):
 
     def tip(self, index):
         start, count, bad = self.buckets[index]
-        return message_bucket_tip(start, count, bad, self.unit)
+        return message_bucket_tip(start, count, bad, self.unit, self.partial and index == len(self.buckets) - 1)
 
     def set_hover(self, index):
         if index == self.hover:
@@ -14391,34 +14542,104 @@ class CountStrip(Gtk.Widget):
         tooltip.set_text(self.tip(self.hover))
         return True
 
+    def names(self):
+        """The bucket name row: [(layout, x)] of the first and the last name, [(layout, x)] of the caption, and the x of its
+        not-sent dot or None. In 24 hours the first name has its weekday when its bucket is on an earlier day than the last."""
+        scale, width = self.window.text_scale, self.get_width()
+        first, last = self.buckets[0][0], self.buckets[-1][0]
+        if self.unit == "hour":
+            day, name = datetime.fromtimestamp(first / 1000), format_clock(first)
+            if day.date() < datetime.fromtimestamp(last / 1000).date():
+                name = f"{ACTIVITY_WEEKDAYS[day.weekday()]} {name}"
+            names = [name, format_clock(last)]
+        else:
+            names = [format_day(first), format_day(last)]
+        layouts = [activity_layout(self, text, 11 * scale) for text in (names if len(self.buckets) > 1 else names[:1])]
+        if len(layouts) < 2:
+            return [(layouts[0], 0)], [], None
+        wide = lambda layout: layout.get_pixel_extents()[1].width  # noqa: E731
+        ends = [(layouts[0], 0), (layouts[1], width - wide(layouts[1]))]
+        # The caption, centered between the names, keeps 12 px from each; when it does not fit, the not-sent part goes first.
+        left, right, dot = wide(layouts[0]) + 12 * scale, ends[1][1] - 12 * scale, 6 * scale
+        unit = activity_layout(self, f"per {'hour' if self.unit == 'hour' else 'day'}", 11 * scale)
+        for bad in ((True, False) if any(item[2] for item in self.buckets) else (False,)):
+            parts = [unit] + ([activity_layout(self, " · ", 11 * scale), None, activity_layout(self, " not sent", 11 * scale)] if bad else [])
+            total = sum(dot if part is None else wide(part) for part in parts)
+            if total <= right - left:
+                x, placed, dot_x = left + (right - left - total) / 2, [], None
+                for part in parts:
+                    if part is None:
+                        dot_x = x + dot / 2
+                    else:
+                        placed.append((part, x))
+                    x += dot if part is None else wide(part)
+                return ends, placed, dot_x
+        return ends, [], None
+
+    def content_box(self):
+        """The box of the plot (its end dots included) and the bucket name row."""
+        names = self.names()[0] if self.buckets and self.get_width() else []
+        bottom = max([self.plot] + [self.plot + 2 * self.window.text_scale + layout.get_pixel_extents()[1].height for layout, _x in names])
+        return 0, 0, self.get_width(), bottom
+
     def do_snapshot(self, snapshot):
         if not self.buckets or not self.get_width():
             return
         palette, scale = self.window.palette, self.window.text_scale
-        points = [(self.x(index), self.y(count)) for index, (_start, count, _bad) in enumerate(self.buckets)]
+        win, text, gray = palette["win"], palette["text"], self.window.table.chord_gray(palette)
+        bad_color = message_status_colors(palette)["not-sent"]
+        # Each point on a device pixel center.
+        points = [(self.snap(self.x(index)), self.snap(self.y(count))) for index, (_start, count, _bad) in enumerate(self.buckets)]
+        partial = self.partial and len(points) > 1
+        # The zero baseline under the line, as the Usage chart baseline.
+        usage_rect(snapshot, points[0][0], self.snap(self.y(0)) - .5, points[-1][0] - points[0][0], 1, rgba(palette["rule"]))
         if self.hover is not None:
             builder = Gsk.PathBuilder.new()
-            builder.move_to(self.x(self.hover), 0)
-            builder.line_to(self.x(self.hover), self.plot)
+            builder.move_to(points[self.hover][0], 0)
+            builder.line_to(points[self.hover][0], self.plot)
             snapshot_stroke(snapshot, builder.to_path(), 1, rgba(palette["dim"]), cap=Gsk.LineCap.BUTT)
-        builder = Gsk.PathBuilder.new()
-        builder.move_to(*points[0])
-        for point in points[1:]:
-            builder.line_to(*point)
-        line = Gsk.Stroke.new(1.5)
-        line.set_line_cap(Gsk.LineCap.ROUND)
-        line.set_line_join(Gsk.LineJoin.ROUND)
-        snapshot.append_stroke(builder.to_path(), line, rgba(self.window.table.chord_gray(palette)))
-        bad = message_status_colors(palette)["not-sent"]
+        solid = points[:-1] if partial else points
+        if len(solid) > 1:
+            builder = Gsk.PathBuilder.new()
+            builder.move_to(*solid[0])
+            for point in solid[1:]:
+                builder.line_to(*point)
+            line = Gsk.Stroke.new(2)
+            line.set_line_cap(Gsk.LineCap.ROUND)
+            line.set_line_join(Gsk.LineJoin.ROUND)
+            snapshot.append_stroke(builder.to_path(), line, rgba(gray))
+        if partial:
+            # The current bucket is not complete: a dashed segment into a hollow point.
+            builder = Gsk.PathBuilder.new()
+            builder.move_to(*points[-2])
+            builder.line_to(*points[-1])
+            snapshot_stroke(snapshot, builder.to_path(), 2, rgba(gray), [3, 3], Gsk.LineCap.BUTT)
+            snapshot_circle(snapshot, *points[-1], 3 * scale, rgba(win))
+            snapshot_stroke(snapshot, circle_path(*points[-1], 3 * scale), 1.5, rgba(gray))
         for (x, y), (_start, _count, failed) in zip(points, self.buckets):
             if failed:
-                snapshot_circle(snapshot, x, y, 3 * scale, rgba(bad))
-        names = [self.buckets[0][0], self.buckets[-1][0]]
-        top = self.plot + 2 * scale
-        for index, start in enumerate(names if len(self.buckets) > 1 else names[:1]):
-            layout = activity_layout(self, format_clock(start) if self.unit == "hour" else format_day(start), 11 * scale)
-            width = layout.get_pixel_extents()[1].width
-            snapshot_layout(snapshot, layout, 0 if index == 0 else self.get_width() - width, top, rgba(palette["dim"]))
+                snapshot_circle(snapshot, x, y, 3 * scale, rgba(bad_color))
+        if self.hover is not None:
+            x, y = points[self.hover]
+            if self.buckets[self.hover][2]:
+                # A not-sent dot keeps its color and gets a 1 px ring in the text color.
+                snapshot_stroke(snapshot, circle_path(x, y, 3 * scale + .5), 1, rgba(text))
+            else:
+                snapshot_circle(snapshot, x, y, 3 * scale + 1, rgba(win))
+                snapshot_circle(snapshot, x, y, 3 * scale, rgba(text))
+        ends, caption, dot_x = self.names()
+        top, dim = self.plot + 2 * scale, rgba(palette["dim"])
+        for layout, x in ends + caption:
+            snapshot_layout(snapshot, layout, x, top, dim)
+        if dot_x is not None:
+            snapshot_circle(snapshot, dot_x, top + caption[0][0].get_pixel_extents()[1].height / 2, 3 * scale, rgba(bad_color))
+        if self.get_state_flags() & Gtk.StateFlags.FOCUS_VISIBLE:
+            # The 2 px accent focus ring with 6 px corners, its inner edge 4 px outside the plot and the name row.
+            left, upper, right, bottom = self.content_box()
+            reach = 4 * scale + 2
+            rounded = Gsk.RoundedRect()
+            rounded.init_from_rect(Graphene.Rect().init(left - reach, upper - reach, right - left + 2 * reach, bottom - upper + 2 * reach), 6)
+            snapshot.append_border(rounded, [2] * 4, [rgba(palette["accent"])] * 4)
 
 
 CountStrip.set_css_name("asb-message-strip")
@@ -14511,7 +14732,7 @@ class CenterLayout(Gtk.LayoutManager):
 
 
 class CapLayout(Gtk.LayoutManager):
-    """One child at the left edge, as wide as the cap or the free width if that is less."""
+    """One child at the left edge, as wide as the cap or the free width if that is less; a cap of math.inf gives the free width."""
     __gtype_name__ = "AsbCapLayout"
 
     def __init__(self, cap):
@@ -14525,10 +14746,12 @@ class CapLayout(Gtk.LayoutManager):
         child = widget.get_first_child()
         if child is None or not child.should_layout():
             return 0, 0, -1, -1
+        # With no cap (math.inf), the child keeps its natural width.
+        cap = self.cap if math.isfinite(self.cap) else child.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
         if orientation == Gtk.Orientation.HORIZONTAL:
             minimum = child.measure(orientation, -1)[0]
-            return minimum, max(minimum, self.cap), -1, -1
-        width = self.cap if for_size < 0 else max(child.measure(Gtk.Orientation.HORIZONTAL, -1)[0], min(for_size, self.cap))
+            return minimum, max(minimum, cap), -1, -1
+        width = cap if for_size < 0 else max(child.measure(Gtk.Orientation.HORIZONTAL, -1)[0], min(for_size, self.cap))
         minimum, natural = child.measure(orientation, width)[:2]
         return minimum, natural, -1, -1
 
@@ -14671,7 +14894,7 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-thead {{ background: {palette['win']}; border-bottom: 2px solid {palette['accent']}; padding: 16px 18px 10px; }}
 {scope} .asb-msg-back {{ min-width: 28px; min-height: {px(28)}; padding: 0; }}
 {scope} .asb-msg-route {{ font-size: {px(13)}; font-weight: 600; min-height: {px(28)}; }}
-{scope} .asb-msg-tlist {{ padding: 0 18px 4px; }}
+{scope} .asb-msg-tlist {{ padding: 0 18px {px(16)}; }}
 {scope} .asb-msg-tmore {{ margin-top: 10px; }}
 {scope} .asb-msg-tmore label {{ font-size: {px(11)}; }}
 {scope} .asb-msg-older {{ min-height: 0; padding: 2px 8px; font-size: {px(11)}; }}
@@ -14684,27 +14907,29 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-who {{ font-size: {px(11)}; font-weight: 600; color: {palette['text']}; }}
 {scope} .asb-msg-body {{ font-size: {px(13)}; }}
 {scope} .asb-msg-body.asb-msg-notext {{ font-style: italic; }}
-{scope} .asb-msg-reader {{ padding: 10px 16px; border-top: 1px solid {palette['divider']}; background: {palette['win']}; }}
+{scope} .asb-msg-reader {{ padding: 0 16px 10px; background: {palette['win']}; }}
 {scope} .asb-msg-c-route {{ font-size: {px(13)}; font-weight: 600; }}
 {scope} .asb-msg-c-name {{ font-size: {px(15)}; font-weight: 600; }}
 {scope} .asb-msg-c-num {{ font-feature-settings: "tnum"; font-size: {px(18)}; }}
 {scope} .asb-msg-c-dir {{ font-feature-settings: "tnum"; font-size: {px(14)}; }}
 {scope} .asb-msg-c-fail {{ font-size: {px(12)}; color: {status_text_on(palette, 'not-sent', palette['win'])}; }}
 {scope} .asb-msg-empty-title {{ font-size: {px(20)}; font-weight: 700; }}
+{scope} .asb-msg-empty-title.asb-msg-large {{ font-size: {px(26)}; }}
 {scope} .asb-msg-busy {{ min-height: {px(26)}; }}
 {scope} .asb-msg-ledger-row label {{ color: {palette['text']}; opacity: 1; }}
 {scope} .asb-msg-ledger-row label.asb-dim {{ color: {palette['dim']}; opacity: 1; }}
 {scope} .asb-msg-ledger-row.asb-msg-notsent label {{ color: {colors['not-sent']}; }}
 {scope} .asb-msg-ledger-row {{ opacity: 1; }}
 {scope} .asb-msg-ledger-row.asb-msg-recent {{ min-height: {px(26)}; }}
-{scope} .asb-msg-busy-main {{ min-height: {px(26)}; }}
-{scope} .asb-msg-busy-fail {{ margin-top: 2px; min-height: {px(11)}; }}
+{scope} .asb-msg-busy-fail {{ min-height: {px(11)}; }}
 {scope} .asb-msg-ledger-row .asb-msg-busy-fail label {{ font-size: {px(11)}; color: {palette['dim']}; }}
-{scope} .asb-msg-machine-row {{ min-height: {px(24)}; }}
-{scope} asb-message-strip:focus-visible {{ outline: 2px solid {palette['accent']}; outline-offset: 1px; border-radius: 6px; }}
-{scope} .asb-msg-route-link {{ min-height: 0; padding: 0; border-radius: 4px; }}
-{scope} .asb-msg-bar-row {{ margin-top: {px(3)}; }}
-{scope} .asb-msg-sticky-day {{ font-size: {px(11)}; color: {palette['dim']}; background: {palette['win']}; padding: 6px 0; }}
+{scope} asb-message-strip {{ outline: none; }}
+{scope} .asb-msg-route-link {{ min-height: 0; padding: 0; border-radius: 4px; outline: none; }}
+{scope} .asb-msg-route-link:hover label, {scope} .asb-msg-route-link:focus-visible label {{ text-decoration-line: underline;
+  text-decoration-color: {palette['text']}; }}
+{scope} .asb-msg-sticky-day {{ font-size: {px(11)}; color: {palette['dim']}; background: {palette['win']}; padding: 6px 0;
+  border-bottom: 1px solid {palette['divider']}; }}
+{scope} .asb-msg-head-tip {{ font-size: {px(12)}; }}
 """
 
     def set_palette(self, colors):
@@ -14729,7 +14954,8 @@ class MessagesWindow(ActivityWindow):
             breakpoint.set_condition(self.breakpoint_condition(name))
         if not self.table.narrow:
             self.ledger.set_size_request(round(340 * self.text_scale), -1)
-        self.head_messages.get_layout_manager().cap = round(340 * self.text_scale)
+        self.head_messages.get_layout_manager().cap = (math.inf if getattr(self.get_current_breakpoint(), "asb_name", None) == "small"
+                                                       else round(340 * self.text_scale))
         self.head_messages.queue_resize()
         if self.view is not None:
             self.render_ledger([], False)
@@ -14740,6 +14966,9 @@ class MessagesWindow(ActivityWindow):
     def breakpoint_changed(self, *_args):
         name = getattr(self.get_current_breakpoint(), "asb_name", None)
         stacked = name in ("narrow", "small")
+        # Below 640 px the Messages section fills the width less its margins; the 340 px cap stays only from 640 px.
+        self.head_messages.get_layout_manager().cap = math.inf if name == "small" else round(340 * self.text_scale)
+        self.head_messages.queue_resize()
         if not stacked:
             self.set_top(False)
         self.set_narrow(stacked)
@@ -14906,8 +15135,9 @@ class MessagesWindow(ActivityWindow):
         for widget in (self.share, self.count_strip, self.legend, self.recent_section, self.busiest_section, self.machines_section, self.apps_section):
             widget.set_visible(not empty)
         self.share.update(view["by_status"])
-        # The strip stands 6 px under the share bar; the legend keeps the gap that it had under the share bar.
-        self.share.set_margin_bottom(round(6 * scale))
+        # The strip stands 10 px under the share bar; the legend keeps the gap that it had under the share bar. The gaps keep the
+        # room of the strip focus ring (6 px outside the strip content).
+        self.share.set_margin_bottom(round(10 * scale))
         self.count_strip.set_margin_bottom(10)
         self.count_strip.set_scale()
         self.count_strip.update(self.data)
@@ -14985,8 +15215,11 @@ class MessagesWindow(ActivityWindow):
         remove_children(self.machine_rows)
         self.machine_counts, self.machine_bars = {}, {}
         largest = max([1] + [item["count"] for item in view["machine_rows"]])
+        # A share bar stands 4 px under the descender line of its row text; the rest of the 30 px row goes under the bar.
+        line = activity_layout(self, "Ay", 12 * scale).get_pixel_extents()[1].height
+        top = max(0, math.floor((24 * scale - line) / 2))
         for item in view["machine_rows"]:
-            row = Gtk.Box(spacing=round(6 * scale))
+            row = Gtk.Box(spacing=round(6 * scale), margin_top=top)
             row.add_css_class("asb-msg-machine-row")
             dots = Gtk.Box(spacing=round(3 * scale))
             for machine_id in item["ids"]:
@@ -15007,7 +15240,8 @@ class MessagesWindow(ActivityWindow):
             row.append(Gtk.Box(width_request=round(18 * scale)))
             bar = UsageBar(round(3 * scale), track=self.palette["track"])
             bar.set_segments([(item["count"], self.palette["accent"])], item["count"] / largest)
-            bars = Gtk.Box(spacing=round(6 * scale))
+            bars = Gtk.Box(spacing=round(6 * scale), margin_top=round(4 * scale),
+                           margin_bottom=max(0, round(30 * scale) - top - line - round(4 * scale) - round(3 * scale)))
             bars.add_css_class("asb-msg-bar-row")
             # The bar starts under the name: the two-dot slot (two 7 px dots, 3 px apart) and the row gap come first.
             bars.append(Gtk.Box(width_request=round(7 * scale) * 2 + round(3 * scale)))
@@ -15085,6 +15319,9 @@ class MessagesWindow(ActivityWindow):
         remove_children(self.busiest)
         self.busiest_rows = []
         self.table.hover["row"] = None
+        # A share bar stands 4 px under the descender line of the last text line of its row; the rest of the row goes under it.
+        line = activity_layout(self, "Ay", 12 * scale).get_pixel_extents()[1].height
+        top = max(0, math.floor((26 * scale - line) / 2))
         for pair in view["busiest"]:
             a, b = self.seat_title(pair["a"]), self.seat_title(pair["b"])
             row = Gtk.Button(has_frame=False, tooltip_text=f"{a} ⇄ {b}")
@@ -15092,7 +15329,7 @@ class MessagesWindow(ActivityWindow):
             row.add_css_class("asb-msg-busy")
             row.add_css_class("asb-msg-ledger-row")
             content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            main = Gtk.Box(spacing=round(8 * scale))
+            main = Gtk.Box(spacing=round(8 * scale), margin_top=top)
             main.add_css_class("asb-msg-busy-main")
             route = Gtk.Box(spacing=round(4 * scale), hexpand=True)
             for text in (a, "⇄", b):
@@ -15108,19 +15345,21 @@ class MessagesWindow(ActivityWindow):
             largest = max(item["n"] for item in view["busiest"])
             bar = UsageBar(round(3 * scale), track=self.palette["track"])
             bar.set_segments([(pair["n"], self.palette["accent"])], pair["n"] / largest)
-            bars = Gtk.Box(spacing=round(8 * scale))
+            bars = Gtk.Box(spacing=round(8 * scale), margin_top=round(4 * scale),
+                           margin_bottom=0 if pair["bad"] else max(0, round(32 * scale) - top - line - round(4 * scale) - round(3 * scale)))
             bars.add_css_class("asb-msg-bar-row")
             bars.append(bar)
             # The bar ends at the right edge of the count column, not under the chevron.
             bars.append(Gtk.Box(width_request=round(16 * scale)))
             if pair["bad"]:
-                line = Gtk.Box(spacing=round(4 * scale))
-                line.add_css_class("asb-msg-busy-fail")
+                # 2 px under the 26 px route line.
+                fail = Gtk.Box(spacing=round(4 * scale), margin_top=max(0, round(26 * scale) - top - line) + 2)
+                fail.add_css_class("asb-msg-busy-fail")
                 icon = Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS["not-sent"], pixel_size=round(12 * scale))
                 icon.add_css_class("asb-msg-stw-not-sent")
-                line.append(icon)
-                line.append(label(f"{format_count(pair['bad'])} not sent", "asb-dim"))
-                content.append(line)
+                fail.append(icon)
+                fail.append(label(f"{format_count(pair['bad'])} not sent", "asb-dim"))
+                content.append(fail)
             content.append(bars)
             row.asb_bar = bar
             row.set_child(content)
@@ -15296,7 +15535,7 @@ class MessagesWindow(ActivityWindow):
             records = self.data.get("messages") or []
             bad_sent = sum(1 for record in records if record["from"] == session and message_status(record) == "not-sent")
             bad_received = sum(1 for record in records if record["to"] == session and message_status(record) == "not-sent")
-            figures((("Sent", counts["sent"], bad_sent), ("Received", counts["received"], bad_received)))
+            figures((("Outgoing", counts["sent"], bad_sent), ("Incoming", counts["received"], bad_received)))
         elif self.view["recent"]:
             # Only who wrote to whom: the texts show in a thread.
             record, seats = self.view["recent"][0], self.view["seats"]
@@ -15312,15 +15551,19 @@ class MessagesWindow(ActivityWindow):
         elif empty:
             period = dict(self.PERIODS)[self.period]
             # The block of the Usage empty page: the icon, the title, the hint, and the pill.
-            icon = Gtk.Image(icon_name="asb-messages-symbolic", pixel_size=round(64 * scale), halign=align)
+            # A disc of 520 px or more across gets the larger icon and title.
+            large = self.table.geometry is not None and 2 * self.table.geometry["Rc"] >= 520 * scale
+            icon = Gtk.Image(icon_name="asb-messages-symbolic", pixel_size=round((128 if large else 96) * scale), halign=align)
             icon.add_css_class("asb-dim")
             box.append(icon)
             title = text(f"No messages in the last {period}", "asb-msg-empty-title", wrap=True)
+            if large:
+                title.add_css_class("asb-msg-large")
             title.set_lines(2)
             title.set_ellipsize(Pango.EllipsizeMode.END)
             # The hint wraps at 260 px or less.
             inner = Gtk.Box(halign=align)
-            text("When an agent sends a message to another session, it shows here.", "asb-msg-small", wrap=True, dim=True, parent=inner)
+            text("When an agent sends a message to another session with ASB Bridge, it shows here.", "asb-msg-small", wrap=True, dim=True, parent=inner)
             box.append(Adw.Clamp(maximum_size=260, tightening_threshold=260, halign=align, child=inner))
             following = MESSAGE_NEXT_PERIOD.get(self.period)
             if following:
@@ -15411,6 +15654,16 @@ class MessagesWindow(ActivityWindow):
         self.thread_counts.add_css_class("asb-mono")
         self.thread_counts.add_css_class("asb-dim")
         titles.append(self.thread_counts)
+        # A status thread head shows the status sentence under the count: at most two lines, then ….
+        self.thread_tip = label("", "asb-msg-head-tip")
+        self.thread_tip.add_css_class("asb-dim")
+        self.thread_tip.set_wrap(True)
+        self.thread_tip.set_wrap_mode(Pango.WrapMode.WORD)
+        self.thread_tip.set_max_width_chars(1)
+        self.thread_tip.set_lines(2)
+        self.thread_tip.set_ellipsize(Pango.EllipsizeMode.END)
+        self.thread_tip.set_visible(False)
+        titles.append(self.thread_tip)
         head.append(titles)
         page.append(head)
         self.thread_list = Gtk.Grid(column_homogeneous=True)
@@ -15468,6 +15721,8 @@ class MessagesWindow(ActivityWindow):
         self.scroll_page(pins)
 
     def back_thread(self):
+        # Escape closes the window only 400 ms or more after an Escape or Back that closed a thread.
+        self.thread_closed_at = time.monotonic()
         if not self.thread_stack:
             self.close_thread()
             return
@@ -15539,17 +15794,22 @@ class MessagesWindow(ActivityWindow):
             proxy.grab_focus()
 
     def window_key(self, _controller, keyval, _code, state):
-        # Escape closes a thread first, then the window, as in Usage; Alt+Left goes back from a thread.
+        # Escape in steps (escape_pressed); Alt+Left goes back from a thread.
         if keyval == Gdk.KEY_Escape:
-            if self.thread is not None:
-                self.back_thread()
-            else:
-                self.close()
-            return True
+            return self.escape_pressed()
         if keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left) and state & Gdk.ModifierType.ALT_MASK and self.thread is not None:
             self.back_thread()
             return True
         return False
+
+    def escape_cursors(self):
+        return (self.count_strip,)
+
+    def escape_back(self):
+        if self.thread is None:
+            return False
+        self.back_thread()
+        return True
 
     def thread_missing(self):
         thread = self.thread
@@ -15565,6 +15825,8 @@ class MessagesWindow(ActivityWindow):
         route = f"{header['route']} · {dict(self.PERIODS)[self.period]}" if thread["kind"] in ("status", "all") else header["route"]
         self.thread_route.set_label(route)
         self.thread_route.set_tooltip_text(MESSAGE_STATUS_TIPS[thread["key"]] if thread["kind"] == "status" else route)
+        self.thread_tip.set_label(MESSAGE_STATUS_TIPS[thread["key"]] if thread["kind"] == "status" else "")
+        self.thread_tip.set_visible(thread["kind"] == "status")
         previous = self.thread_stack[-1][0] if self.thread_stack else None
         back = ("All messages" if previous["kind"] == "all" else ACTIVITY_STATUS_LABELS[previous["key"]] if previous["kind"] == "status" else
                 self.seat_title(previous["key"]) if previous["kind"] == "session" else
@@ -15797,11 +16059,21 @@ class MessagesWindow(ActivityWindow):
         name_label = Gtk.Label(label=who, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
         name_label.set_attributes(no_hyphens(name_label.get_attributes()))
         name_label.add_css_class("asb-msg-who")
-        if not run and thread["kind"] in ("status", "all"):
-            # A route in All messages or a status thread opens its pair thread over this one.
+        if not run and thread["kind"] != "pair":
+            # A route in All messages or a status thread, and the To or From name in a session thread, opens its pair thread over
+            # this one: a link with a dim chevron, underlined on hover and focus.
             pair = tuple(sorted((record["from"], record["to"]), key=lambda seat_id: (self.view["circle"].index(seat_id)
                          if seat_id in self.view["circle"] else len(self.view["circle"]), seat_id)))
-            route = Gtk.Button(has_frame=False, child=name_label, tooltip_text=f"Show the messages of {who}")
+            names = " ⇄ ".join(message_end_title(record, "from" if seat_id == record["from"] else "to", seats) for seat_id in pair)
+            content = Gtk.Box(spacing=round(2 * self.text_scale))
+            content.append(name_label)
+            chevron = Gtk.Image(icon_name="go-next-symbolic", pixel_size=round(12 * self.text_scale), valign=Gtk.Align.CENTER)
+            chevron.add_css_class("asb-dim")
+            content.append(chevron)
+            route = Gtk.Button(has_frame=False, child=content, tooltip_text=f"Open {names}")
+            route.asb_label = name_label
+            route.set_cursor_from_name("pointer")
+            route.update_property([Gtk.AccessibleProperty.LABEL], [f"Open {names}"])
             route.add_css_class("asb-msg-route-link")
             route.connect("clicked", lambda *_: self.open_thread("pair", pair))
             top.append(route)
@@ -17160,8 +17432,7 @@ class UsageWindow(ActivityWindow):
         self.fold_states, self.setting_folds = {}, False
         super().__init__(application, base, fetch, clock)
         shortcuts = Gtk.ShortcutController()
-        shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"),
-                                                Gtk.CallbackAction.new(lambda *_: self.close() or True)))
+        shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"), Gtk.CallbackAction.new(self.escape_pressed)))
         self.add_controller(shortcuts)
         theme = Gtk.IconTheme.get_for_display(self.get_display())
         icons = str(Path(__file__).parents[1] / "assets" / "icons")
@@ -17333,6 +17604,9 @@ class UsageWindow(ActivityWindow):
             self.breakpoints[name] = breakpoint
         # Libadwaita applies only the last breakpoint that matches, so "small" means narrow too.
         self.connect("notify::current-breakpoint", self.breakpoint_changed)
+
+    def escape_cursors(self):
+        return (self.chart, self.round)
 
     def state_controls(self, *_args):
         """While the error page or the empty page shows, the metric toggles and the machine filter are insensitive, so the page

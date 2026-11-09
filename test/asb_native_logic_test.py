@@ -11023,9 +11023,9 @@ class MessagesLogicChecks(unittest.TestCase):
         mine = [record for record in records if "parser-review" in (record["from"], record["to"])]
         sent = sum(record["from"] == "parser-review" for record in mine)
         header = asb.message_thread(records, seats, "session", "parser-review")
-        self.assertEqual((header["route"], header["counts"]), ("parser-review", f"Sent {sent} · 1 not sent   Received {len(mine) - sent}"))
-        self.assertEqual(header["counts"], "Sent 81 · 1 not sent   Received 109")
-        self.assertEqual(asb.message_thread(records, {}, "session", "gone")["counts"], "Sent 0   Received 0")
+        self.assertEqual((header["route"], header["counts"]), ("parser-review", f"Outgoing {sent} · 1 not sent   Incoming {len(mine) - sent}"))
+        self.assertEqual(header["counts"], "Outgoing 81 · 1 not sent   Incoming 109")
+        self.assertEqual(asb.message_thread(records, {}, "session", "gone")["counts"], "Outgoing 0   Incoming 0")
         self.assertEqual(asb.message_thread(records, {}, "session", "gone")["route"], "This session")
         out, back = next(record for record in mine if record["from"] == "parser-review"), next(record for record in mine if record["to"] == "parser-review")
         self.assertEqual(asb.message_block(header, out, seats), (False, "To " + out["to"]))
@@ -11086,8 +11086,22 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertIsNone(asb.message_status_word({"kind": "status", "key": "written"}, {"status": "written"}))
         self.assertEqual(asb.message_status_word({"kind": "status", "key": "written"}, {"status": "held"}), "On hold")
         not_sent = {"kind": "status", "key": "not-sent"}
-        self.assertEqual(asb.message_status_word(not_sent, offline), "Not sent · Machine offline")
+        self.assertEqual(asb.message_status_word(not_sent, offline), "Machine offline")
         self.assertIsNone(asb.message_status_word(not_sent, {"status": "not-sent", "reason": ""}))
+
+    def test_M5_the_not_sent_thread_shows_the_reason_alone(self):
+        seats = {"a": {"machineId": "desk"}, "b": {"machineId": "studio"}}
+        machines = [{"machineId": "desk", "name": "Desk"}, {"machineId": "studio", "name": "Studio"}]
+        record = {"from": "a", "to": "b", "status": "not-sent", "reason": "Machine offline"}
+        not_sent = {"kind": "status", "key": "not-sent"}
+        self.assertEqual(asb.message_status_word(not_sent, record, seats, machines), "Studio was not reachable")
+        self.assertEqual(asb.message_status_word(not_sent, dict(record, reason="Refused"), seats, machines), "Refused by Studio")
+        self.assertEqual(asb.message_status_word(not_sent, dict(record, reason="Too large"), seats, machines), "Too large")
+        self.assertIsNone(asb.message_status_word(not_sent, dict(record, reason=""), seats, machines))
+        # Pair, session, and All messages threads keep `Not sent · <reason>`, as does another status thread.
+        for thread in ({"kind": "pair", "key": ("a", "b")}, {"kind": "session", "key": "a"}, {"kind": "all", "key": "all"},
+                       {"kind": "status", "key": "written"}):
+            self.assertEqual(asb.message_status_word(thread, record, seats, machines), "Not sent · Studio was not reachable")
 
     def test_pairs_count_each_status_and_the_busiest_pairs_rank_by_count_newest_and_circle(self):
         reply = self.reply()
@@ -11149,6 +11163,31 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.message_bucket_tip(day, 1, 0, "day"), "Oct 22: 1 message")
         self.assertEqual(asb.message_bucket_tip(day, 1234, 1, "day"), "Oct 22: 1,234 messages, 1 not sent")
 
+    def test_M2_the_current_bucket_is_partial_and_says_so_far(self):
+        hour = datetime(2026, 10, 26, 16, 0).timestamp() * 1000
+        reply = {"nowMs": hour + 28 * 60_000, "buckets": {"unit": "hour", "startsMs": [hour - 3_600_000, hour]}}
+        self.assertTrue(asb.message_bucket_partial(reply))
+        self.assertFalse(asb.message_bucket_partial(dict(reply, nowMs=hour + 3_600_000)))
+        self.assertFalse(asb.message_bucket_partial(dict(reply, nowMs=hour - 1)))
+        day = datetime(2026, 10, 26).timestamp() * 1000
+        days = {"nowMs": datetime(2026, 10, 26, 23, 59).timestamp() * 1000, "buckets": {"unit": "day", "startsMs": [day]}}
+        self.assertTrue(asb.message_bucket_partial(days))
+        self.assertFalse(asb.message_bucket_partial(dict(days, nowMs=datetime(2026, 10, 27).timestamp() * 1000)))
+        self.assertFalse(asb.message_bucket_partial({"nowMs": 1, "buckets": {"unit": "hour", "startsMs": []}}))
+        self.assertEqual(asb.message_bucket_tip(hour, 4, 0, "hour", True), "16:00 so far: 4 messages")
+        self.assertEqual(asb.message_bucket_tip(day, 27, 1, "day", True), "Oct 26 so far: 27 messages, 1 not sent")
+
+    def test_M18_the_offline_band_keeps_3_to_1_on_the_window(self):
+        # #5fb3b3 on black: 46 % toward the window (3.0:1), not the old 55 % (#2a5050, 2.3:1).
+        self.assertEqual(asb.offline_band_color("#000000", "#5fb3b3"), "#336161")
+        for win in ("#000000", "#222226", "#10141c"):
+            for hue in asb.MACHINE_HUES:
+                color = asb.offline_band_color(win, hue)
+                self.assertGreaterEqual(asb.contrast(color, win), 3)
+                # Never stronger than needed: the old 55 % mix toward the window when that already has 3:1.
+                if asb.contrast(asb.mix_color(win, hue, .45), win) >= 3:
+                    self.assertEqual(color, asb.mix_color(win, hue, .45))
+
     def test_D10_all_messages_header_and_blocks_name_both_ends(self):
         records = [{"from": "a", "to": "b", "status": "accepted"}, {"from": "b", "to": "a", "status": "accepted"},
                    {"from": "a", "to": "c", "status": "not-sent"}]
@@ -11174,7 +11213,7 @@ class MessagesLogicChecks(unittest.TestCase):
             self.assertIn("ASB", asb.message_reason_tip(dict(record, reason=reason)))
         records = [dict(record, id="1"), dict(record, id="2", **{"from": "b", "to": "a"})]
         header = asb.message_thread(records, seats, "session", "a")
-        self.assertEqual(header["counts"], "Sent 1 · 1 not sent   Received 1 · 1 not sent")
+        self.assertEqual(header["counts"], "Outgoing 1 · 1 not sent   Incoming 1 · 1 not sent")
 
     def test_M9_machine_tints_have_equal_lightness_chroma_and_sender_hue(self):
         for win in ("#000000", "#222226", "#10141c", "#ffffff"):
