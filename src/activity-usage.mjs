@@ -527,6 +527,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         }
         for (const machine of ledger?.machines.values() || []) for (const record of machine.records.values()) include(record.hourMs, record.tokens);
       }
+      // The first record hour: the saved ledger keeps only hour starts, so live transcripts and the ledger give the same buckets.
+      if (firstMs !== null) firstMs = Math.floor(firstMs / HOUR_MS) * HOUR_MS;
       const { unit, startsMs, endMs } = periodBuckets(period, nowMs, firstMs);
       rates.ensure();
       const table = rates.table();
@@ -548,7 +550,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const imported = importedOnly(members);
       for (const machine of imported) addMachine(machine.machineId, [...machine.records.values()]);
       return {
-        period, nowMs, buckets: { unit, startsMs },
+        period, nowMs, buckets: period === 'all' ? { unit, startsMs, firstMs } : { unit, startsMs },
         machines: [{ machineId, name, self: true, state: 'local', lastReportAtMs: 0 }, ...members.map((member) => ({
           machineId: member.machineId, name: member.name, self: false, state: member.state, lastReportAtMs: member.lastReportAtMs || 0 })),
         ...imported.map((machine) => ({ machineId: machine.machineId, name: machine.name, self: false, state: 'offline', lastReportAtMs: machine.exportedAtMs }))],

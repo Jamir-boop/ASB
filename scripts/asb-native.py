@@ -2185,8 +2185,24 @@ def machine_last_report(machine):
     return f"Last report {format_day(at)}, {format_clock(at)}" if machine.get("state") == "offline" and at > 0 else ""
 
 
+def usage_partial_first(buckets):
+    """True when the first week or month bucket starts before the local day of the first record (All time)."""
+    first, starts = buckets.get("firstMs"), buckets["startsMs"]
+    return buckets["unit"] in ("week", "month") and first is not None and bool(starts) and \
+        datetime.fromtimestamp(first / 1000).date() > datetime.fromtimestamp(starts[0] / 1000).date()
+
+
+def usage_first_label(buckets):
+    """The label of a partial first bucket: `From Jul 16`, or `From Jul 16, 2024` for months."""
+    first = buckets["firstMs"]
+    year = f", {datetime.fromtimestamp(first / 1000).year}" if buckets["unit"] == "month" else ""
+    return f"From {format_day(first)}{year}"
+
+
 def bucket_label(buckets, index):
     starts, hourly = buckets["startsMs"], buckets["unit"] == "hour"
+    if buckets["unit"] == "week":
+        return "This week" if index == len(starts) - 1 else format_day(starts[index])
     if buckets["unit"] == "month":
         if index == len(starts) - 1:
             return "This month"
@@ -2207,6 +2223,8 @@ def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False):
     starts, last, month = buckets["startsMs"], len(centers) - 1, buckets["unit"] == "month"
 
     def text(index, year):
+        if index == 0 and usage_partial_first(buckets):
+            return usage_first_label(buckets)
         if not month:
             return format_clock(starts[index]) if buckets["unit"] == "hour" else format_day(starts[index])
         at = datetime.fromtimestamp(starts[index] / 1000)
@@ -2225,7 +2243,8 @@ def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False):
         if limit is None or left + width <= limit - 4:
             shown.insert(0, index)
             limit = left
-    if ends and last > 0 and shown[0] != 0:
+    # A partial first bucket keeps its `From …` label, as the narrow chart keeps its first label.
+    if (ends or usage_partial_first(buckets)) and last > 0 and shown[0] != 0:
         end = place(0, measure(text(0, True))) + measure(text(0, True))
         if end <= place(last, measure(text(last, True))) - 4:
             while place(shown[0], measure(text(shown[0], True))) < end + 4:
@@ -16056,12 +16075,12 @@ class UsageChart(Gtk.Widget):
     TOTAL = "asb-total"  # The key of the Total line.
     LABEL = "Usage over time"
     KEY_WIDTH = 520  # Under this width (times the text scale) the end labels are a key under the plot.
-    HEADERS = {"hour": "This hour so far", "day": "Today so far", "month": "This month so far"}
+    HEADERS = {"hour": "This hour so far", "day": "Today so far", "week": "This week so far", "month": "This month so far"}
 
     def __init__(self):
         super().__init__(accessible_role=Gtk.AccessibleRole.IMG, hexpand=True, focusable=True)
         self.update_property([Gtk.AccessibleProperty.LABEL], [self.LABEL])
-        self.narrow, self.dots, self.key_values = False, None, {}
+        self.narrow, self.dots, self.key_values, self.first_rings = False, None, {}, []
         self.series, self.bars, self.buckets, self.sums = [], [], {"unit": "day", "startsMs": []}, []
         self.step, self.axis, self.format = 1, [], str
         self.targets, self.starts, self.progress = {}, {}, 1
@@ -16298,10 +16317,16 @@ class UsageChart(Gtk.Widget):
         count = len(self.bars)
         if self.buckets["unit"] == "month":
             return 1 if count <= 12 else 3 if count <= 36 else 12
-        return 3 if self.buckets["unit"] == "hour" else {7: 1, 30: 5}.get(count, 15)
+        if self.buckets["unit"] == "week":
+            return 1 if count <= 8 else 4 if count <= 52 else 8
+        return 3 if self.buckets["unit"] == "hour" else 1 if count <= 7 else 5 if count <= 31 else 15
 
     def full_label(self, index):
         starts = self.buckets["startsMs"]
+        if index == 0 and usage_partial_first(self.buckets):
+            return usage_first_label(self.buckets)
+        if self.buckets["unit"] == "week":
+            return f"Week of {format_day(starts[index])}"
         if self.buckets["unit"] == "month":
             month = datetime.fromtimestamp(starts[index] / 1000)
             return f"{ACTIVITY_MONTHS[month.month - 1]} {month.year}"
@@ -16325,6 +16350,7 @@ class UsageChart(Gtk.Widget):
         if key == self.paths_key:
             return self.paths
         self.paths_key, self.paths, self.current, self.path_builds, self.dots = key, [], [], self.path_builds + 1, None
+        self.first_rings = []
         centers = self.centers()
         for series in self.lines():
             color = alpha_color(colors[series])
@@ -16345,9 +16371,16 @@ class UsageChart(Gtk.Widget):
             start, first, second, end = segments[-1]
             dash.move_to(*start)
             dash.cubic_to(*first, *second, *end)
-            if series == self.TOTAL and len(points) <= 12:
+            # A partial first bucket (All time, from the first record) is not complete: a hollow point, as the current bucket.
+            partial = usage_partial_first(self.buckets)
+            if partial:
+                ring = Gsk.PathBuilder.new()
+                ring.add_circle(Graphene.Point().init(*points[0]), 3)
+                self.first_rings.append((series, color, ring.to_path()))
+            complete = points[1 if partial else 0:-1]
+            if series == self.TOTAL and len(points) <= 12 and complete:
                 dots = Gsk.PathBuilder.new()
-                for point in points[:-1]:
+                for point in complete:
                     dots.add_circle(Graphene.Point().init(*point), 3)
                 self.dots = dots.to_path()
             self.paths.append((series, color, line.to_path(), area.to_path() if series == self.TOTAL else None))
@@ -16417,6 +16450,9 @@ class UsageChart(Gtk.Widget):
                 snapshot.append_fill(self.dots, Gsk.FillRule.WINDING, color)
             if casing is not None:
                 snapshot.append_fill(casing, Gsk.FillRule.WINDING, background)
+            snapshot.append_fill(ring, Gsk.FillRule.WINDING, background)
+            snapshot.append_stroke(ring, ring_stroke, color)
+        for _key, color, ring in self.first_rings:
             snapshot.append_fill(ring, Gsk.FillRule.WINDING, background)
             snapshot.append_stroke(ring, ring_stroke, color)
         self.snapshot_labels(snapshot, dim, text)
@@ -16988,7 +17024,7 @@ class UsageWindow(ActivityWindow):
         self.round.set_tooltip_text(f"{prices}\n{note}\n{', '.join(view['unpriced_models'])}" if note else prices)
         self.render_keys(arcs)
         self.render_rows(view, show)
-        interval = {"hour": "Hourly", "day": "Daily", "month": "Monthly"}[data["buckets"]["unit"]]
+        interval = {"hour": "Hourly", "day": "Daily", "week": "Weekly", "month": "Monthly"}[data["buckets"]["unit"]]
         self.chart_title.set_label(f"{interval} {'cost' if cost else 'tokens'}" + (" (still reading)" if scanning else ""))
         self.view = view
         self.render_chart(view, show)

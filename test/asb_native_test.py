@@ -15561,6 +15561,51 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIn("still\u00a0reading", window.round.note_text)
         self.assert_no_new_warnings()
 
+    def test_all_time_weeks_from_the_data_span(self):
+        replies = json.loads((Path(__file__).parent / "fixtures" / "activity" / "usage-weekly-sample.json").read_text())
+        window = self.window(replies, period="all")
+        chart = window.chart
+        self.assertEqual(chart.buckets["unit"], "week")
+        self.assertEqual(window.chart_title.get_label(), "Weekly cost")
+        self.assertEqual(chart.header(), "This week so far")
+        window.metric_buttons["tokens"].set_active(True)
+        self.drain(.1)
+        self.assertEqual(window.chart_title.get_label(), "Weekly tokens")
+        window.metric_buttons["cost"].set_active(True)
+        self.drain(.1)
+        # The first record is on Wednesday Jul 1, inside the week of Monday Jun 29.
+        self.assertTrue(asb.usage_partial_first(chart.buckets))
+        self.assertEqual(chart.full_label(0), "From Jul 1")
+        self.assertEqual(chart.tip_box(0)["title"], "From Jul 1")
+        self.assertEqual(chart.tip_box(1)["title"], "Week of Jul 6")
+        self.assertEqual(chart.tip_box(len(chart.bars) - 1)["title"], "Week of Oct 26 · so far")
+        layouts = {}
+        labels = asb.usage_axis_labels(chart.buckets, chart.centers(), chart.get_width(), chart.label_step(),
+                                       lambda text: layouts.setdefault(text, chart.text(text)).get_pixel_extents()[1].width)
+        self.assertEqual((labels[0][0], labels[0][1]), (0, "From Jul 1"))
+        self.assertEqual(chart.label_step(), 4)
+        # Every line has a hollow first point, drawn over a window-colored fill; 18 buckets draw no Total dots.
+        chart.series_paths()
+        self.assertEqual([key for key, _color, _ring in chart.first_rings], chart.lines())
+        self.assertIsNone(chart.dots)
+        with patch.object(chart, "snapshot_labels"):
+            snapshot = asb.Gtk.Snapshot()
+            with patch.object(snapshot, "append_stroke", wraps=snapshot.append_stroke) as stroke:
+                chart.do_snapshot(snapshot)
+        rings = [ring for _key, _color, ring in chart.first_rings]
+        self.assertEqual(sum(1 for call in stroke.call_args_list if call.args[0] in rings), len(rings))
+        # With 12 buckets or fewer, the partial first bucket gets no Total dot.
+        buckets = dict(chart.buckets, startsMs=chart.buckets["startsMs"][:6])
+        chart.set_data(chart.series, chart.bars[:6], buckets, asb.format_cost, "cost", False)
+        chart.series_paths()
+        total = [y for (index, key), y in chart.targets.items() if key == chart.TOTAL]
+        expected = asb.Gsk.PathBuilder.new()
+        for index, x in enumerate(chart.centers()[1:-1], 1):
+            expected.add_circle(asb.Graphene.Point().init(x, chart.value_y(index, chart.TOTAL)), 3)
+        self.assertEqual(chart.dots.to_string(), expected.to_path().to_string())
+        self.assertEqual(len(total), 6)
+        self.assert_no_new_warnings()
+
     def test_round_four_chart_focus_insets_and_total_weight(self):
         window = self.window(period="all")
         chart = window.chart

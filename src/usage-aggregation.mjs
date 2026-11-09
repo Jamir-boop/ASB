@@ -5,14 +5,33 @@ import { priceTokens } from './usage-pricing.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 export const USAGE_PERIODS = { '24h': { unit: 'hour', count: 24 }, '7d': { unit: 'day', count: 7 },
-  '30d': { unit: 'day', count: 30 }, '90d': { unit: 'day', count: 90 }, all: { unit: 'month' } };
+  '30d': { unit: 'day', count: 30 }, '90d': { unit: 'day', count: 90 }, all: { unit: 'span' } };
 
 // Bucket starts, oldest first, and the end of the last bucket. Day starts use local date arithmetic, so they are DST safe.
+// All time picks its unit from the span of local calendar days from the first record to today, both counted:
+// days up to 120, Monday weeks up to 731, months after that.
 export function periodBuckets(period, nowMs, firstMs = null) {
-  const { unit, count } = USAGE_PERIODS[period];
+  let { unit, count } = USAGE_PERIODS[period];
   const now = new Date(nowMs);
-  if (unit === 'month') {
+  if (unit === 'span') {
     const first = new Date(firstMs !== null && firstMs <= nowMs ? firstMs : nowMs);
+    const firstDay = new Date(first.getFullYear(), first.getMonth(), first.getDate());
+    // Day numbers from the calendar fields: a DST day of 23 or 25 hours still counts as one.
+    const span = Math.round((Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())
+      - Date.UTC(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate())) / (24 * HOUR_MS)) + 1;
+    if (span <= 120) {
+      const day = (offset) => new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate() + offset).getTime();
+      return { unit: 'day', startsMs: Array.from({ length: span }, (_, index) => day(index)), endMs: day(span) };
+    }
+    if (span <= 731) {
+      const monday = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate() - (date.getDay() + 6) % 7);
+      const start = monday(firstDay), last = monday(now);
+      const week = (offset) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7 * offset).getTime();
+      const weeks = Math.round((Date.UTC(last.getFullYear(), last.getMonth(), last.getDate())
+        - Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) / (7 * 24 * HOUR_MS)) + 1;
+      return { unit: 'week', startsMs: Array.from({ length: weeks }, (_, index) => week(index)), endMs: week(weeks) };
+    }
+    unit = 'month';
     const year = first.getFullYear(), month = first.getMonth();
     const months = (now.getFullYear() - year) * 12 + now.getMonth() - month + 1;
     return { unit, startsMs: Array.from({ length: months }, (_, index) => new Date(year, month + index, 1).getTime()),

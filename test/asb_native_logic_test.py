@@ -1112,9 +1112,41 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual([asb.bucket_label(fixture, index) for index in range(4)], ["Jul 2026", "Aug", "Sep", "This month"])
         self.assertEqual(asb.UsageChart.full_label(SimpleNamespace(buckets=fixture), 3), "October 2026")
 
+    def test_week_labels_titles_and_a_partial_first_bucket(self):
+        utc = lambda *date: int(datetime(*date, tzinfo=timezone.utc).timestamp() * 1000)
+        weeks = {"unit": "week", "startsMs": [utc(2026, 7, 13), utc(2026, 7, 20), utc(2026, 7, 27)], "firstMs": utc(2026, 7, 13, 9)}
+        self.assertEqual([asb.bucket_label(weeks, index) for index in range(3)], ["Jul 13", "Jul 20", "This week"])
+        chart = SimpleNamespace(buckets=weeks)
+        self.assertEqual([asb.UsageChart.full_label(chart, index) for index in range(3)], ["Week of Jul 13", "Week of Jul 20", "Week of Jul 27"])
+        self.assertFalse(asb.usage_partial_first(weeks))
+        measure = lambda text: 7 * len(text)
+        self.assertEqual([text for _index, text, _left in asb.usage_axis_labels(weeks, [0, 300, 600], 600, 1, measure)], ["Jul 13", "Jul 20", "Jul 27"])
+        # The first record is on Thursday Jul 16: the first week is partial.
+        weeks["firstMs"] = utc(2026, 7, 16, 9)
+        self.assertTrue(asb.usage_partial_first(weeks))
+        self.assertEqual(asb.UsageChart.full_label(chart, 0), "From Jul 16")
+        self.assertEqual([text for _index, text, _left in asb.usage_axis_labels(weeks, [0, 300, 600], 600, 1, measure)],
+                         ["From Jul 16", "Jul 20", "Jul 27"])
+        # With a step of 4 the first point is not a step point, and its `From` label still shows.
+        many = dict(weeks, startsMs=[utc(2026, 7, 13) + index * 7 * 86_400_000 for index in range(10)])
+        self.assertEqual([text for _index, text, _left in asb.usage_axis_labels(many, [index * 100 for index in range(10)], 900, 4, measure)],
+                         ["From Jul 16", "Aug 17", "Sep 14"])
+        months = {"unit": "month", "startsMs": [utc(2024, 7, 1), utc(2024, 8, 1)], "firstMs": utc(2024, 7, 16, 9)}
+        self.assertTrue(asb.usage_partial_first(months))
+        self.assertEqual(asb.UsageChart.full_label(SimpleNamespace(buckets=months), 0), "From Jul 16, 2024")
+        self.assertEqual([text for _index, text, _left in asb.usage_axis_labels(months, [0, 600], 600, 1, measure)], ["From Jul 16, 2024", "Aug"])
+        # A day unit, no first time, and a first record on the first day are never partial.
+        for buckets in ({"unit": "day", "startsMs": [utc(2026, 7, 13)], "firstMs": utc(2026, 7, 13, 23)},
+                        {"unit": "month", "startsMs": [utc(2024, 7, 1)], "firstMs": None},
+                        {"unit": "month", "startsMs": [utc(2024, 7, 1)], "firstMs": utc(2024, 7, 1, 20)},
+                        {"unit": "month", "startsMs": [utc(2024, 7, 1)]}):
+            self.assertFalse(asb.usage_partial_first(buckets))
+
     def test_month_label_steps_and_existing_hour_day_steps(self):
         for unit, count, expected in (("month", 4, 1), ("month", 12, 1), ("month", 13, 3), ("month", 36, 3), ("month", 37, 12),
-                                      ("hour", 24, 3), ("day", 7, 1), ("day", 30, 5), ("day", 90, 15)):
+                                      ("hour", 24, 3), ("day", 7, 1), ("day", 30, 5), ("day", 90, 15),
+                                      ("day", 1, 1), ("day", 8, 5), ("day", 31, 5), ("day", 32, 15), ("day", 120, 15),
+                                      ("week", 8, 1), ("week", 9, 4), ("week", 52, 4), ("week", 53, 8), ("week", 105, 8)):
             with self.subTest(unit=unit, count=count):
                 chart = SimpleNamespace(buckets={"unit": unit}, bars=[{}] * count)
                 self.assertEqual(asb.UsageChart.label_step(chart), expected)

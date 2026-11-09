@@ -3,6 +3,7 @@ process.env.TZ = 'America/New_York';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { aggregateBuckets, aggregateHourly, bucketIndex, periodBuckets } from '../src/usage-aggregation.mjs';
+import { execFileSync } from 'node:child_process';
 import { parseRateTable } from '../src/usage-pricing.mjs';
 
 const HOUR = 3_600_000;
@@ -74,14 +75,56 @@ test('hourly parts use UTC hour starts in the window', () => {
     [['2026-11-01T05:00:00.000Z', 10], ['2026-11-01T06:00:00.000Z', 5]]);
 });
 
-test('All time months are local month starts across DST and the new year', { skip }, () => {
+test('All time months are local month starts across DST and the new year, after 731 days', { skip }, () => {
   const nowMs = new Date(2027, 1, 10, 12).getTime();
-  const { unit, startsMs, endMs } = periodBuckets('all', nowMs, new Date(2026, 9, 20, 12).getTime());
+  const { unit, startsMs, endMs } = periodBuckets('all', nowMs, new Date(2024, 9, 20, 12).getTime());
   assert.equal(unit, 'month');
-  assert.deepEqual(startsMs, [new Date(2026, 9, 1).getTime(), new Date(2026, 10, 1).getTime(), new Date(2026, 11, 1).getTime(),
+  assert.equal(startsMs.length, 29);
+  assert.deepEqual(startsMs.slice(-5), [new Date(2026, 9, 1).getTime(), new Date(2026, 10, 1).getTime(), new Date(2026, 11, 1).getTime(),
     new Date(2027, 0, 1).getTime(), new Date(2027, 1, 1).getTime()]);
   assert.equal(endMs, new Date(2027, 2, 1).getTime());
-  assert.equal(startsMs[2] - startsMs[1], 30 * 24 * HOUR + HOUR);
-  assert.deepEqual(periodBuckets('all', nowMs, null).startsMs, [new Date(2027, 1, 1).getTime()]);
-  assert.deepEqual(periodBuckets('all', nowMs, nowMs + 1).startsMs, [new Date(2027, 1, 1).getTime()]);
+  assert.equal(startsMs.at(-3) - startsMs.at(-4), 30 * 24 * HOUR + HOUR);
+});
+
+test('All time takes its unit from the span of local days: day up to 120, week up to 731, then month', { skip }, () => {
+  const nowMs = new Date(2026, 9, 20, 12).getTime();
+  const daysBack = (days, hour = 9) => new Date(2026, 9, 20 - days, hour).getTime();
+  // 120 days counted, both ends included: daily buckets from the first day to today.
+  const days = periodBuckets('all', nowMs, daysBack(119, 23));
+  assert.equal(days.unit, 'day');
+  assert.equal(days.startsMs.length, 120);
+  assert.equal(days.startsMs[0], new Date(2026, 9, 20 - 119).getTime());
+  assert.equal(days.startsMs.at(-1), new Date(2026, 9, 20).getTime());
+  assert.equal(days.endMs, new Date(2026, 9, 21).getTime());
+  // 121 days: Monday weeks from the Monday on or before the first day to the week of today.
+  const weeks = periodBuckets('all', nowMs, daysBack(120));
+  assert.equal(weeks.unit, 'week');
+  for (const start of weeks.startsMs) {
+    assert.equal(new Date(start).getDay(), 1);
+    assert.equal(new Date(start).getHours(), 0);
+  }
+  assert.ok(weeks.startsMs[0] <= daysBack(120) && daysBack(120) < weeks.startsMs[1]);
+  assert.equal(weeks.startsMs.at(-1), new Date(2026, 9, 19).getTime());
+  assert.equal(weeks.endMs, new Date(2026, 9, 26).getTime());
+  // 731 and 732 days.
+  assert.equal(periodBuckets('all', nowMs, daysBack(730)).unit, 'week');
+  assert.equal(periodBuckets('all', nowMs, daysBack(731)).unit, 'month');
+  // No data, or a first time after now: one day, today.
+  for (const firstMs of [null, nowMs + 1]) {
+    assert.deepEqual(periodBuckets('all', nowMs, firstMs), { unit: 'day', startsMs: [new Date(2026, 9, 20).getTime()], endMs: new Date(2026, 9, 21).getTime() });
+  }
+});
+
+test('All time weeks start on local Mondays across a DST change in Europe/Berlin', () => {
+  const script = `import assert from 'node:assert/strict';
+    import { periodBuckets } from ${JSON.stringify(new URL('../src/usage-aggregation.mjs', import.meta.url).href)};
+    const { unit, startsMs, endMs } = periodBuckets('all', Date.parse('2026-10-20T10:00:00Z'), Date.parse('2026-03-25T10:00:00Z'));
+    assert.equal(unit, 'week');
+    assert.equal(new Date(startsMs[0]).toISOString(), '2026-03-22T23:00:00.000Z');
+    // The week of 2026-03-29 has 167 hours; the next Monday is still 00:00 local time.
+    assert.equal(new Date(startsMs[1]).toISOString(), '2026-03-29T22:00:00.000Z');
+    assert.equal(startsMs[1] - startsMs[0], 167 * 3600000);
+    for (const start of startsMs) assert.deepEqual([new Date(start).getDay(), new Date(start).getHours()], [1, 0]);
+    assert.equal(new Date(endMs).toISOString(), '2026-10-25T23:00:00.000Z');`;
+  execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, TZ: 'Europe/Berlin' } });
 });
