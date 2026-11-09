@@ -11478,6 +11478,19 @@ class MessagesLogicChecks(unittest.TestCase):
             self.assertLessEqual(widths[-1], 8.5)
 
 
+    def test_W6_L3_the_ink_under_a_plate_clips_each_segment(self):
+        box = (10, 10, 20, 30)
+        self.assertEqual(asb.segment_inside((0, 15), (30, 15), box), 10)
+        self.assertEqual(asb.segment_inside((15, 0), (15, 40), box), 20)
+        self.assertEqual(asb.segment_inside((12, 12), (18, 12), box), 6)
+        self.assertEqual(asb.segment_inside((0, 0), (5, 5), box), 0)
+        self.assertEqual(asb.segment_inside((0, 5), (30, 5), box), 0)
+        self.assertAlmostEqual(asb.segment_inside((0, 0), (30, 30), box), math.hypot(10, 10))
+        self.assertEqual(asb.segment_inside((15, 15), (15, 15), box), 0)
+        self.assertEqual(asb.shape_bounds([(0, 0, 1), (10, 5, 2)]), (-1, -1, 12, 7))
+        self.assertTrue(asb.overlaps((0, 0, 10, 10), (10, 10, 20, 20)))
+        self.assertFalse(asb.overlaps((0, 0, 10, 10), (11, 0, 20, 10)))
+
 class BoardWindowsLogicChecks(unittest.TestCase):
     """The Board side of the Messages and Usage windows: the saved sizes, the tray event, and the start variable."""
 

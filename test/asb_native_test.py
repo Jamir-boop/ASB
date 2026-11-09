@@ -18394,16 +18394,14 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             window = self.window(period=period)
             table = window.table
             exits, dashed = table.kept_off
-            touching = []
             for seat, item in table.labels.items():
                 with self.subTest(period=period, seat=seat):
-                    # Each own exit: the 28 px past the pin rim of each chord of the seat, every 4 px.
-                    self.assertEqual(len(exits[seat]), 8 * sum(seat in key for key in table.chord_keys))
+                    # Each own exit: the 28 px past the pin rim of each chord of the seat (40 px at a not-sent end at this seat),
+                    # every 4 px.
+                    self.assertEqual(len(exits[seat]), sum(11 if seat in chord["ends"] else 8 for chord in table.chords if seat in chord["key"]))
                     self.assertTrue(item["shown"])
-                    if any(near(item["box"], x, y) < r for x, y, r in exits[seat] + dashed):
-                        touching.append(seat)
-            # Only the hub (release-plan, the most chords) and a crowded seat find no clear place for their whole name.
-            self.assertLessEqual(len(touching), 2, touching)
+            # A label touches its own exits or a dashed chord only when no candidate that comes earlier in the order is free.
+            self.assertEqual(self.label_order_faults(table), [])
             # Every all-not-sent chord is a kept-off shape for every label.
             bad = [chord for chord in table.chords if chord["bad"]]
             self.assertEqual(len(dashed), sum(max(1, math.ceil(chord["table"][1][-1] / 4)) + 1 for chord in bad))
@@ -18664,22 +18662,21 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             for period in ("24h", "7d", "30d"):
                 window = self.window(period=period)
                 table = window.table
-                candidate, free = table.label_rules
+                candidate, free, rank = table.label_rules
                 if name.startswith("Cascadia"):
-                    # a: the one-line parser-review fits only on the exit of its widest chord (the busiest pair): it takes its two
-                    # lines inward, off that exit, so the open chord shows whole at the pin.
+                    # a: parser-review keeps its whole name off the exit of its widest chord (the busiest pair), so the open chord
+                    # shows whole at the pin.
                     item, pin = table.labels["parser-review"], table.pins["parser-review"]
-                    self.assertEqual((item["text"], item["place"]), (1, 0), period)
                     self.assertLess(item["text"], pin["whole"])
                     self.assertFalse(on_widest(table, "parser-review", item["box"]), period)
-                    self.assertFalse(any(free("parser-review", candidate("parser-review", 0, place)) and
-                                         not on_widest(table, "parser-review", candidate("parser-review", 0, place)["box"]) for place in range(9)))
-                # b: no shown whole name is on its widest exit while a whole-name place off it is free.
+                # b: no shown whole name is on its widest exit while a whole-name place off it, with no stacked or stray fault and
+                # no heavier plate, is free.
                 for seat, item in table.labels.items():
                     pin = table.pins[seat]
                     if item["shown"] and item["text"] < pin["whole"] and on_widest(table, seat, item["box"]):
                         others = [candidate(seat, text, place) for text in range(pin["whole"]) for place in range(9)]
-                        self.assertFalse(any(free(seat, other) and not on_widest(table, seat, other["box"]) for other in others), (name, period, seat))
+                        self.assertFalse(any(free(seat, other) and not on_widest(table, seat, other["box"]) and rank(seat, other)[:3] <= rank(seat, item)[:3]
+                                             for other in others), (name, period, seat))
                 window.destroy()
 
     def table_pixels(self, table):
@@ -18768,7 +18765,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     if abs(radius - geometry["Rc"]) <= 2 or abs(radius - geometry["Ri"]) <= 2:
                         continue
                     pixel = rows[y][x]
-                    self.assertLessEqual(min(max(abs(a - b) for a, b in zip(pixel, color)) for color in allowed), 3, (seat, x, y, pixel))
+                    # Within 8 levels of a background color: a sector edge or the disc rule blends two of them; a chord pixel is far.
+                    self.assertLessEqual(min(max(abs(a - b) for a, b in zip(pixel, color)) for color in allowed), 8, (seat, x, y, pixel))
                     checked += 1
         self.assertGreater(checked, 500)
 
@@ -19069,6 +19067,142 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(table.key["shown"])
         self.assertEqual(table.key["items"][0]["kind"], "chords")
         self.assertEqual(table.key["items"][0]["layout"].get_text(), "Line width: 4 to 139 messages")
+
+    def label_order_faults(self, table):
+        """The shown labels that a free candidate earlier in the order of the rank of label_rules could replace (none when the rules hold): a label
+        of the first step has no free candidate before it; a label of a later step (repair, 2 px, the last try) has no free one."""
+        candidate, free, rank = table.label_rules
+        chosen = table.chosen_seats()
+        wrong = []
+        for seat, item in table.labels.items():
+            if not item["shown"]:
+                continue
+            pin = table.pins[seat]
+            step, placed = table.label_steps[seat]
+            texts = range(pin["whole"] if seat in chosen else len(pin["texts"]))
+            others = [candidate(seat, text, place) for text in texts for place in range(9)]
+            if step == "first":
+                wrong += [(seat, other["text"], other["place"]) for other in others if rank(seat, other) < placed and free(seat, other)]
+            elif step in ("repair", "margin", "last"):
+                wrong += [(seat, other["text"], other["place"]) for other in others if free(seat, other)]
+        return wrong
+
+    def test_W6_L1_L2_cut_names_and_not_sent_exits(self):
+        window = self.window(period="7d")
+        table = window.table
+        texts = lambda seat: [text["layout"].get_text() for text in table.pins[seat]["texts"]]  # noqa: E731
+        self.assertEqual(texts("ui-polish"), ["ui-polish"])
+        self.assertEqual(texts("release-plan"), ["release-plan", "release-\nplan", "release…"])
+        for pin in table.pins.values():
+            for text in pin["texts"][pin["whole"]:]:
+                self.assertLessEqual(len(text["layout"].get_text()), len(pin["title"]) - 3)
+        # The own exit zone of a seat runs 40 px past the pin rim at a not-sent end of the chord at that seat, else 28 px.
+        exits = table.kept_off[0]
+        chords = [chord for chord in table.chords if chord["ends"]]
+        self.assertTrue(chords)
+        for seat in table.pins:
+            mine = [chord for chord in table.chords if seat in chord["key"]]
+            self.assertEqual(len(exits[seat]), sum(11 if seat in chord["ends"] else 8 for chord in mine))
+        chord = chords[0]
+        seat = next(iter(chord["ends"]))
+        length = chord["table"][1][-1]
+        far = asb.curve_point(chord["table"], (16 + 40) / length if seat == chord["a"] else 1 - (16 + 40) / length)
+        self.assertIn(far, [shape[:2] for shape in exits[seat]])
+
+    def test_W6_L3_L4_L5_labels_take_the_first_free_place_in_the_order(self):
+        settings = asb.Gtk.Settings.get_default()
+        font = settings.get_property("gtk-font-name")
+        self.addCleanup(settings.set_property, "gtk-font-name", font)
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if "Cascadia Code" in subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True).stdout else [])
+        for name in fonts:
+            settings.set_property("gtk-font-name", name)
+            for size in ((968, 760), (480, 760)):
+                for period in ("24h", "7d", "30d"):
+                    window = self.window(size, period=period)
+                    table = window.table
+                    table.place_labels(False)
+                    self.assertEqual(self.label_order_faults(table), [], (name, size, period))
+                    # Also with the labels kept by a refresh (preserve).
+                    table.place_labels()
+                    self.assertEqual(self.label_order_faults(table), [], (name, size, period))
+                    window.destroy()
+
+    def test_W6_L3_ink_and_heavy_are_measured_on_the_chords_at_rest(self):
+        window = self.window(period="7d")
+        table = window.table
+        candidate, free, rank = table.label_rules
+        checked = 0
+        for seat in table.pins:
+            for place in range(9):
+                item = candidate(seat, 0, place)
+                layout = table.pins[seat]["texts"][0]["layout"]
+                plate = table.label_plate(layout, item["box"][0] + 1, item["box"][1])
+                ink, too_heavy, tolerance = 0, False, 0
+                for chord in table.chords:
+                    # A dense walk of the center line, 0.25 px steps.
+                    length = chord["table"][1][-1]
+                    steps = max(1, math.ceil(length * 4))
+                    points = [asb.curve_point(chord["table"], index / steps) for index in range(steps + 1)]
+                    inside = sum(length / steps for point in points[1:] if plate[0] <= point[0] <= plate[2] and plate[1] <= point[1] <= plate[3])
+                    ink += inside * chord["width"] * (3 if chord["bad"] else 1)
+                    too_heavy = too_heavy or (chord["width"] >= 5 and inside > 12)
+                    if inside:
+                        checked += 1
+                        tolerance += 2 * chord["width"] * (3 if chord["bad"] else 1)
+                rank(seat, item)
+                facts = table.label_cache[(seat, 0, place, item["ring"])]
+                self.assertAlmostEqual(facts[0], ink, delta=tolerance + 1e-6)
+                self.assertEqual(rank(seat, item)[6], int(facts[0] // 8))
+                if abs(ink - facts[0]) < 1:
+                    self.assertEqual(facts[1], too_heavy)
+        self.assertGreater(checked, 20)
+
+    def test_W6_L4_L5_stacked_and_stray_faults(self):
+        window = self.window(period="7d")
+        table = window.table
+        candidate, free, rank = table.label_rules
+        geometry = table.geometry
+        pins = {seat: asb.table_point(geometry, geometry["Rp"], geometry["seat"][seat]) for seat in table.pins}
+        near = lambda box, x, y: math.hypot(min(max(x, box[0]), box[2]) - x, min(max(y, box[1]), box[3]) - y)  # noqa: E731
+        for seat in table.pins:
+            for text in range(len(table.pins[seat]["texts"])):
+                for place in range(9):
+                    item = candidate(seat, text, place)
+                    box = item["box"]
+                    stacked = False
+                    for other, label in table.labels.items():
+                        if other == seat or not label["shown"]:
+                            continue
+                        theirs = label["box"]
+                        if min(box[2], theirs[2]) - max(box[0], theirs[0]) > .5:
+                            gap = max(theirs[1] - box[3], box[1] - theirs[3])
+                            stacked = stacked or gap < 12 or gap < max(near(box, *pins[seat]) - 16, near(theirs, *pins[other]) - 16) + 4
+                    x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+                    mine = math.hypot(x - pins[seat][0], y - pins[seat][1])
+                    stray = any(math.hypot(x - px, y - py) - mine < 4 for other, (px, py) in pins.items() if other != seat)
+                    self.assertEqual(rank(seat, item)[0], stacked or stray, (seat, text, place))
+        # No two shown labels of different seats stack where a candidate without the fault was free (the order check), and every
+        # shown label keeps its center nearer its own pin.
+        self.assertEqual(self.label_order_faults(table), [])
+
+    def test_W6_L6_a_label_pass_is_fast(self):
+        window = self.window(period="7d")
+        table = window.table
+        table.label_cache.clear()
+        start = time.perf_counter()
+        table.place_labels(False)
+        cold = time.perf_counter() - start
+        times = []
+        for _pass in range(20):
+            start = time.perf_counter()
+            table.place_labels(False)
+            times.append(time.perf_counter() - start)
+        warm = sorted(times)[10]
+        self.assertLess(warm, .04, (cold, warm))
+        # The cache is for one geometry: a new layout clears it.
+        table.label_cache["old"] = True
+        table.layout_table()
+        self.assertNotIn("old", table.label_cache)
 
     def test_R1_one_escape_closes_the_messages_window_after_a_reopen(self):
         # R1: a hidden window gets no key release, so one Escape press closes it again after the next open.
@@ -20594,7 +20728,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                              (3, (x - 16 - 3 * scale - pin["w"], y - pin["h"] / 2)),
                              (4, (x + 16 + 3 * scale, y - pin["h"] / 2))):
             self.assertEqual(table.label_place_with(pin, angle, geometry, 0, place, scale), point)
-        self.assertEqual([item["layout"].get_text() for item in pin["texts"]], ["parser-review", "parser-\nreview", "parser-rev…", "parser…"])
+        self.assertEqual([item["layout"].get_text() for item in pin["texts"]], ["parser-review", "parser-\nreview", "parser…"])
         # Block every candidate: only the chosen seat keeps its full text, inward.
         table.machine_items = {"desk": [{"x": 0, "y": 0, "w": geometry["W"], "h": geometry["H"]}]}
         table.hover["focus"] = seat

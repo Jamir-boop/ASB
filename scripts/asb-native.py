@@ -2686,6 +2686,31 @@ def dim_mark(win, color, fills):
     return color
 
 
+def shape_bounds(shapes):
+    """The box (left, top, right, bottom) of circles (x, y, radius)."""
+    return (min(x - r for x, _y, r in shapes), min(y - r for _x, y, r in shapes), max(x + r for x, _y, r in shapes), max(y + r for _x, y, r in shapes))
+
+
+def overlaps(a, b):
+    return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+
+
+def segment_inside(a, b, box):
+    """The length of the segment a to b inside the box (left, top, right, bottom), by Liang-Barsky clipping."""
+    (ax, ay), (bx, by) = a, b
+    dx, dy = bx - ax, by - ay
+    low, high = 0, 1
+    for p, q in ((-dx, ax - box[0]), (dx, box[2] - ax), (-dy, ay - box[1]), (dy, box[3] - ay)):
+        if p == 0:
+            if q < 0:
+                return 0
+        elif p < 0:
+            low = max(low, q / p)
+        else:
+            high = min(high, q / p)
+    return max(0, high - low) * math.hypot(dx, dy)
+
+
 def seat_label_offset(angle, half_width, scale=1):
     """How far a seat label sits inward from its pin: 30px, or more where a wide label would touch its own pin.
     scale is the text scale: a taller label keeps the same room."""
@@ -13618,6 +13643,7 @@ class RoundTable(Gtk.Overlay):
         # The reader under a small table: its top, the height it adds to the table, and the tooltip of the center disc.
         self.reader_top = self.reader_extra = 0
         self.disc_tip = self.fitted = None
+        self.label_cache = {}
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Machines, sessions and messages"])
         self.canvas = TableCanvas(self)
         self.set_child(self.canvas)
@@ -13675,13 +13701,13 @@ class RoundTable(Gtk.Overlay):
         title = seat.get("title") or "Unlisted sessions"
         size = 12 * self.window.text_scale
         # The whole name on one line (at most 24 characters), on two lines at its last break (each line 4 to 24 characters),
-        # then cut to 10 and to 7 characters.
+        # then cut to 10 and to 7 characters, each only when it is 3 or more characters shorter than the title.
         names = [seat_label_text(title)]
         split = max((match.end() for match in re.finditer(r"[-_. ]", title) if match.end() < len(title)), default=0)
         if split and title[:split].strip("-_. ") and 4 <= split <= 24 and 4 <= len(title) - split <= 24:
             names.append(title[:split] + "\n" + title[split:])
         whole = len(names)
-        names += [title[:length].rstrip("-_. ") + "…" for length in (10, 7) if len(title) > length]
+        names += [cut for cut in (title[:length].rstrip("-_. ") + "…" for length in (10, 7)) if len(cut) <= len(title) - 3]
         texts = []
         for text in dict.fromkeys(names):
             layout = activity_layout(self, text, size)
@@ -13758,7 +13784,7 @@ class RoundTable(Gtk.Overlay):
             start, control, end = chord_curve(geometry, a, b, same)
             table = curve_table(start, control, end)
             bad = pair["bad"] == pair["n"]
-            fails, trim = [], (0, 1)
+            fails, trim, ends = [], (0, 1), set()
             length = table[1][-1]
             if not bad and length:
                 # The receiver end of each direction with not-sent messages: from the pin rim (16 px times the text scale from its
@@ -13770,12 +13796,15 @@ class RoundTable(Gtk.Overlay):
                         near = max(0, length - rim) if forward else min(length, rim)
                         far = max(0, near - part) if forward else min(length, near + part)
                         fails.append([curve_point(table, (near + (far - near) * index / steps) / length) for index in range(steps + 1)])
+                        ends.add(b if forward else a)
                         # The stroke ends where the dashed end starts.
                         trim = (trim[0], min(trim[1], far / length)) if forward else (max(trim[0], far / length), trim[1])
             width = 2 if bad else 1.5 + 7 * math.sqrt(pair["n"] / largest)
             self.chords.append({"key": pair["key"], "a": a, "b": b, "points": (start, control, end), "table": table, "bad": bad, "same": same,
-                                "width": width, "fails": fails, "trim": trim, "end_width": 3 * scale})
+                                "width": width, "fails": fails, "trim": trim, "end_width": 3 * scale, "ends": ends})
         self.machine_items = self.machine_labels(geometry["mach"])
+        # The facts of the label candidates that depend only on this geometry (place_labels).
+        self.label_cache = {}
         self.place_labels(preserve_labels)
         self.place_reader()
         for key, proxy in self.proxies.items():
@@ -13852,31 +13881,33 @@ class RoundTable(Gtk.Overlay):
         return [seat_id for seat_id in dict.fromkeys(seats) if seat_id in self.pins]
 
     def place_labels(self, preserve=True):
-        """Each seat label takes the first free place of nine, in this order: inward, under, over, left, or right of its pin, then
-        under-right, under-left, over-right, or over-left. It tries its texts in this order: the whole name on one line (at most 24
-        characters, then …), on two lines at its last break (each line at most 24 characters), then cut to 10, then to 7 characters.
-        The chosen seats place first, then the seats lit by an open thread or by the keyboard focus, then the others; within each
-        group by message count, then the newest, then circle order.
+        """Each seat label takes the first free candidate (a text in a place) in a fixed order. The places are nine: inward, under,
+        over, left, or right of its pin, then under-right, under-left, over-right, or over-left. The texts are the whole name on one
+        line (at most 24 characters, then …), on two lines at its last break (each line at most 24 characters), then cut to 10 and
+        to 7 characters. The chosen seats place first, then the seats lit by an open thread or by the keyboard focus, then the
+        others; within each group by message count, then the newest, then circle order.
 
-        A free place stays 2 px inside the table, off the center disc and the machine band, and touches no pin ring, machine label,
-        not-sent end, the key line, or other label (6 px times the text scale wider at each side). Its box is also nearer its own
-        pin circle than every other pin circle by 4 px times the text scale or more. Each pin counts with the largest ring that it
-        can get (pin_ring), so a label keeps its place when its seat lights.
+        A free candidate stays 2 px inside the table, off the center disc and the machine band, and touches no pin ring, machine
+        label, not-sent end, the key line, or other label (6 px times the text scale wider at each side). Its box is also nearer its
+        own pin circle than every other pin circle by 4 px times the text scale or more. Each pin counts with the largest ring that
+        it can get (pin_ring), so a label keeps its place when its seat lights.
 
-        The texts go in two groups, the whole names (one line, then two lines) and then the cut ones. In a group, each text tries
-        its nine places that touch none of the seat's own chord exits (the first 28 px of each of its chords past the pin rim) and
-        no all-not-sent chord, then its nine places that touch one but no exit of the seat's widest chord; then each text of the
-        group tries its places on that widest exit. So a whole name covers the exit of its widest chord only when no other whole
-        name place is free, and still before a cut text.
+        The order of the candidates (rank): no stacked or stray fault first (a label that stacks with the label of another
+        seat, or whose center is not nearer its own pin); the whole names before the cut ones; then a plate that covers no more than
+        12 px of a chord of 5 px or more; off the exit of the seat's widest chord; one line before two (and 10 before 7
+        characters); off the seat's own chord exits and off each all-not-sent chord; less chord ink under the plate, in steps of
+        8 px²; and last the order of the nine places.
 
-        With preserve, a label first tries its current text and place, so a selection or a refresh does not move a valid label.
-        When no place is free, the repair step moves the one other (not chosen) label that blocks a place to a free place of its
-        own. When that also fails, the seat tries all its texts and places again with 2 px times the text scale for the own-pin
-        rule, then from the 16 px pin itself (no rings). A chosen seat that still finds no place shows its one-line whole name
-        inward; another seat hides its label. Pointer hover never moves or widens a label."""
+        With preserve, a label first tries its current text and place, so a selection, a focus, or a refresh does not move a valid
+        label. When no candidate is free, the repair step moves the one other (not chosen) label that blocks a candidate to a free
+        candidate of its own, and the seat then takes its first free candidate. When that also fails, the seat tries its
+        candidates again with 2 px times the text scale for the own-pin rule, then from the 16 px pin itself (no rings). A chosen
+        seat that still finds no place shows its one-line whole name inward; another seat hides its label. Pointer hover never
+        moves or widens a label."""
         geometry, scale = self.geometry, self.window.text_scale
         disc = geometry["S"] >= 480
         cx, cy = geometry["cx"], geometry["cy"]
+        cache = self.label_cache
 
         def hit(a, b):
             return a[0] < b[2] - .5 and b[0] < a[2] - .5 and a[1] < b[3] - .5 and b[1] < a[3] - .5
@@ -13893,23 +13924,33 @@ class RoundTable(Gtk.Overlay):
         if self.key and self.key["shown"]:
             obstacles.append(self.key["box"])
         ends = [(x, y, chord["end_width"] / 2 + 1) for chord in self.chords for points in chord["fails"] for x, y in points]
-        # Kept-off shapes, as circles: the own exits of each seat (its chords from the pin rim, 16 px from the pin center, to 28 px
-        # farther, every 4 px, at the rest width plus 2 px at each side), and every all-not-sent chord (its width plus 3 px at
-        # each side) for every label.
-        exits, dashed = {seat_id: [] for seat_id in self.pins}, []
-        for chord in self.chords:
-            length = chord["table"][1][-1]
-            if not length:
-                continue
-            steps = 7
-            for seat_id, forward in ((chord["a"], True), (chord["b"], False)):
-                for index in range(steps + 1):
-                    fraction = min(1, (16 + 28 * index / steps) * scale / length)
-                    exits[seat_id].append((*curve_point(chord["table"], fraction if forward else 1 - fraction), chord["width"] / 2 + 2 * scale))
-            if chord["bad"]:
-                steps = max(1, math.ceil(length / 4))
-                dashed += [(*curve_point(chord["table"], index / steps), chord["width"] / 2 + 3 * scale) for index in range(steps + 1)]
-        self.kept_off = exits, dashed
+        if "shapes" not in cache:
+            # Kept-off shapes, as circles: the own exits of each seat (its chords from the pin rim, 16 px from the pin center, to
+            # 28 px farther, or 40 px at a not-sent end of the chord at that seat, every 4 px, at the rest width plus 2 px at each
+            # side), and every all-not-sent chord (its width plus 3 px at each side) for every label, in groups with their box.
+            exits, dashed = {seat_id: [] for seat_id in self.pins}, []
+            for chord in self.chords:
+                length = chord["table"][1][-1]
+                if not length:
+                    continue
+                for seat_id, forward in ((chord["a"], True), (chord["b"], False)):
+                    steps = 10 if seat_id in chord["ends"] else 7
+                    for index in range(steps + 1):
+                        fraction = min(1, (16 + 4 * index) * scale / length)
+                        exits[seat_id].append((*curve_point(chord["table"], fraction if forward else 1 - fraction), chord["width"] / 2 + 2 * scale))
+                if chord["bad"]:
+                    steps = max(1, math.ceil(length / 4))
+                    group = [(*curve_point(chord["table"], index / steps), chord["width"] / 2 + 3 * scale) for index in range(steps + 1)]
+                    dashed.append((shape_bounds(group), group))
+            # The center lines of the chords at rest, in pieces of 8 segments with their box, for the ink under a plate.
+            lines = []
+            for chord in self.chords:
+                points = chord["table"][0]
+                pieces = [(shape_bounds([(x, y, 0) for x, y in points[index:index + 9]]), points[index:index + 9]) for index in range(0, len(points) - 1, 8)]
+                lines.append((shape_bounds([(x, y, 0) for x, y in points]), chord["width"], 3 if chord["bad"] else 1, pieces))
+            cache["shapes"] = exits, dashed, lines
+        exits, dashed, lines = cache["shapes"]
+        self.kept_off = exits, [shape for _bounds, group in dashed for shape in group]
         room, chosen = 6 * scale, self.chosen_seats()
         counts, activity = self.view["counts"], self.view["activity"]
         circle = {seat_id: index for index, seat_id in enumerate(self.pins)}
@@ -13918,6 +13959,11 @@ class RoundTable(Gtk.Overlay):
         order = sorted(self.pins, key=lambda seat_id: (chosen.index(seat_id) if seat_id in chosen else len(chosen), seat_id not in lit,
                        -sum(counts.get(seat_id, {}).values()), -activity.get(seat_id, 0), circle[seat_id]))
         previous, self.labels = self.labels if preserve else {}, {}
+        widest = {}
+        for seat_id, shapes in exits.items():
+            # The exits of the widest chords of the seat (the largest circles): a whole name takes them late.
+            top = max((radius for _x, _y, radius in shapes), default=0)
+            widest[seat_id] = [shape for shape in shapes if shape[2] >= top - 1e-6]
 
         def candidate(seat_id, text, place, ring=None):
             pin, ring = self.pins[seat_id], self.pin_ring(seat_id) if ring is None else ring
@@ -13925,7 +13971,7 @@ class RoundTable(Gtk.Overlay):
             return {"box": (x - 1, y, x + pin["texts"][text]["w"] + 1, y + pin["texts"][text]["h"]),
                     "text": text, "place": place, "shown": True, "ring": ring}
 
-        def free(seat_id, item, labels=True, margin=4, strict=False, shrink=0):
+        def free(seat_id, item, labels=True, margin=4, shrink=0):
             box = item["box"]
             far = max(math.hypot(x - cx, y - cy) for x in (box[0], box[2]) for y in (box[1], box[3]))
             own = near(box, *circles[seat_id][:2]) - circles[seat_id][2] + shrink
@@ -13936,76 +13982,112 @@ class RoundTable(Gtk.Overlay):
                     and all(near(box, x, y) > radius - shrink - .5 for x, y, radius in circles.values())
                     and all(other == seat_id or near(box, x, y) - radius + shrink >= own + margin * scale for other, (x, y, radius) in circles.items())
                     and all(near(box, x, y) >= radius for x, y, radius in ends)
-                    and not (strict and any(near(box, x, y) < radius for x, y, radius in exits[seat_id] + dashed))
                     and (not labels or not blockers(seat_id, box)))
 
         def blockers(seat_id, box):
             return [other for other, item in self.labels.items() if other != seat_id and item["shown"] and
                     hit((item["box"][0] - room, item["box"][1], item["box"][2] + room, item["box"][3]), box)]
 
+        def facts(seat_id, item):
+            """The facts of a candidate that depend only on the geometry: the chord ink under its plate (the center line length inside
+            the plate times the rest width, 3 times for an all-not-sent chord), heavy (more than 12 px of a chord of 5 px or more),
+            on the seat's widest exit, and strict (off its own exits and off each all-not-sent chord)."""
+            key = (seat_id, item["text"], item["place"], item["ring"])
+            if key not in cache:
+                box = item["box"]
+                plate = self.label_plate(self.pins[seat_id]["texts"][item["text"]]["layout"], box[0] + 1, box[1])
+                ink, heavy = 0, False
+                for bounds, width, weight, pieces in lines:
+                    if not overlaps(bounds, plate):
+                        continue
+                    inside = sum(segment_inside(a, b, plate) for part_bounds, part in pieces if overlaps(part_bounds, plate) for a, b in zip(part, part[1:]))
+                    ink += inside * width * weight
+                    heavy = heavy or (width >= 5 and inside > 12 * scale)
+                strict = not any(near(box, x, y) < radius for x, y, radius in exits[seat_id]) and not any(
+                    near(box, x, y) < radius for bounds, group in dashed if overlaps(bounds, box) for x, y, radius in group)
+                cache[key] = (ink, heavy, any(near(box, x, y) < radius for x, y, radius in widest[seat_id]), strict)
+            return cache[key]
+
+        def faults(seat_id, box):
+            """stacked: a shown label of another seat overlaps the box in x by more than 0.5 px with a vertical gap under 12 px, or under
+            4 px more than the gap of one of the two labels to its own 16 px pin. stray: the center of the box is not 4 px or more
+            nearer its own pin center than each other pin center."""
+            own = near(box, *circles[seat_id][:2]) - 16
+            for other, item in self.labels.items():
+                theirs = item["box"]
+                if other == seat_id or not item["shown"] or min(box[2], theirs[2]) - max(box[0], theirs[0]) <= .5:
+                    continue
+                gap = max(theirs[1] - box[3], box[1] - theirs[3])
+                if gap < 12 * scale or gap < max(own, near(theirs, *circles[other][:2]) - 16) + 4 * scale:
+                    return True
+            x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            mine = math.hypot(x - circles[seat_id][0], y - circles[seat_id][1])
+            return any(other != seat_id and math.hypot(x - px, y - py) - mine < 4 * scale for other, (px, py, _radius) in circles.items())
+
+        def rank(seat_id, item):
+            ink, heavy, wide, strict = facts(seat_id, item)
+            return (faults(seat_id, item["box"]), item["text"] >= self.pins[seat_id]["whole"], heavy, wide, item["text"], not strict,
+                    int(ink // 8), item["place"])
+
+        def ranked(seat_id, texts, ring=None):
+            return sorted((candidate(seat_id, text, place, ring) for text in texts for place in range(9)), key=lambda item: rank(seat_id, item))
+
+        def placed(seat_id, item, step):
+            # The step that placed a label and its rank then, for the checks.
+            steps[seat_id] = step, rank(seat_id, item)
+            return item
+
+        steps = self.label_steps = {}
+
         for seat_id in order:
             pin, found = self.pins[seat_id], None
             texts = range(pin["whole"] if seat_id in chosen else len(pin["texts"]))
-            # The exits of the widest chords of the seat (the largest circles): a whole name takes them last.
-            top = max((radius for _x, _y, radius in exits[seat_id]), default=0)
-            widest = [shape for shape in exits[seat_id] if shape[2] >= top - 1e-6]
-
-            def wide(text, place):
-                box = candidate(seat_id, text, place)["box"]
-                return any(near(box, x, y) < radius for x, y, radius in widest)
-
-            def tiers(group):
-                # For each text, the places off the kept-off shapes, then the places off the widest exits; then the rest.
-                both = [(text, place, strict) for text in group for strict in (True, False) for place in range(9)]
-                return ([option for option in both if option[2] or not wide(*option[:2])]
-                        + [option for option in both if not option[2] and wide(*option[:2])])
-            options = tiers([text for text in texts if text < pin["whole"]]) + tiers([text for text in texts if text >= pin["whole"]])
+            options = ranked(seat_id, texts)
             old = previous.get(seat_id)
             if old and old["shown"] and old["text"] in texts:
-                options.insert(0, (old["text"], old["place"], False))
-            for text, place, strict in options:
-                item = candidate(seat_id, text, place)
-                if free(seat_id, item, strict=strict):
-                    found = item
-                    break
+                item = candidate(seat_id, old["text"], old["place"])
+                if free(seat_id, item):
+                    found = placed(seat_id, item, "kept")
             if found is None:
-                for text, place, strict in options:
-                    item = candidate(seat_id, text, place)
+                found = next((placed(seat_id, item, "first") for item in options if free(seat_id, item)), None)
+            if found is None:
+                for item in options:
                     blocked = blockers(seat_id, item["box"])
-                    if not free(seat_id, item, False, strict=strict) or len(blocked) != 1 or blocked[0] in chosen:
+                    if not free(seat_id, item, False) or len(blocked) != 1 or blocked[0] in chosen:
                         continue
                     other = blocked[0]
                     old = self.labels[other]
                     self.labels[seat_id] = item
-                    for move, keep_off in [(move, True) for move in range(9)] + [(move, False) for move in range(9)]:
-                        moved = candidate(other, old["text"], move)
-                        if free(other, moved, strict=keep_off):
-                            self.labels[other] = moved
+                    for moved in ranked(other, [old["text"]]):
+                        if free(other, moved):
+                            self.labels[other] = placed(other, moved, "moved")
                             if free(seat_id, item):
-                                found = item
+                                found = placed(seat_id, item, "repair")
                                 break
                             self.labels[other] = old
                     if found:
+                        # The move can free a candidate that comes earlier in the order: the seat takes the first free one.
+                        found = next(item for item in options if free(seat_id, item))
+                        placed(seat_id, found, "first")
                         break
                     self.labels[other] = old
                     self.labels.pop(seat_id, None)
             if found is None:
                 # A crowded seat: its own pin may be nearer by 2 px only.
-                found = next((item for item, strict in ((candidate(seat_id, text, place), strict) for text, place, strict in options)
-                              if free(seat_id, item, margin=2, strict=strict)), None)
+                found = next((placed(seat_id, item, "margin") for item in options if free(seat_id, item, margin=2)), None)
             if found is None:
                 # The last try before a hidden label: places from the 16 px pin itself, as if no pin had rings. The label still does
                 # not move when a seat lights; a ring that it gets can then draw under the label.
-                found = next((item for item, strict in ((candidate(seat_id, text, place, 0), strict) for text, place, strict in options)
-                              if free(seat_id, item, margin=2, strict=strict, shrink=11)), None)
+                found = next((placed(seat_id, item, "last") for item in ranked(seat_id, texts, 0) if free(seat_id, item, margin=2, shrink=11)), None)
             if found is None and seat_id in chosen:
-                found = candidate(seat_id, 0, 0)
+                found = placed(seat_id, candidate(seat_id, 0, 0), "chosen")
             self.labels[seat_id] = found or {"box": (0, 0, 0, 0), "shown": False, "text": 0, "place": 0, "ring": 0}
         if self.key and self.key["shown"] and any(item["shown"] and hit(item["box"], self.key["box"]) for item in self.labels.values()):
             self.key["shown"] = False
             self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
-        # The rules of this pass, for the checks: a place free with the final labels was free when its seat placed.
-        self.label_rules = candidate, free
+        # The rules of this pass, for the checks: a candidate free with the final labels was free when its seat placed, and its rank
+        # with the final labels is not before its rank then.
+        self.label_rules = candidate, free, rank
         self.label_tips()
 
     def pin_ring(self, _seat_id):
