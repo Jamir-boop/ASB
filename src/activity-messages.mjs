@@ -273,10 +273,10 @@ export function createActivityMessages({ readSources = async () => [], dashboard
           ? { ...item, fromLabel, toLabel } : item)), truncated: kept.length < messages.length };
     },
 
-    // One pair, one session, or one status group: the newest limit messages (default 60) oldest first, the total, and the text of each.
-    async thread(period, { a, b, seat, status, limit = THREAD_SIZE } = {}) {
+    // One pair, one session, one status group, or all messages: the newest limit messages (default 60) oldest first, the total, and the text of each.
+    async thread(period, { a, b, seat, status, all: every = false, limit = THREAD_SIZE } = {}) {
       const { messages } = await merged(period);
-      const all = messages.filter((item) => status !== undefined ? item.status === status
+      const all = every ? messages : messages.filter((item) => status !== undefined ? item.status === status
         : seat !== undefined ? item.from === seat || item.to === seat
           : (item.from === a && item.to === b) || (item.from === b && item.to === a));
       const shown = all.slice(-limit);

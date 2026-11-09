@@ -235,7 +235,9 @@ export function createAsbServer({
         const seat = (name) => params.getAll(name).length === 1 && SEAT.test(params.get(name));
         // A status thread: the messages of one status group that the ledger legend opens.
         const status = names === 'status' && params.getAll('status').length === 1 && ['written', 'held', 'not-sent', 'unknown'].includes(params.get('status'));
-        query = names === 'seat' && seat('seat') ? { seat: params.get('seat') } : names === 'a,b' && seat('a') && seat('b')
+        // All messages of the period: all=1 is the only selector.
+        const every = names === 'all' && params.getAll('all').length === 1 && params.get('all') === '1';
+        query = every ? { all: true } : names === 'seat' && seat('seat') ? { seat: params.get('seat') } : names === 'a,b' && seat('a') && seat('b')
           ? { a: params.get('a'), b: params.get('b') } : status ? { status: params.get('status') } : null;
         if (!query) {
           sendJson(response, 400, { error: 'Invalid session.' });

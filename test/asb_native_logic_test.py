@@ -10989,6 +10989,31 @@ class MessagesLogicChecks(unittest.TestCase):
         # At the end of the lightness range the text color.
         self.assertEqual(asb.status_text_on(asb.activity_palette(looks["navy"]), "accepted", "#808080"), "#e8eaee")
 
+    def test_D9_buckets_use_the_reply_starts_and_count_not_sent(self):
+        # A 23-hour day (a daylight saving change): the reply starts decide each bucket, not a fixed step.
+        starts = [0, 86_400_000, 86_400_000 + 23 * 3_600_000]
+        reply = {"buckets": {"unit": "day", "startsMs": starts}, "messages": [
+            {"atMs": -1, "status": "accepted"}, {"atMs": 0, "status": "accepted"}, {"atMs": 86_399_999, "status": "not-sent"},
+            {"atMs": 86_400_000 + 23 * 3_600_000 - 1, "status": "written"}, {"atMs": 86_400_000 + 23 * 3_600_000, "status": "not-sent"},
+            {"atMs": 86_400_000 + 23 * 3_600_000 + 5, "status": "held"}]}
+        self.assertEqual(asb.message_buckets(reply), [(0, 2, 1), (86_400_000, 1, 0), (86_400_000 + 23 * 3_600_000, 2, 1)])
+        self.assertEqual(asb.message_buckets({"messages": [{"atMs": 1, "status": "accepted"}]}), [])
+        day = datetime(2026, 10, 22, 12, 0).timestamp() * 1000
+        self.assertEqual(asb.message_bucket_tip(day, 84, 2, "day"), "Oct 22: 84 messages, 2 not sent")
+        self.assertEqual(asb.message_bucket_tip(datetime(2026, 10, 22, 14, 0).timestamp() * 1000, 9, 0, "hour"), "14:00: 9 messages")
+        self.assertEqual(asb.message_bucket_tip(day, 1, 0, "day"), "Oct 22: 1 message")
+        self.assertEqual(asb.message_bucket_tip(day, 1234, 1, "day"), "Oct 22: 1,234 messages, 1 not sent")
+
+    def test_D10_all_messages_header_and_blocks_name_both_ends(self):
+        records = [{"from": "a", "to": "b", "status": "accepted"}, {"from": "b", "to": "a", "status": "accepted"},
+                   {"from": "a", "to": "c", "status": "not-sent"}]
+        seats = {"a": {"title": "docs"}, "b": {"title": "release-plan"}, "c": {"title": "ui-polish"}}
+        header = asb.message_thread(records, seats, "all", "all")
+        self.assertEqual((header["route"], header["counts"], header["total"]), ("All messages", "3 messages · 2 pairs", 3))
+        self.assertEqual(asb.message_thread(records[:1], seats, "all", "all")["counts"], "1 message · 1 pair")
+        self.assertEqual(asb.message_block({"kind": "all", "key": "all"}, records[0], seats), (True, "docs → release-plan"))
+        self.assertEqual(asb.message_status_word({"kind": "all", "key": "all"}, records[2]), "Not sent")
+
     def test_M8_reasons_name_the_receiver_machine_and_explain_the_failure(self):
         seats = {"a": {"machineId": "desk"}, "b": {"machineId": "studio"}}
         machines = [{"machineId": "desk", "name": "Desk"}, {"machineId": "studio", "name": "Studio"}]

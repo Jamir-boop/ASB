@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import functools
 import gzip
 import json
+import bisect
 import math
 import ntpath
 from http.client import HTTPConnection, HTTPException
@@ -2657,6 +2658,11 @@ def message_thread(records, seats, kind, key):
     counted from the report's records."""
     def title(seat_id):
         return (seats.get(seat_id) or {}).get("title") or "This session"
+    if kind == "all":
+        pairs = len({frozenset((record["from"], record["to"])) for record in records})
+        count = len(records)
+        return {"kind": kind, "key": key, "route": "All messages", "total": count, "forward": count,
+                "counts": f"{format_count(count)} message{'' if count == 1 else 's'} · {format_count(pairs)} pair{'' if pairs == 1 else 's'}"}
     if kind == "status":
         count = sum(1 for record in records if message_status(record) == key)
         return {"kind": kind, "key": key, "route": ACTIVITY_STATUS_LABELS[key], "counts": f"{format_count(count)} message{'' if count == 1 else 's'}",
@@ -2742,7 +2748,7 @@ def message_block(thread, record, seats):
     A status thread names both ends, at the left."""
     if thread["kind"] == "pair":
         return record["from"] == thread["key"][0], message_end_title(record, "from", seats)
-    if thread["kind"] == "status":
+    if thread["kind"] in ("status", "all"):
         return True, f"{message_end_title(record, 'from', seats)} → {message_end_title(record, 'to', seats)}"
     if record["from"] == thread["key"]:
         return False, "To " + message_end_title(record, "to", seats)
@@ -2755,6 +2761,25 @@ def message_reply_key(reply):
     day = datetime.fromtimestamp(reply.get("nowMs", 0) / 1000).date()
     machines = [(machine.get("machineId"), machine.get("name"), machine.get("state")) for machine in reply.get("machines") or []]
     return reply.get("period"), day, machines, reply.get("seats"), reply.get("messages"), reply.get("truncated")
+
+
+def message_buckets(reply):
+    """The message and not-sent counts of each reply bucket: a message goes in the last bucket whose start is at or before it, so
+    the local starts of the reply decide each bucket (also over a daylight saving change)."""
+    starts = list((reply.get("buckets") or {}).get("startsMs") or [])
+    counts = [[start, 0, 0] for start in starts]
+    for record in reply.get("messages") or []:
+        index = bisect.bisect_right(starts, record["atMs"]) - 1
+        if index >= 0:
+            counts[index][1] += 1
+            counts[index][2] += message_status(record) == "not-sent"
+    return [tuple(item) for item in counts]
+
+
+def message_bucket_tip(start, count, bad, unit):
+    when = format_clock(start) if unit == "hour" else format_day(start)
+    text = f"{when}: {format_count(count)} message{'' if count == 1 else 's'}"
+    return text + (f", {format_count(bad)} not sent" if bad else "")
 
 
 def message_arrivals(previous, reply):
@@ -14140,6 +14165,116 @@ class StatusShare(Gtk.Widget):
             x += size * scale + 1
 
 
+class CountStrip(Gtk.Widget):
+    """Messages over time: a 1.5 px line of the bucket counts in the rest chord gray, with a not-sent dot on each bucket that has a
+    not-sent message, and the first and the last bucket name under it. One Tab stop: Left, Right, Home, and End move a cursor."""
+    __gtype_name__ = "AsbCountStrip"
+
+    def __init__(self, window):
+        super().__init__(accessible_role=Gtk.AccessibleRole.IMG, hexpand=True, focusable=True)
+        self.window, self.buckets, self.unit, self.hover = window, [], "hour", None
+        self.set_has_tooltip(True)
+        self.connect("query-tooltip", self.query_tooltip)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _event, x, _y: self.set_hover(self.bucket_at(x)))
+        motion.connect("leave", lambda *_args: self.set_hover(None))
+        self.add_controller(motion)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.key_pressed)
+        self.add_controller(keys)
+        self.set_scale()
+
+    def set_scale(self):
+        scale = self.window.text_scale
+        self.inset, self.plot, self.ticks = 3 * scale, 24 * scale, 16 * scale
+        self.set_size_request(-1, round(self.plot + self.ticks))
+
+    def update(self, reply):
+        self.unit = (reply.get("buckets") or {}).get("unit", "hour")
+        self.buckets = message_buckets(reply)
+        self.update_property([Gtk.AccessibleProperty.LABEL], [f"Messages per {'hour' if self.unit == 'hour' else 'day'}"])
+        self.hover = None
+        self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+        self.queue_draw()
+
+    def x(self, index):
+        span = self.get_width() - 2 * self.inset
+        return self.inset + (index * span / (len(self.buckets) - 1) if len(self.buckets) > 1 else span / 2)
+
+    def y(self, count):
+        largest = max([1] + [item[1] for item in self.buckets])
+        return self.plot - self.inset - (24 - 6) * self.window.text_scale * count / largest
+
+    def bucket_at(self, x):
+        if not self.buckets:
+            return None
+        # The hit areas split at the midpoints between the bucket x values.
+        return min(range(len(self.buckets)), key=lambda index: abs(self.x(index) - x))
+
+    def tip(self, index):
+        start, count, bad = self.buckets[index]
+        return message_bucket_tip(start, count, bad, self.unit)
+
+    def set_hover(self, index):
+        if index == self.hover:
+            return
+        self.hover = index
+        if index is None:
+            self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+        else:
+            self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [self.tip(index)])
+        self.trigger_tooltip_query()
+        self.queue_draw()
+
+    def key_pressed(self, _controller, keyval, _code, _state):
+        last = len(self.buckets) - 1
+        steps = {Gdk.KEY_Left: -1, Gdk.KEY_KP_Left: -1, Gdk.KEY_Right: 1, Gdk.KEY_KP_Right: 1}
+        ends = {Gdk.KEY_Home: 0, Gdk.KEY_KP_Home: 0, Gdk.KEY_End: last, Gdk.KEY_KP_End: last}
+        if last < 0 or (keyval not in steps and keyval not in ends):
+            return False
+        index = ends[keyval] if keyval in ends else last if self.hover is None else self.hover + steps[keyval]
+        self.set_hover(max(0, min(last, index)))
+        return True
+
+    def query_tooltip(self, _widget, _x, _y, _keyboard, tooltip):
+        if self.hover is None:
+            return False
+        tooltip.set_text(self.tip(self.hover))
+        return True
+
+    def do_snapshot(self, snapshot):
+        if not self.buckets or not self.get_width():
+            return
+        palette, scale = self.window.palette, self.window.text_scale
+        points = [(self.x(index), self.y(count)) for index, (_start, count, _bad) in enumerate(self.buckets)]
+        if self.hover is not None:
+            builder = Gsk.PathBuilder.new()
+            builder.move_to(self.x(self.hover), 0)
+            builder.line_to(self.x(self.hover), self.plot)
+            snapshot_stroke(snapshot, builder.to_path(), 1, rgba(palette["dim"]), cap=Gsk.LineCap.BUTT)
+        builder = Gsk.PathBuilder.new()
+        builder.move_to(*points[0])
+        for point in points[1:]:
+            builder.line_to(*point)
+        line = Gsk.Stroke.new(1.5)
+        line.set_line_cap(Gsk.LineCap.ROUND)
+        line.set_line_join(Gsk.LineJoin.ROUND)
+        snapshot.append_stroke(builder.to_path(), line, rgba(self.window.table.chord_gray(palette)))
+        bad = message_status_colors(palette)["not-sent"]
+        for (x, y), (_start, _count, failed) in zip(points, self.buckets):
+            if failed:
+                snapshot_circle(snapshot, x, y, 3 * scale, rgba(bad))
+        names = [self.buckets[0][0], self.buckets[-1][0]]
+        top = self.plot + 2 * scale
+        for index, start in enumerate(names if len(self.buckets) > 1 else names[:1]):
+            layout = activity_layout(self, format_clock(start) if self.unit == "hour" else format_day(start), 11 * scale)
+            width = layout.get_pixel_extents()[1].width
+            snapshot_layout(snapshot, layout, 0 if index == 0 else self.get_width() - width, top, rgba(palette["dim"]))
+
+
+CountStrip.set_css_name("asb-message-strip")
+
+
 class ThreadBlockLayout(Gtk.BoxLayout):
     """The layout of a thread message block: at any height its width is its natural width.
     The grid asks a start or end aligned block for its width at a height, and a wrapped label finds that width by a slow search."""
@@ -14417,6 +14552,9 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-busy-fail {{ margin-top: 2px; min-height: {px(11)}; }}
 {scope} .asb-msg-ledger-row .asb-msg-busy-fail label {{ font-size: {px(11)}; color: {palette['dim']}; }}
 {scope} .asb-msg-machine-row {{ min-height: {px(24)}; }}
+{scope} asb-message-strip:focus-visible {{ outline: 2px solid {palette['accent']}; outline-offset: 1px; border-radius: 6px; }}
+{scope} .asb-msg-route-link {{ min-height: 0; padding: 0; border-radius: 4px; }}
+{scope} .asb-msg-bar-row {{ margin-top: {px(3)}; }}
 {scope} .asb-msg-sticky-day {{ font-size: {px(11)}; color: {palette['dim']}; background: {palette['win']}; padding: 6px 0; }}
 """
 
@@ -14566,6 +14704,8 @@ class MessagesWindow(ActivityWindow):
         messages.append(self.total_row)
         self.share = StatusShare(self)
         messages.append(self.share)
+        self.count_strip = CountStrip(self)
+        messages.append(self.count_strip)
         self.legend = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         messages.append(self.legend)
         recent = self.recent_section = section("Recent", first)
@@ -14614,9 +14754,14 @@ class MessagesWindow(ActivityWindow):
         empty = view["total"] == 0
         self.ledger.set_visible(not empty)
         self.messages_section.set_visible(not empty)
-        for widget in (self.share, self.legend, self.recent_section, self.busiest_section, self.machines_section, self.apps_section):
+        for widget in (self.share, self.count_strip, self.legend, self.recent_section, self.busiest_section, self.machines_section, self.apps_section):
             widget.set_visible(not empty)
         self.share.update(view["by_status"])
+        # The strip stands 6 px under the share bar; the legend keeps the gap that it had under the share bar.
+        self.share.set_margin_bottom(round(6 * scale))
+        self.count_strip.set_margin_bottom(10)
+        self.count_strip.set_scale()
+        self.count_strip.update(self.data)
         remove_children(self.legend)
         self.legend_counts, self.legend_rows = {}, {}
         for status in ACTIVITY_STATUSES:
@@ -14689,7 +14834,8 @@ class MessagesWindow(ActivityWindow):
                 self.matrix_cells[(apps[row], apps[column])] = cell
         self.matrix.attach(Gtk.Box(width_request=round(24 * scale)), len(apps) + 1, 0, 1, len(apps) + 1)
         remove_children(self.machine_rows)
-        self.machine_counts = {}
+        self.machine_counts, self.machine_bars = {}, {}
+        largest = max([1] + [item["count"] for item in view["machine_rows"]])
         for item in view["machine_rows"]:
             row = Gtk.Box(spacing=round(6 * scale))
             row.add_css_class("asb-msg-machine-row")
@@ -14710,8 +14856,20 @@ class MessagesWindow(ActivityWindow):
             value.set_xalign(1)
             row.append(value)
             row.append(Gtk.Box(width_request=round(18 * scale)))
-            self.machine_rows.append(row)
+            bar = UsageBar(round(3 * scale), track=self.palette["track"])
+            bar.set_segments([(item["count"], self.palette["accent"])], item["count"] / largest)
+            bars = Gtk.Box(spacing=round(6 * scale))
+            bars.add_css_class("asb-msg-bar-row")
+            # The bar starts under the name: the two-dot slot (two 7 px dots, 3 px apart) and the row gap come first.
+            bars.append(Gtk.Box(width_request=round(7 * scale) * 2 + round(3 * scale)))
+            bars.append(bar)
+            bars.append(Gtk.Box(width_request=round(18 * scale)))
+            barred = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            barred.append(row)
+            barred.append(bars)
+            self.machine_rows.append(barred)
             self.machine_counts[item["ids"]] = value
+            self.machine_bars[item["ids"]] = bar
         new = {record["id"] for record in arrivals}
         remove_children(self.recent)
         self.recent_rows = []
@@ -14750,6 +14908,20 @@ class MessagesWindow(ActivityWindow):
             else:
                 self.recent.append(row)
             self.recent_rows.append(row)
+        total = format_count(view["total"])
+        row = self.all_row = Gtk.Button(has_frame=False, tooltip_text=f"Show all {total} messages")
+        row.add_css_class("asb-msg-recent")
+        row.add_css_class("asb-msg-ledger-row")
+        content = Gtk.Box(spacing=round(8 * scale))
+        content.append(Gtk.Label(label="All messages", xalign=0, hexpand=True))
+        count = label(total, "asb-mono")
+        count.set_xalign(1)
+        content.append(count)
+        content.append(self.chevron())
+        row.set_child(content)
+        row.update_property([Gtk.AccessibleProperty.LABEL], [f"All messages, {total}"])
+        row.connect("clicked", lambda *_: self.open_thread("all", "all", toggle=True))
+        self.recent.append(row)
         self.render_busiest()
 
     def chevron(self):
@@ -14784,6 +14956,14 @@ class MessagesWindow(ActivityWindow):
             main.append(count)
             main.append(self.chevron())
             content.append(main)
+            largest = max(item["n"] for item in view["busiest"])
+            bar = UsageBar(round(3 * scale), track=self.palette["track"])
+            bar.set_segments([(pair["n"], self.palette["accent"])], pair["n"] / largest)
+            bars = Gtk.Box(spacing=round(8 * scale))
+            bars.add_css_class("asb-msg-bar-row")
+            bars.append(bar)
+            # The bar ends at the right edge of the count column, not under the chevron.
+            bars.append(Gtk.Box(width_request=round(16 * scale)))
             if pair["bad"]:
                 line = Gtk.Box(spacing=round(4 * scale))
                 line.add_css_class("asb-msg-busy-fail")
@@ -14792,6 +14972,8 @@ class MessagesWindow(ActivityWindow):
                 line.append(icon)
                 line.append(label(f"{format_count(pair['bad'])} not sent", "asb-dim"))
                 content.append(line)
+            content.append(bars)
+            row.asb_bar = bar
             row.set_child(content)
             spoken = f"{a} and {b}, {format_count(pair['n'])} message{'' if pair['n'] == 1 else 's'}"
             row.update_property([Gtk.AccessibleProperty.LABEL], [spoken + (f", {format_count(pair['bad'])} not sent" if pair["bad"] else "")])
@@ -14847,7 +15029,7 @@ class MessagesWindow(ActivityWindow):
 
     def selected_ids(self):
         # A status thread seats no session of its own.
-        if not self.thread or self.thread["kind"] == "status":
+        if not self.thread or self.thread["kind"] in ("status", "all"):
             return ()
         return tuple(self.thread["key"]) if self.thread["kind"] == "pair" else (self.thread["key"],)
 
@@ -14929,7 +15111,14 @@ class MessagesWindow(ActivityWindow):
         if self.thread is not None:
             pair_key = self.thread["key"] if self.thread["kind"] == "pair" else None
             session = self.thread["key"] if self.thread["kind"] == "session" else None
-        if self.thread is not None and self.thread["kind"] == "status":
+        if self.thread is not None and self.thread["kind"] == "all":
+            head = Gtk.Box(spacing=round(4 * scale), halign=align)
+            text("All messages", "asb-msg-c-name", parent=head)
+            box.append(head)
+            pairs = len({frozenset((record["from"], record["to"])) for record in self.data.get("messages") or []})
+            count = self.view["total"]
+            text(f"{format_count(count)} message{'' if count == 1 else 's'} · {format_count(pairs)} pair{'' if pairs == 1 else 's'}", "asb-msg-small")
+        elif self.thread is not None and self.thread["kind"] == "status":
             # The open status thread owns the center: the status, its messages, and its pairs (seated or not) in the period.
             status = self.thread["key"]
             head = Gtk.Box(spacing=round(4 * scale), halign=align)
@@ -15119,7 +15308,7 @@ class MessagesWindow(ActivityWindow):
             return
         thread = self.thread
         self.thread_stack.clear()
-        pins = [] if thread["kind"] == "status" else list(thread["key"]) if thread["kind"] == "pair" else [thread["key"]]
+        pins = [] if thread["kind"] in ("status", "all") else list(thread["key"]) if thread["kind"] == "pair" else [thread["key"]]
         self.stop_thread_steps()
         self.thread = self.thread_reply = None
         self.update_view()
@@ -15221,11 +15410,11 @@ class MessagesWindow(ActivityWindow):
         if self.thread_missing():
             seats[thread["key"]] = {"title": thread["title"] or "This session"}
         header = message_thread(records, seats, thread["kind"], thread["key"])
-        route = f"{header['route']} · {dict(self.PERIODS)[self.period]}" if thread["kind"] == "status" else header["route"]
+        route = f"{header['route']} · {dict(self.PERIODS)[self.period]}" if thread["kind"] in ("status", "all") else header["route"]
         self.thread_route.set_label(route)
         self.thread_route.set_tooltip_text(MESSAGE_STATUS_TIPS[thread["key"]] if thread["kind"] == "status" else route)
         previous = self.thread_stack[-1][0] if self.thread_stack else None
-        back = (ACTIVITY_STATUS_LABELS[previous["key"]] if previous["kind"] == "status" else
+        back = ("All messages" if previous["kind"] == "all" else ACTIVITY_STATUS_LABELS[previous["key"]] if previous["kind"] == "status" else
                 self.seat_title(previous["key"]) if previous["kind"] == "session" else
                 " ⇄ ".join(self.seat_title(seat) for seat in previous["key"])) if previous else "totals"
         self.thread_back.set_tooltip_text(f"Back to {back} (Esc)")
@@ -15247,6 +15436,8 @@ class MessagesWindow(ActivityWindow):
             query = f"a={quote(thread['key'][0], safe='')}&b={quote(thread['key'][1], safe='')}"
         elif thread["kind"] == "status":
             query = f"status={quote(thread['key'], safe='')}"
+        elif thread["kind"] == "all":
+            query = "all=1"
         else:
             query = f"seat={quote(thread['key'], safe='')}"
 
@@ -15453,7 +15644,15 @@ class MessagesWindow(ActivityWindow):
         name_label = Gtk.Label(label=who, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
         name_label.set_attributes(no_hyphens(name_label.get_attributes()))
         name_label.add_css_class("asb-msg-who")
-        if not run:
+        if not run and thread["kind"] == "all":
+            # A route in All messages opens its pair thread over this one.
+            pair = tuple(sorted((record["from"], record["to"]), key=lambda seat_id: (self.view["circle"].index(seat_id)
+                         if seat_id in self.view["circle"] else len(self.view["circle"]), seat_id)))
+            route = Gtk.Button(has_frame=False, child=name_label, tooltip_text=f"Show the messages of {who}")
+            route.add_css_class("asb-msg-route-link")
+            route.connect("clicked", lambda *_: self.open_thread("pair", pair))
+            top.append(route)
+        elif not run:
             top.append(name_label)
         when = label(format_clock(record["atMs"]), "asb-msg-tiny")
         when.add_css_class("asb-mono")

@@ -331,12 +331,13 @@ test('the activity routes check the period, the seats, the text query, and the r
   const base = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }), activityMessages }));
   const get = (route, headers = {}) => fetch(base + route, { headers });
   for (const route of ['/api/activity/messages?period=24h', '/api/activity/messages', '/api/activity/thread?period=30d&seat=x',
-    '/api/activity/thread?a=x&b=unknown%3Aaaaa']) {
+    '/api/activity/thread?a=x&b=unknown%3Aaaaa', '/api/activity/thread?period=24h&all=1&limit=5']) {
     const response = await get(route);
     assert.equal(response.status, 200, route);
     assert.equal(response.headers.get('cache-control'), 'no-store');
   }
-  assert.deepEqual(calls, [['report', '24h'], ['report', '7d'], ['thread', '30d', { seat: 'x' }], ['thread', '7d', { a: 'x', b: 'unknown:aaaa' }]]);
+  assert.deepEqual(calls, [['report', '24h'], ['report', '7d'], ['thread', '30d', { seat: 'x' }], ['thread', '7d', { a: 'x', b: 'unknown:aaaa' }],
+    ['thread', '24h', { all: true, limit: 5 }]]);
   for (const route of ['/api/activity/messages?period=90d', '/api/activity/messages?period=all', '/api/activity/messages?period=1y', '/api/activity/thread?period=&seat=x',
     '/api/activity/thread?period=90d&seat=x']) {
     const response = await get(route);
@@ -344,12 +345,13 @@ test('the activity routes check the period, the seats, the text query, and the r
   }
   for (const route of ['/api/activity/thread', '/api/activity/thread?seat=', '/api/activity/thread?a=x', '/api/activity/thread?seat=x&a=y&b=z',
     '/api/activity/thread?seat=x&seat=y', '/api/activity/thread?seat=x%0Ay', `/api/activity/thread?seat=${'x'.repeat(513)}`, '/api/activity/thread?seat=x&extra=1',
-    '/api/activity/thread?seat=x&text=0']) {
+    '/api/activity/thread?seat=x&text=0', '/api/activity/thread?all=0', '/api/activity/thread?all=true', '/api/activity/thread?all=1&all=1',
+    '/api/activity/thread?all=1&seat=x', '/api/activity/thread?all=1&a=x&b=y', '/api/activity/thread?all=1&status=held']) {
     const response = await get(route);
     assert.deepEqual([response.status, await response.json(), response.headers.get('cache-control')], [400, { error: 'Invalid session.' }, 'no-store'], route);
   }
   assert.deepEqual([(await get('/api/activity/unknown')).status], [404]);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
   // The phone gateway asks with text=0; any other text query is refused.
   assert.equal((await get('/api/activity/messages?period=7d&text=0')).status, 200);
   assert.deepEqual(calls.at(-1), ['report', '7d', { text: false }]);
@@ -357,14 +359,14 @@ test('the activity routes check the period, the seats, the text query, and the r
     const response = await get(route);
     assert.deepEqual([response.status, await response.json()], [400, { error: 'Invalid query.' }], route);
   }
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 6);
   assert.equal((await get('/api/activity/thread?seat=x', { Origin: 'https://example.com' })).status, 403);
   assert.equal((await get('/api/activity/messages', { Origin: 'https://example.com' })).status, 403);
   assert.equal((await get('/api/activity/messages', { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
   assert.equal((await fetch(`${base}/api/activity/messages`, { method: 'POST', headers: { Origin: base } })).status, 405);
   // No usage service: the usage route does not exist.
   assert.equal((await get('/api/activity/usage?period=30d')).status, 404);
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 6);
   const periods = [];
   const usageBase = await listen(t, createAsbServer({ dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads: [] }),
     activityUsage: { report: async (period) => { periods.push(period); return { period }; } } }));
@@ -395,6 +397,8 @@ test('the switchboard server reads the registered bridge folders and passes the 
   assert.ok(report.messages.every((item) => !('text' in item)));
   const thread = await (await fetch(`${base}/api/activity/thread?period=30d&a=${X}&b=${Y}`)).json();
   assert.deepEqual(thread.messages.map((item) => item.text), [`Synthetic text ${msg(500)}.`]);
+  const every = await (await fetch(`${base}/api/activity/thread?period=30d&all=1`)).json();
+  assert.deepEqual([every.total, every.messages.map((item) => [item.id, item.text])], [1, [[msg(500), `Synthetic text ${msg(500)}.`]]]);
   assert.deepEqual(await (await fetch(`${base}/api/activity/usage?period=7d`)).json(), { period: '7d' });
   assert.deepEqual(periods, ['7d']);
   assert.deepEqual((await server.activityMember('24h')).messages.map((item) => item.direction), ['out']);
@@ -735,4 +739,16 @@ test('the thread route takes an optional limit from 1 to 600', async (t) => {
   }
   assert.equal((await fetch(`${base}/api/activity/thread?period=7d&limit=60`)).status, 400);
   assert.equal(calls.length, 4);
+});
+
+test('the all-messages thread returns the newest messages of the period with their texts and the limit', async (t) => {
+  const { bridge, service } = await home(t);
+  await bridge('codex', X, Array.from({ length: 4 }, (_, index) => ({ id: msg(900 + index), peer: Y, direction: 'out', status: 'delivered',
+    atMs: nowMs - (4 - index) * 60_000 })));
+  const activity = service();
+  const every = await activity.thread('24h', { all: true });
+  assert.deepEqual([every.total, every.messages.map((item) => item.id)], [4, [msg(900), msg(901), msg(902), msg(903)]]);
+  assert.ok(every.messages.every((item) => item.text === `Synthetic text ${item.id}.`));
+  const newest = await activity.thread('24h', { all: true, limit: 2 });
+  assert.deepEqual([newest.total, newest.messages.map((item) => item.id)], [4, [msg(902), msg(903)]]);
 });

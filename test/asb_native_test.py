@@ -16285,7 +16285,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     "messages": [{key: value for key, value in dict(message(record, False), local=local(record)).items() if key != "text"}
                                  for record in records]}
         self.assertEqual(path, "/api/activity/thread")
-        if "seat" in args:
+        if "all" in args:
+            mine = list(records)
+        elif "seat" in args:
             mine = [record for record in records if args["seat"] in record[1:3]]
         elif "status" in args:
             mine = [record for record in records if record[4] == args["status"]]
@@ -16506,6 +16508,113 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(asb.hex_color(snapshot.append_fill.call_args.args[2]), hue)
         self.assertAlmostEqual(snapshot.append_fill.call_args.args[2].alpha, .45)
         self.assertEqual(snapshot.append_stroke.call_args.args[1].get_dash(), [4., 3.])
+
+    def test_D9_count_strip_place_size_cursor_tooltip_and_no_draw_on_same_reply(self):
+        window = self.window()
+        strip, share = window.count_strip, window.share
+        self.assertIs(share.get_next_sibling(), strip)
+        self.assertIs(strip.get_next_sibling(), window.legend)
+        share_box, strip_box = share.compute_bounds(window)[1], strip.compute_bounds(window)[1]
+        self.assertEqual(round(strip_box.get_y() - share_box.get_y() - share_box.get_height()), 6)
+        self.assertEqual((strip_box.get_x(), strip_box.get_width()), (share_box.get_x(), share_box.get_width()))
+        self.assertEqual(strip.get_height(), 40)
+        self.assertEqual(strip.get_margin_bottom(), 10)
+        self.assert_accessible_label(strip, "Messages per day")
+        self.assertEqual(strip.buckets, asb.message_buckets(window.data))
+        self.assertTrue(strip.get_focusable())
+        self.assertTrue(strip.key_pressed(None, asb.Gdk.KEY_End, 0, 0))
+        last = strip.buckets[-1]
+        self.assertEqual(strip.hover, len(strip.buckets) - 1)
+        self.assertEqual(strip.tip(strip.hover), asb.message_bucket_tip(*last, "day"))
+        strip.key_pressed(None, asb.Gdk.KEY_Left, 0, 0)
+        self.assertEqual(strip.hover, len(strip.buckets) - 2)
+        strip.key_pressed(None, asb.Gdk.KEY_Home, 0, 0)
+        self.assertEqual(strip.hover, 0)
+        # The hit areas split at the midpoints.
+        middle = (strip.x(0) + strip.x(1)) / 2
+        self.assertEqual((strip.bucket_at(middle - .1), strip.bucket_at(middle + .1)), (0, 1))
+        snapshot = Mock()
+        strip.do_snapshot(snapshot)
+        line = next(call.args for call in snapshot.append_stroke.call_args_list if call.args[1].get_line_width() == 1.5)
+        self.assertEqual(asb.hex_color(line[2]), window.table.chord_gray(window.palette))
+        self.assertEqual(line[1].get_line_join(), asb.Gsk.LineJoin.ROUND)
+        css = window.palette_css(window.palette)
+        self.assertIn(f"asb-message-strip:focus-visible {{ outline: 2px solid {window.palette['accent']}; outline-offset: 1px; border-radius: 6px; }}", css)
+        window.set_period("24h"); self.drain(.4)
+        self.assert_accessible_label(strip, "Messages per hour")
+        with patch.object(strip, "queue_draw") as draws:
+            window.render(window.data, window.data)
+        draws.assert_not_called()
+
+    def test_D10_all_messages_row_thread_center_and_back(self):
+        window = self.window()
+        row = window.all_row
+        self.assertIs(row.get_parent(), window.recent)
+        self.assertIs(window.recent.get_last_child(), row)
+        self.assertEqual(self.labels(row), ["All messages", "479"])
+        self.assertEqual(row.get_tooltip_text(), "Show all 479 messages")
+        self.assert_accessible_label(row, "All messages, 479")
+        count = row.get_child().get_first_child().get_next_sibling()
+        busiest = window.busiest_rows[0].get_child().get_first_child().get_last_child().get_prev_sibling()
+        right = lambda widget: round(widget.compute_bounds(window)[1].get_x() + widget.compute_bounds(window)[1].get_width())
+        self.assertEqual(right(count), right(busiest))
+        row.emit("clicked"); self.drain(.4)
+        self.assertEqual(window.thread["kind"], "all")
+        self.assertIn("/api/activity/thread?period=7d&all=1", self.routes)
+        pairs = len({frozenset(record[1:3]) for record in self.records()})
+        self.assertEqual(window.thread_route.get_label(), "All messages · 7 days")
+        self.assertEqual(window.thread_counts.get_text(), f"479 messages · {pairs} pairs")
+        self.assertEqual(self.texts(window.table.center), ["All messages", f"479 messages · {pairs} pairs"])
+        self.assertEqual(window.table.open_lit(), (set(), set()))
+        self.assertEqual(self.labels(window.thread_list)[0], "Newest 60 of 479")
+        block = next(iter(window.thread_blocks.values()))
+        route = next(widget for widget in self.tree(block) if isinstance(widget, asb.Gtk.Button))
+        record = next(record for record in self.records() if record[0] == next(iter(window.thread_blocks)))
+        self.assertEqual(route.get_child().get_label(), f"{record[1]} → {record[2]}")
+        route.emit("clicked"); self.drain(.4)
+        self.assertEqual((window.thread["kind"], set(window.thread["key"])), ("pair", set(record[1:3])))
+        self.assertEqual(window.thread_back.get_tooltip_text(), "Back to All messages (Esc)")
+        window.window_key(None, asb.Gdk.KEY_Escape, 0, 0); self.drain(.4)
+        self.assertEqual(window.thread["kind"], "all")
+        before = len(self.routes)
+        self.extra = [["m-all-new", "docs", "release-plan", self.sample["nowMs"] - 500, "accepted", "", "A new message."]]
+        window.refresh(); self.drain(.3)
+        self.assertIn("/api/activity/thread?period=7d&all=1", self.routes[before:])
+        self.assertIn("m-all-new", window.thread_blocks)
+        window.window_key(None, asb.Gdk.KEY_Escape, 0, 0); self.drain(.3)
+        self.assertIsNone(window.thread)
+
+    def test_D12_share_bars_on_busiest_and_machine_rows(self):
+        window = self.window()
+        view, scale = window.view, window.text_scale
+        bounds = lambda widget: widget.compute_bounds(window)[1]
+        largest = view["busiest"][0]["n"]
+        for row, pair in zip(window.busiest_rows, view["busiest"]):
+            bar = row.asb_bar
+            self.assertEqual((bar.get_height(), bar.track, bar.fraction), (3, window.palette["track"], pair["n"] / largest))
+            self.assertEqual(bar.segments, [(pair["n"], window.palette["accent"])])
+            self.assertFalse(bar.get_has_tooltip())
+            main = row.get_child().get_first_child()
+            route, count = main.get_first_child(), main.get_last_child().get_prev_sibling()
+            self.assertEqual(bounds(bar).get_x(), bounds(route).get_x())
+            self.assertEqual(round(bounds(bar).get_x() + bounds(bar).get_width()), round(bounds(count).get_x() + bounds(count).get_width()))
+            above = bar.get_parent().get_prev_sibling()
+            self.assertEqual(round(bounds(bar).get_y() - bounds(above).get_y() - bounds(above).get_height()), 3)
+            line = main.get_next_sibling() if pair["bad"] else None
+            # M5 height (the route line, and 2 px and the not-sent line), then 3 px and the 3 px bar.
+            self.assertEqual(row.get_height(), main.get_height() + (2 + line.get_height() if line else 0) + 6)
+            self.assertEqual(main.get_height(), 26)
+        tops = [bounds(row).get_y() for row in window.busiest_rows]
+        self.assertEqual([round(b - a - row.get_height()) for a, b, row in zip(tops, tops[1:], window.busiest_rows)], [2] * (len(tops) - 1))
+        largest = max(item["count"] for item in view["machine_rows"])
+        for item in view["machine_rows"]:
+            bar, count = window.machine_bars[item["ids"]], window.machine_counts[item["ids"]]
+            name = count.get_prev_sibling()
+            self.assertEqual(bar.fraction, item["count"] / largest)
+            self.assertEqual(bounds(bar).get_x(), bounds(name).get_x())
+            self.assertEqual(round(bounds(bar).get_x() + bounds(bar).get_width()), round(bounds(count).get_x() + bounds(count).get_width()))
+            self.assertEqual(bar.get_parent().get_parent().get_height(), 30)
+        self.assertFalse(any(isinstance(widget, asb.UsageBar) for widget in self.tree(window.matrix)))
 
     def test_a_new_messages_window_reads_24_hours_first(self):
         window = asb.MessagesWindow(self.application, "http://127.0.0.1:1", fetch=self.fetch)
@@ -17613,7 +17722,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
     def test_between_machines_and_between_apps_rows(self):
         window = self.window(period="24h")
         names = []
-        for row in UsageWindowCheck.children(window.machine_rows):
+        for barred in UsageWindowCheck.children(window.machine_rows):
+            row = barred.get_first_child()
             dots, name = UsageWindowCheck.children(row)[:2]
             self.assertEqual(len(UsageWindowCheck.children(dots)), 2)
             names.append(name)
@@ -18260,7 +18370,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(self.texts(table.center)[1:3], ["Messages", str(unknown)])
         window.close_thread(); self.drain(.3)
         self.assertEqual(table.open_lit(), (set(), set()))
-        self.assertEqual(len(table.proxies[("chord", key)].get_tooltip_text().split("\n")), 2)
+        self.assertEqual(len(table.proxies[("chord", key)].get_tooltip_text().split("\n")), 2 + bool(window.view["pairs"][key]["bad"]))
 
     def test_a_status_thread_block_omits_its_status_and_keeps_a_not_sent_reason(self):
         now = self.sample["nowMs"]
@@ -18421,7 +18531,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         geometry = table.geometry
         found, reader = window.reader.compute_bounds(window)
         self.assertTrue(found)
-        self.assertLessEqual(reader.get_y() + reader.get_height(), 760)
+        # The reader ends inside the scrolled page (the Messages head with its count strip stands above the table).
+        found, page = window.narrow_box.compute_bounds(window)
+        self.assertLessEqual(reader.get_y() + reader.get_height(), page.get_y() + page.get_height())
         found, origin = table.compute_point(window, asb.Graphene.Point().init(0, 0))
         bottoms = [geometry["cy"] + geometry["Ro"]] + [item["y"] + item["h"] for entries in table.machine_items.values() for item in entries]
         self.assertGreaterEqual(reader.get_y() - origin.y, max(bottoms))
@@ -18686,7 +18798,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIn(".asb-msg-busy { min-height: 26px; }", window.palette_css(window.palette))
         # A pair with not-sent messages adds a second line in the error text color.
         bad = next((row, pair) for row, pair in zip(window.busiest_rows, view["busiest"]) if pair["bad"])
-        line = bad[0].get_child().get_last_child()
+        line = bad[0].get_child().get_last_child().get_prev_sibling()
         self.assertTrue(line.get_first_child().has_css_class("asb-msg-stw-not-sent"))
         self.assertEqual((line.get_first_child().get_icon_name(), self.labels(line)), (asb.ACTIVITY_STATUS_ICONS["not-sent"], [f"{bad[1]['bad']} not sent"]))
         self.assert_accessible_label(bad[0], f"{window.seat_title(bad[1]['a'])} and {window.seat_title(bad[1]['b'])}, {bad[1]['n']} messages, {bad[1]['bad']} not sent")
