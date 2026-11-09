@@ -1196,6 +1196,42 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(window.filter_popover.get_visible())
             self.assertFalse([call for call in request.call_args_list if call.args[1].endswith("/open")])
 
+    def check_shadow_margin_presses(self, window, popover, press):
+        """press(gesture, x, y) runs the outside-press handler of popover: a window-surface press in the shadow margin closes the
+        popover unclaimed, a window-surface press in the body is claimed, and a press on the popover surface is not claimed."""
+        body = next(child for child in descendants(popover) if child.get_css_name() == "contents")
+        found, outer = popover.compute_bounds(window)
+        self.assertTrue(found)
+        found, inner = body.compute_bounds(window)
+        self.assertTrue(found)
+        margin = asb.Graphene.Point().init(outer.get_x() + 2, outer.get_y() + outer.get_height() - 2)
+        self.assertFalse(inner.contains_point(margin))
+        middle = (inner.get_x() + inner.get_width() / 2, inner.get_y() + inner.get_height() / 2)
+        def run(surface, x, y):
+            gesture = Mock()
+            gesture.get_current_event.return_value = SimpleNamespace(get_surface=lambda: surface)
+            press(gesture, x, y)
+            return gesture
+        for surface, (x, y), claimed in ((window.get_surface(), middle, True), (popover.get_surface(), middle, False),
+                                         (popover.get_surface(), (margin.x, margin.y), False)):
+            gesture = run(surface, x, y)
+            if claimed:
+                gesture.set_state.assert_called_once_with(asb.Gtk.EventSequenceState.CLAIMED)
+            else:
+                gesture.set_state.assert_not_called()
+            self.assertTrue(popover.get_visible(), (surface, x, y))
+        gesture = run(window.get_surface(), margin.x, margin.y)
+        gesture.set_state.assert_not_called()
+        self.assertFalse(popover.get_visible())
+
+    def test_filters_press_in_the_shadow_margin_is_an_outside_press(self):
+        window = self.snapshot_window()
+        window.set_default_size(700, 600)
+        window.present(); self.drain(.4)
+        window.open_filters_popover(); self.drain(.3)
+        self.check_shadow_margin_presses(window, window.filter_popover,
+                                         lambda gesture, x, y: window.filters_outside_press(gesture, 1, x, y))
+
     def test_filters_press_on_the_board_in_the_popover_place_is_claimed(self):
         window = self.snapshot_window()
         window.set_default_size(700, 600)
@@ -13359,6 +13395,7 @@ class ActivityFixture:
     held_popover_click = WidgetCheck.held_popover_click
     check_popover_lifetime = WidgetCheck.check_popover_lifetime
     check_choice_popover = WidgetCheck.check_choice_popover
+    check_shadow_margin_presses = WidgetCheck.check_shadow_margin_presses
     capture = WidgetCheck.capture
     assert_accessible_label = WidgetCheck.assert_accessible_label
     close_windows = WidgetCheck.close_windows
@@ -14214,6 +14251,28 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         window = self.window()
         self.check_choice_popover(window, window.period_menu, window.metric_buttons["tokens"],
                                   lambda: self.assertEqual(window.metric, "tokens"))
+        self.assert_no_new_warnings()
+
+    def test_period_menu_press_in_the_shadow_margin_is_an_outside_press(self):
+        window = self.window()
+        popup = next(widget for widget in descendants(window.period_menu) if isinstance(widget, asb.Gtk.Popover))
+        popup.popup(); self.drain(.3)
+        self.check_shadow_margin_presses(window, popup, lambda gesture, x, y: asb.popover_outside_press(
+            gesture, 1, x, y, window, popup, window.period_menu))
+        self.assert_no_new_warnings()
+
+    @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
+                         "Real clicks need xdotool and DISPLAY=:9 or :10")
+    def test_one_held_click_on_cost_closes_the_period_menu_and_sets_cost(self):
+        window = self.window()
+        window.set_metric("tokens"); self.drain(.1)
+        subprocess.run(["xdotool", "windowfocus", str(window.get_surface().get_xid())], check=True)
+        popup = next(widget for widget in descendants(window.period_menu) if isinstance(widget, asb.Gtk.Popover))
+        self.held_popover_click(window, window.period_menu)
+        self.assertTrue(popup.get_mapped())
+        self.held_popover_click(window, window.metric_buttons["cost"])
+        self.assertFalse(popup.get_visible())
+        self.assertEqual(window.metric, "cost")
         self.assert_no_new_warnings()
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),

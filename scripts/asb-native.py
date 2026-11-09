@@ -493,6 +493,25 @@ def popover_shift(anchor_x, anchor_width, popover_width, window_width, margin=8)
     return round(min(max(left, margin), window_width - margin - popover_width) - left)
 
 
+def popover_press_inside(gesture, x, y, window, popover):
+    """True when a press at (x, y) in window coordinates belongs to the popover: it came on the popover's own surface, or it is
+    inside the visible body (the `contents` node; the shadow margin around it is outside), or the popover has no layout yet.
+    A press on the window surface that belongs to the popover is claimed, so no widget under it gets it."""
+    event = gesture.get_current_event()
+    surface = event.get_surface() if event is not None else None
+    if popover.get_width() and surface != popover.get_surface():
+        body = popover.get_first_child()
+        while body is not None and body.get_css_name() != "contents":
+            body = body.get_next_sibling()
+        found, bounds = (body or popover).compute_bounds(window)
+        if not found or not bounds.contains_point(Graphene.Point().init(x, y)):
+            return False
+    # Before the popup surface maps, a press in its place must not reach a widget under it.
+    if surface is not None and surface == window.get_surface():
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+    return True
+
+
 def popover_outside_press(gesture, _count, x, y, window, popover, anchor):
     if not popover.get_visible():
         return
@@ -509,12 +528,7 @@ def popover_outside_press(gesture, _count, x, y, window, popover, anchor):
         found, bounds = anchor.compute_bounds(window)
         if found and bounds.contains_point(point):
             return
-    found, bounds = popover.compute_bounds(window)
-    # Before the popup surface maps, a press in its place must not reach a card.
-    if not popover.get_width() or found and bounds.contains_point(point):
-        event = gesture.get_current_event()
-        if event is not None and event.get_surface() == window.get_surface():
-            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+    if popover_press_inside(gesture, x, y, window, popover):
         return
     popover.popdown()
 
@@ -9618,13 +9632,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         found, bounds = self.filters_pill.compute_bounds(self)
         if found and bounds.contains_point(point):
             return
-        found, bounds = self.filter_popover.compute_bounds(self)
-        # Until its first layout the popover has no size, and it is not on the screen yet.
-        if not self.filter_popover.get_width() or found and bounds.contains_point(point):
-            event = gesture.get_current_event()
-            # Before the popover shows on the X server, a press in its place reaches the board: no card gets it.
-            if event is not None and event.get_surface() == self.get_surface():
-                gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        if popover_press_inside(gesture, x, y, self, self.filter_popover):
             return
         self.close_filters_popover()
 
