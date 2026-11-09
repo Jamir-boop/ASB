@@ -10878,9 +10878,9 @@ class MessagesLogicChecks(unittest.TestCase):
         mine = [record for record in records if "parser-review" in (record["from"], record["to"])]
         sent = sum(record["from"] == "parser-review" for record in mine)
         header = asb.message_thread(records, seats, "session", "parser-review")
-        self.assertEqual((header["route"], header["counts"]), ("parser-review", f"Sent {sent}  Received {len(mine) - sent}"))
-        self.assertEqual(header["counts"], "Sent 81  Received 109")
-        self.assertEqual(asb.message_thread(records, {}, "session", "gone")["counts"], "Sent 0  Received 0")
+        self.assertEqual((header["route"], header["counts"]), ("parser-review", f"Sent {sent} · 1 not sent   Received {len(mine) - sent}"))
+        self.assertEqual(header["counts"], "Sent 81 · 1 not sent   Received 109")
+        self.assertEqual(asb.message_thread(records, {}, "session", "gone")["counts"], "Sent 0   Received 0")
         self.assertEqual(asb.message_thread(records, {}, "session", "gone")["route"], "This session")
         out, back = next(record for record in mine if record["from"] == "parser-review"), next(record for record in mine if record["to"] == "parser-review")
         self.assertEqual(asb.message_block(header, out, seats), (False, "To " + out["to"]))
@@ -10941,7 +10941,7 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertIsNone(asb.message_status_word({"kind": "status", "key": "written"}, {"status": "written"}))
         self.assertEqual(asb.message_status_word({"kind": "status", "key": "written"}, {"status": "held"}), "On hold")
         not_sent = {"kind": "status", "key": "not-sent"}
-        self.assertEqual(asb.message_status_word(not_sent, offline), "Machine offline")
+        self.assertEqual(asb.message_status_word(not_sent, offline), "Not sent · Machine offline")
         self.assertIsNone(asb.message_status_word(not_sent, {"status": "not-sent", "reason": ""}))
 
     def test_pairs_count_each_status_and_the_busiest_pairs_rank_by_count_newest_and_circle(self):
@@ -10988,6 +10988,40 @@ class MessagesLogicChecks(unittest.TestCase):
                                 self.assertLess(abs((hue(moved) - hue(original) + 180) % 360 - 180), 6)
         # At the end of the lightness range the text color.
         self.assertEqual(asb.status_text_on(asb.activity_palette(looks["navy"]), "accepted", "#808080"), "#e8eaee")
+
+    def test_M8_reasons_name_the_receiver_machine_and_explain_the_failure(self):
+        seats = {"a": {"machineId": "desk"}, "b": {"machineId": "studio"}}
+        machines = [{"machineId": "desk", "name": "Desk"}, {"machineId": "studio", "name": "Studio"}]
+        record = {"from": "a", "to": "b", "status": "not-sent", "reason": "Machine offline"}
+        for receiver in ("b", "unknown:studio"):
+            message = dict(record, to=receiver)
+            self.assertEqual(asb.message_status_label(message, seats, machines), "Not sent · Studio was not reachable")
+            self.assertEqual(asb.message_status_label(dict(message, reason="Refused"), seats, machines), "Not sent · Refused by Studio")
+        self.assertEqual(asb.message_status_label(record), "Not sent · Machine offline")
+        self.assertEqual(asb.message_reason_tip(record), "The receiving machine did not answer, so ASB sent nothing.")
+        self.assertEqual(asb.message_reason_tip(dict(record, reason="Refused")), "The receiving machine refused the message.")
+        for reason in ("Too large", "Rate limited", "Other"):
+            self.assertIn("ASB", asb.message_reason_tip(dict(record, reason=reason)))
+        records = [dict(record, id="1"), dict(record, id="2", **{"from": "b", "to": "a"})]
+        header = asb.message_thread(records, seats, "session", "a")
+        self.assertEqual(header["counts"], "Sent 1 · 1 not sent   Received 1 · 1 not sent")
+
+    def test_M9_machine_tints_have_equal_lightness_chroma_and_sender_hue(self):
+        for win in ("#000000", "#222226", "#10141c", "#ffffff"):
+            palette = {"win": win}
+            amount = .22 if asb.luminance(win) < .01 else .14
+            mixes = [asb.oklab(asb.mix_color(win, hue, amount)) for hue in asb.MACHINE_HUES]
+            light = sum(value[0] for value in mixes) / 6
+            chroma = max(.03, sum(math.hypot(*value[1:]) for value in mixes) / 6)
+            for hue in asb.MACHINE_HUES:
+                actual = asb.oklab(asb.message_block_surface(palette, hue))
+                source = asb.oklab(hue)
+                self.assertEqual(asb.message_block_surface(palette, hue),
+                                 asb.oklch_color(light, chroma, math.degrees(math.atan2(source[2], source[1])) % 360))
+                self.assertAlmostEqual(actual[0], light, delta=.003)
+                self.assertLessEqual(math.hypot(*actual[1:]), chroma + .003)
+                angle = lambda value: math.degrees(math.atan2(value[2], value[1]))
+                self.assertLess(abs((angle(actual) - angle(source) + 180) % 360 - 180), 4)
 
     def test_a_not_sent_message_shows_its_reason_and_text_may_be_missing(self):
         for reason in ("Machine offline", "Too large", "Rate limited", "Refused"):
