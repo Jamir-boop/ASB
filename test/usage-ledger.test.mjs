@@ -22,7 +22,8 @@ const claudeLine = (atMs, id, output) => JSON.stringify({ type: 'assistant', tim
 const tokens = (uncached, cacheRead, cacheWrite, output) => ({ uncached, cacheRead, cacheWrite, output });
 const hourOf = (ms) => Math.floor(ms / HOUR) * HOUR;
 // The records of one machine without the price fields, for exact token checks.
-const withoutScan = ({ scan: _scan, ...rest }) => rest;
+// The sessions differ on purpose: a deleted transcript's usage has no session.
+const withoutScan = ({ scan: _scan, sessions: _sessions, ...rest }) => rest;
 const sums = (report, machineId = SELF) => report.records.filter((record) => record.machineId === machineId)
   .map(({ app, model, bucket, tokens: value }) => [app, model, bucket, value]);
 
@@ -101,9 +102,14 @@ test('a deleted transcript keeps its tokens and cost in report and localHourly, 
   assert.equal(sums(before.month).reduce((sum, [, , , value]) => sum + value.output, 0), 27);
   await fs.rm(path.join(projects, 'a.jsonl'));
   await usage.refresh();
-  assert.deepEqual(withoutScan(usage.report('all')), withoutScan(before.all));
+  const after = usage.report('all');
+  assert.deepEqual(withoutScan(after), withoutScan(before.all));
   assert.deepEqual(withoutScan(usage.report('30d')), withoutScan(before.month));
   assert.deepEqual(usage.localHourly('all').usage, before.hourly.usage);
+  // Session a is gone: its usage stays in the totals as usage with no session, so the rows plus none still give the total.
+  assert.deepEqual([before.all.sessions.rows.map((row) => row.id).sort(), before.all.sessions.counts], [['a', 'b'], { [SELF]: 2 }]);
+  assert.deepEqual([after.sessions.rows.map((row) => row.id), after.sessions.counts], [['b'], { [SELF]: 1 }]);
+  assert.deepEqual(after.sessions.none[SELF].tokens, before.all.sessions.rows.find((row) => row.id === 'a').tokens);
   // The kept message comes back: per hour the larger value, never a sum.
   await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7), claudeLine(BASE - 3 * DAY, 2, 9)]);
   await usage.refresh();

@@ -252,7 +252,9 @@ test('the group merge: one record per ID with the receiver status, offline membe
   let answer = { status: 200, body: { messages: [
     { id: msg(400), from: X, to: uuid(60), atMs: nowMs - 119_000, status: 'accepted', reason: '', direction: 'in', text: 'Leak' },
     { id: msg(401), from: uuid(60), to: uuid(61), atMs: nowMs - 60_000, status: 'held', reason: '', direction: 'out' },
-    { id: msg(402), from: uuid(60), to: X, atMs: nowMs - 50_000, status: 'bogus', reason: '', direction: 'out' }], usage: [], scan: { complete: true, files: 0, scannedFiles: 0 } } };
+    { id: msg(402), from: uuid(60), to: X, atMs: nowMs - 50_000, status: 'bogus', reason: '', direction: 'out' }], usage: [], scan: { complete: true, files: 0, scannedFiles: 0 },
+    sessions: [{ id: 's-1', app: 'codex', title: 'Remote task', tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 }, cost: 0.25, text: 'Leak' },
+      { id: 's-2', app: 'codex', title: 'Remote task', tokens: { uncached: -1, cacheRead: 2, cacheWrite: 3, output: 4 } }] } };
   const calls = [];
   const request = async (options) => {
     calls.push(options.path);
@@ -282,6 +284,9 @@ test('the group merge: one record per ID with the receiver status, offline membe
   assert.deepEqual(first.machines[1], { machineId: B.machineId, name: B.name, self: false, state: 'online', lastReportAtMs: nowMs });
   assert.equal(first.seats.find((seat) => seat.id === remoteRow).machineId, B.machineId);
   assert.equal(JSON.stringify(first).includes('Leak'), false);
+  // The group keeps only the valid member sessions, with only their contract fields.
+  assert.deepEqual((await machineGroup.activity('7d')).find((item) => item.machineId === B.machineId).sessions,
+    [{ id: 's-1', app: 'codex', title: 'Remote task', tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 }, cost: 0.25 }]);
   // 30 s cache: no second request.
   clock += 10_000;
   await activity.report('7d');
@@ -307,6 +312,10 @@ test('the group merge: one record per ID with the receiver status, offline membe
   assert.deepEqual(await withUsage.memberReply('90d'), { messages: (await withUsage.localRecords('90d')), usage, scan: { complete: false, files: 9, scannedFiles: 3 } });
   assert.deepEqual(await withUsage.localRecords('all'), []);
   assert.deepEqual(await withUsage.memberReply('all'), { messages: [], usage: [], scan: { complete: false, files: 9, scannedFiles: 3 } });
+  // The member sessions go with the usage when the usage service gives them.
+  const sessions = [{ id: 's-1', app: 'codex', title: 'release-plan', tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 } }];
+  const withSessions = service({ activityUsage: { localHourly: async () => ({ usage, sessions, scan: { complete: true, files: 1, scannedFiles: 1 } }) } });
+  assert.deepEqual((await withSessions.memberReply('7d')).sessions, sessions);
   assert.deepEqual(validActivity({ messages: [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in', text: 'T' }], usage: [] }).messages,
     [{ id: 'x', from: 'a', to: 'b', atMs: 1, status: 'held', reason: '', direction: 'in', label: '', text: 'T' }]);
   assert.equal(validActivity({ messages: {} }), null);

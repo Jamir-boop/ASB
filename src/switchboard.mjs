@@ -19,7 +19,7 @@ import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
 import { cacheDir, stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
-import { MEMBER_MESSAGE_KEYS } from './machine-peers.mjs';
+import { MEMBER_MESSAGE_KEYS, rowKeyLookup } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
 import { readLiveClaudeRegistry, liveClaudeProcessesChanged } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
@@ -367,6 +367,18 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
 // The native message keys of each row and the incoming messages whose sender is not a local key, for the machine group.
 export function sessionMessageKeys(dashboard) {
   return dashboard?.[MESSAGE_KEYS] || { keysByRow: new Map(), ambiguous: [], unresolved: [] };
+}
+
+const USAGE_ROW_APPS = { codex: 'codex', 'claude-desktop-code': 'claude', opencode: 'opencode' };
+// The Usage session titles (activity contract 2.3): (app, native session ID) -> the title of the local row of that app and
+// session ID, or ''. Rows only: no transcript text becomes a title.
+export function usageSessionTitles(board) {
+  const lookup = rowKeyLookup(board);
+  const rows = new Map((board?.threads || []).filter((row) => !row.remote).map((row) => [row.id, row]));
+  return (app, id) => {
+    const row = rows.get(lookup.get(id));
+    return row && USAGE_ROW_APPS[row.provider] === app ? String(row.title || '') : '';
+  };
 }
 
 // The native session key -> row ID map of [key, row ID] pairs, in order. A key of two rows maps to null, and stays null.
@@ -1075,12 +1087,15 @@ export function createSwitchboardServer(options = {}) {
     machine: activityMachine, ...(options.usageFetch ? { fetch: options.usageFetch } : {}),
     ...(options.usageCacheDir ? { cacheDir: options.usageCacheDir } : {}),
     ...(options.usageHomeDir ? { homeDir: options.usageHomeDir, env: {} } : {}), ledgerFile: options.usageLedgerFile || '' });
+  // The rows give the session titles; a board that cannot be read gives none.
+  const sessionTitles = async () => usageSessionTitles(await server.dashboardForRequest().catch(() => null));
   const activityUsage = options.activityUsage || {
     report: async (period) => {
       await usage.ready();
-      return usage.report(period, group ? await group.activity(period).catch(() => []) : []);
+      const [members, title] = await Promise.all([group ? group.activity(period).catch(() => []) : [], sessionTitles()]);
+      return usage.report(period, members, { title });
     },
-    localHourly: async (period) => { await usage.ready(); return usage.localHourly(period); },
+    localHourly: async (period) => { await usage.ready(); return usage.localHourly(period, { title: await sessionTitles() }); },
     ...(usage.exportAll ? { exportAll: async () => usage.exportAll(group ? await group.activity('all').catch(() => []) : []),
       importAll: (document) => usage.importAll(document) } : {}),
   };

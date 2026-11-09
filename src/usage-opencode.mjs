@@ -21,7 +21,7 @@ export async function openCodeDatabases(dataDir) {
   return files.sort((a, b) => path.basename(a) === 'opencode.db' ? -1 : path.basename(b) === 'opencode.db' ? 1 : a < b ? -1 : a > b ? 1 : 0);
 }
 
-export function openCodeUsageSql(sinceMs, { table = 'session_message', timeCreated = true, paged = false } = {}) {
+export function openCodeUsageSql(sinceMs, { table = 'session_message', timeCreated = true, paged = false, sessionColumn = false } = {}) {
   const at = timeCreated ? "coalesce(json_extract(data, '$.time.created'), time_created)" : "json_extract(data, '$.time.created')";
   const role = table === 'session_message' ? "type = 'assistant'" : "json_extract(data, '$.role') = 'assistant'";
   return `select id, json_extract(data, '$.tokens.input') as input, json_extract(data, '$.tokens.output') as output,
@@ -29,6 +29,7 @@ export function openCodeUsageSql(sinceMs, { table = 'session_message', timeCreat
     json_extract(data, '$.tokens.cache.write') as cache_write,
     coalesce(json_extract(data, '$.model.modelID'), json_extract(data, '$.model.id'), json_extract(data, '$.modelID'),
       case when json_type(data, '$.model') = 'text' then json_extract(data, '$.model') end) as model,
+    ${sessionColumn ? "coalesce(session_id, json_extract(data, '$.sessionID'))" : "json_extract(data, '$.sessionID')"} as session,
     ${at} as at
     from ${table} where ${role} and json_type(data, '$.tokens') = 'object' and ${at} >= ${Math.trunc(sinceMs)}${paged ? ' and rowid > ? and rowid <= ? order by rowid' : ''};`;
 }
@@ -49,7 +50,8 @@ export async function readOpenCodeUsage(dataDir, sinceMs, { query = querySqliteJ
         if (seen.has(row.id)) continue;
         seen.add(row.id);
       }
-      records.push({ app: 'opencode', timestampMs, model: row.model, tokens, dedupeKey: null });
+      records.push({ app: 'opencode', timestampMs, model: row.model, tokens, dedupeKey: null,
+        ...(typeof row.session === 'string' && row.session ? { session: row.session } : {}) });
     }
   };
   for (const file of await openCodeDatabases(dataDir)) {
@@ -63,7 +65,8 @@ export async function readOpenCodeUsage(dataDir, sinceMs, { query = querySqliteJ
       for (const table of ['session_message', 'message']) {
         const columns = new Set((await all(`PRAGMA table_info(${table})`)).map((row) => row.name));
         if (!columns.size) continue;
-        const sql = openCodeUsageSql(sinceMs, { table, timeCreated: columns.has('time_created'), paged: Boolean(database) });
+        const sql = openCodeUsageSql(sinceMs, { table, timeCreated: columns.has('time_created'), paged: Boolean(database),
+          sessionColumn: columns.has('session_id') });
         if (!database) { append(await all(sql)); continue; }
         const [range] = await all(`select min(rowid) as first, max(rowid) as last from ${table}`);
         if (typeof range?.first !== 'number' || typeof range.last !== 'number') continue;

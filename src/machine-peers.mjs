@@ -7,6 +7,7 @@ import { gunzip } from 'node:zlib';
 import { ACTION_AT, OFFLINE_MEMBER, QUESTION_AT, byRowTime, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
 import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { rowReference, shortReference, validScopeTag } from './session-references.mjs';
+import { validSessions } from './usage-aggregation.mjs';
 
 const gunzipAsync = promisify(gunzip);
 export const MEMBER_MESSAGE_KEYS = Symbol('ASB member session message keys');
@@ -189,7 +190,8 @@ export function validActivity(value) {
       cacheWrite: tokens.cacheWrite, output: tokens.output } }));
   const scan = value.scan && typeof value.scan === 'object' && BOOLEAN(value.scan.complete) && COUNT(value.scan.files) && COUNT(value.scan.scannedFiles)
     ? { complete: value.scan.complete, files: value.scan.files, scannedFiles: value.scan.scannedFiles } : { complete: true, files: 0, scannedFiles: 0 };
-  return { messages, usage, scan };
+  // An older member sends no sessions: all its usage is usage with no session.
+  return { messages, usage, scan, ...(Array.isArray(value.sessions) ? { sessions: validSessions(value.sessions) } : {}) };
 }
 
 // The last address that worked first, then LAN, ZeroTier, and Tailscale.

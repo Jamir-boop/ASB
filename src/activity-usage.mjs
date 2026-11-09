@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as zlib from 'node:zlib';
 import { cacheDir as defaultCacheDir } from './platform-paths.mjs';
-import { aggregateBuckets, aggregateHourly, periodBuckets, USAGE_PERIODS } from './usage-aggregation.mjs';
+import { aggregateBuckets, aggregateHourly, MAX_MEMBER_SESSIONS, periodBuckets, sessionSums, topSessions, USAGE_PERIODS, validSessions } from './usage-aggregation.mjs';
 import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-antigravity.mjs';
 import { modelMaker, TIER_TAG } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
@@ -33,6 +33,24 @@ export const LEDGER_REFRESH_MS = 60 * 60 * 1000;
 export const RELEASE_AFTER_MS = 2 * 60 * 1000;
 // No coding agent has usage before 2020: an earlier time is a bad value, and it must not make thousands of month bars.
 const FIRST_USAGE_MS = Date.UTC(2020, 0, 1);
+
+// The sessions of each machine in the report: the 50 with the most cost and the 50 with the most tokens.
+export const TOP_SESSIONS = 50;
+export const UNLISTED_SESSION = 'Unlisted session';
+const UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+// The session ID of a transcript file, from its path ('' when the path has none): the UUID at the end of a Codex rollout
+// name, the Claude transcript name (a subagent transcript belongs to the session folder above `subagents`), the Grok
+// session folder, and the Pi session file name (its UUID after the time).
+export function sessionIdOf(file, app) {
+  const name = path.basename(file).replace(/\.zst$/, '').replace(/\.jsonl$/, '');
+  const folder = path.basename(path.dirname(file));
+  if (app === 'codex') return name.match(UUID)?.[1] || '';
+  if (app === 'claude') return folder === 'subagents' ? path.basename(path.dirname(path.dirname(file))) : name;
+  if (app === 'grok') return folder;
+  if (app === 'pi') return name.match(UUID)?.[1] || name;
+  return '';
+}
 
 // A member record comes from another machine: only plain names, an hour, and token counts are used.
 const validMemberRecord = (record) => typeof record?.app === 'string' && typeof record.model === 'string'
@@ -79,6 +97,43 @@ function foldTiers(records) {
   return [...folded.values()];
 }
 
+// The board title of a session, else UNLISTED_SESSION. No transcript text becomes a title.
+const titleOf = (title, app, id) => (typeof title === 'function' && title(app, id)) || UNLISTED_SESSION;
+
+// The sessions part of the report: the top sessions of each machine (TOP_SESSIONS by cost and by tokens), the count of
+// sessions of each machine, and per machine the usage of its records that no session sum holds (none).
+function sessionReport(lists, records) {
+  const rows = [];
+  const counts = {};
+  const none = {};
+  const totals = new Map();
+  for (const record of records) {
+    let total = totals.get(record.machineId);
+    if (!total) totals.set(record.machineId, total = { tokens: Object.fromEntries(TOKEN_TYPES.map((type) => [type, 0])), cost: 0 });
+    for (const type of TOKEN_TYPES) total.tokens[type] += record.tokens[type];
+    total.cost += record.cost?.total || 0;
+  }
+  for (const [machineId, list] of lists) {
+    if (list.length) counts[machineId] = (counts[machineId] || 0) + list.length;
+    for (const { id, app, title, tokens, cost, unpriced } of topSessions(list, TOP_SESSIONS)) {
+      rows.push({ machineId, id, app, title, tokens, cost, ...(unpriced ? { unpriced: true } : {}) });
+    }
+    const total = totals.get(machineId);
+    for (const item of list) {
+      if (!total) break;
+      for (const type of TOKEN_TYPES) total.tokens[type] -= item.tokens[type];
+      total.cost -= item.cost;
+    }
+  }
+  // A member's sessions cover its own hours, which can start before the first bucket: the rest is never below 0. The tokens
+  // decide: the cost rest also holds the rounding of each record and session.
+  for (const [machineId, total] of totals) {
+    const tokens = Object.fromEntries(TOKEN_TYPES.map((type) => [type, Math.max(0, total.tokens[type])]));
+    if (TOKEN_TYPES.some((type) => tokens[type] > 0)) none[machineId] = { tokens, cost: Math.max(0, roundUsd(total.cost)) };
+  }
+  return { rows, counts, none };
+}
+
 async function listTranscripts(root, app, files, pause, fileName) {
   let entries;
   try { entries = await fs.readdir(root, { withFileTypes: true }); } catch { return; }
@@ -103,6 +158,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   const stats = { bytesRead: 0, scans: 0, saves: 0, openCodeQueries: 0, openCodePages: 0, partBuilds: 0, parts: 0, ledgerSaves: 0, releases: 0, memberBuilds: 0 };
   const progress = { complete: false, files: 0, scannedFiles: 0 };
   let cache = null;
+  // The session ID of each cache key (pathKey of the transcript).
+  const sessionOf = new Map();
   let openCode = [];
   let antigravity = [];
   const antigravityCache = new Map();
@@ -172,6 +229,9 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       if (stopped) return;
       const key = pathKey(file);
       seen.add(key);
+      // Only in memory: the disk cache keeps no session ID, and each scan visits every file again.
+      const session = sessionIdOf(file, app);
+      if (sessionOf.get(key) !== session) { sessionOf.set(key, session); version += 1; }
       const previous = cache.get(key);
       try {
         const entry = await scanFile(file, info, previous, app, { stats, pause, tiersFromMs });
@@ -209,6 +269,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
     if (openCodeChanged) { openCode = found; version += 1; }
     antigravity = await readAntigravityUsage(await antigravityRoots(env, homeDir), 0, { cache: antigravityCache, pause });
     for (const key of cache.keys()) if (!seen.has(key)) { cache.delete(key); changed = true; version += 1; }
+    for (const key of sessionOf.keys()) if (!seen.has(key)) sessionOf.delete(key);
     Object.assign(progress, { complete: true, files: files.length, scannedFiles: files.length });
     stats.scans += 1;
     dirty ||= changed;
@@ -316,34 +377,35 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   }
   const scanState = () => ({ ...progress, complete: !running || progress.complete });
 
-  // The token sums per (app, model, quarter hour), built once per change. Repeated dedupe keys count once: the files go in a
-  // stable order (by file key), so the first copy of a Claude message always gives its app, model, and quarter hour, and each
-  // count is the largest of all copies (a copy can end while the reply still streams). Every bucket edge is on a quarter hour,
-  // so the reports give the same records as with the single parts.
+  // The token sums per (app, model, quarter hour, session), built once per change. Repeated dedupe keys count once: the files
+  // go in a stable order (by file key), so the first copy of a Claude message always gives its app, model, quarter hour, and
+  // session, and each count is the largest of all copies (a copy can end while the reply still streams). Every bucket edge is
+  // on a quarter hour, so the reports give the same records as with the single parts.
   function allParts() {
     if (parts?.version === version && parts.openCode === openCode && parts.antigravity === antigravity) return parts.list;
     const keyed = new Map();
     const sums = new Map();
-    const add = (app, model, quarter, uncached, cacheRead, cacheWrite, output) => {
-      const id = `${app}\0${model}\0${quarter}`;
+    const add = (app, model, quarter, uncached, cacheRead, cacheWrite, output, session) => {
+      const id = `${app}\0${model}\0${quarter}\0${session}`;
       const sum = sums.get(id);
-      if (!sum) sums.set(id, { app, model, atMs: quarter * QUARTER_HOUR_MS, tokens: { uncached, cacheRead, cacheWrite, output } });
+      if (!sum) sums.set(id, { app, model, atMs: quarter * QUARTER_HOUR_MS, tokens: { uncached, cacheRead, cacheWrite, output }, session });
       else {
         sum.tokens.uncached += uncached; sum.tokens.cacheRead += cacheRead; sum.tokens.cacheWrite += cacheWrite; sum.tokens.output += output;
       }
     };
     for (const key of [...(cache?.keys() || [])].sort()) {
       const { app, records } = cache.get(key);
+      const session = sessionOf.get(key) || '';
       for (const [quarter, model, uncached, cacheRead, cacheWrite, output, dedupeKey] of records) {
-        if (dedupeKey === null) { add(app, model, quarter, uncached, cacheRead, cacheWrite, output); continue; }
+        if (dedupeKey === null) { add(app, model, quarter, uncached, cacheRead, cacheWrite, output, session); continue; }
         const kept = keyed.get(dedupeKey);
-        if (!kept) keyed.set(dedupeKey, [app, model, quarter, uncached, cacheRead, cacheWrite, output]);
+        if (!kept) keyed.set(dedupeKey, [app, model, quarter, uncached, cacheRead, cacheWrite, output, session]);
         else [uncached, cacheRead, cacheWrite, output].forEach((value, index) => { kept[index + 3] = Math.max(kept[index + 3], value); });
       }
     }
     for (const kept of keyed.values()) add(...kept);
-    for (const { app, model, timestampMs, tokens } of [...openCode, ...antigravity]) {
-      add(app, model, Math.floor(timestampMs / QUARTER_HOUR_MS), tokens.uncached, tokens.cacheRead, tokens.cacheWrite, tokens.output);
+    for (const { app, model, timestampMs, tokens, session } of [...openCode, ...antigravity]) {
+      add(app, model, Math.floor(timestampMs / QUARTER_HOUR_MS), tokens.uncached, tokens.cacheRead, tokens.cacheWrite, tokens.output, session || '');
     }
     const list = [...sums.values()];
     parts = { version, openCode, antigravity, list };
@@ -510,7 +572,8 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
   return {
     // Contract 2.3: this machine, then the group members (already sorted by name, each with its last hourly usage reply).
     // A member record goes into the local bucket whose start is the last one at or before its hour; earlier ones are dropped.
-    report(period, members = []) {
+    // title(app, sessionId) gives the board title of a local session, or ''.
+    report(period, members = [], { title } = {}) {
       checkPeriod(period);
       ask();
       requestScan();
@@ -549,18 +612,24 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       }
       const imported = importedOnly(members);
       for (const machine of imported) addMachine(machine.machineId, [...machine.records.values()]);
+      const named = (list) => list.map((item) => ({ ...item, title: titleOf(title, item.app, item.id) }));
+      const sessionLists = [[machineId, named(sessionSums(localParts(), startsMs[0], endMs, table).sessions)],
+        ...members.map((member) => [member.machineId, validSessions(member.sessions).map((item) => ({ ...item, title: item.title || UNLISTED_SESSION,
+          cost: item.cost ?? 0, ...(item.unpriced || item.cost === undefined ? { unpriced: true } : {}) }))])];
       return {
         period, nowMs, buckets: period === 'all' ? { unit, startsMs, firstMs } : { unit, startsMs },
         machines: [{ machineId, name, self: true, state: 'local', lastReportAtMs: 0 }, ...members.map((member) => ({
           machineId: member.machineId, name: member.name, self: false, state: member.state, lastReportAtMs: member.lastReportAtMs || 0 })),
         ...imported.map((machine) => ({ machineId: machine.machineId, name: machine.name, self: false, state: 'offline', lastReportAtMs: machine.exportedAtMs }))],
         records: foldTiers(records),
+        sessions: sessionReport(sessionLists, records),
         prices: rates.pricing(),
         scan,
       };
     },
     // The usage part of contract 4: UTC hours, tokens only. It starts early enough to fill the first local bucket of any time zone.
-    localHourly(period) {
+    // The sessions cover the same hours, each with its board title and, once this machine has prices, its cost.
+    localHourly(period, { title } = {}) {
       checkPeriod(period);
       ask();
       requestScan();
@@ -569,7 +638,13 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const sinceMs = period === 'all' ? 0 : Math.floor((nowMs - days * DAY_MS - HOUR_MS) / HOUR_MS) * HOUR_MS;
       const usage = ledgerFile ? ledgerViews().hourly.filter((record) => record.hourMs >= sinceMs && record.hourMs < nowMs + HOUR_MS)
         : aggregateHourly(allParts(), sinceMs, nowMs + HOUR_MS);
-      return { usage: usage.slice(-MAX_HOURLY_RECORDS), scan: scanState() };
+      // The member route never loads prices: with no price table yet, the sessions have no cost.
+      const table = rates.table();
+      const sessions = topSessions(sessionSums(allParts(), sinceMs, nowMs + HOUR_MS, table).sessions.map((item) =>
+        ({ ...item, title: titleOf(title, item.app, item.id) })), MAX_MEMBER_SESSIONS / 2)
+        .map(({ id, app, title: name, tokens, cost, unpriced }) => ({ id, app, title: name, tokens,
+          ...(table.size ? { cost, ...(unpriced ? { unpriced: true } : {}) } : {}) }));
+      return { usage: usage.slice(-MAX_HOURLY_RECORDS), sessions, scan: scanState() };
     },
     ...(ledgerFile ? {
       // This machine, the members with records, then the imported-only machines: every hour, in the export file form.

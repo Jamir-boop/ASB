@@ -287,10 +287,11 @@ export function createActivityMessages({ readSources = async () => [], dashboard
 
     localRecords,
 
-    // GET /peer/v1/activity: local records, and the local hourly usage ({ usage, scan }) when the usage service is there.
+    // GET /peer/v1/activity: local records, and the local hourly usage ({ usage, sessions, scan }) when the usage service is there.
     async memberReply(period) {
       const [messages, hourly] = await Promise.all([localRecords(period), activityUsage?.localHourly ? activityUsage.localHourly(period) : null]);
-      return { messages, usage: Array.isArray(hourly?.usage) ? hourly.usage : [], scan: hourly?.scan || NO_SCAN };
+      return { messages, usage: Array.isArray(hourly?.usage) ? hourly.usage : [],
+        ...(Array.isArray(hourly?.sessions) ? { sessions: hourly.sessions } : {}), scan: hourly?.scan || NO_SCAN };
     },
   };
 }

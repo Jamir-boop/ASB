@@ -220,7 +220,7 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
     }
     await entry.pending;
     return { machineId: state.member.machineId, name: state.member.name, state: entry.online ? 'online' : 'offline',
-      lastReportAtMs: entry.lastReportAtMs, messages: entry.reply?.messages || [], usage: entry.reply?.usage || [],
+      lastReportAtMs: entry.lastReportAtMs, messages: entry.reply?.messages || [], usage: entry.reply?.usage || [], sessions: entry.reply?.sessions || [],
       scan: entry.reply?.scan || { complete: true, files: 0, scannedFiles: 0 } };
   }
 

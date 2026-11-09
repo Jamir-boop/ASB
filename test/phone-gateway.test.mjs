@@ -411,7 +411,10 @@ gatewayTest('the dashboard reply is gzip only when the phone accepts it and has 
 });
 
 gatewayTest('the activity routes proxy only a valid period, ask for messages with no text, gzip like the dashboard, and the thread is never reachable', async (t) => {
-  const body = JSON.stringify({ messages: Array.from({ length: 100 }, (_, i) => ({ id: `m-${i}`, status: 'accepted' })) });
+  // The usage reply passes as it is, with its sessions.
+  const body = JSON.stringify({ messages: Array.from({ length: 100 }, (_, i) => ({ id: `m-${i}`, status: 'accepted' })),
+    sessions: { rows: [{ machineId: 'desk', id: 's-1', app: 'codex', title: 'release-plan', tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 }, cost: 0.5 }],
+      counts: { desk: 1 }, none: {} } });
   const { request, pair, records } = await fixture(t, { reply: (request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(body);

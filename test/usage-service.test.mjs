@@ -87,6 +87,8 @@ test('report and localHourly match the contract shapes, with dedupe, cost, and U
   assert.deepEqual(member.localHourly('24h').scan, { complete: false, files: 0, scannedFiles: 0 });
   await member.idle();
   assert.equal(member.localHourly('24h').usage.length, 3);
+  // With no prices, the member sessions have tokens and no cost.
+  assert.deepEqual(member.localHourly('24h').sessions.map((item) => Object.keys(item)), [['id', 'app', 'title', 'tokens'], ['id', 'app', 'title', 'tokens']]);
   assert.equal(fetches.length, 0);
 
   const usage = service();
@@ -96,7 +98,7 @@ test('report and localHourly match the contract shapes, with dedupe, cost, and U
   await waitComplete(usage);
   await usage.pricesIdle();
   const report = usage.report('30d');
-  assert.deepEqual(Object.keys(report), ['period', 'nowMs', 'buckets', 'machines', 'records', 'prices', 'scan']);
+  assert.deepEqual(Object.keys(report), ['period', 'nowMs', 'buckets', 'machines', 'records', 'sessions', 'prices', 'scan']);
   assert.equal(report.period, '30d');
   assert.equal(report.nowMs, NOW);
   assert.equal(report.buckets.unit, 'day');
@@ -119,9 +121,22 @@ test('report and localHourly match the contract shapes, with dedupe, cost, and U
   assert.equal(byApp.codex.cost, null);
   assert.deepEqual(byApp.opencode.tokens, { uncached: 1, cacheRead: 4, cacheWrite: 5, output: 5 });
   assert.equal(usage.report('90d').records.find((record) => record.app === 'claude' && record.tokens.output === 9)?.app, 'claude');
+  // Sessions: message 1 of the resumed transcript counts once, in one session; the Codex rollout name has no session ID,
+  // so its usage has no session; the OpenCode row gives its session column. No row: Unlisted session.
+  assert.deepEqual(report.sessions.rows.map(({ app, title, tokens, cost }) => [app, title, tokens, cost]).sort(), [
+    ['claude', 'Unlisted session', byApp.claude.tokens, byApp.claude.cost.total],
+    ['opencode', 'Unlisted session', byApp.opencode.tokens, 0]]);
+  assert.deepEqual(report.sessions.rows.find((row) => row.app === 'opencode').id, 's');
+  assert.equal(report.sessions.rows.find((row) => row.app === 'opencode').unpriced, true);
+  assert.ok(['a', 'b'].includes(report.sessions.rows.find((row) => row.app === 'claude').id));
+  assert.deepEqual(report.sessions.counts, { 'machine-test-1': 2 });
+  assert.deepEqual(report.sessions.none, { 'machine-test-1': { tokens: byApp.codex.tokens, cost: 0 } });
 
   const hourly = usage.localHourly('24h');
-  assert.deepEqual(Object.keys(hourly), ['usage', 'scan']);
+  assert.deepEqual(Object.keys(hourly), ['usage', 'sessions', 'scan']);
+  // The member sessions have their cost once this machine has prices.
+  assert.deepEqual(hourly.sessions.map(({ app, title, tokens, cost }) => [app, title, tokens.output, cost]).sort(),
+    [['claude', 'Unlisted session', 7, byApp.claude.cost.total], ['opencode', 'Unlisted session', 5, 0]]);
   assert.deepEqual(hourly.scan, { complete: true, files: 3, scannedFiles: 3 });
   for (const record of hourly.usage) {
     assert.deepEqual(Object.keys(record), ['app', 'model', 'hourMs', 'tokens']);

@@ -60,7 +60,7 @@ async function setup(t, extra = {}) {
 test('the switchboard usage route reads the registered Claude source and prices it with the fake download', async (t) => {
   const { usage, fetches } = await setup(t);
   const reply = await usage();
-  assert.deepEqual(Object.keys(reply).sort(), ['buckets', 'machines', 'nowMs', 'period', 'prices', 'records', 'scan']);
+  assert.deepEqual(Object.keys(reply).sort(), ['buckets', 'machines', 'nowMs', 'period', 'prices', 'records', 'scan', 'sessions']);
   assert.equal(reply.period, '7d');
   assert.deepEqual(reply.machines, [{ machineId: self.machineId, name: self.machineName, self: true, state: 'local', lastReportAtMs: 0 }]);
   assert.equal(reply.records.length, 1);
