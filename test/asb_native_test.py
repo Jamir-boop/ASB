@@ -19241,7 +19241,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 table.snapshot_chord(snapshot, chord, 1, "lit", palette, table.chord_gray(palette), "stroke")
                 self.assertAlmostEqual(snapshot.append_stroke.call_args_list[0].args[1].get_line_width(), asb.status_chord_width(counts[chord["key"]], largest), places=5)
         low = min(counts.values())
-        text = f"Line width: {low} to {largest} messages (Oct 22)" if low != largest else f"Line width: {largest} message{'' if largest == 1 else 's'} (Oct 22)"
+        # The name of the time thread, as in its head: the weekday and the day.
+        day = asb.message_time_name(window.thread["key"], partial=False)
+        self.assertEqual(day, "Thu, Oct 22")
+        text = f"Line width: {low} to {largest} messages ({day})" if low != largest else f"Line width: {largest} message{'' if largest == 1 else 's'} ({day})"
         self.assertEqual((table.key["items"][0]["kind"], table.key["items"][0]["layout"].get_text()), ("chords", text))
         self.assertEqual((table.key["widths"], table.key["accent"]), ((asb.status_chord_width(low, largest), asb.status_chord_width(largest, largest)), True))
         with patch.object(table, "update_property") as update:
@@ -19252,14 +19255,15 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         for key in table.chord_keys:
             tip = table.proxies[("chord", key)].get_tooltip_text()
             if key in counts:
-                self.assertTrue(tip.endswith(f"\nOct 22: {counts[key]}"), tip)
+                self.assertTrue(tip.endswith(f"\n{day}: {counts[key]}"), tip)
             else:
                 self.assertNotIn("Oct 22", tip)
-        # TT5: a step changes the key in place (here to Oct 24); the table follows on the next update.
+        # TT5: a step from the thread strip or the step buttons opens the bucket in place (here Oct 24), and the table follows.
         index = next(index for index, start in enumerate(starts) if asb.format_day(start) == "Oct 24")
         following = (starts[index], starts[index + 1] if index + 1 < len(starts) else asb.message_bucket_end(window.data))
-        window.thread["key"] = following
-        window.update_view(); self.drain(.2)
+        stack = len(window.thread_stack)
+        window.open_time(index, True); self.drain(.2)
+        self.assertEqual((window.thread["key"], len(window.thread_stack)), (following, stack))
         moved = {}
         for record in self.records():
             key = next((key for key in table.chord_keys if set(key) == {record[1], record[2]}), None)
@@ -19268,6 +19272,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(table.open_lit()[0], set(moved))
         name = asb.message_time_name(following, partial=False)
         self.assertTrue(table.key["items"][0]["layout"].get_text().endswith(f"({name})"))
+        for key in table.chord_keys:
+            tip = table.proxies[("chord", key)].get_tooltip_text()
+            self.assertEqual(tip.endswith(f"\n{name}: {moved[key]}") if key in moved else day not in tip and name not in tip, True, tip)
         # A chord with no message in the bucket stays at rest.
         state = table.state()
         other = next(key for key in table.chord_keys if key not in moved)
