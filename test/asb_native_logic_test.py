@@ -1494,6 +1494,62 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertLess(asb.contrast(first, "#101820"), 3)
         self.assertNotEqual(ramp["cacheRead"], first)
 
+    def sessions(self, period="all", on=None, metric="cost", reply=None):
+        reply = reply or self.REPLIES[period]
+        return asb.usage_sessions(reply, self.view(period, on, metric, reply), metric)
+
+    def test_sessions_rank_the_top_8_and_the_rows_add_up_to_the_total(self):
+        for period in ("7d", "30d", "90d", "all"):
+            for metric in ("cost", "tokens"):
+                with self.subTest(period=period, metric=metric):
+                    view, section = self.view(period, metric=metric), self.sessions(period, metric=metric)
+                    rows, other = section["rows"], section["other"]
+                    self.assertEqual(len(rows), 8)
+                    values = [row["value"] for row in rows]
+                    self.assertEqual(values, sorted(values, reverse=True))
+                    # 18 sessions on three machines: 10 more, and Desk has usage with no session.
+                    self.assertEqual(other["label"], "Other sessions (10)")
+                    self.assertEqual(other["tip"], "10 more sessions, and usage that ASB cannot tie to a session")
+                    self.assertAlmostEqual(sum(values) + other["value"], view["total"], delta=1e-6)
+                    self.assertAlmostEqual(sum(row["share"] for row in rows) + other["share"], 1, delta=1e-9)
+                    self.assertAlmostEqual(sum(row["cost"] for row in rows) + other["cost"], view["cost"], delta=1e-6)
+                    self.assertEqual(sum(row["tokens"] for row in rows) + other["tokens"], view["tokens"])
+        cost, tokens = self.sessions(metric="cost"), self.sessions(metric="tokens")
+        self.assertEqual([row["title"] for row in cost["rows"]],
+                         ["docs", "ui-polish", "changelog", "parser-review", "release-plan", "icons", "migrations", "ci-fix"])
+        self.assertNotEqual([row["title"] for row in tokens["rows"]], [row["title"] for row in cost["rows"]])
+        self.assertEqual({row["app"] for row in cost["rows"]} | {row["machine"]["id"] for row in cost["rows"]}, {"codex", "claude", "desk", "laptop"})
+
+    def test_sessions_follow_the_machine_filter(self):
+        # Laptop only: its 6 sessions hold all its usage, so there is no Other row.
+        section = self.sessions(on={"laptop"})
+        self.assertEqual([row["machine"]["id"] for row in section["rows"]], ["laptop"] * 6)
+        self.assertIsNone(section["other"])
+        self.assertAlmostEqual(sum(row["value"] for row in section["rows"]), self.view("all", {"laptop"})["total"], delta=1e-6)
+        # Desk only: 8 sessions, 0 more, and its usage with no session.
+        desk = self.sessions(on={"desk"}, metric="tokens")
+        self.assertEqual((len(desk["rows"]), desk["other"]["label"], desk["other"]["tip"]),
+                         (8, "Other sessions (0)", "Usage that ASB cannot tie to a session"))
+        self.assertEqual(sum(row["value"] for row in desk["rows"]) + desk["other"]["value"], self.view("all", {"desk"}, "tokens")["total"])
+        # Studio and Laptop: 10 sessions, 8 shown, 2 more, all usage tied.
+        both = self.sessions(on={"studio", "laptop"})
+        self.assertEqual((both["other"]["label"], both["other"]["tip"]), ("Other sessions (2)", "2 more sessions"))
+
+    def test_sessions_hide_with_no_session_and_ties_go_to_the_title_then_the_id(self):
+        # In 24 hours, Studio has no usage and no session.
+        self.assertIsNone(self.sessions("24h", on={"studio"}))
+        reply = copy.deepcopy(self.REPLIES["30d"])
+        del reply["sessions"]
+        self.assertIsNone(self.sessions("30d", reply=reply))
+        reply["sessions"] = {"rows": [], "counts": {}, "none": {}}
+        self.assertIsNone(self.sessions("30d", reply=reply))
+        tokens = {"uncached": 1, "cacheRead": 0, "cacheWrite": 0, "output": 0}
+        reply["sessions"] = {"rows": [{"machineId": "desk", "id": id_, "app": "pi", "title": title, "tokens": tokens, "cost": 1}
+                                      for id_, title in (("b", "x"), ("a", "x"), ("c", "w"))], "counts": {"desk": 3}, "none": {}}
+        section = self.sessions("30d", reply=reply)
+        self.assertEqual([row["id"] for row in section["rows"]], ["c", "a", "b"])
+        self.assertIsNone(section["other"])
+
     def test_end_label_tops(self):
         # Far apart: each label keeps the y of its line.
         self.assertEqual(asb.usage_end_label_tops([20, 60, 100], 10, 0, 140), [15, 55, 95])

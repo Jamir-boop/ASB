@@ -3125,6 +3125,46 @@ def usage_view(reply, machines_on, metric):
             "unpriced_models": unpriced_models, "buckets": reply["buckets"], "bars": bars}
 
 
+USAGE_SESSION_ROWS = 8
+
+
+def usage_sessions(reply, view, metric):
+    """The Sessions section for the machines of view: the USAGE_SESSION_ROWS sessions with the highest value (priced cost or
+    processed tokens; ties go to the title, then the ID), then an Other row with the rest of the filtered totals, so the rows
+    add up to the totals. None when no shown machine has a session in the period."""
+    sessions = reply.get("sessions") or {}
+    machines = {machine["id"]: machine for machine in view["machines"]}
+    count = sum((sessions.get("counts") or {}).get(machine, 0) for machine in machines)
+    if not count:
+        return None
+    total = view["total"]
+    rows = []
+    for row in sessions.get("rows") or []:
+        machine = machines.get(row.get("machineId"))
+        if machine is None:
+            continue
+        tokens, cost = sum(row["tokens"][part] for part in USAGE_PARTS), row.get("cost") or 0
+        value = cost if metric == "cost" else tokens
+        rows.append({"id": row["id"], "app": row["app"] if row["app"] in USAGE_APPS else "", "title": row["title"], "machine": machine,
+                     "value": value, "cost": cost, "tokens": tokens, "share": value / total if total else 0})
+    rows.sort(key=lambda row: (-row["value"], row["title"], row["id"]))
+    shown = [row for row in rows if row["value"] > 0][:USAGE_SESSION_ROWS]
+    more = count - len(shown)
+    # The member sessions cover the member's own hours, so the rest is never below 0.
+    cost = max(0, view["cost"] - sum(row["cost"] for row in shown))
+    tokens = max(0, view["tokens"] - sum(row["tokens"] for row in shown))
+    value = cost if metric == "cost" else tokens
+    untied = any(sum((((sessions.get("none") or {}).get(machine) or {}).get("tokens") or {}).values()) > 0 for machine in machines)
+    other = None
+    if more > 0 or (untied and value > 0):
+        sessions_text = f"{more} more session{'' if more == 1 else 's'}"
+        tip = (f"{sessions_text}, and usage that ASB cannot tie to a session" if more else "Usage that ASB cannot tie to a session") if untied \
+            else sessions_text
+        other = {"label": f"Other sessions ({more})", "tip": tip, "value": value, "cost": cost, "tokens": tokens,
+                 "share": value / total if total else 0}
+    return {"rows": shown, "other": other}
+
+
 def usage_toggle(machines_on, machine_id):
     """The machines that are on after a chip click. The last machine that is on stays on."""
     changed = set(machines_on) ^ {machine_id}
@@ -17262,6 +17302,16 @@ class UsageWindow(ActivityWindow):
         self.models = Gtk.Grid()
         models.append(self.models)
         self.content.append(models)
+        # Sessions: the top sessions of the period in the Models row style; hidden when the period has no session.
+        self.sessions_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, visible=False)
+        self.sessions_section.append(self.heading("Sessions"))
+        self.session_keys = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=4, max_children_per_line=12,
+                                        halign=Gtk.Align.START, margin_bottom=8)
+        self.session_keys.add_css_class("asb-usage-keys")
+        self.sessions_section.append(self.session_keys)
+        self.sessions = Gtk.Grid()
+        self.sessions_section.append(self.sessions)
+        self.content.append(self.sessions_section)
         self.layout_content()
 
         self.breakpoints = {}
@@ -17599,6 +17649,7 @@ class UsageWindow(ActivityWindow):
         self.render_chart(view, show)
         self.render_totals(view)
         self.render_models(view, show)
+        self.render_sessions(view, show)
 
     def render_chart(self, view, show):
         if self.split == "app":
@@ -17868,6 +17919,73 @@ class UsageWindow(ActivityWindow):
             cell.add_css_class("asb-usage-cell")
             cell.asb_model = (model["model"], model["app"])
         return cells
+
+    def render_sessions(self, view, show):
+        """The Sessions table: the top sessions under the machine filter, then the dim Other sessions row. It is built again only
+        when its numbers, the metric, the layout, or the colors change. Each row reads as one sentence to a screen reader."""
+        section = usage_sessions(self.data, view, self.metric)
+        self.sessions_section.set_visible(section is not None)
+        if section is None:
+            return
+        columns = [("Session", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
+            [("Session", 0), ("App", 0), ("Machine", 0), ("Cost", 1), ("Share", 0), ("Tokens", 1)]
+        machines = [(machine["id"], machine["name"], machine["hue"], machine["offline"]) for machine in view["machines"]]
+        key = (self.metric, columns, machines, self.text_scale, self.palette["accent"], self.palette["track"],
+               [(row["id"], row["app"], row["title"], row["machine"]["id"], row["value"], row["cost"], row["tokens"]) for row in section["rows"]],
+               section["other"])
+        if key == getattr(self, "session_key", None):
+            return
+        self.session_key = key
+        self.session_keys.remove_all()
+        for machine in view["machines"]:
+            entry = Gtk.Box(spacing=round(6 * self.text_scale))
+            entry.append(self.dot(machine))
+            entry.append(self.text(machine["name"], ("asb-usage-model-key",)))
+            self.session_keys.append(entry)
+            entry.get_parent().set_focusable(False)
+        grid = self.sessions
+        remove_children(grid)
+        for column, (title, xalign) in enumerate(columns):
+            head = self.text(title, ("asb-usage-head",), xalign, hexpand=title in ("Session", "App", "Machine", "Tokens"))
+            if title == "Cost" and not self.small:
+                head.add_css_class("asb-usage-cost")
+            grid.attach(head, column, 0, 1, 1)
+        hidden = Gtk.AccessibleRole.PRESENTATION
+        self.session_rows = []
+        lines = section["rows"] + ([section["other"]] if section["other"] else [])
+        for line, row in enumerate(lines, 1):
+            other = row is section["other"]
+            title = row["label"] if other else row["title"]
+            # A title is a name and is cut in the middle; the Other label wraps, so the window never cuts it.
+            name = self.text(title, ("asb-dim",), wrap=True, wrap_mode=Pango.WrapMode.WORD, tooltip_text=row["tip"]) if other else \
+                self.text(title, (), ellipsize=Pango.EllipsizeMode.MIDDLE, width_chars=8, tooltip_text=title)
+            facts = [title] if other else [title, ACTIVITY_APP_LABELS[row["app"]], row["machine"]["name"]]
+            name.update_property([Gtk.AccessibleProperty.LABEL], [", ".join(facts + [show(row["value"]), f"{format_share(row['share'])} of the total"])])
+            app = Gtk.Box(spacing=round(6 * self.text_scale), accessible_role=hidden)
+            machine = Gtk.Box(accessible_role=hidden)
+            if not other:
+                app.set_tooltip_text(ACTIVITY_APP_LABELS[row["app"]])
+                mark = self.mark(row["app"])
+                mark.set_pixel_size(round(14 * self.text_scale))
+                app.append(mark)
+                if not self.small:
+                    app.append(self.text(ACTIVITY_APP_LABELS[row["app"]], accessible_role=hidden))
+                machine.set_tooltip_text(row["machine"]["name"])
+                machine.append(self.dot(row["machine"]))
+            share = Gtk.Box(spacing=8, accessible_role=hidden)
+            bar = UsageBar(6, self.palette["track"], 60)
+            bar.set_segments([(1, self.palette["accent"])], row["share"])
+            share.append(bar)
+            share.append(self.text(format_share(row["share"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, width_chars=6, accessible_role=hidden))
+            cells = {"Session": name, "App": app, "Machine": machine, "Share": share,
+                     "Cost": self.text(format_cost(row["cost"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, accessible_role=hidden),
+                     "Tokens": self.text(format_tokens(row["tokens"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, accessible_role=hidden)}
+            if not self.small:
+                cells["Cost"].add_css_class("asb-usage-cost")
+            for column, (title, _xalign) in enumerate(columns):
+                cells[title].add_css_class("asb-usage-cell")
+                grid.attach(cells[title], column, line, 1, 1)
+            self.session_rows.append(cells)
 
 
 ACTIVITY_WINDOW_CLASSES["usage"] = UsageWindow

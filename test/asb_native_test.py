@@ -14382,6 +14382,81 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(self.labels(rows[-1][1][4]), [asb.format_share(view["models"][-1]["share"])])
         self.assert_no_new_warnings()
 
+    def check_session_rows(self, window, period, on, metric):
+        """The Sessions rows match usage_sessions and add up to the filtered total; returns the logic section."""
+        view = asb.usage_view(self.REPLIES[period], on, metric)
+        section = asb.usage_sessions(self.REPLIES[period], view, metric)
+        lines = section["rows"] + ([section["other"]] if section["other"] else [])
+        self.assertEqual(len(window.session_rows), len(lines))
+        for cells, line in zip(window.session_rows, lines):
+            self.assertEqual(cells["Session"].get_label(), line.get("title", line.get("label")))
+            self.assertEqual((cells["Cost"].get_label(), cells["Tokens"].get_label()), (asb.format_cost(line["cost"]), asb.format_tokens(line["tokens"])))
+            self.assertEqual(self.labels(cells["Share"]), [asb.format_share(line["share"])])
+        self.assertAlmostEqual(sum(line["value"] for line in lines), view["total"], delta=1e-6)
+        return section
+
+    def test_the_sessions_table(self):
+        window = self.window(period="all")
+        self.assertTrue(window.sessions_section.get_visible())
+        # After Models, with the machine keys under the heading.
+        self.assertIs(window.sessions_section.get_prev_sibling(), window.models.get_parent())
+        self.assertEqual(self.labels(window.session_keys), ["Desk", "Laptop", "Studio"])
+        heads = [child.get_label() for child in self.children(window.sessions) if child.has_css_class("asb-usage-head")]
+        self.assertEqual(heads, ["Session", "App", "Machine", "Cost", "Share", "Tokens"])
+        section = self.check_session_rows(window, "all", self.ALL, "cost")
+        self.assertEqual(len(window.session_rows), 9)
+        first, other = window.session_rows[0], window.session_rows[-1]
+        row = section["rows"][0]
+        self.assertEqual((first["Session"].get_label(), first["Session"].get_tooltip_text(), first["Session"].get_ellipsize()),
+                         ("docs", "docs", asb.Pango.EllipsizeMode.MIDDLE))
+        self.assertEqual((self.labels(first["App"]), first["App"].get_tooltip_text(), first["Machine"].get_tooltip_text()),
+                         (["Claude Code"], "Claude Code", "Desk"))
+        self.assertTrue(self.children(first["Machine"])[0].has_css_class("asb-activity-hue-0"))
+        self.assert_accessible_label(first["Session"], f"docs, Claude Code, Desk, {asb.format_cost(row['cost'])}, {asb.format_share(row['share'])} of the total")
+        self.assertGreaterEqual(first["Session"].get_height(), 34)
+        self.assertEqual(asb.Gtk.AccessibleRole.PRESENTATION, first["Cost"].get_accessible_role())
+        # The dim Other row: the rest of the total, and what it holds in its tooltip.
+        self.assertEqual(other["Session"].get_label(), "Other sessions (10)")
+        self.assertEqual(other["Session"].get_tooltip_text(), "10 more sessions, and usage that ASB cannot tie to a session")
+        self.assertTrue(all(other[name].has_css_class("asb-dim") for name in ("Session", "Cost", "Tokens")))
+        self.assertEqual(self.children(other["App"]) + self.children(other["Machine"]), [])
+        self.assert_accessible_label(other["Session"], f"Other sessions (10), {asb.format_cost(section['other']['cost'])}, "
+                                     f"{asb.format_share(section['other']['share'])} of the total")
+        # Tokens: the order follows the tokens, and the shares too.
+        window.metric_buttons["tokens"].set_active(True)
+        self.drain(.05)
+        tokens = self.check_session_rows(window, "all", self.ALL, "tokens")
+        self.assertNotEqual([line["id"] for line in tokens["rows"]], [line["id"] for line in section["rows"]])
+        self.assert_accessible_label(window.session_rows[0]["Session"], ", ".join((tokens["rows"][0]["title"], asb.ACTIVITY_APP_LABELS[tokens["rows"][0]["app"]],
+                                     tokens["rows"][0]["machine"]["name"], asb.format_tokens(tokens["rows"][0]["tokens"]),
+                                     f"{asb.format_share(tokens['rows'][0]['share'])} of the total")))
+        # The machine filter: Laptop only has 6 sessions that hold all its usage, so no Other row.
+        window.metric_buttons["cost"].set_active(True)
+        window.toggle_machine("desk")
+        window.toggle_machine("studio")
+        self.drain(.05)
+        laptop = self.check_session_rows(window, "all", {"laptop"}, "cost")
+        self.assertEqual((len(window.session_rows), laptop["other"]), (6, None))
+        self.assertEqual({cells["Machine"].get_tooltip_text() for cells in window.session_rows}, {"Laptop"})
+        self.assertEqual(self.labels(window.session_keys), ["Laptop"])
+        self.assert_no_new_warnings()
+
+    def test_the_sessions_section_hides_with_no_session(self):
+        replies = copy.deepcopy(self.REPLIES)
+        del replies["30d"]["sessions"]
+        window = self.window(replies)
+        self.assertFalse(window.sessions_section.get_visible())
+        self.assertTrue(window.models.get_parent().get_visible())
+        # 24 hours on Studio alone: no usage and no session.
+        window.set_period("24h")
+        self.drain(.25)
+        self.assertTrue(window.sessions_section.get_visible())
+        window.toggle_machine("desk")
+        window.toggle_machine("laptop")
+        self.drain(.05)
+        self.assertFalse(window.sessions_section.get_visible())
+        self.assert_no_new_warnings()
+
     def test_an_incomplete_scan_reads_every_two_seconds(self):
         reading = copy.deepcopy(self.REPLIES)
         reading["30d"]["scan"] = {"complete": False, "files": 2707, "scannedFiles": 120}
