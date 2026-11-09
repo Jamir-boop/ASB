@@ -17584,13 +17584,14 @@ class UsageChart(Gtk.Widget):
             return [(self.LEFT + right) / 2]
         return [self.LEFT + index * (right - self.LEFT) / (count - 1) for index in range(count)]
 
-    def end_label_tops(self):
-        """The keys of the end labels, the y of their line ends, and their tops (see end_labels)."""
+    def end_label_tops(self, final=False):
+        """The keys of the end labels, the y of their line ends, and their tops (see end_labels). final: the places at the end
+        of a running animation."""
         keys = list(self.end_texts)
         if not keys or self.narrow:
             return [], [], []
         last = len(self.bars) - 1
-        ends, height = [self.value_y(last, key) for key in keys], self.label_height
+        ends, height = [self.targets[(last, key)] if final else self.value_y(last, key) for key in keys], self.label_height
         top = max(self.TOP, len(self.header_lines(self.label_column_width())) * height + 4)
         tops = usage_end_label_tops(ends, height, top, self.BOTTOM)
         for index, end in enumerate(ends):
@@ -17603,8 +17604,9 @@ class UsageChart(Gtk.Widget):
 
     def dotted_ends(self):
         """True when two or more end labels would need a leader (6 px or more from their line end): then no leader draws, each
-        label has a dot in its line color, and the end rings of the series are small."""
-        _keys, ends, tops = self.end_label_tops()
+        label has a dot in its line color, and the end rings of the series are small. The rule reads the places at the end of
+        a running animation, so the labels and the rings do not change during it."""
+        _keys, ends, tops = self.end_label_tops(True)
         return sum(abs(top + self.label_height / 2 - end) >= 6 for end, top in zip(ends, tops)) >= 2
 
     def end_labels(self):

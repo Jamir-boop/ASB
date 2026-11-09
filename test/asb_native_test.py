@@ -14849,6 +14849,11 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.drain(.2)
         self.assertFalse(plain.dotted_ends())
         self.assertTrue(all(left == plain.centers()[-1] + plain.gap() for _key, _text, left, *_rest in plain.end_labels()))
+        # The rule reads the places at the end of an animation: lines that rise from the baseline do not get dots on the way.
+        plain.starts, plain.progress = {point: plain.BOTTOM for point in plain.targets}, 0
+        self.assertFalse(plain.dotted_ends())
+        self.assertTrue(all(left == plain.centers()[-1] + plain.gap() for _key, _text, left, *_rest in plain.end_labels()))
+        plain.progress = 1
         # No label is cut at the smallest wide width either.
         small = self.window(self.WEEKLY, size=(560, 760), period="all").chart
         self.drain(.2)
