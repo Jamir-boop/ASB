@@ -13397,7 +13397,7 @@ class ActivityFixture:
             found, bounds = window.metric_buttons[window.metric].compute_bounds(window)
             self.assertTrue(found)
             self.assert_pixel(window, bounds.get_x() + 7, bounds.get_y() + bounds.get_height() // 2,
-                              asb.mix_color(self.THEME["background"], self.THEME["text"], .10))
+                              asb.mix_color(self.THEME["background"], self.THEME["text"], .17))
         window.set_palette(None)
         self.drain(.2)
         self.assertFalse(window.has_css_class("asb-custom"))
@@ -14971,7 +14971,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             window = self.window()
             window.set_palette(colors)
             palette = window.palette
-            raised = asb.mix_color(palette["win"], palette["text"], .10)
+            raised = palette["track"]
             for button in (window.metric_buttons["cost"], window.split_buttons["app"]):
                 for hover in (False, True):
                     with self.subTest(look=look, button=button.get_label(), hover=hover):
@@ -14986,6 +14986,13 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                         self.assertGreaterEqual(asb.contrast(label, raised), 4.5)
                         self.assertEqual(button.get_child().get_pango_context().get_font_description().get_weight(), asb.Pango.Weight.BOLD)
                         button.unset_state_flags(asb.Gtk.StateFlags.PRELIGHT)
+            # The checked fill differs from the unchecked fill.
+            data, stride = self.pixels(window)
+            def fill(button):
+                bounds = button.compute_bounds(window)[1]
+                offset = int(bounds.get_y() + bounds.get_height() // 2) * stride + int(bounds.get_x() + 4) * 4
+                return "#" + data[offset:offset + 3].hex()
+            self.assertNotEqual(fill(window.metric_buttons["cost"]), fill(window.metric_buttons["tokens"]), look)
             # The accent stays as it is where it has 4.5:1 on the fill.
             if look != "gnome":
                 self.assertEqual(asb.hex_color(window.metric_buttons["cost"].get_color()), palette["accent"])
@@ -15523,7 +15530,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertGreaterEqual(asb.contrast(window.palette["win"], accent), 4.5)
                 for button in (window.retry_button, window.empty_all_time):
                     self.assertEqual(asb.hex_color(button.get_color()), window.palette["win"])
-                raised = asb.mix_color(window.palette["win"], window.palette["text"], .10)
+                raised = window.palette["track"]
                 for button in (window.metric_buttons["cost"], window.split_buttons["app"]):
                     self.assertEqual(asb.hex_color(button.get_color()), asb.contrast_floor(accent, window.palette["text"], raised))
                     self.assertGreaterEqual(asb.contrast(asb.hex_color(button.get_color()), raised), 4.5)
@@ -16339,7 +16346,7 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertNotIn("font-family", mono)
             # A checked linked toggle has the neutral raised fill and its label in the accent at weight 700 (D17 A).
             checked = rules.split(".asb-activity .linked > button:checked {")[1].split("}")[0]
-            raised = asb.mix_color(window.palette["win"], window.palette["text"], .10)
+            raised = window.palette["track"]
             self.assertIn(f"background-color: {asb.rgba(raised).to_string()};", checked)
             self.assertIn(f"color: {asb.rgba(asb.contrast_floor(window.palette['accent'], window.palette['text'], raised)).to_string()};", checked)
             self.assertIn("font-weight: 700;", checked)

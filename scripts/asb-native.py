@@ -13054,9 +13054,9 @@ class ActivityWindow(Adw.Window):
         scope, s = ".asb-activity" + self.css_scope, self.text_scale
         self.size_status_pages()
         ring = palette["accent"] if colors else "@accent_color"
-        # D17 A: a checked linked toggle has the neutral raised fill of a button (10 % text in the window) and its label in the
-        # accent, moved toward the text where it has less than 4.5:1 on that fill.
-        raised = mix_color(palette["win"], palette["text"], .10)
+        # D17 A: a checked linked toggle has the neutral track fill (17 % text in the window) and its label in the accent, moved
+        # toward the text where it has less than 4.5:1 on that fill.
+        raised = palette["track"]
         checked = contrast_floor(palette["accent"], palette["text"], raised)
         hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {self.machine_hue(index)}; }}\n"
                        f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {self.machine_hue(index)}; min-width: 4px; min-height: 4px; }}\n"
