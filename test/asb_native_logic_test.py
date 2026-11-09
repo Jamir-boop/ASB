@@ -1616,6 +1616,71 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertGreater(asb.ease_bars(.25), .75)
         self.assertLess(asb.ease_bars(.05), asb.ease_bars(.1))
 
+    def test_W_U7_rows_show_unpriced_and_no_data_from_the_view_facts(self):
+        # U5d: each machine and app row has a priced flag and its unpriced tokens; no value, arc, or sum changes.
+        view = self.view("90d", on={"desk"})
+        self.assert_consistent(view, "cost")
+        desk, apps = view["machines"][0], {app["id"]: app for app in view["apps"]}
+        self.assertEqual((desk["priced"], desk["unpriced_tokens"]), (True, 436517688))
+        self.assertEqual((apps["opencode"]["priced"], apps["opencode"]["unpriced_tokens"]), (False, 436517688))
+        self.assertEqual((apps["codex"]["priced"], apps["codex"]["unpriced_tokens"]), (True, 0))
+        self.assertEqual(apps["opencode"]["value"], 0)
+        # U5a: all tokens unpriced reads Unpriced in Cost; U5b: a part of them names the unpriced tokens.
+        self.assertEqual(asb.usage_row_value("app", apps["opencode"], view), ("Unpriced", "436.5M tokens with no price"))
+        self.assertEqual(asb.usage_row_value("app", apps["codex"], view), (None, None))
+        self.assertEqual(asb.usage_row_value("machine", desk, view), (None, "Without 436.5M unpriced tokens"))
+        tokens = self.view("90d", on={"desk"}, metric="tokens")
+        self.assertEqual([asb.usage_row_value("app", app, tokens) for app in tokens["apps"]], [(None, None)] * 3)
+        # U5c: an offline machine with no tokens and no report in the period reads No data, in both metrics.
+        for metric in ("cost", "tokens"):
+            day = self.view("24h", metric=metric)
+            self.assert_consistent(day, metric)
+            desk = (None, "Without 4.4M unpriced tokens") if metric == "cost" else (None, None)
+            self.assertEqual([asb.usage_row_value("machine", machine, day) for machine in day["machines"]],
+                             [desk, (None, None), ("No data", "No report from Studio in this period")])
+        # A report inside the period, or a machine that is not offline: the plain $0.00.
+        reply = copy.deepcopy(self.REPLIES["24h"])
+        reply["machines"][2]["lastReportAtMs"] = reply["buckets"]["startsMs"][0]
+        reply["machines"][1]["state"], reply["records"] = "online", [record for record in reply["records"] if record["machineId"] != "laptop"]
+        day = self.view(reply=reply, metric="tokens")
+        self.assertEqual([asb.usage_row_value("machine", machine, day) for machine in day["machines"]], [(None, None)] * 3)
+
+    def test_W_U7_sessions_show_more_rows_in_steps_of_eight(self):
+        view = self.view("all")
+        first = asb.usage_sessions(self.REPLIES["all"], view, "cost")
+        self.assertEqual((len(first["rows"]), first["other"]["label"], first["other"]["next"]), (8, "Other sessions (10)", 8))
+        second = asb.usage_sessions(self.REPLIES["all"], view, "cost", 16)
+        self.assertEqual(second["rows"][:8], first["rows"])
+        # 17 sessions have a value: one more, then only a session with no value is left.
+        self.assertEqual((len(second["rows"]), second["other"]["label"], second["other"]["next"]), (16, "Other sessions (2)", 1))
+        third = asb.usage_sessions(self.REPLIES["all"], view, "cost", 24)
+        self.assertEqual((len(third["rows"]), third["other"]["label"], third["other"]["next"]), (17, "Other sessions (1)", 0))
+        for section in (first, second, third):
+            self.assertAlmostEqual(sum(row["value"] for row in section["rows"]) + section["other"]["value"], view["total"], delta=1e-6)
+        # Desk shows all its sessions: the rest row has only the usage with no session, with nothing more to show.
+        desk = asb.usage_sessions(self.REPLIES["all"], self.view("all", on={"desk"}, metric="tokens"), "tokens")
+        self.assertEqual((desk["other"]["label"], desk["other"]["next"]), ("Usage with no session", 0))
+
+    def test_W_U7_hour_ticks_name_the_day(self):
+        buckets = self.REPLIES["24h"]["buckets"]
+        measure = lambda text: 7 * len(text)  # noqa: E731
+        # U7a, b: the first tick is on the day before the last bucket, and 01:00 is the first tick of the next day.
+        wide = asb.usage_axis_labels(buckets, [index * 800 / 23 for index in range(24)], 800, 3, measure)
+        self.assertEqual([text for _index, text, _left in wide], ["Sun 19:00", "22:00", "Mon 01:00", "04:00", "07:00", "10:00", "13:00", "16:00"])
+        narrow = asb.usage_axis_labels(buckets, [index * 352 / 23 for index in range(24)], 352, 3, measure, ends=True)
+        self.assertEqual([text for _index, text, _left in narrow], ["Sun 17:00", "Mon 01:00", "07:00", "10:00", "16:00"])
+        # U7c: 16 px stand beside each label with a weekday (and the last label); 4 px between regular labels.
+        for labels in (wide, narrow):
+            for (index, text, left), (following, after, start) in zip(labels, labels[1:]):
+                strong = " " in text or " " in after or following == 23
+                self.assertGreaterEqual(start - (left + measure(text)), 16 if strong else 4, (text, after))
+        # The same day all along: no weekday; a day change on a later tick names it.
+        same = [ActivityHelperChecks.utc(2026, 10, 26, hour) for hour in range(6)]
+        self.assertEqual(asb.usage_hour_weekdays(same, [2, 5]), set())
+        late = [ActivityHelperChecks.utc(2026, 10, 26, 21) + hour * 3_600_000 for hour in range(6)]
+        self.assertEqual(asb.usage_hour_weekdays(late, [0, 3]), {0, 3})
+        self.assertEqual(asb.usage_hour_text(late, 3, True), "Tue 00:00")
+
 
 class UsageBackupChecks(unittest.TestCase):
     def status(self, **changes):

@@ -13516,6 +13516,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
     def assert_no_new_warnings(self):
         self.assertEqual(GTK_WARNINGS[self.warnings:], [])
 
+    def heads(self, grid):
+        """The head texts of the Models or Sessions table (the ranked head is a box with its arrow and its text)."""
+        return [self.labels(child)[0] for child in self.children(grid) if child.has_css_class("asb-usage-head")]
+
     def test_a_new_usage_window_reads_all_time_first(self):
         routes = []
         def fetch(route):
@@ -13872,16 +13876,17 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertLessEqual(left + box_width, chart.get_width())
                 self.assertLessEqual(top + box_height, chart.HEIGHT)
                 self.assertGreaterEqual(box_width, 150)
-        # The box sits on the side with more free plot width: left of a point in the right half, right of one in the left half.
+        # The box sits on the side with more free plot width: left of a point in the right half, right of one in the left half
+        # (its edges on whole pixels, so within 1 px).
         controller.emit("motion", centers[20], 100)
-        self.assertEqual(chart.tip["bounds"][0] + chart.tip["bounds"][2], centers[20] - 12)
+        self.assertAlmostEqual(chart.tip["bounds"][0] + chart.tip["bounds"][2], centers[20] - 12, delta=1)
         self.assertEqual((chart.tip["total_text"], chart.tip["rows"]), ("$34.32", [("Claude Code", "$22.88"), ("Codex", "$10.11"), ("OpenCode", "$1.33")]))
         controller.emit("motion", centers[10], 100)
-        self.assertEqual(chart.tip["bounds"][0], centers[10] + 12)
+        self.assertAlmostEqual(chart.tip["bounds"][0], centers[10] + 12, delta=.5)
         # The last two buckets put the box 12 px left of the point, off the segments into the current bucket.
         for index in (28, 29):
             controller.emit("motion", centers[index], 100)
-            self.assertEqual(chart.tip["bounds"][0] + chart.tip["bounds"][2], centers[index] - 12)
+            self.assertAlmostEqual(chart.tip["bounds"][0] + chart.tip["bounds"][2], centers[index] - 12, delta=1)
         # Ties keep the series order.
         window.chart.set_data(self.CURVE_SERIES, [{"a": 4, "b": 4, "c": 9}, {"a": 4, "b": 4, "c": 9}], chart.buckets | {"startsMs": chart.buckets["startsMs"][:2]},
                               asb.format_cost, "cost", False)
@@ -14007,13 +14012,13 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(chart.colors()[chart.TOTAL], window.palette["accent"])
         right = chart.get_width() - chart.RIGHT
         widest = max(asb.activity_layout(chart, text, 11).get_pixel_extents()[1].width for _key, text, *_rest in labels)
-        # The column holds the widest end label and the wider part of the header.
-        self.assertEqual(chart.RIGHT, math.ceil(chart.gap() + max(widest, chart.header_width()) + 8))
+        # The column holds the room of an end label dot, the widest end label, and the wider part of the header.
+        self.assertEqual(chart.RIGHT, math.ceil(chart.gap() + 12 + max(widest, chart.header_width()) + 8))
         boxes = sorted((top, top + height) for _key, _text, _left, top, _width, height in labels)
         for (_top, bottom), (after, _bottom) in zip(boxes, boxes[1:]):
             self.assertGreaterEqual(after - bottom, 2 - 1e-6)
         for key, _text, left, top, width, height in labels:
-            self.assertEqual(left, right + chart.gap())
+            self.assertEqual(left, right + chart.gap() + (12 if chart.dotted_ends() else 0))
             self.assertLessEqual(left + width, chart.get_width())
             self.assertGreaterEqual(top, chart.TOP - 1e-6)
             self.assertLessEqual(top + height, chart.BOTTOM + 1e-6)
@@ -14030,7 +14035,9 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             moved = [abs(top + height / 2 - chart.value_y(last, key)) for key, _text, _left, top, _width, height in chart.end_labels()]
             strokes = [node for node in self.render_nodes(self.chart_node(chart)) if isinstance(node, asb.Gsk.StrokeNode)
                        and node.get_stroke().get_line_width() == 1]
-            self.assertEqual(len(strokes), sum(1 for distance in moved if distance >= 6))
+            leaders = sum(1 for distance in moved if distance >= 6)
+            # Two or more leaders: no leader, a dot before each label.
+            self.assertEqual(len(strokes), 0 if leaders >= 2 else leaders)
             labels = chart.end_labels()
             for (key, _text, _left, top, _width, height), distance in zip(labels, moved):
                 if 0 < distance < 6:
@@ -14458,8 +14465,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual([key for key, _cells in rows], [
             ("claude-opus-5-5", "claude"), ("gpt-6.1-sol", "codex"), ("claude-sonnet-5-5", "claude"), ("claude-sonnet-5-5", "opencode"),
             ("claude-haiku-5-5", "claude"), ("gpt-6.1-mini", "codex"), ("mimo-v2.6-pro", "opencode")])
-        heads = [child.get_label() for child in self.children(window.models) if child.has_css_class("asb-usage-head")]
-        self.assertEqual(heads, ["Model", "App", "Machines", "Cost", "Share", "Tokens"])
+        self.assertEqual(self.heads(window.models), ["Model", "App", "Machines", "Cost", "Share of cost", "Tokens"])
         first, last = rows[0][1], rows[-1][1]
         self.assertEqual(self.labels(first[0]) + self.labels(first[1]) + self.labels(first[3]) + self.labels(first[4]) + self.labels(first[5]),
                          ["claude-opus-5-5", "Claude Code", "$923.90", "39.4%", "625.9M"])
@@ -14490,7 +14496,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         lines = section["rows"] + ([section["other"]] if section["other"] else [])
         self.assertEqual(len(window.session_rows), len(lines))
         for cells, line in zip(window.session_rows, lines):
-            self.assertEqual(cells["Session"].get_label(), line.get("title", line.get("label")))
+            self.assertEqual(self.labels(cells["Session"])[0], line.get("title", line.get("label")))
             cost = asb.format_cost(None if line.get("unpriced") and not line["cost"] else line["cost"])
             self.assertEqual((cells["Cost"].get_label(), cells["Tokens"].get_label()), (cost, asb.format_tokens(line["tokens"])))
             self.assertEqual(self.labels(cells["Share"]), [asb.format_share(line["share"])])
@@ -14502,9 +14508,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue(window.sessions_section.get_visible())
         # After Models, with the machine keys under the heading.
         self.assertIs(window.sessions_section.get_prev_sibling(), window.models.get_parent())
-        self.assertEqual(self.labels(window.session_keys), ["Desk", "Laptop", "Studio"])
-        heads = [child.get_label() for child in self.children(window.sessions) if child.has_css_class("asb-usage-head")]
-        self.assertEqual(heads, ["Session", "App", "Machine", "Cost", "Share", "Tokens"])
+        self.assertEqual(self.heads(window.sessions), ["Session", "App", "Machine", "Cost", "Share of cost", "Tokens"])
         section = self.check_session_rows(window, "all", self.ALL, "cost")
         self.assertEqual(len(window.session_rows), 9)
         first, other = window.session_rows[0], window.session_rows[-1]
@@ -14514,16 +14518,15 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((self.labels(first["App"]), first["App"].get_tooltip_text(), first["Machine"].get_tooltip_text()),
                          (["Claude Code"], "Claude Code", "Desk"))
         self.assertTrue(self.children(first["Machine"])[0].has_css_class("asb-activity-hue-0"))
-        self.assert_accessible_label(first["Session"], f"docs, Claude Code, Desk, {asb.format_cost(row['cost'])}, {asb.format_share(row['share'])} of the total")
+        self.assert_accessible_label(first["Session"], f"docs, Claude Code, Desk, {asb.format_cost(row['cost'])}, {asb.format_share(row['share'])} of the cost")
         self.assertGreaterEqual(first["Session"].get_height(), 34)
         self.assertEqual(asb.Gtk.AccessibleRole.PRESENTATION, first["Cost"].get_accessible_role())
-        # The dim Other row: the rest of the total, and what it holds in its tooltip.
-        self.assertEqual(other["Session"].get_label(), "Other sessions (10)")
-        self.assertEqual(other["Session"].get_tooltip_text(), "10 more sessions, and usage that ASB cannot tie to a session")
-        self.assertTrue(all(other[name].has_css_class("asb-dim") for name in ("Session", "Cost", "Tokens")))
+        # The dim Other row: the rest of the total; more sessions with a value make its name a button (U3).
+        self.assertEqual(self.labels(other["Session"]), ["Other sessions (10)"])
+        self.assertEqual(other["Session"].get_tooltip_text(), "Show 8 more sessions")
+        self.assertTrue(all(cell.has_css_class("asb-dim") for cell in (self.children(self.children(other["Session"])[0])[0], other["Cost"], other["Tokens"])))
         self.assertEqual(self.children(other["App"]) + self.children(other["Machine"]), [])
-        self.assert_accessible_label(other["Session"], f"Other sessions (10), {asb.format_cost(section['other']['cost'])}, "
-                                     f"{asb.format_share(section['other']['share'])} of the total")
+        self.assert_accessible_label(other["Session"], "Show 8 more sessions")
         # Tokens: the order follows the tokens, and the shares too.
         window.metric_buttons["tokens"].set_active(True)
         self.drain(.05)
@@ -14531,7 +14534,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertNotEqual([line["id"] for line in tokens["rows"]], [line["id"] for line in section["rows"]])
         self.assert_accessible_label(window.session_rows[0]["Session"], ", ".join((tokens["rows"][0]["title"], asb.ACTIVITY_APP_LABELS[tokens["rows"][0]["app"]],
                                      tokens["rows"][0]["machine"]["name"], asb.format_tokens(tokens["rows"][0]["tokens"]),
-                                     f"{asb.format_share(tokens['rows'][0]['share'])} of the total")))
+                                     f"{asb.format_share(tokens['rows'][0]['share'])} of the tokens")))
         # The machine filter: Laptop only has 6 sessions that hold all its usage, so no Other row.
         window.metric_buttons["cost"].set_active(True)
         window.toggle_machine("desk")
@@ -14540,7 +14543,6 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         laptop = self.check_session_rows(window, "all", {"laptop"}, "cost")
         self.assertEqual((len(window.session_rows), laptop["other"]), (6, None))
         self.assertEqual({cells["Machine"].get_tooltip_text() for cells in window.session_rows}, {"Laptop"})
-        self.assertEqual(self.labels(window.session_keys), ["Laptop"])
         # Desk only in Tokens: all its 8 sessions show, and the dim rest row holds its usage with no session.
         window.toggle_machine("desk")
         window.toggle_machine("laptop")
@@ -14551,7 +14553,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((len(window.session_rows), rest.get_label(), rest.get_tooltip_text()),
                          (9, "Usage with no session", "Usage that ASB cannot tie to a session"))
         self.assert_accessible_label(rest, f"Usage with no session, {asb.format_tokens(desk['other']['tokens'])}, "
-                                     f"{asb.format_share(desk['other']['share'])} of the total")
+                                     f"{asb.format_share(desk['other']['share'])} of the tokens")
         # The unpriced OpenCode session of Desk reads Unpriced in the dim color, as an unpriced model; a priced row keeps its cost.
         cells = next(cells for cells, line in zip(window.session_rows, desk["rows"]) if line["title"] == "bridge-tests")
         self.assertEqual(cells["Cost"].get_label(), "Unpriced")
@@ -14591,9 +14593,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         # The small layout: four columns.
         small = self.window(size=(600, 760), period="all")
         self.assertTrue(small.small)
-        # The small tables have no Machines column, so no machine key stands above them.
-        self.assertEqual([keys.get_visible() for keys in (small.model_keys, small.session_keys)], [False, False])
-        self.assertEqual([keys.get_visible() for keys in (window.model_keys, window.session_keys)], [True, True])
+        # The small tables have no Machines column, so no machine key stands above Models; Sessions has none (U2).
+        self.assertEqual([small.model_keys.get_visible(), window.model_keys.get_visible()], [False, True])
         self.assertEqual(len(self.column_edges(small.sessions, small)), 4)
         self.assert_shared_columns(small)
         # Large Text, wide and small.
@@ -14601,6 +14602,329 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.drain(.2)
         self.assert_shared_columns(window)
         self.assert_shared_columns(small)
+        self.assert_no_new_warnings()
+
+    def ranked_head(self, grid):
+        return next(child for child in self.children(grid) if child.has_css_class("asb-usage-ranked"))
+
+    def test_W_U7_tokens_rank_their_measure_beside_its_share(self):
+        window = self.window(period="all")
+        palette = window.palette
+        # U1a, b, c: in Cost the columns stay; the share head names its measure, and the ranked head is in the text color.
+        for grid, name, machines in ((window.models, "Model", "Machines"), (window.sessions, "Session", "Machine")):
+            self.assertEqual(self.heads(grid), [name, "App", machines, "Cost", "Share of cost", "Tokens"])
+            head = self.ranked_head(grid)
+            self.assertEqual(self.labels(head), ["Cost"])
+            self.assert_accessible_label(head, "Cost, sorted from high to low")
+        window.metric_buttons["tokens"].set_active(True)
+        self.drain(.1)
+        for grid, name, machines in ((window.models, "Model", "Machines"), (window.sessions, "Session", "Machine")):
+            self.assertEqual(self.heads(grid), [name, "App", machines, "Tokens", "Share of tokens", "Cost"])
+            head = self.ranked_head(grid)
+            self.assert_accessible_label(head, "Tokens, sorted from high to low")
+            arrow, text = self.children(self.children(head)[0])
+            self.assertEqual((icon_name(arrow), arrow.get_pixel_size(), self.children(head)[0].get_spacing()), ("pan-down-symbolic", 12, 4))
+            self.assertEqual(asb.hex_color(text.get_color()), palette["text"])
+            self.assertEqual(asb.hex_color(arrow.get_color()), palette["text"])
+            # The text stays right-aligned with its values; the arrow stands directly before it.
+            text_box, arrow_box = (widget.compute_bounds(window)[1] for widget in (text, arrow))
+            self.assertAlmostEqual(arrow_box.get_x() + arrow_box.get_width() + 4, text_box.get_x(), delta=.5)
+            self.assertTrue(head.has_css_class("asb-usage-cost"))
+            others = [child for child in self.children(grid) if child.has_css_class("asb-usage-head") and child is not head]
+            self.assertEqual({asb.hex_color(child.get_color()) for child in others}, {palette["dim"]})
+        # The ranked measure keeps the place and the 24 px gutter of Cost; the two tables keep their shared columns.
+        rows = self.model_rows(window)
+        tokens, share = rows[0][1][3], rows[0][1][4]
+        self.assertTrue(tokens.has_css_class("asb-usage-cost") and not rows[0][1][5].has_css_class("asb-usage-cost"))
+        tokens_box = tokens.compute_bounds(window)[1]
+        self.assertEqual(share.compute_bounds(window)[1].get_x(), tokens_box.get_x() + tokens_box.get_width())
+        self.assert_shared_columns(window)
+        # U1d: the share tooltip and the row sentence name the measure.
+        view = asb.usage_view(self.REPLIES["all"], self.ALL, "tokens")
+        self.assertEqual(share.get_tooltip_text(), f"{asb.format_share(view['models'][0]['share'])} of the tokens")
+        section = asb.usage_sessions(self.REPLIES["all"], view, "tokens")
+        self.assertEqual(window.session_rows[0]["Share"].get_tooltip_text(), f"{asb.format_share(section['rows'][0]['share'])} of the tokens")
+        # U8g: a 120 px share track, and each share above 0 fills 2 px or more.
+        bars = [self.children(cells[4])[0] for _key, cells in rows if self.children(cells[4])] + \
+            [self.children(cells["Share"])[0] for cells in window.session_rows]
+        for bar in bars:
+            self.assertEqual(bar.get_width(), 120)
+            self.assertGreaterEqual(bar.filled(bar.get_width()), 2)
+        # The small layout: Tokens, then Cost, with the ranked head.
+        small = self.window(size=(600, 760), period="all")
+        small.metric_buttons["tokens"].set_active(True)
+        self.drain(.1)
+        for grid, name in ((small.models, "Model"), (small.sessions, "Session")):
+            self.assertEqual(self.heads(grid), [name, "App", "Tokens", "Cost"])
+            self.assert_accessible_label(self.ranked_head(grid), "Tokens, sorted from high to low")
+        self.assert_shared_columns(small)
+        self.assert_no_new_warnings()
+
+    def test_W_U7_sessions_name_the_machine(self):
+        window = self.window(period="all")
+        self.assertFalse(hasattr(window, "session_keys"))
+        self.assertTrue(window.model_keys.get_visible())
+        section = asb.usage_sessions(self.REPLIES["all"], asb.usage_view(self.REPLIES["all"], self.ALL, "cost"), "cost")
+        for cells, row in zip(window.session_rows, section["rows"]):
+            dot, name = self.children(cells["Machine"])
+            self.assertTrue(dot.has_css_class("asb-activity-dot"))
+            self.assertEqual((name.get_label(), name.get_ellipsize()), (row["machine"]["name"], asb.Pango.EllipsizeMode.MIDDLE))
+            self.assertEqual(cells["Machine"].get_spacing(), 6)
+            self.assertEqual(cells["Machine"].get_tooltip_text(), row["machine"]["name"] + (" (offline)" if row["machine"]["offline"] else ""))
+            # The name has the text style of the app name.
+            app_name = self.children(cells["App"])[1]
+            self.assertEqual((asb.hex_color(name.get_color()), self.font_px(name)), (asb.hex_color(app_name.get_color()), self.font_px(app_name)))
+        # An offline machine: a ring, and ` (offline)` in the tooltip.
+        replies = copy.deepcopy(self.REPLIES)
+        replies["all"]["machines"][0]["state"] = "offline"
+        offline = self.window(replies, period="all")
+        machine = offline.session_rows[0]["Machine"]
+        self.assertTrue(self.children(machine)[0].has_css_class("asb-activity-hollow"))
+        self.assertEqual(machine.get_tooltip_text(), "Desk (offline)")
+        self.assert_no_new_warnings()
+
+    def test_W_U7_the_rest_row_shows_more_sessions(self):
+        window = self.window(period="all")
+        palette = window.palette
+        rest = window.session_rows[-1]
+        # U3a: the rest bar is the dim color mixed 50 % toward the track, with 3:1 on the window; the named rows keep the accent.
+        color = asb.contrast_floor(asb.mix_color(palette["dim"], palette["track"], .5), palette["dim"], palette["win"], 3)
+        self.assertEqual(self.children(rest["Share"])[0].segments[0][1], color)
+        self.assertGreaterEqual(asb.contrast(color, palette["win"]), 3)
+        self.assertEqual(self.children(window.session_rows[0]["Share"])[0].segments[0][1], palette["accent"])
+        self.assertTrue(self.children(rest["Share"])[1].has_css_class("asb-dim"))
+        # U3b: the rest name is a flat button with the dim chevron.
+        button = rest["Session"]
+        self.assertIs(button, window.session_more)
+        self.assertTrue(isinstance(button, asb.Gtk.Button) and button.has_css_class("flat"))
+        label, arrow = self.children(self.children(button)[0])
+        self.assertEqual((label.get_label(), icon_name(arrow), arrow.get_pixel_size(), self.children(button)[0].get_spacing()),
+                         ("Other sessions (10)", "pan-down-symbolic", 12, 6))
+        self.assertTrue(arrow.has_css_class("asb-dim") and label.has_css_class("asb-dim"))
+        # The label is on one line when the column has room for it, as the plain rest label was.
+        self.assertEqual(label.get_layout().get_line_count(), 1)
+        self.assertEqual(button.get_tooltip_text(), "Show 8 more sessions")
+        self.assert_accessible_label(button, "Show 8 more sessions")
+        view = asb.usage_view(self.REPLIES["all"], self.ALL, "cost")
+        other = asb.usage_sessions(self.REPLIES["all"], view, "cost")["other"]
+        self.assert_accessible_label(button, f"Other sessions (10), {asb.format_cost(other['cost'])}, {asb.format_share(other['share'])} of the cost",
+                                     asb.Gtk.AccessibleProperty.DESCRIPTION)
+        self.assertGreaterEqual(button.get_height(), window.session_rows[0]["Cost"].get_height())
+        self.assertIn("button:hover.asb-usage-more", window.css.to_string())
+        # U3c: Enter shows the next 8; the page keeps its offset and the focus stays on the button.
+        adjustment = window.scroll.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        self.drain(.2)
+        offset = adjustment.get_value()
+        self.assertGreater(offset, 0)
+        window.set_focus_visible(True)
+        button.grab_focus()
+        button.activate()
+        self.drain(.3)
+        self.assertEqual(len(window.session_rows), 17)
+        self.assertEqual((self.labels(window.session_rows[-1]["Session"])[0], window.session_more.get_tooltip_text()), ("Other sessions (2)", "Show 1 more session"))
+        self.assertIs(window.get_focus(), window.session_more)
+        self.assertEqual(adjustment.get_value(), offset)
+        # U3d: a live refresh keeps the rows.
+        window.render_view()
+        self.assertEqual(len(window.session_rows), 17)
+        # The last click: no button is left, and the focus moves to the Tab stop before it.
+        window.session_more.emit("clicked")
+        self.drain(.3)
+        self.assertEqual(len(window.session_rows), 18)
+        self.assertIsNone(window.session_more)
+        self.assertEqual(self.labels(window.session_rows[-1]["Session"]), ["Other sessions (1)"])
+        self.assertIs(window.get_focus(), window.chart)
+        self.assertEqual(adjustment.get_value(), offset)
+        # U3d: the metric, the machine filter, and the period each start again from 8 rows.
+        for change in (lambda: window.set_metric("tokens"), lambda: window.toggle_machine("studio"), lambda: window.set_period("90d")):
+            if window.session_more:
+                window.session_more.emit("clicked")
+            self.drain(.1)
+            self.assertGreater(len(window.session_rows), 9)
+            change()
+            self.drain(.3)
+            self.assertEqual(len(window.session_rows), 9)
+        self.assert_no_new_warnings()
+
+    def test_W_U7_unchecked_toggles_are_regular_and_dim(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-enable-animations", settings.get_property("gtk-enable-animations"))
+        settings.set_property("gtk-enable-animations", False)
+        for look, colors in self.LOOKS.items():
+            window = self.window()
+            window.set_palette(colors)
+            self.drain(.1)
+            palette = window.palette
+            widths = {key: button.get_width() for key, button in {**window.metric_buttons, **window.split_buttons}.items()}
+            data, stride = self.pixels(window)
+            for button in (window.metric_buttons["tokens"], window.split_buttons["machine"]):
+                with self.subTest(look=look, button=button.get_label()):
+                    self.assertFalse(button.get_active())
+                    label = asb.hex_color(button.get_color())
+                    bounds = button.compute_bounds(window)[1]
+                    offset = int(bounds.get_y() + bounds.get_height() // 2) * stride + int(bounds.get_x() + 4) * 4
+                    self.assertGreaterEqual(asb.contrast(label, "#" + data[offset:offset + 3].hex()), 4.5)
+                    self.assertNotEqual(label, palette["text"])
+                    self.assertEqual(button.get_child().get_pango_context().get_font_description().get_weight(), asb.Pango.Weight.NORMAL)
+                    button.set_state_flags(asb.Gtk.StateFlags.PRELIGHT, False)
+                    self.drain(.05)
+                    self.assertEqual(asb.hex_color(button.get_color()), palette["text"])
+                    button.unset_state_flags(asb.Gtk.StateFlags.PRELIGHT)
+            # A toggle moves nothing: each button keeps the width of its bold label.
+            window.metric_buttons["tokens"].set_active(True)
+            window.split_buttons["machine"].set_active(True)
+            self.drain(.1)
+            self.assertEqual({key: button.get_width() for key, button in {**window.metric_buttons, **window.split_buttons}.items()}, widths)
+            self.assertEqual(window.metric_buttons["cost"].get_child().get_pango_context().get_font_description().get_weight(), asb.Pango.Weight.NORMAL)
+        self.assert_no_new_warnings()
+
+    def overview_row(self, box, attribute, key):
+        return next(row for row in self.children(box) if getattr(row, attribute, None) == key)
+
+    def test_W_U7_unpriced_and_no_data_rows(self):
+        window = self.window(period="90d")
+        window.app_fold.set_expanded(True)
+        window.toggle_machine("laptop")
+        window.toggle_machine("studio")
+        self.drain(.2)
+        # U5a: OpenCode on Desk has only unpriced tokens: dim Unpriced, no percent, an empty bar.
+        row = self.overview_row(window.app_rows, "asb_app", "opencode")
+        self.assertEqual((row.asb_value.get_label(), row.asb_share.get_label(), row.asb_bar.segments), ("Unpriced", "", []))
+        self.assertTrue(row.asb_value.has_css_class("asb-dim") and not row.asb_value.has_css_class("asb-mono"))
+        self.assertEqual(row.asb_value.get_tooltip_text(), "436.5M tokens with no price")
+        # U5b: Desk has some unpriced tokens.
+        desk = self.overview_row(window.machine_rows, "asb_machine", "desk")
+        self.assertEqual(desk.asb_value.get_tooltip_text(), "Without 436.5M unpriced tokens")
+        self.assertTrue(desk.asb_value.has_css_class("asb-mono"))
+        codex = self.overview_row(window.app_rows, "asb_app", "codex")
+        self.assertIsNone(codex.asb_value.get_tooltip_text())
+        # Tokens: every row has its number.
+        window.set_metric("tokens")
+        self.assertEqual(row.asb_value.get_label(), asb.format_tokens(436517688))
+        self.assertIsNone(row.asb_value.get_tooltip_text())
+        # U5c: Studio reports nothing in the last 24 hours, in both metrics.
+        window.show_all_machines()
+        window.set_period("24h")
+        self.drain(.3)
+        for metric in ("tokens", "cost"):
+            window.set_metric(metric)
+            studio = self.overview_row(window.machine_rows, "asb_machine", "studio")
+            self.assertEqual((studio.asb_value.get_label(), studio.asb_share.get_label(), studio.asb_bar.segments), ("No data", "", []))
+            self.assertEqual(studio.asb_value.get_tooltip_text(), "No report from Studio in this period")
+        # The ring and the chart keep their numbers.
+        view = asb.usage_view(self.REPLIES["24h"], self.ALL, "cost")
+        self.assertAlmostEqual(sum(arc["value"] for arc in window.round.arcs if arc["kind"] == "machine"), view["total"], delta=1e-6)
+        self.assertAlmostEqual(sum(window.chart.sums), view["total"], delta=1e-6)
+        self.assert_no_new_warnings()
+
+    def test_W_U7_bunched_chart_ends_have_dots(self):
+        window = self.window(self.WEEKLY, period="all")
+        chart = window.chart
+        self.drain(.3)
+        # Two or more labels would need a leader: no leader, a 6 px dot in the line color before each label.
+        self.assertTrue(chart.dotted_ends())
+        nodes = self.render_nodes(self.chart_node(chart))
+        self.assertEqual([node for node in nodes if isinstance(node, asb.Gsk.StrokeNode) and node.get_stroke().get_line_width() == 1], [])
+        labels, colors, right = chart.end_labels(), chart.colors(), chart.centers()[-1]
+        dots = [node for node in nodes if isinstance(node, asb.Gsk.ColorNode) and node.get_bounds().get_width() == 6
+                and node.get_bounds().get_height() == 6 and node.get_bounds().get_x() > right]
+        self.assertEqual(len(dots), len(labels))
+        for (key, _text, left, top, width, height), dot in zip(labels, dots):
+            self.assertEqual(asb.hex_color(dot.get_color()), colors[key])
+            self.assertEqual((dot.get_bounds().get_x(), left), (right + chart.gap(), right + chart.gap() + 12))
+            self.assertAlmostEqual(dot.get_bounds().get_y() + 3, top + height / 2)
+            self.assertLessEqual(left + width, chart.get_width() - 8)
+        # The Total ring keeps its size; each series ring is 4 px across over a 1 px window-colored casing.
+        for key, _color, _dash, ring, casing in chart.current:
+            found, bounds = ring.get_bounds()
+            self.assertAlmostEqual(bounds.get_width(), 6 if key == chart.TOTAL else 2.5, delta=1 if key == chart.TOTAL else .01)
+            if key != chart.TOTAL:
+                self.assertAlmostEqual(casing.get_bounds()[1].get_width(), 6)
+        # The column always keeps the dot room, so the plot width does not change; one leader or none draws as before.
+        widest = max(chart.text(text, 11, asb.Pango.Weight.BOLD if key == chart.TOTAL else asb.Pango.Weight.NORMAL).get_pixel_extents()[1].width
+                     for key, text, *_rest in labels)
+        self.assertEqual(chart.RIGHT, math.ceil(chart.gap() + 12 + max(widest, chart.header_width()) + 8))
+        plain = self.window(period="30d").chart
+        self.drain(.2)
+        self.assertFalse(plain.dotted_ends())
+        self.assertTrue(all(left == plain.centers()[-1] + plain.gap() for _key, _text, left, *_rest in plain.end_labels()))
+        # No label is cut at the smallest wide width either.
+        small = self.window(self.WEEKLY, size=(560, 760), period="all").chart
+        self.drain(.2)
+        self.assertFalse(small.narrow)
+        for _key, _text, left, _top, width, _height in small.end_labels():
+            self.assertLessEqual(left + width, small.get_width() - 8)
+        self.assert_no_new_warnings()
+
+    def axis_ticks(self, chart):
+        layouts = {}
+
+        def measure(text):
+            layouts.setdefault(text, chart.text(text))
+            return layouts[text].get_pixel_extents()[1].width
+        labels = asb.usage_axis_labels(chart.buckets, chart.centers(), chart.get_width() - 8 * chart.text_scale, chart.label_step(), measure,
+                                       chart.narrow, 16 * chart.text_scale)
+        return [(text, left, measure(text)) for _index, text, left in labels]
+
+    def test_W_U7_the_hourly_chart_names_the_day(self):
+        for size in ((948, 760), (360, 760)):
+            window = self.window(size=size, period="24h")
+            chart = window.chart
+            self.drain(.2)
+            self.assertEqual(chart.narrow, size[0] == 360)
+            ticks = self.axis_ticks(chart)
+            named = [text for text, *_rest in ticks if text[:3] in asb.ACTIVITY_WEEKDAYS]
+            # U7a, b: the first tick names Sunday (the last bucket is on Monday), and the first tick after midnight names Monday.
+            self.assertEqual([text[:3] for text in named], ["Sun", "Mon"], size)
+            self.assertEqual(ticks[0][0], named[0])
+            # U7c: 16 px beside a label with a weekday or at the end.
+            for (text, left, width), following in zip(ticks, ticks[1:]):
+                strong = text in named or following[0] in named or following == ticks[-1]
+                self.assertGreaterEqual(following[1] - (left + width), 16 if strong else 4, (size, text, following[0]))
+            # U7d: an hour tooltip starts with its weekday; the current hour keeps the header.
+            motion = self.motion(chart)
+            centers = chart.centers()
+            for index, title in ((0, "Sun 17:00"), (10, "Mon 03:00"), (23, chart.header())):
+                motion.emit("motion", centers[index], chart.TOP + 10)
+                self.assertEqual(chart.tip["title"], title)
+            self.assertTrue(chart.header().startswith("This hour so far"))
+        self.assert_no_new_warnings()
+
+    def test_W_U7_title_notes_axis_label_and_ring_key_caption(self):
+        reading = copy.deepcopy(self.REPLIES)
+        reading["30d"]["scan"] = {"complete": False, "files": 2707, "scannedFiles": 120}
+        window = self.window(reading)
+        palette = window.palette
+        # U8a: the dim regular ` (still reading)` after both titles; the label keeps the whole text.
+        for title, text in ((window.chart_title, "Daily cost"), (window.totals_heading, "Totals")):
+            self.assertEqual(title.get_label(), f"{text} (still reading)")
+            attributes = {attribute.klass.type: attribute for attribute in title.get_attributes().get_attributes()}
+            weight, color = attributes[asb.Pango.AttrType.WEIGHT], attributes[asb.Pango.AttrType.FOREGROUND]
+            self.assertEqual((weight.start_index, weight.end_index, weight.as_int().value), (len(text), len(text) + 16, asb.Pango.Weight.NORMAL))
+            self.assertEqual((color.start_index, color.end_index), (len(text), len(text) + 16))
+            shade = color.as_color().color
+            self.assertEqual("#" + "".join(f"{channel // 257:02x}" for channel in (shade.red, shade.green, shade.blue)), palette["dim"])
+        # U8b: the top axis label centers on its gridline, as the other labels do.
+        chart = window.chart
+        self.assertGreaterEqual(chart.TOP, chart.label_height / 2 + 1)
+        lines = [chart.y(chart.step * line) for line in range(1, len(chart.axis) + 1)]
+        texts = [node for node in self.render_nodes(self.chart_node(chart)) if isinstance(node, asb.Gsk.TextNode)
+                 and node.get_bounds().get_x() + node.get_bounds().get_width() <= chart.LEFT]
+        self.assertEqual(len(texts), len(lines))
+        offsets = []
+        for node in texts:
+            middle = node.get_bounds().get_y() + node.get_bounds().get_height() / 2
+            offsets.append(middle - min(lines, key=lambda y: abs(y - middle)))
+        self.assertLessEqual(max(offsets) - min(offsets), 1)
+        # U8f: the `Apps` caption 8 px before the first key entry, on its line, and the key name for a screen reader.
+        caption, entry = self.children(self.children(window.round_keys)[0])
+        self.assertEqual((caption.get_label(), self.font_px(caption), asb.hex_color(caption.get_color())), ("Apps", 11, palette["dim"]))
+        caption_box, entry_box = caption.compute_bounds(window)[1], entry.compute_bounds(window)[1]
+        self.assertAlmostEqual(entry_box.get_x() - (caption_box.get_x() + caption_box.get_width()), 8, delta=.5)
+        self.assertAlmostEqual(caption_box.get_y() + caption_box.get_height() / 2, entry_box.get_y() + entry_box.get_height() / 2, delta=1)
+        self.assert_accessible_label(window.round_keys, "Apps")
+        self.assertEqual(caption.get_accessible_role(), asb.Gtk.AccessibleRole.PRESENTATION)
         self.assert_no_new_warnings()
 
     def test_the_sessions_section_hides_with_no_session(self):
@@ -14760,9 +15084,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual([key for key, _cells in rows], [(model["model"], model["app"]) for model in view["models"]])
         self.assertNotEqual([key for key, _cells in rows], list(before))
         for (key, cells), model in zip(rows, view["models"]):
-            self.assertEqual(cells, before[key])
+            self.assertEqual(set(cells), set(before[key]))
             self.assertEqual({window.models.query_child(cell)[1] for cell in cells}, {rows.index((key, cells)) + 1})
-            self.assertEqual(self.labels(cells[5]), [asb.format_tokens(model["tokens"])])
+            # In Tokens the ranked Tokens column stands before its share, and Cost is last.
+            self.assertEqual(self.labels(cells[3]), [asb.format_tokens(model["tokens"])])
             self.assertEqual(self.labels(cells[4]), [asb.format_share(model["share"])])
         self.drain(.1)
         tops = [cells[0].compute_bounds(window)[1].get_y() for _key, cells in rows]
@@ -14857,11 +15182,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(window.round.outer_radius(), 146)
         self.assertAlmostEqual(round_bounds.get_x() + round_bounds.get_width() / 2, window.get_width() / 2, delta=8)
         self.assertEqual(len(self.children(window.figures)), 3)
-        self.assertIn("Machines", [child.get_label() for child in self.children(window.models) if child.has_css_class("asb-usage-head")])
+        self.assertIn("Machines", self.heads(window.models))
         small = self.window(size=(600, 900))
         self.assertTrue(small.small and small.narrow)
-        heads = [child.get_label() for child in self.children(small.models) if child.has_css_class("asb-usage-head")]
-        self.assertEqual(heads, ["Model", "App", "Cost", "Tokens"])
+        self.assertEqual(self.heads(small.models), ["Model", "App", "Cost", "Tokens"])
         self.assertEqual(self.labels(self.model_rows(small)[0][1][1]), [])
         self.assertEqual(small.blocks.get_orientation(), asb.Gtk.Orientation.VERTICAL)
         self.assertLessEqual(len(self.figure_lines(small)), 2)
@@ -15233,8 +15557,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             # The accent stays as it is where it has 4.5:1 on the fill.
             if look != "gnome":
                 self.assertEqual(asb.hex_color(window.metric_buttons["cost"].get_color()), palette["accent"])
-            # An unchecked toggle keeps the text color and the normal weight; the suggested pill keeps the accent fill.
-            self.assertEqual(asb.hex_color(window.metric_buttons["tokens"].get_color()), palette["text"])
+            # An unchecked toggle label is dim with 4.5:1 or more on its fill (U4); the suggested pill keeps the accent fill.
+            unchecked = asb.hex_color(window.metric_buttons["tokens"].get_color())
+            self.assertEqual(unchecked, asb.contrast_floor(palette["dim"], palette["text"], asb.mix_color(palette["win"], palette["text"], .10)))
+            self.assertGreaterEqual(asb.contrast(unchecked, fill(window.metric_buttons["tokens"])), 4.5, look)
             self.assertIn("button.suggested-action", window.css.to_string())
             self.assertIn(f"background-color:{asb.rgba(palette['accent']).to_string()}", window.css.to_string().replace(" ", ""))
         self.assert_no_new_warnings()
@@ -15340,6 +15666,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         # The app keys: one per app of the outer ring, in its order, 10 px under the ring.
         apps = list(dict.fromkeys(arc["id"].split("/", 1)[1] for arc in ring.arcs if arc["kind"] == "app"))
         keys = self.children(window.round_keys)
+        # The dim `Apps` caption stands 8 px before the first entry, on its line (U8f).
+        caption, entry = self.children(keys[0])
+        self.assertEqual((caption.get_label(), keys[0].get_spacing()), ("Apps", 8))
+        keys = [entry] + keys[1:]
         self.assertEqual([self.labels(key) for key in keys], [[asb.ACTIVITY_APP_LABELS[app]] for app in apps])
         dot = keys[0].get_first_child()
         self.assertTrue(dot.has_css_class("asb-usage-key-dot") and dot.has_css_class(f"asb-usage-app-{apps[0] or 'other'}"))
@@ -15720,7 +16050,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         check = window.chip_buttons["desk"].get_child()
         self.assertEqual(check.get_spacing(), 9)
         self.assertEqual(check.get_first_child().get_size_request(), (10, 10))
-        key = self.children(window.round_keys)[0]
+        key = self.children(self.children(window.round_keys)[0])[1]
         self.assertEqual(key.get_spacing(), 9)
         self.assertEqual(key.get_first_child().get_size_request(), (12, 12))
         self.assertEqual(window.round_keys.get_layout_manager().column, 18)
@@ -15941,10 +16271,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(chart.header(), "This week so far · day 1 of 7")
         self.motion(chart).emit("motion", centers[-1], 100)
         self.assertEqual(chart.tip["title"], "This week so far · day 1 of 7")
-        # The header is left-aligned with the end label column, and breaks only between its two parts.
+        # The header is left-aligned with the end label column (with its dots, where dotted), and breaks only between its two parts.
         lines, left, top = chart.header_place()
         labels = chart.end_labels()
-        self.assertEqual(left, labels[0][2])
+        self.assertEqual(left, labels[0][2] - (12 if chart.dotted_ends() else 0))
         self.assertIn(lines, (["This week so far · day 1 of 7"], ["This week so far", "day 1 of 7"]))
         self.assertEqual(lines, chart.header_lines(chart.label_column_width()))
         self.assertEqual(top + len(lines) * chart.label_height + 4, min(label[3] for label in labels))
@@ -16689,6 +17019,112 @@ class ActivityWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertEqual(asb.request_json(base, "/api/activity/other"), {"seats": []})
         self.assertEqual(len(headers), 4)
         self.assertFalse(any("X-ASB-Source-Token" in sent for sent in headers))
+
+    def usage_window(self, size=(948, 760)):
+        """A shown Usage window over the made-up 30 days reply."""
+        replies = UsageWindowCheck.REPLIES
+        window = asb.UsageWindow(self.application, "http://127.0.0.1:1", fetch=lambda route: copy.deepcopy(replies[route.rsplit("=", 1)[1]]))
+        window.set_default_size(*size)
+        window.present()
+        self.drain(.1)
+        window.set_period("30d")
+        self.drain(.25)
+        return window
+
+    def test_W_U7_toolbar_images_follow_the_text_scale(self):
+        warnings, settings = len(GTK_WARNINGS), asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-xft-dpi", settings.get_property("gtk-xft-dpi"))
+        for dpi, scale in ((settings.get_property("gtk-xft-dpi"), 1), (147456, 1.5)):
+            settings.set_property("gtk-xft-dpi", dpi)
+            self.drain(.3)
+            usage, probe = self.usage_window(size=(360, 760)), self.probe()
+            probe.present()
+            self.drain(.2)
+            icon, give = round(16 * scale), (round(16 * scale) - 16) // 2
+            for window in (usage, probe):
+                with self.subTest(scale=scale, window=window.KIND):
+                    self.assertEqual(window.text_scale, scale)
+                    # The ASB mark, the period chevron, and the close icon are 16 px icons times the text scale.
+                    self.assertEqual((window.app_mark.get_pixel_size(), window.app_mark.get_width()), (icon, icon + 4))
+                    arrow = next(node for node in descendants(window.period_menu) if node.get_css_name() == "arrow")
+                    self.assertEqual(arrow.get_width(), icon)
+                    close = next(node for node in descendants(window.window_controls) if isinstance(node, asb.Gtk.Button))
+                    image = next(node for node in descendants(close) if isinstance(node, asb.Gtk.Image))
+                    self.assertEqual(image.get_width(), icon)
+                    self.assertGreaterEqual(min(close.get_width(), close.get_height()), 24)
+            # The filter icon too; its button stays 24 x 24 px or more, and the toolbar fits the smallest window.
+            self.assertEqual(usage.filter_image.get_pixel_size(), icon)
+            self.assertGreaterEqual(min(usage.machine_filter.get_width(), usage.machine_filter.get_height()), 24)
+            self.assertLessEqual(usage.toolbar.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[0], 360)
+            for window in (usage, probe):
+                window.close()
+                window.destroy()
+            self.drain(.1)
+        self.assertEqual(GTK_WARNINGS[warnings:], [])
+
+    def assert_crisp_edges(self, widget, box, edge):
+        """Each of the four 1 px edges of box (x, y, width, height in widget pixels) is one row or one column in the edge color."""
+        data, stride = self.pixels(widget)
+        pixel = lambda x, y: data[int(y) * stride + int(x) * 4:][:3].hex()  # noqa: E731
+        near = lambda value: all(abs(int(value[index:index + 2], 16) - int(edge[1 + index:3 + index], 16)) <= 2 for index in (0, 2, 4))  # noqa: E731
+        x, y, width, height = box
+        middle_x, middle_y = int(x + width / 2), int(y + height / 2)
+        for name, line, found in (("top", y, [row for row in range(int(y) - 2, int(y) + 3) if near(pixel(middle_x, row))]),
+                                  ("bottom", y + height - 1, [row for row in range(int(y + height) - 3, int(y + height) + 2) if near(pixel(middle_x, row))]),
+                                  ("left", x, [column for column in range(int(x) - 2, int(x) + 3) if near(pixel(column, middle_y))]),
+                                  ("right", x + width - 1, [column for column in range(int(x + width) - 3, int(x + width) + 2) if near(pixel(column, middle_y))])):
+            self.assertEqual(found, [line], (widget, name, box))
+
+    def test_W_U7_floating_surfaces_have_crisp_edges(self):
+        warnings, user = len(GTK_WARNINGS), UsageWindowCheck.LOOKS["user"]
+        asb.THEME_PATH.write_text(json.dumps({"mode": "custom", "colors": user}))
+        with patch.object(asb, "validate_theme", return_value=user):
+            window = self.usage_window()
+        edge, body = window.palette["popup"], window.palette["float"]
+        # The period menu is as tall as it draws (no padding over its contents), at its old place under the button.
+        menu = next(node for node in descendants(window.period_menu) if isinstance(node, asb.Gtk.Popover))
+        self.assertEqual(menu.get_offset(), (0, 6))
+        menu.popup()
+        self.drain(.4)
+        self.assertEqual(asb.Gtk.WidgetPaintable.new(menu).get_intrinsic_height(), menu.get_height())
+        contents = next(node for node in descendants(menu) if node.get_css_name() == "contents")
+        bounds = contents.compute_bounds(menu)[1]
+        self.assert_crisp_edges(menu, (bounds.get_x(), bounds.get_y(), bounds.get_width(), bounds.get_height()), edge)
+        menu.popdown()
+        self.drain(.2)
+        popover = window.machine_filter.get_popover()
+        window.machine_filter.set_active(True)
+        self.drain(.4)
+        contents = next(node for node in descendants(popover) if node.get_css_name() == "contents")
+        bounds = contents.compute_bounds(popover)[1]
+        self.assert_crisp_edges(popover, (bounds.get_x(), bounds.get_y(), bounds.get_width(), bounds.get_height()), edge)
+        # U8e: 8 px of the popover body stand between each check and its machine dot.
+        data, stride = self.pixels(popover)
+        for button in window.chip_buttons.values():
+            check, dot = button.get_first_child(), button.get_child().get_first_child()
+            check_box, dot_box = check.compute_bounds(popover)[1], dot.compute_bounds(popover)[1]
+            row = int(dot_box.get_y() + dot_box.get_height() / 2)
+            columns = range(int(check_box.get_x() + check_box.get_width() / 2), int(dot_box.get_x()))
+            clear = [column for column in columns if "#" + data[row * stride + column * 4:][:3].hex() == body]
+            name = button.get_child().get_last_child().get_label()
+            self.assertEqual(clear, list(range(clear[0], clear[0] + len(clear))), name)
+            # The check ink ends half a pixel into the column before the clear ones; the hollow ring's outline starts half a pixel out of its box.
+            self.assertGreaterEqual(dot_box.get_x() - (clear[0] - .5), 8, name)
+            if "asb-activity-hollow" not in button.get_child().get_first_child().get_css_classes():
+                self.assertEqual(len(clear), 8, name)
+        window.machine_filter.set_active(False)
+        self.drain(.2)
+        # The chart tooltip box lies on whole pixels, here at a cursor x between pixels.
+        chart = window.chart
+        motion = next(item for item in chart.observe_controllers() if isinstance(item, asb.Gtk.EventControllerMotion))
+        for index in (3, 20):
+            motion.emit("motion", chart.centers()[index], 100)
+            self.drain(.1)
+            self.assertNotEqual(chart.centers()[index] % 1, 0)
+            box = chart.tip["bounds"]
+            self.assertTrue(all(value == int(value) for value in box), box)
+            self.assert_crisp_edges(chart, box, edge)
+        self.assertEqual(GTK_WARNINGS[warnings:], [])
 
 
 @unittest.skipUnless(asb.Gtk.init_check(), "A GTK display is not available.")

@@ -2275,6 +2275,8 @@ def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False, 
         x = centers[index] - (width / 2 if 0 < index < last or not last else width if index == last else 0)
         return min(max(x, 0), chart_width - width)
 
+    if buckets["unit"] == "hour":
+        return usage_hour_labels(starts, centers, chart_width, step, measure, ends, end_gap)
     shown, limit, keep_first = [], None, ends or usage_partial_first(buckets)
     for index in range(last, -1, -step):
         # A month label is measured with its year, so the year rule below never makes it wider than measured.
@@ -2297,6 +2299,45 @@ def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False, 
         year = at
         labels.append((index, label, place(index, measure(label))))
     return labels
+
+
+def usage_hour_weekdays(starts, indexes):
+    """The tick indexes (in order) whose hour label names its weekday: the first when its bucket is on an earlier local day than
+    the last bucket, and each one on a later local day than the tick before it."""
+    day = lambda index: datetime.fromtimestamp(starts[index] / 1000).date()  # noqa: E731
+    named = {indexes[0]} if indexes and day(indexes[0]) < day(len(starts) - 1) else set()
+    named.update(index for previous, index in zip(indexes, indexes[1:]) if day(index) > day(previous))
+    return named
+
+
+def usage_hour_text(starts, index, weekday):
+    at = datetime.fromtimestamp(starts[index] / 1000)
+    return f"{ACTIVITY_WEEKDAYS[at.weekday()]} {format_clock(starts[index])}" if weekday else format_clock(starts[index])
+
+
+def usage_hour_labels(starts, centers, chart_width, step, measure, ends, end_gap):
+    """The x labels of an hourly chart, as usage_axis_labels: the ticks are every step-th point from the last (and the first in
+    the narrow chart), and a label with a weekday (usage_hour_weekdays) or at an end keeps end_gap px from its neighbors: it
+    stays, and a regular neighbor that comes nearer is dropped. Regular labels keep 4 px between them."""
+    last = len(centers) - 1
+    ticks = sorted(set(range(last, -1, -step)) | ({0} if ends else set()))
+    named = usage_hour_weekdays(starts, ticks)
+    texts = {index: usage_hour_text(starts, index, index in named) for index in ticks}
+
+    def box(index):
+        width = measure(texts[index])
+        x = centers[index] - (width / 2 if 0 < index < last or not last else width if index == last else 0)
+        x = min(max(x, 0), chart_width - width)
+        return x, x + width
+    strong = [index for index in [last] + sorted(named - {last}, reverse=True) + ([0] if ends else []) if index in texts]
+    kept = {}
+    # The strong labels first (the last, the weekdays from the right, then a narrow chart's first), then the regular ones from the right.
+    for index in list(dict.fromkeys(strong)) + [index for index in reversed(ticks) if index not in strong]:
+        left, right = box(index)
+        if all(right + (end_gap if index in strong or other in strong else 4) <= kept[other][0] or
+               kept[other][1] + (end_gap if index in strong or other in strong else 4) <= left for other in kept):
+            kept[index] = (left, right)
+    return [(index, texts[index], kept[index][0]) for index in sorted(kept)]
 
 
 def activity_palette(colors):
@@ -3141,8 +3182,10 @@ def usage_view(reply, machines_on, metric):
             machines[machine["machineId"]] = {
                 "id": machine["machineId"], "name": machine["name"], "hue": machine_hue(index), "offline": offline,
                 "state": f"Offline · seen {format_day(at)}, {format_clock(at)}" if offline and at > 0 else machine_state_text(machine),
-                "apps": {app: zero() for app in USAGE_APPS + ("",)}, **zero()}
-    total, apps, models, makers = zero(), {app: zero() for app in USAGE_APPS + ("",)}, {}, {}
+                "last_report": at, "apps": {app: zero() for app in USAGE_APPS + ("",)}, **zero(), "priced": False, "unpriced_tokens": 0}
+    total, models, makers = zero(), {}, {}
+    # priced: a record of the row has a price; unpriced_tokens: the tokens of its records with no price (as the makers have).
+    apps = {app: {**zero(), "priced": False, "unpriced_tokens": 0} for app in USAGE_APPS + ("",)}
     parts, cost_parts = dict.fromkeys(USAGE_PARTS, 0), dict.fromkeys(USAGE_PARTS, 0.0)
     bars = [{"app": {}, "machine": {}} for _start in starts]
     savings = unpriced_tokens = 0
@@ -3158,6 +3201,9 @@ def usage_view(reply, machines_on, metric):
                      bars[bucket]["machine"].setdefault(machine["id"], zero())):
             item["cost"] += spent
             item["tokens"] += processed
+        for item in (machine, apps[app]):
+            item["priced"] = item["priced"] or bool(cost)
+            item["unpriced_tokens"] += 0 if cost else processed
         maker = record.get("maker")
         if not isinstance(maker, str) or not maker:
             maker = USAGE_OTHER_MAKER
@@ -3213,10 +3259,26 @@ def usage_view(reply, machines_on, metric):
 USAGE_SESSION_ROWS = 8
 
 
-def usage_sessions(reply, view, metric):
-    """The Sessions section for the machines of view: the USAGE_SESSION_ROWS sessions with the highest value (priced cost or
-    processed tokens; ties go to the title, then the ID), then an Other row with the rest of the filtered totals, so the rows
-    add up to the totals. None when no shown machine has a session in the period."""
+def usage_row_value(kind, item, view):
+    """The value cell of a Machines ("machine") or Apps ("app") row that shows no number, as (text, tooltip): `No data` for an
+    offline machine with no tokens whose last report is before the period, and in Cost `Unpriced` for a row whose tokens all
+    have no price. (None, tooltip) for a Cost row with some unpriced tokens; (None, None) else."""
+    starts = view["buckets"]["startsMs"]
+    if kind == "machine" and item["offline"] and item["tokens"] == 0 and starts and item["last_report"] < starts[0]:
+        return "No data", f"No report from {item['name']} in this period"
+    if view["metric"] != "cost" or not item["unpriced_tokens"]:
+        return None, None
+    if not item["priced"]:
+        return "Unpriced", f"{format_tokens(item['unpriced_tokens'])} tokens with no price"
+    return None, f"Without {format_tokens(item['unpriced_tokens'])} unpriced tokens"
+
+
+def usage_sessions(reply, view, metric, shown=USAGE_SESSION_ROWS):
+    """The Sessions section for the machines of view: the shown sessions (USAGE_SESSION_ROWS, more after a click on the rest row)
+    with the highest value (priced cost or processed tokens; ties go to the title, then the ID), then an Other row with the rest
+    of the filtered totals, so the rows add up to the totals. The Other row has next: how many more sessions a click shows (at
+    most USAGE_SESSION_ROWS, 0 when the reply has no other session with a value). None when no shown machine has a session in
+    the period."""
     sessions = reply.get("sessions") or {}
     machines = {machine["id"]: machine for machine in view["machines"]}
     count = sum((sessions.get("counts") or {}).get(machine, 0) for machine in machines)
@@ -3233,7 +3295,8 @@ def usage_sessions(reply, view, metric):
         rows.append({"id": row["id"], "app": row["app"] if row["app"] in USAGE_APPS else "", "title": row["title"], "machine": machine,
                      "value": value, "cost": cost, "unpriced": row.get("unpriced") is True, "tokens": tokens, "share": value / total if total else 0})
     rows.sort(key=lambda row: (-row["value"], row["title"], row["id"]))
-    shown = [row for row in rows if row["value"] > 0][:USAGE_SESSION_ROWS]
+    valued = [row for row in rows if row["value"] > 0]
+    shown, ready = valued[:shown], len(valued)
     more = count - len(shown)
     # The member sessions cover the member's own hours, so the rest is never below 0.
     cost = max(0, view["cost"] - sum(row["cost"] for row in shown))
@@ -3247,7 +3310,7 @@ def usage_sessions(reply, view, metric):
             else sessions_text
         # With no other session, the row holds only the usage with no session.
         other = {"label": f"Other sessions ({more})" if more else "Usage with no session", "tip": tip, "value": value, "cost": cost, "tokens": tokens,
-                 "share": value / total if total else 0}
+                 "share": value / total if total else 0, "next": min(USAGE_SESSION_ROWS, ready - len(shown))}
     return {"rows": shown, "other": other}
 
 
@@ -12873,6 +12936,13 @@ class ActivityWindow(Adw.Window):
         factory.connect("bind", self.period_item_bind)
         self.period_menu.set_list_factory(factory)
         non_autohide_choice(self, self.period_menu)
+        # The menu popover has no padding over its contents (Adwaita has 6 px at the top) and opens 6 px lower in its place: the
+        # popover is then as tall as it draws, so its 1 px edges stay on whole pixels in every render of it.
+        menu = self.period_menu.get_first_child()
+        while menu is not None and not isinstance(menu, Gtk.Popover):
+            menu = menu.get_next_sibling()
+        if menu is not None:
+            menu.set_offset(0, 6)
         self.toolbar.append(self.period_menu)
         self.toolbar_start = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
         self.toolbar.append(self.toolbar_start)
@@ -13211,6 +13281,15 @@ class ActivityWindow(Adw.Window):
         # toward the text where it has less than 4.5:1 on that fill.
         raised = palette["track"]
         checked = contrast_floor(palette["accent"], palette["text"], raised)
+        # An unchecked toggle label is regular and dim, with 4.5:1 on the strongest unchecked fill (GNOME: 10 % of the label color).
+        unchecked = contrast_floor(palette["dim"], palette["text"], mix_color(palette["win"], palette["text"], .10))
+        # The toolbar images are 16 px icons times the text scale (the ASB mark in a slot 4 px wider). Their buttons give back the
+        # growth from their side padding, so the toolbar still fits the smallest window.
+        icon = round(16 * s)
+        give = (icon - 16) // 2
+        self.app_mark.set_pixel_size(icon)
+        self.app_mark.set_size_request(icon + 4, -1)
+        controls = f"{scope} .asb-activity-toolbar windowcontrols button image {{ padding: {max(0, 4 - give)}px; }}\n" if give else ""
         hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {self.machine_hue(index)}; }}\n"
                        f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {self.machine_hue(index)}; min-width: 4px; min-height: 4px; }}\n"
                        for index in range(len(MACHINE_HUES)))
@@ -13220,6 +13299,8 @@ class ActivityWindow(Adw.Window):
 {scope}.asb-custom .linked > button {{ background: alpha({palette['text']}, .08); color: {palette['text']}; }}
 {scope}.asb-custom .linked > button:hover:not(:checked) {{ background: alpha({palette['text']}, .14); }}
 {scope} .linked > button:checked {{ background: {raised}; color: {checked}; font-weight: 700; }}
+{scope} .linked > button:not(:checked) {{ color: {unchecked}; font-weight: 400; }}
+{scope} .linked > button:not(:checked):hover {{ color: {palette['text']}; }}
 {scope}.asb-custom :focus-visible {{ outline-color: {palette['accent']}; }}
 {scope} button:focus-visible, {scope} checkbutton:focus-visible,
 {scope} expander-widget:focus-visible > box > title {{ outline: 2px solid {ring}; outline-offset: 1px; }}
@@ -13227,8 +13308,12 @@ class ActivityWindow(Adw.Window):
 {scope} button.suggested-action {{ background: {palette['accent']}; color: {palette['win']}; }}
 {scope} .asb-activity-toolbar {{ background: {palette['win']}; }}
 {scope} .asb-activity-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
-{scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
+{scope} .asb-activity-toolbar windowcontrols button image, {scope} .asb-activity-toolbar .asb-period-menu arrow {{ -gtk-icon-size: {icon}px; }}
+{scope} .asb-activity-toolbar .asb-period-menu arrow {{ min-width: {icon}px; min-height: {icon}px; }}
+{controls}{scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
 {scope} .asb-activity-toolbar menubutton > button {{ min-height: {24 * s:g}px; padding: 0 8px; font-size: {12 * s:g}px; }}
+{scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar menubutton > button {{ padding: 0 {max(0, 8 - give)}px; }}
+{scope} .asb-period-menu > popover {{ padding: 0; }}
 {scope} .asb-period-item {{ font-size: {13 * s:g}px; min-height: {28 * s:g}px; }}
 {scope} .asb-period-shortcut {{ font-size: {12 * s:g}px; }}
 {scope}.asb-custom popover > contents, {scope}.asb-custom popover > arrow {{ background: {palette['float']}; color: {palette['text']};
@@ -16728,6 +16813,23 @@ class LinkedBox(Gtk.Box):
             self.snapshot_child(child, snapshot)
 
 
+class BoldWidthLayout(Gtk.BinLayout):
+    """The layout of a linked toggle: as wide as its label in bold, so a toggle whose label weight changes moves nothing."""
+    __gtype_name__ = "AsbBoldWidthLayout"
+
+    def do_measure(self, widget, orientation, for_size):
+        label = widget.get_child()
+        minimum, natural, minimum_baseline, natural_baseline = label.measure(orientation, for_size)
+        if orientation == Gtk.Orientation.HORIZONTAL and isinstance(label, Gtk.Label):
+            layout = label.create_pango_layout(label.get_label())
+            attributes = Pango.AttrList()
+            attributes.insert(Pango.attr_weight_new(Pango.Weight.BOLD))
+            layout.set_attributes(attributes)
+            extra = max(0, layout.get_pixel_size()[0] - natural)
+            minimum, natural = minimum + extra, natural + extra
+        return minimum, natural, minimum_baseline, natural_baseline
+
+
 def usage_rect(snapshot, x, y, width, height, color, radius=0):
     bounds = Graphene.Rect().init(x, y, width, height)
     if radius:
@@ -16744,9 +16846,10 @@ def usage_rect(snapshot, x, y, width, height, color, radius=0):
 class UsageBar(Gtk.Widget):
     """A share bar: an optional track, and stacked segments (radius 2, 1 px gaps) over a fraction of the width. A segment
     (value, color, tip) has a tooltip."""
-    def __init__(self, height, track=None, width=-1):
+    def __init__(self, height, track=None, width=-1, least=0):
         super().__init__(height_request=height, width_request=width, valign=Gtk.Align.CENTER, hexpand=width < 0)
-        self.track, self.segments, self.fraction, self.tips = track, [], 1, []
+        # least: the smallest fill of a share above 0, in px.
+        self.track, self.segments, self.fraction, self.tips, self.least = track, [], 1, [], least
         self.connect("query-tooltip", self.query_tooltip)
 
     def set_segments(self, segments, fraction=1):
@@ -16756,10 +16859,14 @@ class UsageBar(Gtk.Widget):
         self.set_has_tooltip(any(self.tips))
         self.queue_draw()
 
+    def filled(self, width):
+        """The width of the filled part: its share of width, and at least self.least px for a share above 0."""
+        return min(width, max(width * self.fraction, self.least if self.fraction > 0 and self.segments else 0))
+
     def segment_at(self, x):
         """The index of the segment under x, or None."""
         total = sum(value for value, _color in self.segments)
-        room, left = self.get_width() * self.fraction - (len(self.segments) - 1), 0
+        room, left = self.filled(self.get_width()) - (len(self.segments) - 1), 0
         for index, (value, _color) in enumerate(self.segments):
             size = room * value / total if total else 0
             if left <= x < left + size:
@@ -16777,10 +16884,10 @@ class UsageBar(Gtk.Widget):
     def do_snapshot(self, snapshot):
         width, height = self.get_width(), self.get_height()
         if self.track:
-            start = min(width, width * self.fraction + (1 if self.segments and self.fraction > 0 else 0))
+            start = min(width, self.filled(width) + (1 if self.segments and self.fraction > 0 else 0))
             usage_rect(snapshot, start, 0, width - start, height, alpha_color(self.track), 2)
         total = sum(value for value, _color in self.segments)
-        room = width * self.fraction - (len(self.segments) - 1)
+        room = self.filled(width) - (len(self.segments) - 1)
         if not total or room <= 0:
             return
         if self.track:
@@ -17326,6 +17433,9 @@ class UsageChart(Gtk.Widget):
         """The text scale of the labels: the label room under the plot and the insets follow the measured text."""
         self.text_scale = scale
         self.label_height = self.text("Ag").get_pixel_extents()[1].height
+        # The top axis label centers on the top gridline: half a label and 1 px stand above it.
+        self.TOP = max(8, math.ceil(self.label_height / 2 + 1))
+        self.BOTTOM = self.TOP + self.PLOT
         self.HEIGHT = self.BOTTOM + 6 + self.label_height + 6 * scale + 2
         self.set_size_request(-1, self.HEIGHT)
         self.measure_insets()
@@ -17334,6 +17444,10 @@ class UsageChart(Gtk.Widget):
     def gap(self):
         """The room between the end ring of a line (radius 3) and its end label."""
         return 3 + 6 * self.text_scale
+
+    def dot_room(self):
+        """The room of an end label dot (6 px) and its 6 px gap before the text: the end label column always keeps it."""
+        return 12 * self.text_scale
 
     def header(self):
         """The dim line over the end labels or the key: the current bucket and its running part (`This week so far · day 1 of 7`)."""
@@ -17367,7 +17481,8 @@ class UsageChart(Gtk.Widget):
                   for key, text in self.end_texts.items()]
         if widths:
             widths.append(self.header_width())
-        self.RIGHT = (8 * self.text_scale if self.narrow else math.ceil(self.gap() + max(widths) + 8 * self.text_scale)) if widths else 8 * self.text_scale
+        self.RIGHT = (8 * self.text_scale if self.narrow else math.ceil(self.gap() + self.dot_room() + max(widths) + 8 * self.text_scale)) \
+            if widths else 8 * self.text_scale
         self.paths_key, self.tip = None, None if self.hover is None else self.tip_box(self.hover)
         self.queue_draw()
 
@@ -17469,13 +17584,11 @@ class UsageChart(Gtk.Widget):
             return [(self.LEFT + right) / 2]
         return [self.LEFT + index * (right - self.LEFT) / (count - 1) for index in range(count)]
 
-    def end_labels(self):
-        """The end labels as (key, text, left, top, width, height): 6 px (times the text scale) after the end ring of each drawn
-        series, at the y of its last point where they can, moved apart so that no two overlap, under the bucket header.
-        A narrow chart has a key in place of them."""
+    def end_label_tops(self):
+        """The keys of the end labels, the y of their line ends, and their tops (see end_labels)."""
         keys = list(self.end_texts)
         if not keys or self.narrow:
-            return []
+            return [], [], []
         last = len(self.bars) - 1
         ends, height = [self.value_y(last, key) for key in keys], self.label_height
         top = max(self.TOP, len(self.header_lines(self.label_column_width())) * height + 4)
@@ -17486,7 +17599,22 @@ class UsageChart(Gtk.Widget):
             if 0 < abs(tops[index] - at) < 6 and top <= at <= self.BOTTOM - height and \
                     all(abs(at - other) >= height + 2 for position, other in enumerate(tops) if position != index):
                 tops[index] = at
-        left = self.centers()[-1] + self.gap()
+        return keys, ends, tops
+
+    def dotted_ends(self):
+        """True when two or more end labels would need a leader (6 px or more from their line end): then no leader draws, each
+        label has a dot in its line color, and the end rings of the series are small."""
+        _keys, ends, tops = self.end_label_tops()
+        return sum(abs(top + self.label_height / 2 - end) >= 6 for end, top in zip(ends, tops)) >= 2
+
+    def end_labels(self):
+        """The end labels as (key, text, left, top, width, height): 6 px (times the text scale) after the end ring of each drawn
+        series (after the dot room when dotted_ends), at the y of its last point where they can, moved apart so that no two
+        overlap, under the bucket header. A narrow chart has a key in place of them."""
+        keys, _ends, tops = self.end_label_tops()
+        if not keys:
+            return []
+        left = self.centers()[-1] + self.gap() + (self.dot_room() if self.dotted_ends() else 0)
         return [(key, self.end_texts[key], left, top, self.text(self.end_texts[key], 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL).get_pixel_extents()[1].width, self.label_height)
                 for key, top in zip(keys, tops)]
 
@@ -17547,6 +17675,10 @@ class UsageChart(Gtk.Widget):
         left = x + 12 if right_side else x - 12 - box_width
         left = max(6, min(left, self.get_width() - box_width - 6))
         top = max(6, min(self.y(self.sums[index]) - box_height / 2, max(self.HEIGHT, self.get_height()) - box_height - 6))
+        # The 1 px edge of the box lies on whole device pixels.
+        scale = self.get_scale_factor()
+        left, top = round(left * scale) / scale, round(top * scale) / scale
+        box_width, box_height = math.ceil(box_width * scale) / scale, math.ceil(box_height * scale) / scale
         return {"index": index, "title": full, "rows": [(label, text) for label, text, _color in rows], "total": self.sums[index],
                 "total_text": self.format(self.sums[index]), "bounds": (left, top, box_width, box_height), "layouts": (title, names, values),
                 "colors": [color for _label, _text, color in rows]}
@@ -17571,7 +17703,7 @@ class UsageChart(Gtk.Widget):
         if self.buckets["unit"] == "month":
             month = datetime.fromtimestamp(starts[index] / 1000)
             return f"{ACTIVITY_MONTHS[month.month - 1]} {month.year}"
-        return format_clock(starts[index]) if self.buckets["unit"] == "hour" else format_day(starts[index])
+        return usage_hour_text(starts, index, True) if self.buckets["unit"] == "hour" else format_day(starts[index])
 
     def colors(self):
         """The color of each drawn line by key: the series colors and the accent for the Total."""
@@ -17587,7 +17719,8 @@ class UsageChart(Gtk.Widget):
         One bucket gives (key, color, None, 3 px hollow point). With 12 buckets or fewer, self.dots has a filled 3 px dot at each complete bucket of the
         Total. Built again only when the data, the width, the accent, or the animation progress changes: a hover uses these paths."""
         colors = self.colors()
-        key = (self.get_width(), self.progress, self.LEFT, self.RIGHT, colors[self.TOTAL])
+        dotted = self.dotted_ends()
+        key = (self.get_width(), self.progress, self.LEFT, self.RIGHT, colors[self.TOTAL], dotted)
         if key == self.paths_key:
             return self.paths
         self.paths_key, self.paths, self.current, self.path_builds, self.dots = key, [], [], self.path_builds + 1, None
@@ -17631,11 +17764,14 @@ class UsageChart(Gtk.Widget):
         ends = {series: end for series, _color, _dash, end in self.current}
         for position, (series, color, dash, end) in enumerate(self.current):
             close = any(other != series and math.dist(end, point) < 2 * 3 + 2 for other, point in ends.items())
+            # With dotted end labels, a series ring is 4 px across (its outer edge) over a 1 px casing; the Total keeps its ring.
+            small = dotted and series != self.TOTAL
             ring, casing = Gsk.PathBuilder.new(), None
-            ring.add_circle(Graphene.Point().init(*end), 2.5 if close else 3)
-            if close:
+            radius = 1.25 if small else 2.5 if close else 3
+            ring.add_circle(Graphene.Point().init(*end), radius)
+            if close or small:
                 casing = Gsk.PathBuilder.new()
-                casing.add_circle(Graphene.Point().init(*end), 2.5 + .75 + 1)
+                casing.add_circle(Graphene.Point().init(*end), radius + .75 + 1)
                 casing = casing.to_path()
             self.current[position] = (series, color, dash, ring.to_path(), casing)
         return self.paths
@@ -17651,7 +17787,7 @@ class UsageChart(Gtk.Widget):
             if line:
                 layout = self.text(self.axis[line - 1])
                 extents = layout.get_pixel_extents()[1]
-                snapshot_layout(snapshot, layout, self.LEFT - 8 - extents.width, max(8 * self.text_scale, y - extents.height / 2), dim)
+                snapshot_layout(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
         paths = self.series_paths()
         for _key, color, line, area in paths:
             if line is None:
@@ -17728,7 +17864,7 @@ class UsageChart(Gtk.Widget):
         labels = self.end_labels()
         if labels:
             top = min(top for _key, _label, _left, top, _width, _height in labels)
-            return lines, labels[0][2], top - 4 - len(lines) * self.label_height
+            return lines, self.centers()[-1] + self.gap(), top - 4 - len(lines) * self.label_height
         if self.key_entries():
             return lines, 8 * self.text_scale, self.key_top()
         return None
@@ -17742,11 +17878,14 @@ class UsageChart(Gtk.Widget):
             lines, left, top = place
             for line, text_line in enumerate(lines):
                 snapshot_layout(snapshot, self.text(text_line), left, top + line * self.label_height, dim)
-        leader = Gsk.Stroke.new(1)
+        leader, dotted, s = Gsk.Stroke.new(1), self.dotted_ends(), self.text_scale
         for key, label, left, top, _width, height in labels:
-            # A label that moved 6 px or more from its line end has a leader in the line color from the end ring.
+            # A label that moved 6 px or more from its line end has a leader in the line color from the end ring; when two or
+            # more would, no leader draws and each label has a 6 px dot in its line color.
             end, middle = self.value_y(last, key), top + height / 2
-            if abs(middle - end) >= 6:
+            if dotted:
+                usage_rect(snapshot, left - self.dot_room(), middle - 3 * s, 6 * s, 6 * s, alpha_color(colors[key]), 3 * s)
+            elif abs(middle - end) >= 6:
                 builder = Gsk.PathBuilder.new()
                 builder.move_to(right + 3.75, end)
                 builder.line_to(left - 2, middle)
@@ -17811,6 +17950,8 @@ class UsageWindow(ActivityWindow):
         self.metric, self.split, self.machines_off, self.chip_key, self.chart_key, self.view = "cost", "app", set(), None, None, None
         self.narrow = self.small = False
         self.fold_states, self.setting_folds = {}, False
+        # The Sessions rows that the rest row button added, for one period, metric, and machine filter.
+        self.session_extra, self.session_scope, self.session_more = 0, None, None
         super().__init__(application, base, fetch, clock)
         shortcuts = Gtk.ShortcutController()
         shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"), Gtk.CallbackAction.new(self.escape_pressed)))
@@ -17826,7 +17967,7 @@ class UsageWindow(ActivityWindow):
             self.metric_buttons[key].set_tooltip_text(tip)
         self.toolbar_start.append(metrics)
         self.machine_filter = Gtk.MenuButton(valign=Gtk.Align.CENTER, visible=False, tooltip_text="Machines")
-        image = Gtk.Image()
+        self.filter_image = image = Gtk.Image(pixel_size=round(16 * self.text_scale))
         set_icon(image, "asb-filter-symbolic")
         self.filter_count = self.text("", ("asb-usage-count",), visible=False)
         content = Gtk.Box(spacing=4)
@@ -17966,10 +18107,6 @@ class UsageWindow(ActivityWindow):
         # Sessions: the top sessions of the period in the Models row style; hidden when the period has no session.
         self.sessions_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, visible=False)
         self.sessions_section.append(self.heading("Sessions"))
-        self.session_keys = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=12, row_spacing=4, max_children_per_line=12,
-                                        halign=Gtk.Align.START, margin_bottom=8)
-        self.session_keys.add_css_class("asb-usage-keys")
-        self.sessions_section.append(self.session_keys)
         self.sessions = Gtk.Grid()
         self.sessions_section.append(self.sessions)
         # The Models and Sessions tables share their columns: one width group per column over the cells of both grids.
@@ -18017,6 +18154,8 @@ class UsageWindow(ActivityWindow):
         scope, rule, s = self.css_scope, palette["rule"], self.text_scale
         swatches = "".join(f"{scope} .asb-usage-type-{part} {{ background: {color}; }}\n" for part, color in usage_token_ramp(palette["accent"], palette["win"]).items())
         keys = "".join(f"{scope} .asb-usage-app-{app or 'other'} {{ background: {self.app_color(app)}; }}\n" for app in ACTIVITY_APP_COLORS)
+        # The check box ink ends half a pixel into its last column: 1 px more spacing leaves 8 px (times the text scale) clear
+        # before the machine dot.
         check = f"{scope} .asb-usage-check check:checked {{ background: {palette['accent']}; border-color: {palette['accent']}; color: {palette['win']}; }}\n"
         return f"""
 {scope} .asb-usage-filtered image {{ color: {palette['accent']}; }}
@@ -18037,6 +18176,9 @@ class UsageWindow(ActivityWindow):
 {scope} .asb-activity-dot.asb-activity-hollow {{ min-width: {max(0, 7 * s - 3):g}px; min-height: {max(0, 7 * s - 3):g}px; }}
 {scope} .asb-usage-model-key {{ font-size: {11 * s:g}px; color: {palette['dim']}; }}
 {scope} .asb-usage-cost {{ padding-right: 24px; }}
+{scope} .asb-usage-head.asb-usage-ranked {{ color: {palette['text']}; }}
+{scope} button.asb-usage-more {{ min-height: {34 * s:g}px; padding: 0 10px 0 0; border-radius: 0; font-weight: normal; }}
+{scope} button.asb-usage-more:hover {{ background: alpha({palette['text']}, .06); }}
 {scope} .asb-usage-check check:not(:checked) {{ border: 1.5px solid {palette['dim']}; }}
 {scope} .asb-usage-check > check {{ min-width: {20 * s - 3:g}px; min-height: {20 * s - 3:g}px; padding: 0; border-width: 1.5px; border-style: solid; }}
 {scope} .linked > button:checked:disabled {{ background: {palette['track']}; color: {palette['dim']}; filter: none; }}
@@ -18045,7 +18187,7 @@ class UsageWindow(ActivityWindow):
 {scope} asb-usage-chart {{ border-radius: 6px; }}
 {scope} asb-usage-chart:focus-visible {{ outline: 2px solid {palette['accent']}; outline-offset: -2px; }}
 {scope} .asb-usage-key {{ font-size: {12 * s:g}px; color: {palette['text']}; }}
-{scope} .asb-usage-check {{ min-height: {22 * s:g}px; font-size: {12 * s:g}px; color: {palette['text']}; }}
+{scope} .asb-usage-check {{ min-height: {22 * s:g}px; font-size: {12 * s:g}px; color: {palette['text']}; border-spacing: {round(8 * s) + 1}px; }}
 {scope} .asb-usage-check:disabled {{ filter: none; opacity: 1; }}
 {scope} .asb-usage-check:disabled label {{ color: {palette['text']}; }}
 {scope} .asb-usage-check:disabled label.asb-dim {{ color: {palette['dim']}; }}
@@ -18063,6 +18205,7 @@ class UsageWindow(ActivityWindow):
         super().set_palette(colors)
         # Drawn widgets keep their render nodes until they draw again, and their text follows the text scale.
         if hasattr(self, "chart"):
+            self.filter_image.set_pixel_size(round(16 * self.text_scale))
             self.round.text_scale = self.text_scale
             if self.chart.text_scale != self.text_scale:
                 self.chart.set_text_scale(self.text_scale)
@@ -18080,6 +18223,8 @@ class UsageWindow(ActivityWindow):
         buttons = {}
         for key, text in items:
             button = Gtk.ToggleButton(label=text, active=key == active)
+            # The unchecked label is regular and the checked one bold: each button keeps the width of its bold label.
+            button.set_layout_manager(BoldWidthLayout())
             if buttons:
                 button.set_group(next(iter(buttons.values())))
             button.connect("toggled", lambda button, key: button.get_active() and callback(key), key)
@@ -18174,9 +18319,8 @@ class UsageWindow(ActivityWindow):
         self.content.set_margin_bottom(32 if self.small else 40)
         for side in ("start", "end"):
             getattr(self.content, f"set_margin_{side}")(14 if self.small else 24)
-        # The small tables have no Machines column: no machine key stands above them.
-        for keys in (self.model_keys, self.session_keys):
-            keys.set_visible(not self.small)
+        # The small Models table has no Machines column: no machine key stands above it.
+        self.model_keys.set_visible(not self.small)
         self.overview.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
         self.round_cell.set_size_request(-1 if self.narrow else 340, -1)
         self.round_cell.set_valign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
@@ -18267,6 +18411,9 @@ class UsageWindow(ActivityWindow):
         self.round_keys.asb_apps = (apps, self.text_scale)
         self.round_keys.get_layout_manager().column = round(12 * self.text_scale)
         remove_children(self.round_keys)
+        # The key names its band: a dim 11 px caption stands 8 px before the first entry, on its line; a screen reader gets it
+        # as the name of the key.
+        self.round_keys.update_property([Gtk.AccessibleProperty.LABEL], ["Apps"])
         for app in apps:
             key = Gtk.Box(spacing=round(6 * self.text_scale))
             dot = Gtk.Box(width_request=round(8 * self.text_scale), height_request=round(8 * self.text_scale), valign=Gtk.Align.CENTER)
@@ -18274,6 +18421,10 @@ class UsageWindow(ActivityWindow):
             dot.add_css_class(f"asb-usage-app-{app or 'other'}")
             key.append(dot)
             key.append(self.text(ACTIVITY_APP_LABELS[app], ("asb-usage-key",)))
+            if app == apps[0]:
+                entry, key = key, Gtk.Box(spacing=round(8 * self.text_scale))
+                key.append(self.text("Apps", ("asb-usage-model-key",), accessible_role=Gtk.AccessibleRole.PRESENTATION))
+                key.append(entry)
             self.round_keys.append(key)
         self.round_keys.queue_resize()
 
@@ -18313,12 +18464,26 @@ class UsageWindow(ActivityWindow):
         self.render_keys(arcs)
         self.render_rows(view, show)
         interval = {"hour": "Hourly", "day": "Daily", "week": "Weekly", "month": "Monthly"}[data["buckets"]["unit"]]
-        self.chart_title.set_label(f"{interval} {'cost' if cost else 'tokens'}" + (" (still reading)" if scanning else ""))
+        self.set_title_note(self.chart_title, f"{interval} {'cost' if cost else 'tokens'}", scanning)
         self.view = view
         self.render_chart(view, show)
         self.render_totals(view)
         self.render_models(view, show)
         self.render_sessions(view, show)
+
+    def set_title_note(self, title, text, scanning):
+        """A section title, with ` (still reading)` after it during a scan in the dim color and the regular weight. The label (and
+        so the accessible name) keeps the whole text."""
+        note = " (still reading)" if scanning else ""
+        title.set_label(text + note)
+        attributes = Pango.AttrList()
+        if note:
+            start, end = len(text.encode()), len((text + note).encode())
+            red, green, blue = (int(self.palette["dim"][index:index + 2], 16) * 257 for index in (1, 3, 5))
+            for attribute in (Pango.attr_weight_new(Pango.Weight.NORMAL), Pango.attr_foreground_new(red, green, blue)):
+                attribute.start_index, attribute.end_index = start, end
+                attributes.insert(attribute)
+        title.set_attributes(attributes)
 
     def render_chart(self, view, show):
         if self.split == "app":
@@ -18372,8 +18537,14 @@ class UsageWindow(ActivityWindow):
             for box in (self.machine_rows, self.app_rows, self.maker_rows):
                 remove_children(box)
             self.row_size = size
-        values = [format_cost(None) if item["value"] is None else show(item["value"])
-                  for group in (view["machines"], view["apps"], view["makers"]) for item in group]
+        def value(kind, item):
+            """The value text of a row, its tooltip, and whether it is a dim word (`Unpriced`, `No data`) in place of a number."""
+            note, tip = usage_row_value(kind, item, view) if kind != "maker" else (None, None)
+            if note is None and item["value"] is None:
+                note = format_cost(None)
+            return (note if note is not None else show(item["value"])), tip, note is not None
+        values = [value(kind, item)[0] for kind, group in (("machine", view["machines"]), ("app", view["apps"]), ("maker", view["makers"]))
+                  for item in group]
         measure = self.text("", ("asb-mono", "asb-usage-value"))
         self.content.append(measure)
         value_width = max((measure.create_pango_layout(value).get_pixel_size()[0] for value in values), default=0)
@@ -18410,12 +18581,14 @@ class UsageWindow(ActivityWindow):
                                 for app in USAGE_APPS + ("",)]
                 else:
                     segments = [(item["value"] or 0, self.app_color(item["id"]) if kind == "app" else self.palette["accent"])]
+                text, tip, blank = value(kind, item)
                 row.asb_bar.track = self.palette["track"]
-                row.asb_bar.set_segments(segments, item["share"] or 0)
-                row.asb_value.set_label(format_cost(None) if item["value"] is None else show(item["value"]))
-                row.asb_value.remove_css_class("asb-mono" if item["value"] is None else "asb-dim")
-                row.asb_value.add_css_class("asb-dim" if item["value"] is None else "asb-mono")
-                row.asb_share.set_label("" if item["value"] is None else format_share(item["share"]))
+                row.asb_bar.set_segments([] if blank else segments, 0 if blank else item["share"] or 0)
+                row.asb_value.set_label(text)
+                row.asb_value.set_tooltip_text(tip)
+                row.asb_value.remove_css_class("asb-mono" if blank else "asb-dim")
+                row.asb_value.add_css_class("asb-dim" if blank else "asb-mono")
+                row.asb_share.set_label("" if blank else format_share(item["share"]))
                 if row.get_prev_sibling() is not previous:
                     box.reorder_child_after(row, previous)
                 previous = row
@@ -18430,7 +18603,7 @@ class UsageWindow(ActivityWindow):
 
     def render_totals(self, view):
         parts = view["parts"]
-        self.totals_heading.set_label("Totals (still reading)" if not (self.data.get("scan") or {}).get("complete", True) else "Totals")
+        self.set_title_note(self.totals_heading, "Totals", not (self.data.get("scan") or {}).get("complete", True))
         figures = (("Cost", format_cost(view["cost"])), ("Processed tokens", format_tokens(view["tokens"])),
                    ("Cache savings", format_cost(view["savings"])))
         if not hasattr(self, "total_figures"):
@@ -18505,21 +18678,24 @@ class UsageWindow(ActivityWindow):
                 entry.append(self.text(machine["name"], ("asb-usage-model-key",)))
                 self.model_keys.append(entry)
                 entry.get_parent().set_focusable(False)
-        columns = [("Model", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
-            [("Model", 0), ("App", 0), ("Machines", 0), ("Cost", 1), ("Share", 0), ("Tokens", 1)]
+        columns = self.table_columns("Model", "Machines")
+        first = columns[2 if self.small else 3][0]
         if columns != getattr(self, "model_columns", None):
-            remove_children(grid)
-            self.model_columns, self.model_cells = columns, {}
+            # A metric change only reorders the measure columns: the rows keep their cells. The small layout has other cells.
+            if sorted(columns) != sorted(getattr(self, "model_columns", None) or []):
+                remove_children(grid)
+                self.model_cells = {}
+            for head in [child for child in self.children_of(grid) if not hasattr(child, "asb_model")]:
+                grid.remove(head)
+            self.model_columns = columns
             for column, (title, xalign) in enumerate(columns):
-                self.model_head = self.text(title, ("asb-usage-head",), xalign, hexpand=title in ("Model", "App", "Machines", "Tokens"))
-                if title == "Cost" and not self.small:
-                    self.model_head.add_css_class("asb-usage-cost")
+                self.model_head = self.table_head(columns, title, xalign)
                 grid.attach(self.model_head, column, 0, 1, 1)
-        keys = {(model["model"], model["app"]) for model in view["models"]}
+        keys, layout = {(model["model"], model["app"]) for model in view["models"]}, grid.get_layout_manager()
         for key in [key for key in self.model_cells if key not in keys]:
             for cell in self.model_cells.pop(key).values():
                 grid.remove(cell)
-        layout, previous = grid.get_layout_manager(), self.model_head
+        previous = self.model_head
         for line, model in enumerate(view["models"], 1):
             key = (model["model"], model["app"])
             cells = self.model_cells.get(key)
@@ -18527,6 +18703,11 @@ class UsageWindow(ActivityWindow):
                 cells = self.model_cells[key] = self.model_row(model)
                 for column, (title, _xalign) in enumerate(columns):
                     grid.attach(cells[title], column, line, 1, 1)
+            for column, (title, _xalign) in enumerate(columns):
+                # The ranked measure keeps the place and the 24 px gutter before the share.
+                (cells[title].add_css_class if title == first and not self.small else cells[title].remove_css_class)("asb-usage-cost")
+                if layout.get_layout_child(cells[title]).get_column() != column:
+                    layout.get_layout_child(cells[title]).set_column(column)
             cost = cells["Cost"]
             cost.set_label(format_cost(model["cost"]))
             cost.remove_css_class("asb-mono" if model["cost"] is None else "asb-dim")
@@ -18548,13 +18729,16 @@ class UsageWindow(ActivityWindow):
             share = cells["Share"]
             if model["share"] is None:
                 remove_children(share)
+                share.set_tooltip_text(None)
             else:
                 if share.get_first_child() is None:
-                    share.append(UsageBar(6, self.palette["track"], 60))
+                    share.append(self.share_bar())
                     share.append(self.text("", ("asb-mono",), 1, width_chars=6))
                 share.get_first_child().track = self.palette["track"]
+                share.get_first_child().set_size_request(round(120 * self.text_scale), 6)
                 share.get_first_child().set_segments([(1, self.palette["accent"])], model["share"])
                 share.get_last_child().set_label(format_share(model["share"]))
+                share.set_tooltip_text(self.share_text(model["share"]))
             # Keep the child order in the row order too: the screen reader reads the children in that order.
             for title, _xalign in columns:
                 cell = cells[title]
@@ -18563,6 +18747,44 @@ class UsageWindow(ActivityWindow):
                 if layout.get_layout_child(cell).get_row() != line:
                     layout.get_layout_child(cell).set_row(line)
                 previous = cell
+
+    def table_columns(self, name, machines):
+        """The columns of Models (name "Model", machines "Machines") or Sessions ("Session", "Machine") as (title, xalign): the
+        ranked measure (Cost in Cost, Tokens in Tokens), its share, then the other measure. The small layout has no machine and
+        share columns."""
+        first, other = ("Cost", "Tokens") if self.metric == "cost" else ("Tokens", "Cost")
+        if self.small:
+            return [(name, 0), ("App", 0), (first, 1), (other, 1)]
+        return [(name, 0), ("App", 0), (machines, 0), (first, 1), ("Share", 0), (other, 1)]
+
+    def table_head(self, columns, title, xalign):
+        """A column head of Models or Sessions (dim, 11 px). The head of the ranked measure is in the text color with a 12 px down
+        arrow 4 px before its right-aligned text; the share head names its measure (`Share of cost`)."""
+        first, last = columns[2 if self.small else 3][0], columns[-1][0]
+        expand = title in (columns[0][0], "App", "Machines", "Machine", last)
+        if title == first:
+            s, hidden = self.text_scale, Gtk.AccessibleRole.PRESENTATION
+            head = Gtk.Box(hexpand=expand, accessible_role=Gtk.AccessibleRole.COLUMN_HEADER)
+            inner = Gtk.Box(spacing=round(4 * s), halign=Gtk.Align.END, valign=Gtk.Align.CENTER, hexpand=True)
+            inner.append(Gtk.Image(icon_name="pan-down-symbolic", pixel_size=round(12 * s), accessible_role=hidden))
+            inner.append(self.text(title, (), 1, accessible_role=hidden))
+            head.append(inner)
+            head.add_css_class("asb-usage-ranked")
+            head.update_property([Gtk.AccessibleProperty.LABEL], [f"{title}, sorted from high to low"])
+            if not self.small:
+                head.add_css_class("asb-usage-cost")
+        else:
+            head = self.text(f"Share of {self.metric}" if title == "Share" else title, (), xalign, hexpand=expand)
+        head.add_css_class("asb-usage-head")
+        return head
+
+    def share_bar(self):
+        """The share track of a Models or Sessions row: 120 px (times the text scale); a share above 0 fills 2 px or more."""
+        return UsageBar(6, self.palette["track"], round(120 * self.text_scale), least=2)
+
+    def share_text(self, share):
+        """The share bar tooltip and the end of a row sentence: `44.4% of the tokens`, `19.0% of the cost`."""
+        return f"{format_share(share)} of the {self.metric}"
 
     def model_row(self, model):
         """The cells of one Models row by column title. render_models fills the texts that change."""
@@ -18582,8 +18804,6 @@ class UsageWindow(ActivityWindow):
         cells["App"] = app
         cells["Machines"] = Gtk.Box(spacing=4, accessible_role=Gtk.AccessibleRole.IMG)
         cells["Share"] = Gtk.Box(spacing=8)
-        if not self.small:
-            cells["Cost"].add_css_class("asb-usage-cost")
         for cell in cells.values():
             cell.add_css_class("asb-usage-cell")
             cell.asb_model = (model["model"], model["app"])
@@ -18592,69 +18812,132 @@ class UsageWindow(ActivityWindow):
     def render_sessions(self, view, show):
         """The Sessions table: the top sessions under the machine filter, then the dim Other sessions row. It is built again only
         when its numbers, the metric, the layout, or the colors change. Each row reads as one sentence to a screen reader."""
-        section = usage_sessions(self.data, view, self.metric)
+        # The rows that the rest row button added stay over a live refresh, not over a new period, metric, or machine filter.
+        scope = (self.period, self.metric, frozenset(self.machines_on()))
+        if scope != self.session_scope:
+            self.session_scope, self.session_extra = scope, 0
+        section = usage_sessions(self.data, view, self.metric, USAGE_SESSION_ROWS + self.session_extra)
         self.sessions_section.set_visible(section is not None)
         for group in self.column_groups:
             for widget in group.get_widgets():
                 group.remove_widget(widget)
         if section is None:
+            self.session_key, self.session_more = None, None
             return
-        columns = [("Session", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
-            [("Session", 0), ("App", 0), ("Machine", 0), ("Cost", 1), ("Share", 0), ("Tokens", 1)]
+        columns = self.table_columns("Session", "Machine")
         machines = [(machine["id"], machine["name"], machine["hue"], machine["offline"]) for machine in view["machines"]]
-        key = (self.metric, columns, machines, self.text_scale, self.palette["accent"], self.palette["track"],
+        key = (self.metric, columns, machines, self.text_scale, self.palette["accent"], self.palette["track"], self.palette["dim"],
                [(row["id"], row["app"], row["title"], row["machine"]["id"], row["value"], row["cost"], row["unpriced"], row["tokens"]) for row in section["rows"]],
                section["other"])
         if key != getattr(self, "session_key", None):
             self.session_key = key
-            self.build_sessions(section, view, show, columns)
+            self.build_sessions(section, show, columns)
         # Models keeps its own cells (render_models may add some on each render), so the groups take the current cells each time.
         for grid in (self.models, self.sessions):
             layout = grid.get_layout_manager()
             for child in self.children_of(grid):
                 self.column_groups[layout.get_layout_child(child).get_column()].add_widget(child)
 
-    def build_sessions(self, section, view, show, columns):
-        """The machine keys and the cells of the Sessions table, built again."""
-        self.session_keys.remove_all()
-        for machine in view["machines"]:
-            entry = Gtk.Box(spacing=round(6 * self.text_scale))
-            entry.append(self.dot(machine))
-            entry.append(self.text(machine["name"], ("asb-usage-model-key",)))
-            self.session_keys.append(entry)
-            entry.get_parent().set_focusable(False)
+    def more_sessions(self, button):
+        """The rest row button: the next sessions in rank order. The page keeps its scroll offset and the focus stays on the
+        button; when the button goes away, the focus moves to the Tab stop before it."""
+        focused = button.has_focus()
+        adjustment = self.scroll.get_vadjustment()
+        offset = adjustment.get_value()
+        self.session_extra += USAGE_SESSION_ROWS
+        section = usage_sessions(self.data, self.view, self.metric, USAGE_SESSION_ROWS + self.session_extra)
+        if focused and not (section and section["other"] and section["other"]["next"]):
+            # The button goes away: the focus moves to the nearest Tab stop before it, in widget order.
+            stops = []
+
+            def visit(widget):
+                if widget is button:
+                    return True
+                if widget.get_focusable() and widget.get_can_focus() and widget.get_mapped() and widget.is_sensitive():
+                    stops.append(widget)
+                child = widget.get_first_child()
+                while child is not None:
+                    if visit(child):
+                        return True
+                    child = child.get_next_sibling()
+                return False
+            visit(self)
+            if stops:
+                stops[-1].grab_focus()
+        self.render_sessions(self.view, format_cost if self.metric == "cost" else format_tokens)
+        if focused and self.session_more is not None:
+            self.session_more.grab_focus()
+        self.keep_offset(offset)
+
+    def keep_offset(self, offset):
+        """Hold the page at offset while the next frames lay out the new rows (a focus move would scroll to its widget)."""
+        adjustment = self.scroll.get_vadjustment()
+        adjustment.set_value(offset)
+        handler = adjustment.connect("value-changed", lambda changed: changed.get_value() != offset and changed.set_value(offset))
+        frames = [0]
+
+        def tick(_widget, _clock):
+            frames[0] += 1
+            if frames[0] < 3:
+                return GLib.SOURCE_CONTINUE
+            adjustment.disconnect(handler)
+            return GLib.SOURCE_REMOVE
+        self.scroll.add_tick_callback(tick)
+
+    def build_sessions(self, section, show, columns):
+        """The cells of the Sessions table, built again."""
         grid = self.sessions
         remove_children(grid)
         for column, (title, xalign) in enumerate(columns):
-            head = self.text(title, ("asb-usage-head",), xalign, hexpand=title in ("Session", "App", "Machine", "Tokens"))
-            if title == "Cost" and not self.small:
-                head.add_css_class("asb-usage-cost")
-            grid.attach(head, column, 0, 1, 1)
-        hidden = Gtk.AccessibleRole.PRESENTATION
-        self.session_rows = []
+            grid.attach(self.table_head(columns, title, xalign), column, 0, 1, 1)
+        hidden, s = Gtk.AccessibleRole.PRESENTATION, self.text_scale
+        # The rest row bar: the dim text mixed 50 % toward the track, moved toward the dim color until it has 3:1 on the window.
+        rest = contrast_floor(mix_color(self.palette["dim"], self.palette["track"], .5), self.palette["dim"], self.palette["win"], 3)
+        self.session_rows, self.session_more = [], None
         lines = section["rows"] + ([section["other"]] if section["other"] else [])
         for line, row in enumerate(lines, 1):
             other = row is section["other"]
             title = row["label"] if other else row["title"]
-            # A title is a name and is cut in the middle; the Other label wraps, so the window never cuts it.
-            name = self.text(title, ("asb-dim",), wrap=True, wrap_mode=Pango.WrapMode.WORD, tooltip_text=row["tip"]) if other else \
-                self.text(title, (), ellipsize=Pango.EllipsizeMode.MIDDLE, width_chars=8, tooltip_text=title)
             facts = [title] if other else [title, ACTIVITY_APP_LABELS[row["app"]], row["machine"]["name"]]
-            name.update_property([Gtk.AccessibleProperty.LABEL], [", ".join(facts + [show(row["value"]), f"{format_share(row['share'])} of the total"])])
-            app = Gtk.Box(spacing=round(6 * self.text_scale), accessible_role=hidden)
-            machine = Gtk.Box(accessible_role=hidden)
+            sentence = ", ".join(facts + [show(row["value"]), self.share_text(row["share"])])
+            if other and row["next"]:
+                # More sessions with a value: the rest row name is a button that shows the next ones.
+                label = self.text(title, ("asb-dim",), wrap=True, wrap_mode=Pango.WrapMode.WORD, accessible_role=hidden)
+                # The box measures the label at the row height, where it would wrap: it asks for one line, and wraps only when the column is narrower.
+                label.set_natural_wrap_mode(Gtk.NaturalWrapMode.NONE)
+                content = Gtk.Box(spacing=round(6 * s), halign=Gtk.Align.START)
+                content.append(label)
+                arrow = Gtk.Image(icon_name="pan-down-symbolic", pixel_size=round(12 * s), accessible_role=hidden)
+                arrow.add_css_class("asb-dim")
+                content.append(arrow)
+                tip = f"Show {row['next']} more session{'' if row['next'] == 1 else 's'}"
+                name = Gtk.Button(child=content, tooltip_text=tip)
+                name.add_css_class("flat")
+                name.add_css_class("asb-usage-more")
+                name.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [tip, sentence])
+                name.connect("clicked", self.more_sessions)
+                self.session_more = name
+            else:
+                # A title is a name and is cut in the middle; the Other label wraps, so the window never cuts it.
+                name = self.text(title, ("asb-dim",), wrap=True, wrap_mode=Pango.WrapMode.WORD, tooltip_text=row["tip"]) if other else \
+                    self.text(title, (), ellipsize=Pango.EllipsizeMode.MIDDLE, width_chars=8, tooltip_text=title)
+                name.update_property([Gtk.AccessibleProperty.LABEL], [sentence])
+            app = Gtk.Box(spacing=round(6 * s), accessible_role=hidden)
+            machine = Gtk.Box(spacing=round(6 * s), accessible_role=hidden)
             if not other:
                 app.set_tooltip_text(ACTIVITY_APP_LABELS[row["app"]])
                 mark = self.mark(row["app"])
-                mark.set_pixel_size(round(14 * self.text_scale))
+                mark.set_pixel_size(round(14 * s))
                 app.append(mark)
                 if not self.small:
                     app.append(self.text(ACTIVITY_APP_LABELS[row["app"]], accessible_role=hidden))
-                machine.set_tooltip_text(row["machine"]["name"])
+                # The machine dot and name, cut in the middle; the whole name (and the offline state) in the tooltip.
+                machine.set_tooltip_text(row["machine"]["name"] + (" (offline)" if row["machine"]["offline"] else ""))
                 machine.append(self.dot(row["machine"]))
-            share = Gtk.Box(spacing=8, accessible_role=hidden)
-            bar = UsageBar(6, self.palette["track"], 60)
-            bar.set_segments([(1, self.palette["accent"])], row["share"])
+                machine.append(self.text(row["machine"]["name"], ellipsize=Pango.EllipsizeMode.MIDDLE, accessible_role=hidden))
+            share = Gtk.Box(spacing=8, accessible_role=hidden, tooltip_text=self.share_text(row["share"]))
+            bar = self.share_bar()
+            bar.set_segments([(1, rest if other else self.palette["accent"])], row["share"])
             share.append(bar)
             share.append(self.text(format_share(row["share"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, width_chars=6, accessible_role=hidden))
             # A session with no priced tokens reads Unpriced, dim, as an unpriced model in the Models table.
@@ -18664,7 +18947,7 @@ class UsageWindow(ActivityWindow):
                      self.text(format_cost(row["cost"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, accessible_role=hidden),
                      "Tokens": self.text(format_tokens(row["tokens"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, accessible_role=hidden)}
             if not self.small:
-                cells["Cost"].add_css_class("asb-usage-cost")
+                cells[columns[3][0]].add_css_class("asb-usage-cost")
             for column, (title, _xalign) in enumerate(columns):
                 cells[title].add_css_class("asb-usage-cell")
                 grid.attach(cells[title], column, line, 1, 1)
