@@ -87,8 +87,8 @@ test('report and localHourly match the contract shapes, with dedupe, cost, and U
   assert.deepEqual(member.localHourly('24h').scan, { complete: false, files: 0, scannedFiles: 0 });
   await member.idle();
   assert.equal(member.localHourly('24h').usage.length, 3);
-  // With no prices, the member sessions have tokens and no cost.
-  assert.deepEqual(member.localHourly('24h').sessions.map((item) => Object.keys(item)), [['id', 'app', 'title', 'tokens'], ['id', 'app', 'title', 'tokens']]);
+  // The member sessions have the tokens of each model and no cost: the asking side prices them.
+  assert.deepEqual(member.localHourly('24h').sessions.map((item) => Object.keys(item)), [['id', 'app', 'title', 'models'], ['id', 'app', 'title', 'models']]);
   assert.equal(fetches.length, 0);
 
   const usage = service();
@@ -134,9 +134,9 @@ test('report and localHourly match the contract shapes, with dedupe, cost, and U
 
   const hourly = usage.localHourly('24h');
   assert.deepEqual(Object.keys(hourly), ['usage', 'sessions', 'scan']);
-  // The member sessions have their cost once this machine has prices.
-  assert.deepEqual(hourly.sessions.map(({ app, title, tokens, cost }) => [app, title, tokens.output, cost]).sort(),
-    [['claude', 'Unlisted session', 7, byApp.claude.cost.total], ['opencode', 'Unlisted session', 5, 0]]);
+  // The member sessions: the tokens of each model, never a cost.
+  assert.deepEqual(hourly.sessions.map(({ app, title, models }) => [app, title, models.map(({ model, tokens }) => [model, tokens.output])]).sort(),
+    [['claude', 'Unlisted session', [['claude-test-5', 7]]], ['opencode', 'Unlisted session', [['oc-test', 5]]]]);
   assert.deepEqual(hourly.scan, { complete: true, files: 3, scannedFiles: 3 });
   for (const record of hourly.usage) {
     assert.deepEqual(Object.keys(record), ['app', 'model', 'hourMs', 'tokens']);

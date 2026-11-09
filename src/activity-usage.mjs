@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as zlib from 'node:zlib';
 import { cacheDir as defaultCacheDir } from './platform-paths.mjs';
-import { aggregateBuckets, aggregateHourly, MAX_MEMBER_SESSIONS, periodBuckets, sessionSums, topSessions, USAGE_PERIODS, validSessions } from './usage-aggregation.mjs';
+import { aggregateBuckets, aggregateHourly, memberSessions, periodBuckets, priceSessions, sessionSums, topSessions, USAGE_PERIODS, validSessions } from './usage-aggregation.mjs';
 import { antigravityRoots, expandHome, readAntigravityUsage } from './usage-antigravity.mjs';
 import { modelMaker, TIER_TAG } from './usage-pricing.mjs';
 import { openCodeDatabases, readOpenCodeUsage } from './usage-opencode.mjs';
@@ -99,6 +99,7 @@ function foldTiers(records) {
 
 // The board title of a session, else UNLISTED_SESSION. No transcript text becomes a title.
 const titleOf = (title, app, id) => (typeof title === 'function' && title(app, id)) || UNLISTED_SESSION;
+const named = (list, title) => list.map((item) => ({ ...item, title: titleOf(title, item.app, item.id) }));
 
 // The sessions part of the report: the top sessions of each machine (TOP_SESSIONS by cost and by tokens), the count of
 // sessions of each machine, and per machine the usage of its records that no session sum holds (none).
@@ -612,10 +613,10 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       }
       const imported = importedOnly(members);
       for (const machine of imported) addMachine(machine.machineId, [...machine.records.values()]);
-      const named = (list) => list.map((item) => ({ ...item, title: titleOf(title, item.app, item.id) }));
-      const sessionLists = [[machineId, named(sessionSums(localParts(), startsMs[0], endMs, table).sessions)],
-        ...members.map((member) => [member.machineId, validSessions(member.sessions).map((item) => ({ ...item, title: item.title || UNLISTED_SESSION,
-          cost: item.cost ?? 0, ...(item.unpriced || item.cost === undefined ? { unpriced: true } : {}) }))])];
+      // One pricing for all sessions: the table and function of the records. Member sessions come with their models and no cost.
+      const sessionLists = [[machineId, priceSessions(named(sessionSums(localParts(), startsMs[0], endMs).sessions, title), table)],
+        ...members.map((member) => [member.machineId, priceSessions(validSessions(member.sessions)
+          .map((item) => ({ ...item, title: item.title || UNLISTED_SESSION })), table)])];
       return {
         period, nowMs, buckets: period === 'all' ? { unit, startsMs, firstMs } : { unit, startsMs },
         machines: [{ machineId, name, self: true, state: 'local', lastReportAtMs: 0 }, ...members.map((member) => ({
@@ -628,7 +629,7 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       };
     },
     // The usage part of contract 4: UTC hours, tokens only. It starts early enough to fill the first local bucket of any time zone.
-    // The sessions cover the same hours, each with its board title and, once this machine has prices, its cost.
+    // The sessions cover the same hours, each with its board title and its tokens per model (no cost).
     localHourly(period, { title } = {}) {
       checkPeriod(period);
       ask();
@@ -638,12 +639,9 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const sinceMs = period === 'all' ? 0 : Math.floor((nowMs - days * DAY_MS - HOUR_MS) / HOUR_MS) * HOUR_MS;
       const usage = ledgerFile ? ledgerViews().hourly.filter((record) => record.hourMs >= sinceMs && record.hourMs < nowMs + HOUR_MS)
         : aggregateHourly(allParts(), sinceMs, nowMs + HOUR_MS);
-      // The member route never loads prices: with no price table yet, the sessions have no cost.
-      const table = rates.table();
-      const sessions = topSessions(sessionSums(allParts(), sinceMs, nowMs + HOUR_MS, table).sessions.map((item) =>
-        ({ ...item, title: titleOf(title, item.app, item.id) })), MAX_MEMBER_SESSIONS / 2)
-        .map(({ id, app, title: name, tokens, cost, unpriced }) => ({ id, app, title: name, tokens,
-          ...(table.size ? { cost, ...(unpriced ? { unpriced: true } : {}) } : {}) }));
+      // No price table: the asking side prices the models of each session with the table of its records.
+      const sessions = memberSessions(named(sessionSums(allParts(), sinceMs, nowMs + HOUR_MS).sessions, title))
+        .map(({ id, app, title: name, models }) => ({ id, app, title: name, models }));
       return { usage: usage.slice(-MAX_HOURLY_RECORDS), sessions, scan: scanState() };
     },
     ...(ledgerFile ? {

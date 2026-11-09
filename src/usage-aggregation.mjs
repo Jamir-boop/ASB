@@ -104,10 +104,10 @@ const TOKEN_TYPES = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
 const roundUsd = (value) => Math.round(value * 1e6) / 1e6;
 export const tokenSum = (tokens) => tokens.uncached + tokens.cacheRead + tokens.cacheWrite + tokens.output;
 
-// The tokens and cost of each session (part.session) in [sinceMs, untilMs), with the dedupe of sumParts, so the session sums
-// and `none` (the parts with no session) add up to the records of the same parts. cost is the priced part; unpriced marks
-// a session with tokens of a model that has no price.
-export function sessionSums(parts, sinceMs, untilMs, rates) {
+// The tokens of each session (part.session) and model in [sinceMs, untilMs), with the dedupe of sumParts, so the session sums
+// and `none` (the parts with no session) add up to the records of the same parts. Each session is { app, id, models }, and
+// models is [{ model, tokens }] with the model names of the records (tier tags kept).
+export function sessionSums(parts, sinceMs, untilMs) {
   const seen = new Set();
   const sessions = new Map();
   const none = emptyTokens();
@@ -127,36 +127,53 @@ export function sessionSums(parts, sinceMs, untilMs, rates) {
   }
   const list = [];
   for (const { app, id, models } of sessions.values()) {
-    const tokens = emptyTokens();
-    let cost = 0, unpriced = false;
-    for (const [model, sum] of models) {
-      addTokens(tokens, sum);
-      const price = priceTokens(rates, model, sum);
-      if (price) cost += price.total; else if (tokenSum(sum) > 0) unpriced = true;
-    }
-    if (tokenSum(tokens) > 0) list.push({ app, id, tokens, cost: roundUsd(cost), ...(unpriced ? { unpriced: true } : {}) });
+    const kept = [...models].filter(([, tokens]) => tokenSum(tokens) > 0).map(([model, tokens]) => ({ model, tokens }));
+    if (kept.length) list.push({ app, id, models: kept });
   }
   return { sessions: list, none };
 }
 
+// One pricing for the local and the member sessions, with the function of the records: tokens is the sum over the models,
+// cost the priced part, and unpriced marks a session with tokens of a model that has no price. The models go away.
+export function priceSessions(list, rates) {
+  return list.map(({ models, ...session }) => {
+    const tokens = emptyTokens();
+    let cost = 0, unpriced = false;
+    for (const { model, tokens: sum } of models) {
+      addTokens(tokens, sum);
+      const price = priceTokens(rates, model, sum);
+      if (price) cost += price.total; else if (tokenSum(sum) > 0) unpriced = true;
+    }
+    return { ...session, tokens, cost: roundUsd(cost), ...(unpriced ? { unpriced: true } : {}) };
+  });
+}
+
 const byText = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-// The union of the `count` sessions with the most cost and the `count` with the most tokens; ties go to the title, then the ID.
+const tie = (a, b) => byText(a.title, b.title) || byText(a.id, b.id) || byText(a.app, b.app);
+const modelTokens = (session) => session.models.reduce((sum, { tokens }) => sum + tokenSum(tokens), 0);
+// The union of the `count` priced sessions with the most cost and the `count` with the most tokens; ties go to the title, then the ID.
 export function topSessions(list, count) {
-  const tie = (a, b) => byText(a.title, b.title) || byText(a.id, b.id) || byText(a.app, b.app);
   const byCost = [...list].sort((a, b) => b.cost - a.cost || tokenSum(b.tokens) - tokenSum(a.tokens) || tie(a, b)).slice(0, count);
   const byTokens = [...list].sort((a, b) => tokenSum(b.tokens) - tokenSum(a.tokens) || b.cost - a.cost || tie(a, b)).slice(0, count);
   return [...new Set([...byCost, ...byTokens])];
 }
 
 export const MAX_MEMBER_SESSIONS = 2000;
+export const MAX_SESSION_MODELS = 16;
+// The member reply: the MAX_MEMBER_SESSIONS sessions (with models, no cost) with the most tokens; ties go to the title, then the ID.
+export const memberSessions = (list) => [...list].sort((a, b) => modelTokens(b) - modelTokens(a) || tie(a, b)).slice(0, MAX_MEMBER_SESSIONS);
+
 const count = (value) => Number.isFinite(value) && value >= 0;
 const text = (value) => typeof value === 'string' && value.length <= 300;
-// The sessions of a member reply (contract 4): only plain strings and finite counts of 0 or more, at most MAX_MEMBER_SESSIONS.
+const validModel = (item) => item && typeof item === 'object' && text(item.model) && item.model.length > 0
+  && item.tokens && typeof item.tokens === 'object' && TOKEN_TYPES.every((type) => count(item.tokens[type]));
+// The sessions of a member reply (contract 4): only plain strings, 1 to MAX_SESSION_MODELS models with finite counts of 0 or
+// more, at most MAX_MEMBER_SESSIONS, and only the contract fields. The asking side prices them.
 export function validSessions(list) {
   if (!Array.isArray(list)) return [];
   return list.filter((item) => item && typeof item === 'object' && text(item.id) && item.id && text(item.app) && text(item.title)
-    && item.tokens && typeof item.tokens === 'object' && TOKEN_TYPES.every((type) => count(item.tokens[type]))
-    && (item.cost === undefined || count(item.cost))).slice(0, MAX_MEMBER_SESSIONS)
-    .map(({ id, app, title, tokens, cost, unpriced }) => ({ id, app, title, tokens: Object.fromEntries(TOKEN_TYPES.map((type) => [type, tokens[type]])),
-      ...(cost === undefined ? {} : { cost }), ...(unpriced === true ? { unpriced: true } : {}) }));
+    && Array.isArray(item.models) && item.models.length >= 1 && item.models.length <= MAX_SESSION_MODELS && item.models.every(validModel))
+    .slice(0, MAX_MEMBER_SESSIONS)
+    .map(({ id, app, title, models }) => ({ id, app, title, models: models.map(({ model, tokens }) =>
+      ({ model, tokens: Object.fromEntries(TOKEN_TYPES.map((type) => [type, tokens[type]])) })) }));
 }

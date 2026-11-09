@@ -6,7 +6,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createActivityUsage, sessionIdOf, TOP_SESSIONS } from '../src/activity-usage.mjs';
-import { periodBuckets, sessionSums, topSessions, validSessions } from '../src/usage-aggregation.mjs';
+import { MAX_MEMBER_SESSIONS, memberSessions, periodBuckets, priceSessions, sessionSums, topSessions, validSessions } from '../src/usage-aggregation.mjs';
+import { priceTokens } from '../src/usage-pricing.mjs';
 import { validActivity } from '../src/machine-peers.mjs';
 import { buildSwitchboardDashboard, usageSessionTitles } from '../src/switchboard.mjs';
 
@@ -59,15 +60,20 @@ test('sessionSums uses the dedupe of the records and the period bounds, and the 
     // Before the start bound: outside.
     { app: 'claude', model: 'm', atMs: 9, tokens: tokens(8), key: null, session: 'a' },
   ];
-  const rates = new Map([['m', { input: 1, output: 2 }]]);
-  const { sessions, none } = sessionSums(parts, 10, 30, rates);
+  const { sessions, none } = sessionSums(parts, 10, 30);
   assert.deepEqual(sessions, [
-    { app: 'claude', id: 'a', tokens: tokens(4), cost: 1 + 2 + 3 + 8 },
-    { app: 'claude', id: 'b', tokens: tokens(5), cost: 1 + 2 + 3 + 10 }]);
+    { app: 'claude', id: 'a', models: [{ model: 'm', tokens: tokens(4) }] },
+    { app: 'claude', id: 'b', models: [{ model: 'm', tokens: tokens(5) }] }]);
   assert.deepEqual(none, tokens(6));
-  // A model with no price gives unpriced and only the priced part as cost.
-  assert.deepEqual(sessionSums([{ app: 'codex', model: 'x', atMs: 10, tokens: tokens(1), session: 's' }], 0, 99, rates).sessions,
-    [{ app: 'codex', id: 's', tokens: tokens(1), cost: 0, unpriced: true }]);
+});
+
+test('priceSessions prices each model with the function of the records: a model with no price gives unpriced and only the priced part', () => {
+  const tokens = (output) => ({ uncached: 1, cacheRead: 2, cacheWrite: 3, output });
+  const rates = new Map([['m', { input: 1, output: 2 }]]);
+  assert.deepEqual(priceSessions([{ app: 'claude', id: 'a', title: 't', models: [{ model: 'm', tokens: tokens(4) }, { model: 'x', tokens: tokens(1) }] },
+    { app: 'claude', id: 'b', title: 't', models: [{ model: 'm', tokens: tokens(4) }] }], rates), [
+    { app: 'claude', id: 'a', title: 't', tokens: { uncached: 2, cacheRead: 4, cacheWrite: 6, output: 5 }, cost: priceTokens(rates, 'm', tokens(4)).total, unpriced: true },
+    { app: 'claude', id: 'b', title: 't', tokens: tokens(4), cost: priceTokens(rates, 'm', tokens(4)).total }]);
 });
 
 test('session sums of made-up Codex, Claude, Grok, Pi, and OpenCode transcripts, with board titles', { skip: !sqlite }, async (t) => {
@@ -144,48 +150,96 @@ test('session sums of made-up Codex, Claude, Grok, Pi, and OpenCode transcripts,
   assert.equal(report.sessions.none[SELF].tokens.output, 11);
   // No transcript text or path becomes a title.
   assert.ok(!report.sessions.rows.some((row) => /projects|rollout|agent-a1/.test(row.title)));
-  // The member reply: the same sums over its hours, with titles and costs.
+  // The member reply: the same sums over its hours, with titles and the tokens of each model, no cost.
   const hourly = usage.localHourly('7d', { title });
   assert.equal(hourly.sessions.length, 7);
   assert.equal(hourly.sessions.find((item) => item.id === uuid(1)).title, 'release-plan');
-  assert.deepEqual(Object.keys(hourly.sessions.find((item) => item.id === uuid(2))), ['id', 'app', 'title', 'tokens', 'cost']);
+  assert.deepEqual(hourly.sessions.find((item) => item.id === uuid(1)).models.map((item) => Object.keys(item)), [['model', 'tokens']]);
+  assert.ok(hourly.sessions.every((item) => Object.keys(item).join() === 'id,app,title,models'));
+
+  // A member with no price table: its reply has no cost, and the asking side prices its sessions with the table of its records.
+  const member = createActivityUsage({ homeDir: root, env: {}, cacheDir: path.join(root, 'member-cache'), now: () => NOW, refreshMs: Infinity,
+    log: () => {}, fetch: async () => { throw new Error('offline'); }, machine: { machineId: MEMBER, name: 'laptop' }, readSources: async () => [
+      { enabled: true, provider: 'codex', dataDir: path.join(root, 'codex') },
+      { enabled: true, provider: 'claude-desktop-code', projectsDir: path.join(root, 'projects') }] });
+  t.after(() => Promise.all([member.idle(), member.pricesIdle()]));
+  await member.refresh();
+  const reply = member.localHourly('24h', { title });
+  assert.ok(reply.sessions.length > 0 && !JSON.stringify(reply.sessions).includes('cost'));
+  const asked = usage.report('24h', [{ machineId: MEMBER, name: 'laptop', state: 'online', usage: reply.usage, sessions: reply.sessions }], { title });
+  const memberRows = asked.sessions.rows.filter((row) => row.machineId === MEMBER && row.app === 'claude');
+  const memberRecords = asked.records.filter((record) => record.machineId === MEMBER && record.app === 'claude');
+  assert.equal(memberRows.length, 2);
+  assert.ok(memberRows.every((row) => row.cost > 0 && !row.unpriced));
+  assert.ok(Math.abs(memberRows.reduce((sum, row) => sum + row.cost, 0) - memberRecords.reduce((sum, record) => sum + record.cost.total, 0)) < 1e-5);
+  // A member session with two models, one with no price: unpriced, and the cost of the priced model only.
+  const claudeTokens = { uncached: 10, cacheRead: 100, cacheWrite: 5, output: 7 };
+  const two = usage.report('24h', [{ machineId: MEMBER, name: 'laptop', state: 'online', usage: [], sessions: [
+    { id: 'two', app: 'claude', title: 'docs', models: [{ model: 'claude-test-5', tokens: claudeTokens }, { model: 'no-price-test', tokens: claudeTokens }] },
+    { id: 'one', app: 'claude', title: 'docs', models: [{ model: 'claude-test-5', tokens: claudeTokens }] }] }]).sessions.rows
+    .filter((row) => row.machineId === MEMBER);
+  const byId = Object.fromEntries(two.map((row) => [row.id, row]));
+  assert.ok(byId.one.cost > 0 && !byId.one.unpriced);
+  assert.deepEqual([byId.two.cost, byId.two.unpriced, byId.two.tokens.output], [byId.one.cost, true, 14]);
 });
 
 test('the report keeps the 50 sessions with the most cost and the 50 with the most tokens of each machine, and counts all', () => {
-  // 120 member sessions: cost rises with n, tokens fall with n, so the two top lists do not overlap.
+  const tokens = (uncached) => ({ uncached, cacheRead: 0, cacheWrite: 0, output: 0 });
   const sessions = Array.from({ length: 120 }, (_, n) => ({ id: `s${String(n).padStart(3, '0')}`, app: 'codex', title: `task ${n}`,
-    tokens: { uncached: 1000 - n, cacheRead: 0, cacheWrite: 0, output: 0 }, cost: n }));
+    models: [{ model: 'free-test', tokens: tokens(10_000 - n) }] }));
   const usage = createActivityUsage({ machine: { machineId: SELF, name: 'desk' }, now: () => NOW, fetch: async () => { throw new Error('offline'); },
     cacheDir: path.join(os.tmpdir(), 'asb-usage-sessions-none'), log: () => {}, refreshMs: Infinity });
-  const usageRecords = [{ app: 'codex', model: 'gpt-test-1', hourMs: Math.floor(NOW / HOUR) * HOUR - HOUR,
-    tokens: { uncached: sessions.reduce((sum, item) => sum + item.tokens.uncached, 0) + 77, cacheRead: 0, cacheWrite: 0, output: 0 } }];
+  const usageRecords = [{ app: 'codex', model: 'free-test', hourMs: Math.floor(NOW / HOUR) * HOUR - HOUR,
+    tokens: tokens(sessions.reduce((sum, item) => sum + item.models[0].tokens.uncached, 0) + 77) }];
   const report = usage.report('24h', [{ machineId: MEMBER, name: 'laptop', state: 'online', usage: usageRecords, sessions }]);
   const member = report.sessions.rows.filter((row) => row.machineId === MEMBER);
-  assert.equal(member.length, 2 * TOP_SESSIONS);
-  assert.deepEqual(member.map((row) => row.id).sort(), [...sessions.slice(0, 50), ...sessions.slice(70)].map((item) => item.id).sort());
+  // With no prices every cost is 0, so the cost order is the token order: one list of 50.
+  assert.equal(member.length, TOP_SESSIONS);
+  assert.deepEqual(member.map((row) => row.id).sort(), sessions.slice(0, 50).map((item) => item.id));
   assert.deepEqual(report.sessions.counts, { [MEMBER]: 120 });
   // The usage of the member's records that no session holds.
-  assert.deepEqual(report.sessions.none[MEMBER].tokens, { uncached: 77, cacheRead: 0, cacheWrite: 0, output: 0 });
-  assert.deepEqual(Object.keys(member[0]), ['machineId', 'id', 'app', 'title', 'tokens', 'cost']);
+  assert.deepEqual(report.sessions.none[MEMBER].tokens, tokens(77));
+  assert.deepEqual(Object.keys(member[0]), ['machineId', 'id', 'app', 'title', 'tokens', 'cost', 'unpriced']);
+  // With a cost order that differs from the token order, the union has 50 + 50 rows.
+  const priced = sessions.map((item, n) => ({ ...item, tokens: tokens(10_000 - n), cost: n }));
+  const top = topSessions(priced, TOP_SESSIONS);
+  assert.equal(top.length, 2 * TOP_SESSIONS);
+  assert.deepEqual(top.map((row) => row.id).sort(), [...sessions.slice(0, 50), ...sessions.slice(70)].map((item) => item.id).sort());
   // Ties go to the title, then the ID.
-  const tied = [{ id: 'b', title: 'x' }, { id: 'a', title: 'x' }, { id: 'c', title: 'w' }].map((item) => ({ ...item, app: 'pi',
-    tokens: { uncached: 1, cacheRead: 0, cacheWrite: 0, output: 0 }, cost: 0 }));
+  const tied = [{ id: 'b', title: 'x' }, { id: 'a', title: 'x' }, { id: 'c', title: 'w' }].map((item) => ({ ...item, app: 'pi', tokens: tokens(1), cost: 0 }));
   assert.deepEqual(topSessions(tied, 2).map((item) => item.id), ['c', 'a']);
+});
+
+test('the member reply keeps the 2,000 sessions with the most tokens; ties go to the title, then the ID', () => {
+  const tokens = (uncached) => ({ uncached, cacheRead: 0, cacheWrite: 0, output: 0 });
+  const list = Array.from({ length: 2100 }, (_, n) => ({ id: `s${String(n).padStart(4, '0')}`, app: 'codex', title: n < 10 ? 'same' : `t${n}`,
+    models: [{ model: 'm', tokens: tokens(n < 10 ? 5 : n) }] }));
+  const kept = memberSessions(list);
+  assert.equal(kept.length, MAX_MEMBER_SESSIONS);
+  assert.equal(kept[0].id, 's2099');
+  // The 100 with the fewest tokens go: the 10 ties (5 tokens) and n = 10 to 99.
+  assert.deepEqual(kept.slice(-2).map((item) => item.id), ['s0101', 's0100']);
+  assert.deepEqual(memberSessions(list.slice(0, 3).reverse()).map((item) => item.id), ['s0000', 's0001', 's0002']);
 });
 
 test('member sessions: valid entries only, and a member that sends none has all its usage with no session', () => {
   const tokens = { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 };
-  const good = { id: 'docs', app: 'claude', title: 'docs', tokens, cost: 1.5, unpriced: true, extra: 'dropped' };
+  const models = [{ model: 'claude-test-5', tokens, extra: 'dropped' }];
+  const good = { id: 'docs', app: 'claude', title: 'docs', models, cost: 1.5, unpriced: true, tokens, extra: 'dropped' };
+  const clean = { id: 'docs', app: 'claude', title: 'docs', models: [{ model: 'claude-test-5', tokens }] };
+  const model = (change) => ({ ...good, models: [{ ...models[0], ...change }] });
   const kept = validSessions([good, { ...good, id: '' }, { ...good, id: 7 }, { ...good, title: 'x'.repeat(301) }, { ...good, title: 'x'.repeat(300) },
-    { ...good, tokens: { ...tokens, output: -1 } }, { ...good, tokens: { ...tokens, output: Infinity } }, { ...good, tokens: { ...tokens, output: '4' } },
-    { ...good, cost: Number.NaN }, { ...good, cost: undefined }, { ...good, app: null }, null, 'docs']);
-  assert.deepEqual(kept, [{ id: 'docs', app: 'claude', title: 'docs', tokens, cost: 1.5, unpriced: true },
-    { id: 'docs', app: 'claude', title: 'x'.repeat(300), tokens, cost: 1.5, unpriced: true }, { id: 'docs', app: 'claude', title: 'docs', tokens, unpriced: true }]);
+    { ...good, app: null }, { ...good, app: 'x'.repeat(301) }, { ...good, models: [] }, { ...good, models: undefined },
+    { ...good, models: Array(17).fill(models[0]) }, { ...good, models: Array(16).fill(models[0]) },
+    model({ model: '' }), model({ model: 'x'.repeat(301) }), model({ model: 5 }), model({ model: 'x'.repeat(300) }),
+    model({ tokens: { ...tokens, output: -1 } }), model({ tokens: { ...tokens, output: Infinity } }), model({ tokens: { ...tokens, output: '4' } }),
+    model({ tokens: { ...tokens, output: Number.NaN } }), model({ tokens: null }), null, 'docs']);
+  assert.deepEqual(kept, [clean, { ...clean, title: 'x'.repeat(300) }, { ...clean, models: Array(16).fill(clean.models[0]) },
+    { ...clean, models: [{ model: 'x'.repeat(300), tokens }] }]);
   assert.equal(validSessions(Array.from({ length: 2500 }, () => good)).length, 2000);
   assert.deepEqual(validSessions('x'), []);
   // The member reply: sessions only when the member sends them (an older ASB sends none).
-  assert.deepEqual(validActivity({ messages: [], usage: [], sessions: [good, { ...good, title: 5 }] }).sessions,
-    [{ id: 'docs', app: 'claude', title: 'docs', tokens, cost: 1.5, unpriced: true }]);
+  assert.deepEqual(validActivity({ messages: [], usage: [], sessions: [good, { ...good, title: 5 }] }).sessions, [clean]);
   assert.equal(Object.hasOwn(validActivity({ messages: [], usage: [] }), 'sessions'), false);
   const usage = createActivityUsage({ machine: { machineId: SELF, name: 'desk' }, now: () => NOW, fetch: async () => { throw new Error('offline'); },
     cacheDir: path.join(os.tmpdir(), 'asb-usage-sessions-none'), log: () => {}, refreshMs: Infinity });
@@ -195,7 +249,8 @@ test('member sessions: valid entries only, and a member that sends none has all 
     { machineId: MEMBER, name: 'laptop', state: 'online', usage: [record] },
     { machineId: 'c'.repeat(16), name: 'studio', state: 'online', usage: [record], sessions: [{ ...good, title: '' }, { id: 'bad' }] }]);
   assert.deepEqual(report.sessions.counts, { ['c'.repeat(16)]: 1 });
-  assert.deepEqual(report.sessions.rows, [{ machineId: 'c'.repeat(16), id: 'docs', app: 'claude', title: 'Unlisted session', tokens, cost: 1.5, unpriced: true }]);
+  // No price table here: the model has no price, so the session is unpriced with cost 0.
+  assert.deepEqual(report.sessions.rows, [{ machineId: 'c'.repeat(16), id: 'docs', app: 'claude', title: 'Unlisted session', tokens, cost: 0, unpriced: true }]);
   assert.deepEqual(report.sessions.none, { [MEMBER]: { tokens, cost: 0 } });
 });
 
