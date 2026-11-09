@@ -14390,7 +14390,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(len(window.session_rows), len(lines))
         for cells, line in zip(window.session_rows, lines):
             self.assertEqual(cells["Session"].get_label(), line.get("title", line.get("label")))
-            self.assertEqual((cells["Cost"].get_label(), cells["Tokens"].get_label()), (asb.format_cost(line["cost"]), asb.format_tokens(line["tokens"])))
+            cost = asb.format_cost(None if line.get("unpriced") and not line["cost"] else line["cost"])
+            self.assertEqual((cells["Cost"].get_label(), cells["Tokens"].get_label()), (cost, asb.format_tokens(line["tokens"])))
             self.assertEqual(self.labels(cells["Share"]), [asb.format_share(line["share"])])
         self.assertAlmostEqual(sum(line["value"] for line in lines), view["total"], delta=1e-6)
         return section
@@ -14450,6 +14451,13 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                          (9, "Usage with no session", "Usage that ASB cannot tie to a session"))
         self.assert_accessible_label(rest, f"Usage with no session, {asb.format_tokens(desk['other']['tokens'])}, "
                                      f"{asb.format_share(desk['other']['share'])} of the total")
+        # The unpriced OpenCode session of Desk reads Unpriced in the dim color, as an unpriced model; a priced row keeps its cost.
+        cells = next(cells for cells, line in zip(window.session_rows, desk["rows"]) if line["title"] == "bridge-tests")
+        self.assertEqual(cells["Cost"].get_label(), "Unpriced")
+        self.assertTrue(cells["Cost"].has_css_class("asb-dim") and not cells["Cost"].has_css_class("asb-mono"))
+        priced = window.session_rows[0]["Cost"]
+        self.assertEqual(priced.get_label(), asb.format_cost(desk["rows"][0]["cost"]))
+        self.assertTrue(desk["rows"][0]["cost"] > 0 and priced.has_css_class("asb-mono") and not priced.has_css_class("asb-dim"))
         self.assert_no_new_warnings()
 
     def column_edges(self, grid, window):

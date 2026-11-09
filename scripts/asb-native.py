@@ -3146,7 +3146,7 @@ def usage_sessions(reply, view, metric):
         tokens, cost = sum(row["tokens"][part] for part in USAGE_PARTS), row.get("cost") or 0
         value = cost if metric == "cost" else tokens
         rows.append({"id": row["id"], "app": row["app"] if row["app"] in USAGE_APPS else "", "title": row["title"], "machine": machine,
-                     "value": value, "cost": cost, "tokens": tokens, "share": value / total if total else 0})
+                     "value": value, "cost": cost, "unpriced": row.get("unpriced") is True, "tokens": tokens, "share": value / total if total else 0})
     rows.sort(key=lambda row: (-row["value"], row["title"], row["id"]))
     shown = [row for row in rows if row["value"] > 0][:USAGE_SESSION_ROWS]
     more = count - len(shown)
@@ -17937,7 +17937,7 @@ class UsageWindow(ActivityWindow):
             [("Session", 0), ("App", 0), ("Machine", 0), ("Cost", 1), ("Share", 0), ("Tokens", 1)]
         machines = [(machine["id"], machine["name"], machine["hue"], machine["offline"]) for machine in view["machines"]]
         key = (self.metric, columns, machines, self.text_scale, self.palette["accent"], self.palette["track"],
-               [(row["id"], row["app"], row["title"], row["machine"]["id"], row["value"], row["cost"], row["tokens"]) for row in section["rows"]],
+               [(row["id"], row["app"], row["title"], row["machine"]["id"], row["value"], row["cost"], row["unpriced"], row["tokens"]) for row in section["rows"]],
                section["other"])
         if key != getattr(self, "session_key", None):
             self.session_key = key
@@ -17991,8 +17991,11 @@ class UsageWindow(ActivityWindow):
             bar.set_segments([(1, self.palette["accent"])], row["share"])
             share.append(bar)
             share.append(self.text(format_share(row["share"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, width_chars=6, accessible_role=hidden))
+            # A session with no priced tokens reads Unpriced, dim, as an unpriced model in the Models table.
+            unpriced = not other and row["unpriced"] and not row["cost"]
             cells = {"Session": name, "App": app, "Machine": machine, "Share": share,
-                     "Cost": self.text(format_cost(row["cost"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, accessible_role=hidden),
+                     "Cost": self.text(format_cost(None), ("asb-dim",), 1, accessible_role=hidden) if unpriced else
+                     self.text(format_cost(row["cost"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, accessible_role=hidden),
                      "Tokens": self.text(format_tokens(row["tokens"]), ("asb-mono",) + (("asb-dim",) if other else ()), 1, accessible_role=hidden)}
             if not self.small:
                 cells["Cost"].add_css_class("asb-usage-cost")

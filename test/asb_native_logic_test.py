@@ -1531,6 +1531,9 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual((len(desk["rows"]), desk["other"]["label"], desk["other"]["tip"]),
                          (8, "Usage with no session", "Usage that ASB cannot tie to a session"))
         self.assertEqual(sum(row["value"] for row in desk["rows"]) + desk["other"]["value"], self.view("all", {"desk"}, "tokens")["total"])
+        # Each row carries unpriced: only the OpenCode session of Desk (its model has no price) has it.
+        self.assertEqual([(row["title"], row["cost"]) for row in desk["rows"] if row["unpriced"]], [("bridge-tests", 0)])
+        self.assertTrue(all(row["cost"] > 0 for row in desk["rows"] if not row["unpriced"]))
         # Studio and Laptop: 10 sessions, 8 shown, 2 more, all usage tied.
         both = self.sessions(on={"studio", "laptop"})
         self.assertEqual((both["other"]["label"], both["other"]["tip"]), ("Other sessions (2)", "2 more sessions"))
