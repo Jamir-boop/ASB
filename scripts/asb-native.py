@@ -3160,7 +3160,8 @@ def usage_sessions(reply, view, metric):
         sessions_text = f"{more} more session{'' if more == 1 else 's'}"
         tip = (f"{sessions_text}, and usage that ASB cannot tie to a session" if more else "Usage that ASB cannot tie to a session") if untied \
             else sessions_text
-        other = {"label": f"Other sessions ({more})", "tip": tip, "value": value, "cost": cost, "tokens": tokens,
+        # With no other session, the row holds only the usage with no session.
+        other = {"label": f"Other sessions ({more})" if more else "Usage with no session", "tip": tip, "value": value, "cost": cost, "tokens": tokens,
                  "share": value / total if total else 0}
     return {"rows": shown, "other": other}
 
@@ -17311,6 +17312,8 @@ class UsageWindow(ActivityWindow):
         self.sessions_section.append(self.session_keys)
         self.sessions = Gtk.Grid()
         self.sessions_section.append(self.sessions)
+        # The Models and Sessions tables share their columns: one width group per column over the cells of both grids.
+        self.column_groups = [Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL) for _column in range(6)]
         self.content.append(self.sessions_section)
         self.layout_content()
 
@@ -17925,6 +17928,9 @@ class UsageWindow(ActivityWindow):
         when its numbers, the metric, the layout, or the colors change. Each row reads as one sentence to a screen reader."""
         section = usage_sessions(self.data, view, self.metric)
         self.sessions_section.set_visible(section is not None)
+        for group in self.column_groups:
+            for widget in group.get_widgets():
+                group.remove_widget(widget)
         if section is None:
             return
         columns = [("Session", 0), ("App", 0), ("Cost", 1), ("Tokens", 1)] if self.small else \
@@ -17933,9 +17939,17 @@ class UsageWindow(ActivityWindow):
         key = (self.metric, columns, machines, self.text_scale, self.palette["accent"], self.palette["track"],
                [(row["id"], row["app"], row["title"], row["machine"]["id"], row["value"], row["cost"], row["tokens"]) for row in section["rows"]],
                section["other"])
-        if key == getattr(self, "session_key", None):
-            return
-        self.session_key = key
+        if key != getattr(self, "session_key", None):
+            self.session_key = key
+            self.build_sessions(section, view, show, columns)
+        # Models keeps its own cells (render_models may add some on each render), so the groups take the current cells each time.
+        for grid in (self.models, self.sessions):
+            layout = grid.get_layout_manager()
+            for child in self.children_of(grid):
+                self.column_groups[layout.get_layout_child(child).get_column()].add_widget(child)
+
+    def build_sessions(self, section, view, show, columns):
+        """The machine keys and the cells of the Sessions table, built again."""
         self.session_keys.remove_all()
         for machine in view["machines"]:
             entry = Gtk.Box(spacing=round(6 * self.text_scale))

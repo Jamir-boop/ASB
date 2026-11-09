@@ -14439,6 +14439,56 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((len(window.session_rows), laptop["other"]), (6, None))
         self.assertEqual({cells["Machine"].get_tooltip_text() for cells in window.session_rows}, {"Laptop"})
         self.assertEqual(self.labels(window.session_keys), ["Laptop"])
+        # Desk only in Tokens: all its 8 sessions show, and the dim rest row holds its usage with no session.
+        window.toggle_machine("desk")
+        window.toggle_machine("laptop")
+        window.metric_buttons["tokens"].set_active(True)
+        self.drain(.05)
+        desk = self.check_session_rows(window, "all", {"desk"}, "tokens")
+        rest = window.session_rows[-1]["Session"]
+        self.assertEqual((len(window.session_rows), rest.get_label(), rest.get_tooltip_text()),
+                         (9, "Usage with no session", "Usage that ASB cannot tie to a session"))
+        self.assert_accessible_label(rest, f"Usage with no session, {asb.format_tokens(desk['other']['tokens'])}, "
+                                     f"{asb.format_share(desk['other']['share'])} of the total")
+        self.assert_no_new_warnings()
+
+    def column_edges(self, grid, window):
+        """The left and right edge of each column of grid, in window coordinates, from its first two rows."""
+        layout, edges = grid.get_layout_manager(), {}
+        for child in self.children(grid):
+            place = layout.get_layout_child(child)
+            if place.get_row() < 2:
+                bounds = child.compute_bounds(window)[1]
+                edges.setdefault(place.get_column(), set()).add((round(bounds.get_x(), 1), round(bounds.get_x() + bounds.get_width(), 1)))
+        return edges
+
+    def assert_shared_columns(self, window):
+        models, sessions = self.column_edges(window.models, window), self.column_edges(window.sessions, window)
+        self.assertEqual(sorted(models), sorted(sessions))
+        for column in models:
+            # One edge pair per column: the head and the first row agree, and so do the two tables.
+            self.assertEqual(len(models[column]), 1, column)
+            self.assertEqual(models[column], sessions[column], column)
+
+    def test_the_models_and_sessions_tables_share_their_columns(self):
+        window = self.window(period="all")
+        self.assert_shared_columns(window)
+        self.assertEqual(len(self.column_edges(window.sessions, window)), 6)
+        # After a metric change and a machine filter change.
+        window.metric_buttons["tokens"].set_active(True)
+        window.toggle_machine("desk")
+        self.drain(.1)
+        self.assert_shared_columns(window)
+        # The small layout: four columns.
+        small = self.window(size=(600, 760), period="all")
+        self.assertTrue(small.small)
+        self.assertEqual(len(self.column_edges(small.sessions, small)), 4)
+        self.assert_shared_columns(small)
+        # Large Text, wide and small.
+        self.set_text_dpi(147456)
+        self.drain(.2)
+        self.assert_shared_columns(window)
+        self.assert_shared_columns(small)
         self.assert_no_new_warnings()
 
     def test_the_sessions_section_hides_with_no_session(self):

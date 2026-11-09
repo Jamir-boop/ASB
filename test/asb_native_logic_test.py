@@ -1529,7 +1529,7 @@ class UsageLogicChecks(unittest.TestCase):
         # Desk only: 8 sessions, 0 more, and its usage with no session.
         desk = self.sessions(on={"desk"}, metric="tokens")
         self.assertEqual((len(desk["rows"]), desk["other"]["label"], desk["other"]["tip"]),
-                         (8, "Other sessions (0)", "Usage that ASB cannot tie to a session"))
+                         (8, "Usage with no session", "Usage that ASB cannot tie to a session"))
         self.assertEqual(sum(row["value"] for row in desk["rows"]) + desk["other"]["value"], self.view("all", {"desk"}, "tokens")["total"])
         # Studio and Laptop: 10 sessions, 8 shown, 2 more, all usage tied.
         both = self.sessions(on={"studio", "laptop"})
