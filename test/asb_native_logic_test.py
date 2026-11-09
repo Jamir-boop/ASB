@@ -281,7 +281,7 @@ class ActivityHelperChecks(unittest.TestCase):
     def test_activity_palette(self):
         colors = {"background": "#101010", "text": "#f0f0f0", "accent": "#3080c0", "muted": "#a0a0a0", "divider": "#404040"}
         self.assertEqual(asb.activity_palette(colors), {
-            "win": "#101010", "rule": "#2d2d2d", "track": "#363636", "divider": "#404040", "popup": "#616161",
+            "win": "#101010", "rule": "#2d2d2d", "track": "#363636", "divider": "#404040", "popup": "#616161", "float": "#1d1d1d",
             "text": "#f0f0f0", "dim": "#a0a0a0", "accent": "#3080c0", "light": "#78acd6", "warn": "#e0b45a", "bad": "#f5a090"})
         # A divider under 1.3:1 against the window (#030303 on #000000) draws with the rule color.
         black = asb.activity_palette({"background": "#000000", "text": "#ffffff", "accent": "#ffb900", "muted": "#bcbcbc", "divider": "#030303"})
@@ -1033,6 +1033,7 @@ class UsageLogicChecks(unittest.TestCase):
     """The Usage window numbers over the preview's sample data (test/fixtures/activity/usage-sample.json, UTC buckets)."""
     REPLIES = json.loads((Path(__file__).parent / "fixtures" / "activity" / "usage-sample.json").read_text())
     ALL = {"desk", "laptop", "studio"}
+    utc = staticmethod(ActivityHelperChecks.utc)
 
     def setUp(self):
         saved = os.environ.get("TZ")
@@ -1237,6 +1238,55 @@ class UsageLogicChecks(unittest.TestCase):
                     self.assertEqual(labels[0][0], 0)
                 elif width == 100:
                     self.assertEqual(len(labels), 1)
+
+    def test_a_regular_tick_keeps_16_px_from_an_end_label(self):
+        # 7 px per character: `Oct 19` and `Oct 26` are 42 px wide; the last label ends at its point.
+        starts = [self.utc(2026, 10, day) for day in (5, 12, 19, 26)]
+        buckets, measure = {"unit": "week", "startsMs": starts}, lambda text: 7 * len(text)
+        # The label of Oct 19 ends 10 px before `Oct 26`: kept with a 4 px gap, dropped with the 16 px end gap.
+        centers = [0, 100, 167, 240]
+        self.assertEqual([index for index, *_ in asb.usage_axis_labels(buckets, centers, 240, 1, measure, end_gap=4)], [0, 1, 2, 3])
+        labels = asb.usage_axis_labels(buckets, centers, 240, 1, measure)
+        self.assertEqual([index for index, *_ in labels], [0, 1, 3])
+        for (_index, text, left), (_next, _text, right) in zip(labels, labels[1:]):
+            self.assertLessEqual(left + 7 * len(text), right - 4)
+        self.assertLessEqual(labels[-2][2] + 7 * len(labels[-2][1]), labels[-1][2] - 16)
+        # The narrow axis: the first label is an end label too, and a label beside it keeps 16 px from it.
+        # `Oct 19` starts 10 px after the end of `Oct 5` (35 px).
+        narrow = [0, 50, 66, 240]
+        self.assertEqual([index for index, *_ in asb.usage_axis_labels(buckets, narrow, 240, 1, measure, ends=True, end_gap=4)], [0, 2, 3])
+        self.assertEqual([index for index, *_ in asb.usage_axis_labels(buckets, narrow, 240, 1, measure, ends=True)], [0, 3])
+
+    def test_the_current_bucket_names_its_running_part(self):
+        hour = self.utc(2026, 10, 26, 16)
+        cases = (("hour", hour, hour + 28 * 60_000 + 59_000, "minute 29 of 60"),
+                 ("hour", hour, hour, "minute 1 of 60"),
+                 ("day", self.utc(2026, 10, 26), self.utc(2026, 10, 26, 16, 40), "hour 17 of 24"),
+                 ("week", self.utc(2026, 10, 26), self.utc(2026, 10, 26, 16, 40), "day 1 of 7"),
+                 ("week", self.utc(2026, 10, 26), self.utc(2026, 11, 1, 23, 59), "day 7 of 7"),
+                 ("month", self.utc(2026, 10, 1), self.utc(2026, 10, 26, 16, 40), "day 26 of 31"),
+                 ("month", self.utc(2026, 2, 1), self.utc(2026, 2, 3), "day 3 of 28"))
+        for unit, start, now, expected in cases:
+            with self.subTest(unit=unit, expected=expected):
+                self.assertEqual(asb.usage_bucket_progress({"unit": unit, "startsMs": [start - 1, start]}, now), expected)
+        self.assertEqual(asb.usage_bucket_progress({"unit": "week", "startsMs": []}, hour), "")
+        self.assertEqual(asb.usage_bucket_progress({"unit": "week", "startsMs": [hour]}, None), "")
+        # Daylight saving days: 23 hours in spring and 25 in autumn (local time).
+        os.environ["TZ"] = "Europe/Berlin"
+        time.tzset()
+        spring, autumn = datetime(2026, 3, 29).timestamp() * 1000, datetime(2026, 10, 25).timestamp() * 1000
+        self.assertEqual(asb.usage_bucket_progress({"unit": "day", "startsMs": [spring]}, spring + 5 * 3_600_000), "hour 6 of 23")
+        self.assertEqual(asb.usage_bucket_progress({"unit": "day", "startsMs": [autumn]}, autumn + 24 * 3_600_000 + 1), "hour 25 of 25")
+
+    def test_the_totals_cost_basis(self):
+        priced = {"unpriced_tokens": 0, "unpriced_models": []}
+        self.assertEqual(asb.usage_cost_basis(priced), "if paid at API prices")
+        self.assertEqual(asb.usage_cost_basis({"unpriced_tokens": 5, "unpriced_models": ["model-a"]}),
+                         "if paid at API prices · without 1 unpriced model")
+        self.assertEqual(asb.usage_cost_basis({"unpriced_tokens": 5, "unpriced_models": ["model-a", "model-b"]}),
+                         "if paid at API prices · without 2 unpriced models")
+        # In either metric: the cost of the Totals has the same basis.
+        self.assertEqual(asb.usage_cost_basis(self.view(metric="tokens")), asb.usage_cost_basis(self.view()))
 
     def test_all_fixture_keeps_the_90_day_totals_in_utc_months(self):
         reply, days = self.REPLIES["all"], self.REPLIES["90d"]

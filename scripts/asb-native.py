@@ -2200,6 +2200,30 @@ def usage_first_label(buckets):
     return f"From {format_day(first)}{year}"
 
 
+def usage_bucket_progress(buckets, now_ms):
+    """The running part of the current (last) bucket as `day 1 of 7`, `day 26 of 31`, `hour 17 of 24`, or `minute 29 of 60`: the
+    whole elapsed units plus 1, of the units in the bucket (local time: a daylight saving day has 23 or 25 hours). Empty without
+    a time or buckets."""
+    starts, unit = buckets["startsMs"], buckets["unit"]
+    if not starts or now_ms is None:
+        return ""
+    start_ms = starts[-1]
+    start, now = datetime.fromtimestamp(start_ms / 1000), datetime.fromtimestamp(now_ms / 1000)
+    if unit == "hour":
+        word, done, total = "minute", (now_ms - start_ms) // 60000, 60
+    elif unit == "day":
+        following = (start.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp() * 1000
+        word, done, total = "hour", (now_ms - start_ms) // 3600000, round((following - start_ms) / 3600000)
+    else:
+        if unit == "week":
+            total = 7
+        else:
+            following = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            total = (following.date() - start.date()).days
+        word, done = "day", (now.date() - start.date()).days
+    return f"{word} {max(1, min(total, int(done) + 1))} of {total}"
+
+
 def bucket_label(buckets, index):
     starts, hourly = buckets["startsMs"], buckets["unit"] == "hour"
     if buckets["unit"] == "week":
@@ -2215,9 +2239,10 @@ def bucket_label(buckets, index):
     return format_clock(starts[index]) if hourly else format_day(starts[index])
 
 
-def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False):
+def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False, end_gap=16):
     """The x labels of the chart as (index, text, left x): every step-th point from the last, kept inside the chart, skipped when
-    it would end less than 4 px before the label to its right. The first label starts at its point, the last ends at its point,
+    it would end less than 4 px before the label to its right, or less than end_gap px before an end label (the last label, or
+    the first label that ends or a partial first bucket keeps). The first label starts at its point, the last ends at its point,
     and the others are centered. Each label names its bucket, the last one too (`so far` is in the header, not on the axis).
     Month labels name the year where it changes. With ends (the narrow chart), the first point keeps its label too when it fits
     beside the last one; labels between them make room for it."""
@@ -2236,19 +2261,19 @@ def usage_axis_labels(buckets, centers, chart_width, step, measure, ends=False):
         x = centers[index] - (width / 2 if 0 < index < last or not last else width if index == last else 0)
         return min(max(x, 0), chart_width - width)
 
-    shown, limit = [], None
+    shown, limit, keep_first = [], None, ends or usage_partial_first(buckets)
     for index in range(last, -1, -step):
         # A month label is measured with its year, so the year rule below never makes it wider than measured.
         width = measure(text(index, True))
         left = place(index, width)
-        if limit is None or left + width <= limit - 4:
+        if limit is None or left + width <= limit - (end_gap if len(shown) == 1 or (index == 0 and keep_first) else 4):
             shown.insert(0, index)
             limit = left
     # A partial first bucket keeps its `From …` label, as the narrow chart keeps its first label.
-    if (ends or usage_partial_first(buckets)) and last > 0 and shown[0] != 0:
+    if keep_first and last > 0 and shown[0] != 0:
         end = place(0, measure(text(0, True))) + measure(text(0, True))
-        if end <= place(last, measure(text(last, True))) - 4:
-            while place(shown[0], measure(text(shown[0], True))) < end + 4:
+        if end <= place(last, measure(text(last, True))) - end_gap:
+            while place(shown[0], measure(text(shown[0], True))) < end + end_gap:
                 shown.pop(0)
             shown.insert(0, 0)
     labels, year = [], None
@@ -2266,6 +2291,8 @@ def activity_palette(colors):
     # A divider that hardly shows on the background (for example #030303 on #000000) draws with the rule color.
     return {"win": background, "rule": rule, "track": mix_color(background, text, .17),
             "divider": colors["divider"] if contrast(colors["divider"], background) >= 1.3 else rule, "popup": edge_color(background, text, .36, (background,)),
+            # The floating surfaces of a custom palette (the menus, the popovers, the chart tooltip): the window 6 % toward the text.
+            "float": mix_color(background, text, .06),
             "text": text, "dim": colors["muted"], "accent": accent, "light": mix_color(accent, "#ffffff", .35), "warn": "#e0b45a", "bad": "#f5a090"}
 
 
@@ -3229,6 +3256,16 @@ def usage_ring_note(view, scanning, shown, total):
         count = len(view["unpriced_models"])
         parts.append(f"without {count} unpriced model{'' if count == 1 else 's'}")
     return " · ".join(part.replace(" ", "\u00a0") for part in parts)
+
+
+def usage_cost_basis(view):
+    """The dim line under the Totals Cost: `if paid at API prices`, then `without 1 unpriced model` when the period has unpriced
+    tokens (in either metric), joined by ` · `."""
+    parts = ["if paid at API prices"]
+    if view["unpriced_tokens"] > 0:
+        count = len(view["unpriced_models"])
+        parts.append(f"without {count} unpriced model{'' if count == 1 else 's'}")
+    return " · ".join(parts)
 
 
 def facts_lines(facts, width, measure):
@@ -12735,7 +12772,7 @@ class ActivityWindow(Adw.Window):
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.NONE, hexpand=True, vexpand=True)
         self.stack.add_named(Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER), "loading")
         error = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
-        self.error_icon = Gtk.Image(icon_name="computer-fail-symbolic", pixel_size=64)
+        self.error_icon = Gtk.Image(icon_name="computer-fail-symbolic", pixel_size=128)
         self.error_icon.add_css_class("asb-dim")
         error.append(self.error_icon)
         self.error_title = Gtk.Label(label=f"Cannot load {self.TITLE.lower()}", wrap=True, justify=Gtk.Justification.CENTER)
@@ -12778,7 +12815,13 @@ class ActivityWindow(Adw.Window):
         shortcuts = Gtk.ShortcutController()
         shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("<Control>w"),
                                                 Gtk.CallbackAction.new(lambda *_: self.close() or True)))
+        # Ctrl+1 to Ctrl+N choose the periods in menu order.
+        for index, (key, _text) in enumerate(self.PERIODS, 1):
+            self.add_window_shortcut(shortcuts, f"<Control>{index}", lambda key=key: self.set_period(key) if key != self.period else None)
         self.add_controller(shortcuts)
+        self.shortcuts = shortcuts
+        # The status pages: a 128 px icon and a 26 px title, a 96 px icon and a 20 px title in the small layout (under 640 px).
+        self.connect("notify::current-breakpoint", lambda *_: self.size_status_pages())
         # Tests give fetch and start the live refresh themselves.
         if fetch is None:
             self.connect("map", self.on_map)
@@ -12796,12 +12839,37 @@ class ActivityWindow(Adw.Window):
             saved = None
         self.set_palette(saved)
 
+    def add_window_shortcut(self, controller, trigger, callback, sensitive=None):
+        """A window shortcut that does nothing while a text entry has the focus (or while sensitive() is false)."""
+        def run(*_args):
+            if isinstance(self.get_focus(), Gtk.Editable) or (sensitive and not sensitive()):
+                return False
+            callback()
+            return True
+        controller.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(trigger), Gtk.CallbackAction.new(run)))
+
+    def status_compact(self):
+        return getattr(self.get_current_breakpoint(), "asb_name", None) == "small"
+
+    def size_status_pages(self):
+        """The icon of the error page (and of the Usage empty page) and the title class: 128 or 96 px times the text scale."""
+        compact = self.status_compact()
+        (self.add_css_class if compact else self.remove_css_class)("asb-status-compact")
+        for icon in (self.error_icon, getattr(self, "empty_icon", None)):
+            if icon is not None:
+                icon.set_pixel_size(round((96 if compact else 128) * self.text_scale))
+
     def period_item_setup(self, _factory, item):
         row = Gtk.Box(spacing=12)
         row.add_css_class("asb-period-item")
         row.asb_label = Gtk.Label(xalign=0, hexpand=True)
+        # The window shortcut of the period, dim and right-aligned before the check slot.
+        row.asb_shortcut = Gtk.Label(xalign=1)
+        row.asb_shortcut.add_css_class("asb-dim")
+        row.asb_shortcut.add_css_class("asb-period-shortcut")
         row.asb_check = Gtk.Image(icon_name="object-select-symbolic", pixel_size=16, width_request=16)
         row.append(row.asb_label)
+        row.append(row.asb_shortcut)
         row.append(row.asb_check)
         item.set_child(row)
         item.connect("notify::selected", lambda *_: row.asb_check.set_opacity(1 if item.get_selected() else 0))
@@ -12809,6 +12877,7 @@ class ActivityWindow(Adw.Window):
     def period_item_bind(self, _factory, item):
         row = item.get_child()
         row.asb_label.set_label(item.get_item().get_string())
+        row.asb_shortcut.set_label(f"Ctrl+{item.get_position() + 1}")
         row.asb_check.set_opacity(1 if item.get_position() == self.period_menu.get_selected() else 0)
 
     def copy_engine_command(self, *_args):
@@ -12899,6 +12968,7 @@ class ActivityWindow(Adw.Window):
                     self.stack.set_visible_child_name("error")
             elif self.fetch is None and data is None:
                 self.data["nowMs"] = self.clock()
+                self.time_changed()
             else:
                 self.etags[route] = etag[0]
                 previous, self.data = self.data, data
@@ -12921,6 +12991,9 @@ class ActivityWindow(Adw.Window):
 
     def render(self, data, previous):
         pass
+
+    def time_changed(self):
+        """The reply time moved without new data (an HTTP 304 or the same numbers)."""
 
     def on_map(self, *_args):
         self.start_live()
@@ -12979,7 +13052,7 @@ class ActivityWindow(Adw.Window):
             # GNOME draws its dividers with the borders role, about 15 % text; the divider of native_colors is 30 %.
             palette["divider"] = palette["rule"]
         scope, s = ".asb-activity" + self.css_scope, self.text_scale
-        self.error_icon.set_pixel_size(round(64 * s))
+        self.size_status_pages()
         ring = palette["accent"] if colors else "@accent_color"
         hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {self.machine_hue(index)}; }}\n"
                        f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {self.machine_hue(index)}; min-width: 4px; min-height: 4px; }}\n"
@@ -12999,12 +13072,16 @@ class ActivityWindow(Adw.Window):
 {scope} .asb-activity-toolbar windowcontrols button {{ min-height: 24px; min-width: 22px; padding: 2px; }}
 {scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
 {scope} .asb-activity-toolbar menubutton > button {{ min-height: {24 * s:g}px; padding: 0 8px; font-size: {12 * s:g}px; }}
-{scope} .asb-period-item {{ font-size: {13 * s:g}px; }}
+{scope} .asb-period-item {{ font-size: {13 * s:g}px; min-height: {28 * s:g}px; }}
+{scope} .asb-period-shortcut {{ font-size: {12 * s:g}px; }}
+{scope}.asb-custom popover > contents, {scope}.asb-custom popover > arrow {{ background: {palette['float']}; color: {palette['text']};
+  border: 1px solid {palette['popup']}; }}
 {scope}.asb-scroll-edge .top-bar {{ box-shadow: inset 0 -1px {palette['rule']}; }}
 {scope} .asb-dim {{ color: {palette['dim']}; }}
 {scope} .asb-mono {{ font-feature-settings: "tnum"; }}
 {scope} .asb-paths-note {{ font-size: {12 * s:g}px; }}
-{scope} .asb-error-title {{ font-size: {20 * s:g}px; font-weight: 700; }}
+{scope} .asb-error-title {{ font-size: {26 * s:g}px; font-weight: 700; }}
+{scope}.asb-status-compact .asb-error-title {{ font-size: {20 * s:g}px; }}
 {scope} .asb-error-text {{ font-size: {13 * s:g}px; }}
 {scope} .asb-error-reason {{ font-size: {12 * s:g}px; }}
 {scope} .asb-error-command {{ font-family: monospace; font-size: {13 * s:g}px; background: {palette['rule']}; border-radius: {4 * s:g}px;
@@ -16289,6 +16366,11 @@ class UsageRound(Gtk.Widget):
     def outer_radius(self):
         return self.size * self.OUTER / self.SIZE
 
+    def focus_radius(self):
+        """The center of the 2 px focus circle: its inner edge lies outside the outer band, the 4 px raise of the cursor arc, its
+        1 px gap and 2 px outline, and 4 px of window color (times the text scale). The frame keeps this room at rest."""
+        return self.outer_radius() + 4 * self.size / self.SIZE + 1 + 2 + 4 * self.text_scale + 1
+
     def do_get_request_mode(self):
         return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH if self.fill else Gtk.SizeRequestMode.CONSTANT_SIZE
 
@@ -16398,10 +16480,6 @@ class UsageRound(Gtk.Widget):
             return
         half = self.SIZE / 2
         palette = self.get_root().palette
-        if self.get_state_flags() & Gtk.StateFlags.FOCUS_VISIBLE:
-            circle = Gsk.PathBuilder.new()
-            circle.add_circle(Graphene.Point().init(self.origin + self.size / 2, self.size / 2), self.outer_radius() + 4 * self.text_scale)
-            snapshot_stroke(snapshot, circle.to_path(), 2, alpha_color(palette["accent"]))
         snapshot.save()
         snapshot.translate(Graphene.Point().init(self.origin, 0))
         snapshot.save()
@@ -16425,6 +16503,11 @@ class UsageRound(Gtk.Widget):
         for layout, x, y, color in self.center_layouts():
             snapshot_layout(snapshot, layout, x, y, color)
         snapshot.restore()
+        if self.get_state_flags() & Gtk.StateFlags.FOCUS_VISIBLE:
+            # After the arcs: a raised arc never covers the circle.
+            circle = Gsk.PathBuilder.new()
+            circle.add_circle(Graphene.Point().init(self.origin + self.size / 2, self.size / 2), self.focus_radius())
+            snapshot_stroke(snapshot, circle.to_path(), 2, alpha_color(palette["accent"]))
 
 
 UsageRound.set_css_name("asb-usage-round")
@@ -16547,8 +16630,20 @@ class UsageChart(Gtk.Widget):
         return 3 + 6 * self.text_scale
 
     def header(self):
-        """The dim line over the end labels or the key: the current bucket."""
-        return self.HEADERS[self.buckets["unit"]]
+        """The dim line over the end labels or the key: the current bucket and its running part (`This week so far · day 1 of 7`)."""
+        progress = usage_bucket_progress(self.buckets, self.buckets.get("nowMs"))
+        return f"{self.HEADERS[self.buckets['unit']]} · {progress}" if progress else self.HEADERS[self.buckets["unit"]]
+
+    def header_lines(self, width):
+        """The header in one line, or in two where it is wider than width: it breaks only between its two parts."""
+        text = self.header()
+        if self.text(text).get_pixel_extents()[1].width <= width or " · " not in text:
+            return [text]
+        return text.split(" · ", 1)
+
+    def header_width(self):
+        """The width of the end label column that the header needs: its wider part."""
+        return max(self.text(part).get_pixel_extents()[1].width for part in self.header().split(" · "))
 
     def measure_insets(self):
         """The left inset holds the widest gridline label and 8 px; the right inset holds the gap after the end ring, the widest
@@ -16565,7 +16660,7 @@ class UsageChart(Gtk.Widget):
         widths = [self.text(text, 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL).get_pixel_extents()[1].width
                   for key, text in self.end_texts.items()]
         if widths:
-            widths.append(self.text(self.header()).get_pixel_extents()[1].width)
+            widths.append(self.header_width())
         self.RIGHT = (8 * self.text_scale if self.narrow else math.ceil(self.gap() + max(widths) + 8 * self.text_scale)) if widths else 8 * self.text_scale
         self.paths_key, self.tip = None, None if self.hover is None else self.tip_box(self.hover)
         self.queue_draw()
@@ -16574,9 +16669,26 @@ class UsageChart(Gtk.Widget):
         """The top of the bucket header over the key of a narrow chart, under the tick labels."""
         return self.HEIGHT + 8
 
+    def key_gutter(self):
+        """The gutter between the value of the first key column and the swatch of the second."""
+        return 16 * self.text_scale
+
+    def key_columns(self, width):
+        """2, or 1 where two columns with the gutter would show fewer than 4 characters of a name (2, an ellipsis, and 2)."""
+        column = (width - 16 * self.text_scale - self.key_gutter()) / 2
+        for key, (name, value) in self.key_values.items():
+            weight = Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL
+            shortest = name if len(name) <= 4 else f"{name[:2]}…{name[-2:]}"
+            room = column - 14 * self.text_scale - self.text(value, 11, weight, mono=True).get_pixel_extents()[1].width - 8
+            if self.text(shortest, 11, weight).get_pixel_extents()[1].width > room:
+                return 1
+        return 2
+
     def height_for(self, width):
         if self.end_texts and 0 <= width < self.KEY_WIDTH * self.text_scale:
-            return math.ceil(self.key_top() + self.label_height + 4 + (len(self.end_texts) + 1) // 2 * self.row_height())
+            columns, lines = self.key_columns(width), len(self.header_lines(width - 16 * self.text_scale))
+            rows = (len(self.end_texts) + columns - 1) // columns
+            return math.ceil(self.key_top() + lines * self.label_height + 4 + rows * self.row_height())
         return self.HEIGHT
 
     def do_get_request_mode(self):
@@ -16625,6 +16737,14 @@ class UsageChart(Gtk.Widget):
             self.set_hover(min(cursor, len(self.bars) - 1))
         self.queue_draw()
 
+    def set_now(self, now_ms):
+        if now_ms != self.buckets.get("nowMs"):
+            header = self.header()
+            self.buckets = dict(self.buckets, nowMs=now_ms)
+            if self.header() != header:
+                self.measure_insets()
+                self.queue_resize()
+
     def value_y(self, index, key):
         start, target = self.starts[(index, key)], self.targets[(index, key)]
         return start + (target - start) * self.progress
@@ -16651,7 +16771,8 @@ class UsageChart(Gtk.Widget):
         if not keys or self.narrow:
             return []
         last = len(self.bars) - 1
-        ends, height, top = [self.value_y(last, key) for key in keys], self.label_height, max(self.TOP, self.label_height + 4)
+        ends, height = [self.value_y(last, key) for key in keys], self.label_height
+        top = max(self.TOP, len(self.header_lines(self.label_column_width())) * height + 4)
         tops = usage_end_label_tops(ends, height, top, self.BOTTOM)
         for index, end in enumerate(ends):
             # A label that moved less than 6 px goes back to its line end where it overlaps no other label.
@@ -16663,13 +16784,22 @@ class UsageChart(Gtk.Widget):
         return [(key, self.end_texts[key], left, top, self.text(self.end_texts[key], 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL).get_pixel_extents()[1].width, self.label_height)
                 for key, top in zip(keys, tops)]
 
+    def label_column_width(self):
+        """The width of the end label column (wide chart) or of the key (narrow chart)."""
+        if self.narrow:
+            return self.get_width() - 16 * self.text_scale
+        return self.RIGHT - self.gap() - 8 * self.text_scale
+
     def key_entries(self):
-        """The key of a narrow chart as (key, name, value, left, top, width): in end label order, two columns of equal width,
-        18 px rows (times the text scale) under the bucket header."""
+        """The key of a narrow chart as (key, name, value, left, top, width): in end label order, two columns of equal width with
+        a 16 px gutter (times the text scale), or one column where two do not fit, 18 px rows (times the text scale) under the
+        bucket header."""
         if not self.narrow:
             return []
-        width, row, top = (self.get_width() - 16 * self.text_scale) / 2, self.row_height(), self.key_top() + self.label_height + 4
-        return [(key, name, value, 8 * self.text_scale + (index % 2) * width, top + (index // 2) * row, width)
+        inner, columns, row = self.label_column_width(), self.key_columns(self.get_width()), self.row_height()
+        width = (inner - self.key_gutter()) / 2 if columns == 2 else inner
+        top = self.key_top() + len(self.header_lines(inner)) * self.label_height + 4
+        return [(key, name, value, 8 * self.text_scale + (index % columns) * (width + self.key_gutter()), top + (index // columns) * row, width)
                 for index, (key, (name, value)) in enumerate(self.key_values.items())]
 
     def bar_at(self, x, y):
@@ -16697,7 +16827,8 @@ class UsageChart(Gtk.Widget):
         bar = self.bars[index]
         rows = [(label, self.format(bar.get(key, 0)), color)
                 for key, label, color in sorted(self.series, key=lambda item: -bar.get(item[0], 0))]
-        full = self.full_label(index) + (" · so far" if index == len(self.bars) - 1 else "")
+        # The current bucket has the header as its title: `This week so far · day 1 of 7`.
+        full = self.header() if index == len(self.bars) - 1 else self.full_label(index)
         title = self.text(full, 12, Pango.Weight.SEMIBOLD)
         names = [self.text("Total", 12)] + [self.text(label, 12) for label, _text, _color in rows]
         values = [self.text(self.format(self.sums[index]), 12, mono=True)] + [self.text(text, 12, mono=True) for _label, text, _color in rows]
@@ -16765,11 +16896,12 @@ class UsageChart(Gtk.Widget):
                 self.paths.append((series, color, None, line.to_path()))
                 continue
             segments = smooth_curve(points)
-            for builder, items in ((line, segments[:-1]), (area, segments)):
+            # The Total area stops at the last complete bucket: the dashed segment into the current bucket has no area.
+            for builder, items in ((line, segments[:-1]), (area, segments[:-1])):
                 builder.move_to(*points[0])
                 for _from, first, second, to in items:
                     builder.cubic_to(*first, *second, *to)
-            area.line_to(points[-1][0], self.BOTTOM)
+            area.line_to(points[-2][0], self.BOTTOM)
             area.line_to(points[0][0], self.BOTTOM)
             area.close()
             start, first, second, end = segments[-1]
@@ -16866,7 +16998,8 @@ class UsageChart(Gtk.Widget):
             layouts.setdefault(label, self.text(label))
             return layouts[label].get_pixel_extents()[1].width
         centers = self.centers()
-        for _index, label, left in usage_axis_labels(self.buckets, centers, chart_width - 8 * self.text_scale, self.label_step(), measure, self.narrow):
+        for _index, label, left in usage_axis_labels(self.buckets, centers, chart_width - 8 * self.text_scale, self.label_step(), measure, self.narrow,
+                                                 16 * self.text_scale):
             left = max(8 * self.text_scale, left)
             snapshot_layout(snapshot, layouts[label], left, self.BOTTOM + 6, dim)
         if self.tip:
@@ -16882,18 +17015,27 @@ class UsageChart(Gtk.Widget):
                     snapshot.append_fill(dot.to_path(), Gsk.FillRule.WINDING, alpha_color(color))
             self.snapshot_tip(snapshot, palette, text, rule)
 
+    def header_place(self):
+        """The header as (lines, left, top): left-aligned with the end label column, 4 px above its first label, or left-aligned
+        with the key over it. None without labels."""
+        lines = self.header_lines(self.label_column_width())
+        labels = self.end_labels()
+        if labels:
+            top = min(top for _key, _label, _left, top, _width, _height in labels)
+            return lines, labels[0][2], top - 4 - len(lines) * self.label_height
+        if self.key_entries():
+            return lines, 8 * self.text_scale, self.key_top()
+        return None
+
     def snapshot_labels(self, snapshot, dim, text):
         """The bucket header and the end labels (with their leaders), or the key of a narrow chart."""
         colors, right, last = self.colors(), self.centers()[-1], len(self.bars) - 1
-        labels, entries, header = self.end_labels(), self.key_entries(), self.text(self.header())
-        header_width = header.get_pixel_extents()[1].width
-        if labels:
-            # Right-aligned over the end label column, 4 px above the first label.
-            top = min(top for _key, _label, _left, top, _width, _height in labels)
-            width = max(header_width, max(width for _key, _label, _left, _top, width, _height in labels))
-            snapshot_layout(snapshot, header, labels[0][2] + width - header_width, top - 4 - self.label_height, dim)
-        elif entries:
-            snapshot_layout(snapshot, header, self.get_width() - 8 * self.text_scale - header_width, self.key_top(), dim)
+        labels, entries = self.end_labels(), self.key_entries()
+        place = self.header_place()
+        if place:
+            lines, left, top = place
+            for line, text_line in enumerate(lines):
+                snapshot_layout(snapshot, self.text(text_line), left, top + line * self.label_height, dim)
         leader = Gsk.Stroke.new(1)
         for key, label, left, top, _width, height in labels:
             # A label that moved 6 px or more from its line end has a leader in the line color from the end ring.
@@ -16910,11 +17052,11 @@ class UsageChart(Gtk.Widget):
             usage_rect(snapshot, left, top + (row - 8 * s) / 2, 8 * s, 8 * s, alpha_color(colors[key]), 4 * s)
             figure = self.text(value, 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL, mono=True)
             figure_width = figure.get_pixel_extents()[1].width
-            end = left + width - (12 if left == 0 else 0)
+            end = left + width
             snapshot_layout(snapshot, figure, end - figure_width, middle, text)
             title = self.text(name, 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL)
             title.set_width(int(max(1, end - figure_width - 8 - (left + 14 * s)) * Pango.SCALE))
-            title.set_ellipsize(Pango.EllipsizeMode.END)
+            title.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
             snapshot_layout(snapshot, title, left + 14 * s, middle, text)
 
     def snapshot_tip(self, snapshot, palette, text, rule):
@@ -16924,7 +17066,8 @@ class UsageChart(Gtk.Widget):
         box.init_from_rect(Graphene.Rect().init(left, top, box_width, box_height), 4)
         snapshot.append_outset_shadow(box, alpha_color("#000000", .45), 0, 6, 0, 16)
         snapshot.push_rounded_clip(box)
-        snapshot.append_color(alpha_color(palette["win"]), box.bounds)
+        # One rule with the menus and popovers in a custom palette; with GNOME colors the tooltip keeps the window color.
+        snapshot.append_color(alpha_color(palette["float"] if self.get_root().colors else palette["win"]), box.bounds)
         snapshot.pop()
         snapshot.append_border(box, [1] * 4, [alpha_color(palette["popup"])] * 4)
         title, names, values = tip["layouts"]
@@ -16974,6 +17117,8 @@ class UsageWindow(ActivityWindow):
         metrics = LinkedBox(valign=Gtk.Align.CENTER)
         metrics.add_css_class("linked")
         self.metric_buttons = self.linked_toggles(metrics, (("cost", "Cost"), ("tokens", "Tokens")), self.metric, self.set_metric)
+        for key, tip in (("cost", "Show cost (Ctrl+T)"), ("tokens", "Show tokens (Ctrl+T)")):
+            self.metric_buttons[key].set_tooltip_text(tip)
         self.toolbar_start.append(metrics)
         self.machine_filter = Gtk.MenuButton(valign=Gtk.Align.CENTER, visible=False, tooltip_text="Machines")
         image = Gtk.Image()
@@ -16994,7 +17139,8 @@ class UsageWindow(ActivityWindow):
         self.filter_show_all = self.show_all_button()
         filters.append(self.filter_show_all)
         # The popover ends at the right edge of its button, so it stays inside the window.
-        self.machine_filter.set_popover(Gtk.Popover(child=filters, autohide=False, halign=Gtk.Align.END))
+        # No arrow, as the period menus.
+        self.machine_filter.set_popover(Gtk.Popover(child=filters, autohide=False, halign=Gtk.Align.END, has_arrow=False))
         non_autohide_popover(self, self.machine_filter.get_popover(), self.machine_filter)
         self.scan_label = self.text("", ("asb-usage-small", "asb-dim"), visible=False, valign=Gtk.Align.CENTER)
         self.toolbar_end.append(self.scan_label)
@@ -17012,14 +17158,15 @@ class UsageWindow(ActivityWindow):
         self.scroll.set_child(Adw.Clamp(maximum_size=1240, tightening_threshold=1240, child=self.content))
         self.empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, vexpand=True, valign=Gtk.Align.CENTER,
                              halign=Gtk.Align.CENTER, visible=False)
-        self.empty_icon = Gtk.Image(pixel_size=round(64 * self.text_scale))
+        self.empty_icon = Gtk.Image(pixel_size=round(128 * self.text_scale))
         set_icon(self.empty_icon, "asb-usage-symbolic")
         self.empty_icon.add_css_class("asb-dim")
         self.empty.append(self.empty_icon)
         self.empty_title = self.text("", ("asb-error-title",), 0.5, wrap=True, justify=Gtk.Justification.CENTER)
         self.empty.append(self.empty_title)
+        # Two lines of about 50 characters.
         self.empty_hint = self.text("Usage shows here after Codex, Claude Code, OpenCode, or another agent app runs on one of your machines.", ("asb-dim", "asb-error-text"), 0.5,
-                                    wrap=True, justify=Gtk.Justification.CENTER)
+                                    wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=52)
         self.empty.append(Adw.Clamp(maximum_size=560, child=self.empty_hint))
         self.empty_all_time = Gtk.Button(label="Show all time", halign=Gtk.Align.CENTER)
         self.empty_all_time.add_css_class("suggested-action")
@@ -17075,6 +17222,13 @@ class UsageWindow(ActivityWindow):
         splits.add_css_class("linked")
         splits.add_css_class("asb-usage-split")
         self.split_buttons = self.linked_toggles(splits, (("app", "By app"), ("machine", "By machine")), self.split, self.set_split)
+        for key, tip in (("app", "Split by app (Ctrl+B)"), ("machine", "Split by machine (Ctrl+B)")):
+            self.split_buttons[key].set_tooltip_text(tip)
+        # Ctrl+T switches Cost and Tokens, Ctrl+B By app and By machine, while their toggles are sensitive.
+        self.add_window_shortcut(self.shortcuts, "<Control>t", lambda: self.set_metric("tokens" if self.metric == "cost" else "cost"),
+                                 lambda: self.metric_buttons[self.metric].get_sensitive())
+        self.add_window_shortcut(self.shortcuts, "<Control>b", lambda: self.set_split("machine" if self.split == "app" else "app"),
+                                 lambda: self.stack.get_visible_child_name() == "data" and self.scroll.get_visible())
         header.append(splits)
         chart_section.append(header)
         self.chart = UsageChart()
@@ -17192,7 +17346,7 @@ class UsageWindow(ActivityWindow):
             self.round.text_scale = self.text_scale
             if self.chart.text_scale != self.text_scale:
                 self.chart.set_text_scale(self.text_scale)
-            self.empty_icon.set_pixel_size(round(64 * self.text_scale))
+            self.size_status_pages()
             self.layout_content()
             self.round.queue_draw()
             self.chart.queue_draw()
@@ -17316,12 +17470,15 @@ class UsageWindow(ActivityWindow):
         self.round_keys_clamp.set_maximum_size(size)
         self.round_keys_clamp.set_tightening_threshold(size)
         self.layout_folds()
+        # Three figures on a line outside the small layout: the cost basis wraps under its value, it does not move a figure down.
+        self.figures.set_min_children_per_line(2 if self.small else 3)
         self.blocks.set_orientation(Gtk.Orientation.VERTICAL if self.small else Gtk.Orientation.HORIZONTAL)
         self.blocks.set_spacing(20 if self.small else 36)
 
     def render(self, data, previous):
         # A refresh comes after each dashboard event: the same numbers with a new reply time keep the shown view.
         if previous is not None and {**previous, "nowMs": None} == {**data, "nowMs": None}:
+            self.time_changed()
             return
         scan = usage_scan_text(data.get("scan"))
         self.scan_label.set_label(scan)
@@ -17333,6 +17490,10 @@ class UsageWindow(ActivityWindow):
         busy = bool(scan) or (data.get("prices") or {}).get("status") == "loading"
         self.set_poll_seconds(self.FAST_POLL_SECONDS if busy else ActivityWindow.POLL_SECONDS)
         self.render_view()
+
+    def time_changed(self):
+        # The running part of the current bucket follows the reply time.
+        self.chart.set_now(self.data.get("nowMs"))
 
     def render_chips(self, on):
         total = len(self.data["machines"])
@@ -17442,7 +17603,9 @@ class UsageWindow(ActivityWindow):
         else:
             series = [(machine["id"], machine["name"], self.machine_hue(MACHINE_HUES.index(machine["hue"]))) for machine in view["machines"]]
         key = (self.period, self.metric, self.split, frozenset(self.machines_on()))
-        self.chart.set_data(series, [bar[self.split] for bar in view["bars"]], view["buckets"], show, self.metric,
+        # The reply time gives the running part of the current bucket.
+        buckets = dict(view["buckets"], nowMs=self.data.get("nowMs"))
+        self.chart.set_data(series, [bar[self.split] for bar in view["bars"]], buckets, show, self.metric,
                             self.chart_key is not None and key != self.chart_key)
         self.chart_key = key
 
@@ -17561,9 +17724,14 @@ class UsageWindow(ActivityWindow):
                 }[title])
                 if title == "Cache savings":
                     figure.append(self.text("vs. uncached input price", ("asb-usage-sub",), wrap=True))
+                if title == "Cost":
+                    # The cost basis, as in the ring center; it breaks only between its parts.
+                    self.cost_basis = FactsLabel(css_classes=["asb-usage-sub"])
+                    figure.append(self.cost_basis)
                 self.total_figures.append(figure)
         for figure, (_title, value) in zip(self.total_figures, figures):
             figure.get_first_child().get_next_sibling().set_label(value)
+        self.cost_basis.set_label(usage_cost_basis(view))
         if not hasattr(self, "type_blocks"):
             self.type_blocks = []
             for title in ("Tokens by type", "Cost by type"):
