@@ -15323,6 +15323,18 @@ class TotalStack(Gtk.Stack):
         return found[0], found[1], -1, -1
 
 
+class LedgerStack(Gtk.Stack):
+    """The ledger column. In the wide layout its natural width is its minimum, the 340 px times the text scale of its size request:
+    the window box asks it for its width at its height, and a wrapped head label can give a wider width for that height."""
+    __gtype_name__ = "AsbLedgerStack"
+
+    def do_measure(self, orientation, for_size):
+        minimum, natural = Gtk.Stack.do_measure(self, orientation, for_size)[:2]
+        if orientation == Gtk.Orientation.HORIZONTAL and self.get_size_request()[0] > 0:
+            natural = minimum
+        return minimum, natural, -1, -1
+
+
 def set_route(route, broken):
     """Show a center route whole or broken before its arrow; the full route stays its accessible label."""
     route.set_label(route.asb_route[1] if broken else route.asb_route[0])
@@ -15360,8 +15372,8 @@ class MessagesWindow(ActivityWindow):
         self.left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         self.left.append(self.table)
         self.page_tick = None
-        self.ledger = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False,
-                                hhomogeneous=True, interpolate_size=False)
+        self.ledger = LedgerStack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False,
+                                  hhomogeneous=True, interpolate_size=False)
         self.ledger.add_css_class("asb-msg-ledger")
         self.ledger.set_size_request(round(340 * self.text_scale), -1)
         self.ledger.update_property([Gtk.AccessibleProperty.LABEL], ["Message statistics"])
@@ -16248,13 +16260,13 @@ class MessagesWindow(ActivityWindow):
         self.thread_counts.add_css_class("asb-mono")
         self.thread_counts.add_css_class("asb-dim")
         titles.append(self.thread_counts)
-        # A status thread head shows the status sentence under the count: at most two lines, then ….
+        # A status thread head shows the status sentence under the count: at most three lines, then ….
         self.thread_tip = label("", "asb-msg-head-tip")
         self.thread_tip.add_css_class("asb-dim")
         self.thread_tip.set_wrap(True)
         self.thread_tip.set_wrap_mode(Pango.WrapMode.WORD)
         self.thread_tip.set_max_width_chars(1)
-        self.thread_tip.set_lines(2)
+        self.thread_tip.set_lines(3)
         self.thread_tip.set_ellipsize(Pango.EllipsizeMode.END)
         self.thread_tip.set_visible(False)
         titles.append(self.thread_tip)

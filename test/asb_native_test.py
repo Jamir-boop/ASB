@@ -18547,7 +18547,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(samples, [(table.key["widths"][0], palette["accent"]), (table.key["widths"][1], palette["accent"])])
         self.assertTrue(window.thread_tip.get_visible())
         self.assertEqual(window.thread_tip.get_label(), "ASB\u00a0sent these messages to the receiver. No\u00a0receipt came back.")
-        self.assertEqual((window.thread_tip.get_lines(), window.thread_tip.get_ellipsize()), (2, asb.Pango.EllipsizeMode.END))
+        self.assertEqual((window.thread_tip.get_lines(), window.thread_tip.get_ellipsize()), (3, asb.Pango.EllipsizeMode.END))
         self.assertTrue(window.thread_tip.has_css_class("asb-dim"))
         self.assertEqual(window.thread_route.get_tooltip_text(), asb.MESSAGE_STATUS_HEADS["written"][0])
         # A pair thread keeps the open ring, the gray key, and no sentence.
@@ -19246,6 +19246,56 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertIn("ui-polish", table.chosen_seats())
         self.assertLess(table.labels["ui-polish"]["text"], table.pins["ui-polish"]["whole"])
         self.assertEqual(text("ui-polish"), "ui-polish")
+
+    def thread_kinds(self, window):
+        """Each thread kind as (name, open): pair, session, the five statuses, time, and all."""
+        starts = window.data["buckets"]["startsMs"]
+        day = next(index for index, start in enumerate(starts) if asb.format_day(start) == "Oct 22")
+        return ([("pair", lambda: window.open_thread("pair", ("release-plan", "parser-review"))),
+                 ("session", lambda: window.open_thread("session", "ui-polish"))]
+                + [(status, lambda status=status: window.open_thread("status", status)) for status in asb.MESSAGE_STATUS_HEADS]
+                + [("time", lambda: window.open_time(day)), ("all", lambda: window.open_thread("all", "all"))])
+
+    def test_W7_S1_each_thread_keeps_the_ledger_width(self):
+        settings = asb.Gtk.Settings.get_default()
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if self.has_cascadia() else [])
+        for font in fonts:
+            settings.set_property("gtk-font-name", font)
+            window = self.window(period="7d")
+            canvas = window.table.canvas
+            width = round(340 * window.text_scale)
+            # The column width with its 1 px left rule.
+            column = lambda: window.ledger.compute_bounds(window)[1].get_width()  # noqa: E731
+            ledger = (column(), canvas.get_width(), canvas.get_height())
+            self.assertEqual(ledger[0], width, font)
+            for name, show in self.thread_kinds(window):
+                show(); self.drain(.4)
+                self.assertEqual((column(), canvas.get_width(), canvas.get_height()), ledger, (font, name))
+                if name in asb.MESSAGE_STATUS_HEADS:
+                    # S1.2: each status sentence, plural and singular, shows whole in at most three lines.
+                    for form in asb.MESSAGE_STATUS_HEADS[name]:
+                        with patch.dict(asb.MESSAGE_STATUS_HEADS, {name: (form, form)}):
+                            window.render_thread(); self.drain(.2)
+                        layout = window.thread_tip.get_layout()
+                        self.assertEqual(layout.get_text().replace("\u00a0", " "), form)
+                        self.assertFalse(layout.is_ellipsized(), (font, form))
+                        self.assertLessEqual(layout.get_line_count(), 3, (font, form))
+                        self.assertEqual(column(), width, (font, form))
+                window.close_thread(); self.drain(.3)
+            # The root cause: no head label sets the column width, also a sentence too long for three lines.
+            window.open_thread("status", "held"); self.drain(.4)
+            with patch.dict(asb.MESSAGE_STATUS_HEADS, {"held": ("Held " * 60,) * 2}):
+                window.render_thread(); self.drain(.2)
+            self.assertEqual((column(), canvas.get_width(), canvas.get_height()), ledger, font)
+            # The first word of a sentence stays with its next word.
+            window.open_thread("status", "not-sent"); self.drain(.4)
+            self.assertTrue(window.thread_tip.get_label().startswith("ASB\u00a0did not"))
+            window.destroy()
+        # S1.3: below 640 px the ledger keeps the full width of the stacked page.
+        window = self.window((480, 760), period="7d")
+        for name, show in self.thread_kinds(window)[2:3]:
+            show(); self.drain(.4)
+            self.assertEqual(window.ledger.get_width(), window.narrow_box.get_width(), name)
 
     def test_W6_TT1_TT5_an_open_time_thread_lights_its_chords(self):
         window = self.window(period="7d")
