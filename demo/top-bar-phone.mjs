@@ -27,7 +27,7 @@ const READS = [
 
 const C = {
   ground: '#111113', window: '#242424', control: '#343434', text: '#f6f3ed', muted: '#b3b0aa', hairline: '#4a4844',
-  amber: '#ffb900', green: '#8fce8a', flash: '#ffce4d', openai: '#c9ccd1', claude: '#d97757', opencode: '#7d848c',
+  amber: '#ffb900', flash: '#ffce4d',
 };
 const S = .9; // dp to px for every phone part
 const SLIDE = 12 / S;
