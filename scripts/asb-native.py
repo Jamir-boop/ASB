@@ -1780,6 +1780,10 @@ def row_where(row):
     return None, ""
 
 
+# The ink rows of the 12-unit view-only glyphs in assets/icons: the terminal from 1 to 11, the machine from 1 to 11.5.
+WHERE_GLYPH_INK = {"asb-terminal-symbolic": (1, 11), "asb-machine-symbolic": (1, 11.5)}
+
+
 def no_open_title(row):
     """The toast title that says why ASB does not open a card: the first rule that applies."""
     if row.get("remote"):
@@ -7815,10 +7819,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base}:not(.asb-comfortable) .asb-dot.asb-question:not(.asb-passive),
 {base}:not(.asb-comfortable) .asb-dot.asb-alert {{ min-width: 12px; min-height: 12px; border-radius: 50%;
     background: @accent_color; color: @window_bg_color; font-size: 9px; font-weight: 800; }}
-/* Whole-pixel ink moves of a disc glyph (center_passive_glyph): a margin pair of n and -n keeps the disc size. */
+/* Whole-pixel ink moves of a disc glyph (center_passive_glyph) or a view-only glyph (center_where_icon): a margin pair of n
+   and -n keeps the box size. */
 {ink_moves}
-/* The terminal and machine glyphs: their ink center on the cap band of the caption next to them. */
-{base} .asb-where-icon {{ margin-top: 1px; margin-bottom: -1px; }}
 /* The Comfortable state line sits 3 px up; the 3 px under it keeps the card height. */
 {base} .asb-footer {{ margin-top: -3px; margin-bottom: 3px; }}
 {base} .asb-dot.asb-stop, .asb-tooltip .asb-dot.asb-stop {{ border-radius: 1px; }}
@@ -10923,6 +10926,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             where_icon = self.zoom_icon(Gtk.Image(visible=False, valign=Gtk.Align.CENTER), 11)
             where_icon.add_css_class("asb-where-icon")
             where_icon.add_css_class("dim-label")
+            # The ink center goes on the cap band of the caption (center_where_icon); 1 px down until the font is measured.
+            where_icon.add_css_class("asb-ink-y1")
+            where_icon.asb_ink_move = (0, 1)
+            where_icon.connect("map", self.where_icon_mapped)
             where = WhereCaption(widget.asb_age_label)
             where.add_css_class("caption")
             where.add_css_class("asb-where")
@@ -11189,6 +11196,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             if where_icon:
                 set_icon(widget.asb_where_icon, where_icon)
             widget.asb_where_icon.set_visible(bool(where))
+            self.where_icon_mapped(widget.asb_where_icon)
         if widget.asb_where_label:
             widget.asb_where_label.set_label((where + " ·" if comfortable else "· " + where) if where else "")
             widget.asb_where_label.set_visible(bool(where))
@@ -11353,6 +11361,44 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if glyph.asb_center_frames > 0:
             return True
         glyph.asb_center_tick = None
+        return False
+
+    def where_icon_mapped(self, icon):
+        # As passive_glyph_mapped: a new card, a new glyph, a font change, or a zoom measures the icon again.
+        if icon.get_mapped() and not getattr(icon, "asb_center_tick", None):
+            icon.asb_center_frames = 3
+            icon.asb_center_tick = icon.add_tick_callback(self.center_where_icon)
+
+    def center_where_icon(self, icon, _clock):
+        """Move a view-only glyph (terminal or machine) in whole px so that its ink center is on the center of the cap band
+        (the ink of H) of the caption beside it, with at most three layout frames."""
+        card = icon.get_ancestor(Gtk.ListBoxRow)
+        where = getattr(card, "asb_where_label", None)
+        gicon = icon.get_gicon()
+        file = gicon.get_file() if isinstance(gicon, Gio.FileIcon) else None
+        rows = WHERE_GLYPH_INK.get(Path(file.get_path()).stem) if file is not None and file.get_path() else None
+        if rows is not None and where is not None and where.get_mapped():
+            found, box = icon.compute_bounds(card)
+            placed, point = where.compute_point(card, Graphene.Point().init(0, 0))
+            if found and placed:
+                size = icon.get_pixel_size()
+                ink = box.origin.y + (box.size.height - size) / 2 + (rows[0] + rows[1]) / 2 / 12 * size
+                _x, y = where.get_layout_offsets()
+                cap = where.create_pango_layout("H")
+                cap_ink, _logical = cap.get_extents()
+                shift = (where.get_layout().get_baseline() - cap.get_baseline()) / Pango.SCALE
+                error = point.y + y + shift + (cap_ink.y + cap_ink.height / 2) / Pango.SCALE - ink
+                move = icon.asb_ink_move[1]
+                move = max(INK_MOVES[0], min(INK_MOVES[-1], move + (round(error) if abs(error) > .5 else 0)))
+                if move != icon.asb_ink_move[1]:
+                    self.clear_glyph_moves(icon)
+                    if move:
+                        icon.add_css_class(f"asb-ink-y{move}")
+                    icon.asb_ink_move = (0, move)
+        icon.asb_center_frames -= 1
+        if icon.asb_center_frames > 0:
+            return True
+        icon.asb_center_tick = None
         return False
 
     def clear_read_feedback(self, widget):
