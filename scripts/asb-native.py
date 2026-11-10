@@ -13647,6 +13647,8 @@ class RoundTable(Gtk.Overlay):
         self.disc_tip = self.fitted = None
         self.label_cache = {}
         self.thread_memo = None
+        # The labels that a hovered, lit, or top chord crosses (plate_crossings), and the labels and chords that they come from.
+        self.lit_over, self.over_memo = {}, None
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Machines, sessions and messages"])
         self.canvas = TableCanvas(self)
         self.set_child(self.canvas)
@@ -14597,17 +14599,21 @@ class RoundTable(Gtk.Overlay):
             else:
                 snapshot.append_fill(sector_path(cx, cy, geometry["Ri"], geometry["Ro"], arc["start"], arc["end"]), Gsk.FillRule.WINDING,
                                      alpha_color(hue, .85))
+        passes = ((("hover",), "casing"), (("hover",), "stroke"), (("lit",), "casing"), (("lit",), "stroke"),
+                  (("top",), "casing"), (("top",), "stroke"), (("hover", "lit", "top"), "ends"))
+        current = None
         for chords, fade in chord_sets:
             if fade > 0:
                 tones = [(chord, self.chord_tone(chord, state, lit)) for chord in chords]
+                if chords is self.chords:
+                    current = tones, fade
                 # Each chord draws one time: the rest and dim chords, the hovered or focused chord outside the open thread, the lit
                 # chords (all casings, then all strokes, so that the casing of one lit chord never cuts another), the hovered or
                 # focused chord of the thread, and last the not-sent ends of all lit chords.
                 for chord, tone in tones:
                     if tone in ("rest", "dim"):
                         self.snapshot_chord(snapshot, chord, fade, tone, palette, gray)
-                for group, part in ((("hover",), "casing"), (("hover",), "stroke"), (("lit",), "casing"), (("lit",), "stroke"),
-                                    (("top",), "casing"), (("top",), "stroke"), (("hover", "lit", "top"), "ends")):
+                for group, part in passes:
                     for chord, tone in tones:
                         if tone in group:
                             self.snapshot_chord(snapshot, chord, fade, tone, palette, gray, part)
@@ -14617,6 +14623,7 @@ class RoundTable(Gtk.Overlay):
         self.snapshot_lights(snapshot, now, palette)
         shown, scale = state[1], self.window.text_scale
         dims, hover = self.hover_dims(state, pointer=False), self.thread_hover(state)
+        drawn = {}
         for seat_id, angle in seats.items():
             label = self.labels.get(seat_id)
             if label and label["shown"]:
@@ -14626,7 +14633,26 @@ class RoundTable(Gtk.Overlay):
                 pin = self.pins[seat_id]
                 x, y = self.label_place_with(pin, angle, geometry, text, place, scale, label.get("ring", self.pin_ring(seat_id)))
                 dim = seat_id not in hover[1] if hover and hover[0] == "lit" else dims and seat_id not in lit[1]
-                self.snapshot_label(snapshot, pin["texts"][text]["layout"], x, y, enter.get(seat_id, 1), palette, dim, arcs)
+                drawn[seat_id] = pin["texts"][text]["layout"], x, y, enter.get(seat_id, 1), dim
+                self.snapshot_label(snapshot, *drawn[seat_id][:4], palette, dim, arcs)
+        # A hovered, lit, or top chord draws again over the plates that it crosses, and those labels draw again over a casing.
+        if current:
+            tones, fade = current
+            over = self.plate_crossings(frozenset(chord["key"] for chord, tone in tones if tone in ("hover", "lit", "top")))
+            for seat_id, keys in over.items():
+                if seat_id not in drawn:
+                    continue
+                layout, x, y, alpha, dim = drawn[seat_id]
+                left, top, right, bottom = self.label_plate(layout, x, y)
+                rounded = Gsk.RoundedRect()
+                rounded.init_from_rect(Graphene.Rect().init(left, top, right - left, bottom - top), 3)
+                snapshot.push_rounded_clip(rounded)
+                for group, part in passes:
+                    for chord, tone in tones:
+                        if tone in group and chord["key"] in keys:
+                            self.snapshot_chord(snapshot, chord, fade, tone, palette, gray, part)
+                snapshot.pop()
+                self.snapshot_cased_text(snapshot, layout, x, y, alpha, palette, dim)
         for seat_id, angle in seats.items():
             self.snapshot_pin(snapshot, self.pins[seat_id], *table_point(geometry, geometry["Rp"], angle), seat_id, lit, enter.get(seat_id, 1), now, palette)
         if self.move:
@@ -14773,9 +14799,41 @@ class RoundTable(Gtk.Overlay):
         ink = layout.get_pixel_extents()[0]
         return x + ink.x - 3, y + ink.y - 3, x + ink.x + ink.width + 3, y + ink.y + ink.height + 3
 
+    def plate_crossings(self, keys):
+        """The shown labels whose plates a chord of keys (the hovered, lit, and top chords) crosses: its center line 1 px or more
+        inside the plate, as in facts(). Kept in self.lit_over (seat id to chord keys) and made again only when the labels or keys
+        change."""
+        if self.over_memo is not None and self.over_memo[0] is self.labels and self.over_memo[1] == keys:
+            return self.lit_over
+        lines, over = self.label_cache.get("shapes", ((), (), ()))[2], {}
+        for seat_id, label in self.labels.items():
+            if not label["shown"]:
+                continue
+            plate = self.label_plate(self.pins[seat_id]["texts"][label["text"]]["layout"], label["box"][0] + 1, label["box"][1])
+            for bounds, _width, _weight, pieces, key in lines:
+                if key in keys and overlaps(bounds, plate) and sum(segment_inside(a, b, plate) for part_bounds, part in pieces
+                                                                  if overlaps(part_bounds, plate) for a, b in zip(part, part[1:])) >= 1:
+                    over.setdefault(seat_id, []).append(key)
+        self.over_memo, self.lit_over = (self.labels, keys), over
+        return over
+
+    def snapshot_cased_text(self, snapshot, layout, x, y, alpha, palette, dim):
+        """The text of a label that a lit chord crosses, over a casing in the window color 2 px times the text scale wide at each side
+        of its glyphs: the text drawn in the window color at 24 offsets (16 at 2 px, 8 at 1 px), which rounds the corners as a round
+        join does."""
+        scale, win = self.window.text_scale, rgba(palette["win"])
+        snapshot.push_opacity(alpha)
+        for radius, count in ((2 * scale, 16), (scale, 8)):
+            for index in range(count):
+                angle = 2 * math.pi * index / count
+                snapshot_layout(snapshot, layout, x + radius * math.cos(angle), y + radius * math.sin(angle), win)
+        snapshot_layout(snapshot, layout, x, y, rgba(palette["dim" if dim else "text"]))
+        snapshot.pop()
+
     def snapshot_label(self, snapshot, layout, x, y, alpha, palette, dim=False, arcs=None):
         """A seat label over its plate: a rounded rectangle with 3 px corners in which the table draws its background again (the
-        window color, each sector tint, and the center disc with its 1 px rule), so that no chord shows under the label."""
+        window color, each sector tint, and the center disc with its 1 px rule), so that no chord at rest and no dim chord shows
+        under the label. A hovered, lit, or top chord draws again over the plate (draw)."""
         geometry = self.geometry
         left, top, right, bottom = self.label_plate(layout, x, y)
         rectangle = Graphene.Rect().init(left, top, right - left, bottom - top)

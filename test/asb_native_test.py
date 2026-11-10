@@ -18546,6 +18546,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
 
     def test_W5_M9_hover_over_an_open_thread(self):
         window = self.window(period="7d")
+        # The first chord pass only; the second pass over the label plates (round 7, T5) has the W7 T5 tests.
+        self.enterContext(patch.object(window.table, "plate_crossings", return_value={}))
         table, palette = window.table, window.palette
         window.open_thread("pair", ("release-plan", "parser-review")); self.drain(.4)
         other = next(key for key in table.chord_keys if not set(key) & {"release-plan", "parser-review"})
@@ -18926,6 +18928,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
 
     def test_W6_T4_each_chord_draws_once_and_the_open_chord_crosses_a_hover_chord(self):
         window = self.window(period="7d")
+        # The first chord pass only; the second pass over the label plates (round 7, T5) has the W7 T5 tests.
+        self.enterContext(patch.object(window.table, "plate_crossings", return_value={}))
         table = window.table
         pair = ("release-plan", "parser-review")
         other = next(key for key in table.chord_keys if not set(key) & set(pair))
@@ -19508,6 +19512,165 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     self.assertTrue(not covered or (name, seat) in exceptions, (name, seat, covered))
             window.destroy()
         print("W7 T1 exceptions:", exceptions)
+
+    def m04_window(self):
+        """The state of sheet m04: 7 days, the session thread of docs, Cascadia Code NF 11, 968 x 760."""
+        if not self.has_cascadia():
+            self.skipTest("Cascadia Code is not installed")
+        asb.Gtk.Settings.get_default().set_property("gtk-font-name", "Cascadia Code NF 11")
+        now = self.sample["nowMs"]
+        self.extra = [["m-t5-1", "docs", "release-plan", now - 3000, "not-sent", "", "Check the release steps."],
+                      ["m-t5-2", "unknown:laptop", "docs", now - 2000, "not-sent", "Machine offline", None, "beta-helper", ""],
+                      ["m-t5-3", "docs", "ui-polish", now - 1000, "accepted", "", None]]
+        window = self.window(period="7d")
+        window.show_session("docs", "docs"); self.drain(.4)
+        return window
+
+    def line_share(self, table, rows, seat, key, color, clear=None, tolerance=24):
+        """The share of the points of the center line of a chord inside the plate of a label (1 px inside its edges) whose pixel has
+        the color, and the count of points; with clear, only the points for which clear(x, y) is true."""
+        label = table.labels[seat]
+        plate = table.label_plate(table.pins[seat]["texts"][label["text"]]["layout"], label["box"][0] + 1, label["box"][1])
+        chord = next(chord for chord in table.chords if chord["key"] == key)
+        want = tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
+        steps = math.ceil(chord["table"][1][-1] * 2)
+        points = [asb.curve_point(chord["table"], index / steps) for index in range(steps + 1)]
+        inside = [(x, y) for x, y in points if plate[0] + 1 <= x <= plate[2] - 1 and plate[1] + 1 <= y <= plate[3] - 1
+                  and (clear is None or clear(round(x), round(y)))]
+        hits = sum(all(abs(a - b) <= tolerance for a, b in zip(rows[round(y)][round(x)], want)) for x, y in inside)
+        return hits / max(1, len(inside)), len(inside)
+
+    def label_alone(self, table, seat):
+        """The pixels of the plate and the text of one shown label alone over the window color, as a function of (x, y)."""
+        label, palette = table.labels[seat], table.window.palette
+        layout = table.pins[seat]["texts"][label["text"]]["layout"]
+        width, height = table.canvas.get_width(), table.canvas.get_height()
+        snapshot = asb.Gtk.Snapshot()
+        snapshot.append_color(asb.rgba(palette["win"]), asb.Graphene.Rect().init(0, 0, width, height))
+        table.snapshot_label(snapshot, layout, label["box"][0] + 1, label["box"][1], 1, palette)
+        renderer = asb.Gsk.CairoRenderer()
+        renderer.realize(None)
+        downloader = asb.Gdk.TextureDownloader.new(renderer.render_texture(snapshot.to_node(), asb.Graphene.Rect().init(0, 0, width, height)))
+        downloader.set_format(asb.Gdk.MemoryFormat.R8G8B8A8)
+        data, stride = downloader.download_bytes()
+        renderer.unrealize()
+        data = data.get_data()
+        return lambda x, y: tuple(data[y * stride + x * 4:y * stride + x * 4 + 3])
+
+    def glyph_free(self, alone, x, y, reach):
+        """True when the label alone has no glyph pixel within reach px of (x, y): no pixel that differs from the pixel at (x, y) by
+        more than 40 in a channel (the plate tint and the window color differ by less)."""
+        return all(all(abs(a - b) <= 40 for a, b in zip(alone(x + dx, y + dy), alone(x, y))) for dx in range(-reach, reach + 1) for dy in range(-reach, reach + 1))
+
+    def test_W7_T5_lit_chords_cross_the_plates(self):
+        window = self.m04_window()
+        table = window.table
+        table.draw(asb.Gtk.Snapshot())
+        api = next(key for key in table.chord_keys if set(key) == {"docs", "api-docs"})
+        self.assertIn(api, table.lit_over["ui-polish"])
+        self.assertIn(api, table.lit_over["parser-review"])
+        print("W7 T5 crossings:", table.lit_over)
+        # The crossings come from the center lines inside the plates (1 px or more), of the hovered, lit, and top chords only.
+        lit = table.open_lit()[0]
+        for seat, keys in table.lit_over.items():
+            label = table.labels[seat]
+            self.assertTrue(label["shown"])
+            plate = table.label_plate(table.pins[seat]["texts"][label["text"]]["layout"], label["box"][0] + 1, label["box"][1])
+            for key in keys:
+                self.assertIn(key, lit)
+                points = next(chord for chord in table.chords if chord["key"] == key)["table"][0]
+                self.assertGreaterEqual(sum(asb.segment_inside(a, b, plate) for a, b in zip(points, points[1:])), 1)
+        # The set is made again only when the labels or the lit chords change, not in each frame.
+        memo = table.over_memo
+        table.draw(asb.Gtk.Snapshot())
+        self.assertIs(table.over_memo, memo)
+        # At rest (no thread, no focus, no pointer) the set is empty.
+        window.close_thread(); self.drain(.3)
+        window.set_focus(None); self.drain(.1)
+        table.hover["chord"] = table.hover["seat"] = None
+        self.assertEqual(table.lit(table.state())[0], set())
+        table.draw(asb.Gtk.Snapshot())
+        self.assertEqual(table.lit_over, {})
+
+    def test_W7_T5_lit_chords_draw_over_the_plates(self):
+        window = self.m04_window()
+        table, palette = window.table, window.palette
+        api = next(key for key in table.chord_keys if set(key) == {"docs", "api-docs"})
+        rows = self.table_pixels(table)
+        with patch.object(table, "plate_crossings", return_value={}):
+            before = self.table_pixels(table)
+        lit_keys, background = table.open_lit()[0], {}
+        for seat in ("ui-polish", "parser-review"):
+            alone = self.label_alone(table, seat)
+            # Each point of the center line that is 3 px or more from each glyph (outside the 2 px casing) has the lit chord color.
+            share, count = self.line_share(table, rows, seat, api, palette["accent"])
+            old, _count = self.line_share(table, before, seat, api, palette["accent"])
+            clear, clear_count = self.line_share(table, rows, seat, api, palette["accent"], lambda x, y: self.glyph_free(alone, x, y, 3))
+            print("W7 T5 share", seat, count, round(old, 2), round(share, 2), "outside the casing", clear_count, round(clear, 2))
+            # The casing hides the chord under the letters: ui-polish shows 42% of its points in the chord color, parser-review 15%
+            # (the chord crosses both of its lines). Before T5 no point shows.
+            self.assertGreater(clear_count, 0, seat)
+            self.assertEqual(clear, 1, seat)
+            self.assertGreater(share, .1, seat)
+            self.assertEqual(old, 0, seat)
+            # A plate point 6 px or more from each lit chord and 4 px or more from each glyph (outside the 2 px casing) keeps the plate
+            # background. The plate reaches only 3 px past the ink, so a one-line plate has no point 6 px from each glyph.
+            label = table.labels[seat]
+            plate = table.label_plate(table.pins[seat]["texts"][label["text"]]["layout"], label["box"][0] + 1, label["box"][1])
+            lit_tables = [chord["table"] for chord in table.chords if chord["key"] in lit_keys]
+            checked = 0
+            for y in range(math.ceil(plate[1]) + 1, math.floor(plate[3]) - 1):
+                for x in range(math.ceil(plate[0]) + 1, math.floor(plate[2]) - 1):
+                    if any(asb.curve_distance(curve, x, y) < 6 for curve in lit_tables) or not self.glyph_free(alone, x, y, 4):
+                        continue
+                    checked += 1
+                    self.assertTrue(all(abs(a - b) <= 2 for a, b in zip(rows[y][x], alone(x, y))), (seat, x, y, rows[y][x], alone(x, y)))
+            # ui-polish has two lit chords in its plate (docs to api-docs, docs to ui-polish), so it can have no such point.
+            background[seat] = checked
+        print("W7 T5 background points", background)
+        self.assertGreater(sum(background.values()), 0)
+        # The text of a crossed label draws again over its casing, in the window color at 24 offsets, then in the text color.
+        with patch.object(asb, "snapshot_layout") as layouts:
+            table.draw(asb.Gtk.Snapshot())
+        crossed = {id(table.pins[seat]["texts"][table.labels[seat]["text"]]["layout"]) for seat in table.lit_over}
+        for layout_id in crossed:
+            colors = [asb.hex_color(call.args[4]) for call in layouts.call_args_list if id(call.args[1]) == layout_id]
+            self.assertEqual(colors[-25:], [palette["win"]] * 24 + [palette["text"]])
+        uncrossed = [table.pins[seat]["texts"][label["text"]]["layout"] for seat, label in table.labels.items() if label["shown"] and seat not in table.lit_over]
+        self.assertTrue(uncrossed)
+        for layout in uncrossed:
+            self.assertEqual(len([call for call in layouts.call_args_list if call.args[1] is layout]), 1)
+
+    def test_W7_T5_a_hovered_chord_draws_over_a_plate(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        pairs = window.view["pairs"]
+        busiest = max(pairs, key=lambda key: pairs[key]["n"])
+        window.open_thread("pair", busiest); self.drain(.4)
+        # The m13 state: the pointer on another chord whose center line crosses a plate.
+        # The longest crossing of a chord outside the thread and a shown plate.
+        length, other, seat = max((self.plate_covers(table, seat, label)[key], key, seat) for seat, label in table.labels.items()
+                                  if label["shown"] for key in table.chord_keys if key != busiest)
+        self.assertGreater(length, 12)
+        table.hover["chord"] = other
+        self.assertEqual(table.chord_tone(next(chord for chord in table.chords if chord["key"] == other), table.state(), table.lit(table.state())), "hover")
+        rows = self.table_pixels(table)
+        self.assertIn(other, table.lit_over[seat])
+        alone = self.label_alone(table, seat)
+        color = asb.mix_color(palette["win"], palette["accent"], .6)
+        share, count = self.line_share(table, rows, seat, other, color)
+        clear, clear_count = self.line_share(table, rows, seat, other, color, lambda x, y: self.glyph_free(alone, x, y, 3))
+        print("W7 T5 hover", other, seat, round(length, 1), count, round(share, 2), "outside the casing", clear_count, round(clear, 2))
+        self.assertGreater(clear_count, 5)
+        self.assertEqual(clear, 1)
+        # With the pointer away the chord is at rest again: the set has no crossing of it, and the plate covers it.
+        table.hover["chord"] = None
+        rows = self.table_pixels(table)
+        self.assertFalse(any(other in keys for keys in table.lit_over.values()))
+        self.assertEqual(table.lit_over, {})
+        share, count = self.line_share(table, rows, seat, other, table.chord_gray(palette), lambda x, y: self.glyph_free(alone, x, y, 3))
+        self.assertGreater(count, 5)
+        self.assertEqual(share, 0)
 
     def stacked_pairs(self, table):
         """The pairs of shown labels of different seats with the stacked fault (the rule of faults in place_labels)."""
@@ -21048,6 +21211,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
 
     def test_the_outlined_chord_draws_after_the_other_chords(self):
         window = self.window()
+        # The first chord pass only; the second pass over the label plates (round 7, T5) has the W7 T5 tests.
+        self.enterContext(patch.object(window.table, "plate_crossings", return_value={}))
         table = window.table
         first = table.chords[0]["key"]
         table.hover["chord"] = first
@@ -21447,6 +21612,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
     def test_RoundTable_lit_chords_have_two_passes_and_bad_marks_stay_bad(self):
         self.extra = [["m-mixed", "docs", "release-plan", self.sample["nowMs"] - 1000, "not-sent", "", None]]
         window = self.window(period="24h")
+        # The first chord pass only; the second pass over the label plates (round 7, T5) has the W7 T5 tests.
+        self.enterContext(patch.object(window.table, "plate_crossings", return_value={}))
         window.open_thread("session", "docs"); self.drain(.4)
         table, palette = window.table, window.palette
         calls = []
@@ -21703,6 +21870,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
     def test_RoundTable_lit_chords_draw_every_casing_before_any_accent_stroke(self):
         self.extra = [["m-mixed", "docs", "release-plan", self.sample["nowMs"] - 1000, "not-sent", "", None]]
         window = self.window(period="24h")
+        # The first chord pass only; the second pass over the label plates (round 7, T5) has the W7 T5 tests.
+        self.enterContext(patch.object(window.table, "plate_crossings", return_value={}))
         table, palette = window.table, window.palette
         pair = max(window.view["pairs"], key=lambda key: window.view["pairs"][key]["n"])
         for name, setup in (("seat focus", lambda: table.proxies[("pin", "docs")].grab_focus()),
