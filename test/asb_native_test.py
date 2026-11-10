@@ -21128,7 +21128,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(len(window.view["seated"]), 12)
         self.assertIsNotNone(window.table.move)
         self.assertEqual(window.table.flights, [])
-        self.drain(.45)
+        # The light starts on the first frame after 300 ms of the seat move; a slow CI runner can draw that frame late.
+        end = time.monotonic() + 1
+        while not window.table.flights and time.monotonic() < end:
+            self.drain(.02)
         self.assertEqual([flight["from"] for flight in window.table.flights], [outside])
         self.drain(1.5)
         self.assertIsNone(window.table.move)
