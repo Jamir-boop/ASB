@@ -19511,7 +19511,6 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     covered = [key for key, inside in self.plate_covers(table, seat, label).items() if key in lit and seat not in key and inside > 12]
                     self.assertTrue(not covered or (name, seat) in exceptions, (name, seat, covered))
             window.destroy()
-        print("W7 T1 exceptions:", exceptions)
 
     def m04_window(self):
         """The state of sheet m04: 7 days, the session thread of docs, Cascadia Code NF 11, 968 x 760."""
