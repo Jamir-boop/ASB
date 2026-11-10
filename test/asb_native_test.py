@@ -19224,7 +19224,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     points = [asb.curve_point(chord["table"], index / steps) for index in range(steps + 1)]
                     inside = sum(length / steps for point in points[1:] if plate[0] <= point[0] <= plate[2] and plate[1] <= point[1] <= plate[3])
                     ink += inside * chord["width"] * (3 if chord["bad"] else 1)
-                    too_heavy = too_heavy or (chord["width"] >= 5 and inside > 12)
+                    too_heavy = too_heavy or (inside > 12 and (chord["width"] >= 5 or seat not in chord["key"]))
                     if inside:
                         checked += 1
                         tolerance += 2 * chord["width"] * (3 if chord["bad"] else 1)
@@ -19418,6 +19418,80 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         window.open_time(full[0]); self.drain(.4)
         self.assertEqual(window.thread_up.get_tooltip_text(), "No earlier hour with messages")
         self.assert_accessible_label(window.thread_up, "No earlier hour with messages")
+
+    def plate_covers(self, table, seat, item):
+        """The center line length of each chord under the plate of a label candidate, by chord key."""
+        layout = table.pins[seat]["texts"][item["text"]]["layout"]
+        plate = table.label_plate(layout, item["box"][0] + 1, item["box"][1])
+        points = {chord["key"]: chord["table"][0] for chord in table.chords}
+        return {key: sum(asb.segment_inside(a, b, plate) for a, b in zip(line, line[1:])) for key, line in points.items()}
+
+    def test_W7_T1_a_plate_on_a_thin_chord_of_another_pair_is_heavy(self):
+        window = self.window(period="7d")
+        table = window.table
+        candidate, free, rank = table.label_rules
+        widths = {chord["key"]: chord["width"] for chord in table.chords}
+        thin = own = 0
+        for seat, pin in table.pins.items():
+            for text in range(len(pin["texts"])):
+                for place in range(9):
+                    item = candidate(seat, text, place)
+                    covers = self.plate_covers(table, seat, item)
+                    if any(abs(inside - 12) < .01 for inside in covers.values()):
+                        continue
+                    other = [key for key, inside in covers.items() if inside > 12 and seat not in key]
+                    if any(widths[key] < 5 for key in other):
+                        thin += 1
+                        self.assertTrue(rank(seat, item)[2], (seat, text, place))
+                    if not other:
+                        # Only chords of its own seat: the rule of round 6 (more than 12 px of a chord of 5 px or more).
+                        own += 1
+                        self.assertEqual(rank(seat, item)[2], any(inside > 12 and widths[key] >= 5 for key, inside in covers.items()), (seat, text, place))
+        self.assertGreater(thin, 0)
+        self.assertGreater(own, 0)
+
+    def test_W7_T1_labels_keep_off_lit_chords_of_other_pairs(self):
+        settings = asb.Gtk.Settings.get_default()
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if self.has_cascadia() else [])
+        now = self.sample["nowMs"]
+        # The state of sheet m04: the session thread of docs in 7 days, with a not-sent message and an unlisted seat.
+        self.extra = [["m-t1-1", "docs", "release-plan", now - 3000, "not-sent", "", "Check the release steps."],
+                      ["m-t1-2", "unknown:laptop", "docs", now - 2000, "not-sent", "Machine offline", None, "beta-helper", ""],
+                      ["m-t1-3", "docs", "ui-polish", now - 1000, "accepted", "", None]]
+        exceptions = {}
+        for name in fonts:
+            settings.set_property("gtk-font-name", name)
+            window = self.window(period="7d")
+            table = window.table
+            window.show_session("docs", "docs"); self.drain(.4)
+            candidate, free, rank = table.label_rules
+            chosen, lit = table.chosen_seats(), table.open_lit()[0]
+            self.assertEqual(chosen, ["docs"])
+            self.assertEqual(self.label_order_faults(table), [], name)
+            for seat, label in table.labels.items():
+                if not label["shown"] or seat in chosen:
+                    continue
+                covered = {key: round(inside, 1) for key, inside in self.plate_covers(table, seat, label).items() if key in lit and seat not in key and inside > 12}
+                if not covered:
+                    continue
+                # Allowed only when each other free candidate of the seat with no stacked or stray fault is also heavy; whole names
+                # rank before cut ones (the first key), so a whole label compares with the whole candidates only.
+                pin = table.pins[seat]
+                others = [candidate(seat, text, place) for text in range(pin["late"]) for place in range(9)]
+                good = [item for item in others if (item["text"], item["place"]) != (label["text"], label["place"]) and free(seat, item)
+                        and not rank(seat, item)[1] and rank(seat, item)[0] <= rank(seat, label)[0]]
+                self.assertTrue(all(rank(seat, item)[2] for item in good), (name, seat, covered))
+                cuts = [pin["texts"][item["text"]]["layout"].get_text() for item in others if free(seat, item) and not rank(seat, item)[1]
+                        and not rank(seat, item)[2] and rank(seat, item)[0] > rank(seat, label)[0]]
+                exceptions[(name, seat)] = covered, sorted(set(cuts))
+            # A refresh with preserve keeps the rule.
+            table.place_labels()
+            for seat, label in table.labels.items():
+                if label["shown"] and seat not in chosen:
+                    covered = [key for key, inside in self.plate_covers(table, seat, label).items() if key in lit and seat not in key and inside > 12]
+                    self.assertTrue(not covered or (name, seat) in exceptions, (name, seat, covered))
+            window.destroy()
+        print("W7 T1 exceptions:", exceptions)
 
     def test_W6_TT1_TT5_an_open_time_thread_lights_its_chords(self):
         window = self.window(period="7d")
@@ -21612,7 +21686,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 geometry = table.geometry
                 for seat in ("ui-polish", "parser-review", "render-farm", "sync-check"):
                     # R2: in Cascadia the one-line parser-review fits only on the exit of its widest chord: it takes two lines.
-                    whole = 1 if seat == "parser-review" and font.startswith("Cascadia") else 0
+                    # Round 7 (T1): in Cascadia each free one-line sync-check place has a fault or covers more than 12 px of a chord of
+                    # another pair (render-farm and parser-review): it takes two lines.
+                    whole = 1 if seat in ("parser-review", "sync-check") and font.startswith("Cascadia") else 0
                     self.assertEqual((table.labels[seat]["shown"], table.labels[seat]["text"]), (True, whole), seat)
                 ends = [(x, y, chord["end_width"] / 2) for chord in table.chords for points in chord["fails"] for x, y in points]
                 for seat, label in table.labels.items():

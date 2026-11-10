@@ -13928,12 +13928,13 @@ class RoundTable(Gtk.Overlay):
 
         The order of the candidates (rank): the whole names before the cut ones first; then no stacked or stray fault (a label
         that stacks with the label of another seat, or whose center is not nearer its own pin); then a plate that covers no more
-        than 12 px of a chord of 5 px or more; off the exit of the seat's widest chord; one line before two (and 10 before 7
-        characters); off the seat's own chord exits and off each all-not-sent chord; less chord ink under the plate, in steps of
-        8 px²; and last the order of the nine places.
+        than 12 px of a chord of 5 px or more, or of a chord of another pair (one that does not end at the seat) at each width; off
+        the exit of the seat's widest chord; one line before two (and 10 before 7 characters); off the seat's own chord exits and
+        off each all-not-sent chord; less chord ink under the plate, in steps of 8 px²; and last the order of the nine places.
 
         With preserve, a label first tries its current text and place, so a selection, a focus, or a refresh does not move a valid
-        label. When no candidate is free, the repair step moves the one other (not chosen) label that blocks a candidate to a free
+        label. A seat that is not chosen does not keep a label whose plate covers more than 12 px of a chord of another pair that
+        the open thread or the keyboard focus lights: it takes its first free candidate. When no candidate is free, the repair step moves the one other (not chosen) label that blocks a candidate to a free
         candidate of its own, and the seat then takes its first free candidate. When that also fails, the seat tries its
         candidates again with 2 px times the text scale for the own-pin rule, then from the 16 px pin itself (no rings). A chosen
         seat that still finds no place shows its one-line whole name inward. Another seat then tries its late texts in the same
@@ -13982,15 +13983,17 @@ class RoundTable(Gtk.Overlay):
             for chord in self.chords:
                 points = chord["table"][0]
                 pieces = [(shape_bounds([(x, y, 0) for x, y in points[index:index + 9]]), points[index:index + 9]) for index in range(0, len(points) - 1, 8)]
-                lines.append((shape_bounds([(x, y, 0) for x, y in points]), chord["width"], 3 if chord["bad"] else 1, pieces))
+                lines.append((shape_bounds([(x, y, 0) for x, y in points]), chord["width"], 3 if chord["bad"] else 1, pieces, chord["key"]))
             cache["shapes"] = exits, dashed, lines
         exits, dashed, lines = cache["shapes"]
         self.kept_off = exits, [shape for _bounds, group in dashed for shape in group]
         room, chosen = 6 * scale, self.chosen_seats()
         counts, activity = self.view["counts"], self.view["activity"]
         circle = {seat_id: index for index, seat_id in enumerate(self.pins)}
-        focus = self.hover["focus"]
+        focus, chord_focus = self.hover["focus"], self.hover["chord_focus"]
         lit = opened | {seat_id for key in self.chord_keys if key in self.open_lit()[0] or focus in key for seat_id in key}
+        # The chords that the open thread or the keyboard focus lights, as the drawing does without the pointer.
+        lit_chords = self.open_lit()[0] | ({chord_focus} if chord_focus else {key for key in self.chord_keys if focus in key})
         order = sorted(self.pins, key=lambda seat_id: (chosen.index(seat_id) if seat_id in chosen else len(chosen), seat_id not in lit,
                        -sum(counts.get(seat_id, {}).values()), -activity.get(seat_id, 0), circle[seat_id]))
         previous, self.labels = self.labels if preserve else {}, {}
@@ -14025,22 +14028,25 @@ class RoundTable(Gtk.Overlay):
 
         def facts(seat_id, item):
             """The facts of a candidate that depend only on the geometry: the chord ink under its plate (the center line length inside
-            the plate times the rest width, 3 times for an all-not-sent chord), heavy (more than 12 px of a chord of 5 px or more),
-            on the seat's widest exit, and strict (off its own exits and off each all-not-sent chord)."""
+            the plate times the rest width, 3 times for an all-not-sent chord), heavy (more than 12 px of a chord of 5 px or more, or of
+            a chord of another pair at each width), on the seat's widest exit, strict (off its own exits and off each all-not-sent
+            chord), and the keys of the chords of other pairs (that do not end at the seat) with more than 12 px under the plate."""
             key = (seat_id, item["text"], item["place"], item["ring"])
             if key not in cache:
                 box = item["box"]
                 plate = self.label_plate(self.pins[seat_id]["texts"][item["text"]]["layout"], box[0] + 1, box[1])
-                ink, heavy = 0, False
-                for bounds, width, weight, pieces in lines:
+                ink, heavy, covered = 0, False, set()
+                for bounds, width, weight, pieces, pair in lines:
                     if not overlaps(bounds, plate):
                         continue
                     inside = sum(segment_inside(a, b, plate) for part_bounds, part in pieces if overlaps(part_bounds, plate) for a, b in zip(part, part[1:]))
                     ink += inside * width * weight
-                    heavy = heavy or (width >= 5 and inside > 12 * scale)
+                    if inside > 12 * scale and seat_id not in pair:
+                        covered.add(pair)
+                    heavy = heavy or (inside > 12 * scale and (width >= 5 or seat_id not in pair))
                 strict = not any(near(box, x, y) < radius for x, y, radius in exits[seat_id]) and not any(
                     near(box, x, y) < radius for bounds, group in dashed if overlaps(bounds, box) for x, y, radius in group)
-                cache[key] = (ink, heavy, any(near(box, x, y) < radius for x, y, radius in widest[seat_id]), strict)
+                cache[key] = (ink, heavy, any(near(box, x, y) < radius for x, y, radius in widest[seat_id]), strict, covered)
             return cache[key]
 
         def faults(seat_id, box):
@@ -14060,7 +14066,7 @@ class RoundTable(Gtk.Overlay):
             return any(other != seat_id and math.hypot(x - px, y - py) - mine < 4 * scale for other, (px, py, _radius) in circles.items())
 
         def rank(seat_id, item):
-            ink, heavy, wide, strict = facts(seat_id, item)
+            ink, heavy, wide, strict, _covered = facts(seat_id, item)
             return (item["text"] >= self.pins[seat_id]["whole"], faults(seat_id, item["box"]), heavy, wide, item["text"], not strict,
                     int(ink // 8), item["place"])
 
@@ -14082,7 +14088,8 @@ class RoundTable(Gtk.Overlay):
             old = previous.get(seat_id)
             if old and old["shown"] and (old["text"] in texts or old["text"] in late):
                 item = candidate(seat_id, old["text"], old["place"])
-                if free(seat_id, item):
+                # A kept label of a seat that is not chosen must not cover a lit chord of another pair.
+                if free(seat_id, item) and (seat_id in chosen or not facts(seat_id, item)[4] & lit_chords):
                     found = placed(seat_id, item, "kept")
             if found is None:
                 found = next((placed(seat_id, item, "first") for item in options if free(seat_id, item)), None)
