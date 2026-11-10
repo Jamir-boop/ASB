@@ -19639,7 +19639,6 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         api = next(key for key in table.chord_keys if set(key) == {"docs", "api-docs"})
         self.assertIn(api, table.lit_over["ui-polish"])
         self.assertIn(api, table.lit_over["parser-review"])
-        print("W7 T5 crossings:", table.lit_over)
         # The crossings come from the center lines inside the plates (1 px or more), of the hovered, lit, and top chords only.
         lit = table.open_lit()[0]
         for seat, keys in table.lit_over.items():
@@ -19676,7 +19675,6 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             share, count = self.line_share(table, rows, seat, api, palette["accent"])
             old, _count = self.line_share(table, before, seat, api, palette["accent"])
             clear, clear_count = self.line_share(table, rows, seat, api, palette["accent"], lambda x, y: self.glyph_free(alone, x, y, 3))
-            print("W7 T5 share", seat, count, round(old, 2), round(share, 2), "outside the casing", clear_count, round(clear, 2))
             # The casing hides the chord under the letters: ui-polish shows 42% of its points in the chord color, parser-review 15%
             # (the chord crosses both of its lines). Before T5 no point shows.
             self.assertGreater(clear_count, 0, seat)
@@ -19697,7 +19695,6 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     self.assertTrue(all(abs(a - b) <= 2 for a, b in zip(rows[y][x], alone(x, y))), (seat, x, y, rows[y][x], alone(x, y)))
             # ui-polish has two lit chords in its plate (docs to api-docs, docs to ui-polish), so it can have no such point.
             background[seat] = checked
-        print("W7 T5 background points", background)
         self.assertGreater(sum(background.values()), 0)
         # The text of a crossed label draws again over its casing, in the window color at 24 offsets, then in the text color.
         with patch.object(asb, "snapshot_layout") as layouts:
@@ -19730,7 +19727,6 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         color = asb.mix_color(palette["win"], palette["accent"], .6)
         share, count = self.line_share(table, rows, seat, other, color)
         clear, clear_count = self.line_share(table, rows, seat, other, color, lambda x, y: self.glyph_free(alone, x, y, 3))
-        print("W7 T5 hover", other, seat, round(length, 1), count, round(share, 2), "outside the casing", clear_count, round(clear, 2))
         self.assertGreater(clear_count, 5)
         self.assertEqual(clear, 1)
         # With the pointer away the chord is at rest again: the set has no crossing of it, and the plate covers it.
