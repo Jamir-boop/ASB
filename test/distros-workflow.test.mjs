@@ -34,7 +34,7 @@ test('the check job has the rows of the probe job, each with the package of its 
   // The same job, image, runner, family, tier, node, and window, in the same order.
   assert.deepEqual(check.map(({ package: _package, snapshot: _snapshot, preferences: _preferences, widgets: _widgets, ...row }) => row), probe);
   for (const row of check) assert.equal(row.package, PACKAGES[row.family], row.job);
-  assert.ok(jobs.check.includes('    timeout-minutes: 30'));
+  assert.ok(jobs.check.includes('    timeout-minutes: 60'));
   assert.ok(jobs.check.some((line) => line.includes('PREFERENCES: ${{ matrix.preferences }}')));
   assert.ok(jobs.check.some((line) => line.includes('-e ASB_CHECK_PREFERENCES="$PREFERENCES"')));
   // Only the x86_64 debian-13 row runs the board widget tests.
@@ -88,6 +88,6 @@ test('the widget step runs the board widget tests only when enabled, with the de
   assert.match(source, /check_widgets\(\) \{\n  \[ "\$\{ASB_CHECK_WIDGETS:-\}" = run \] \|\| return 0\n  step 12/);
   assert.match(source, /debian\) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-cantarell adwaita-icon-theme xdotool ;;/);
   assert.match(source, /\*\) fail "No widget test packages for the \$family family\." ;;/);
-  assert.match(source, /as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 900 dbus-run-session -- xvfb-run -a -e \/tmp\/asb-widgets-xvfb\.log -s '-screen 0 1600x1000x24 -noreset' python3 -I \/asb\/test\/compositor-stub\.py python3 -m unittest discover -s \/asb\/test -p asb_native_test\.py"/);
+  assert.match(source, /as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 2400 dbus-run-session -- xvfb-run -a -e \/tmp\/asb-widgets-xvfb\.log -s '-screen 0 1600x1000x24 -noreset' python3 -I \/asb\/test\/compositor-stub\.py python3 -m unittest discover -s \/asb\/test -p asb_native_test\.py"/);
   assert.match(source, /fail "The board widget tests failed\."/);
 });
