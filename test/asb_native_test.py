@@ -19228,6 +19228,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertLessEqual(len(item["layout"].get_text()), len(pin["title"]) - 3, seat)
             for item in pin["texts"][pin["late"]:]:
                 self.assertGreater(len(item["layout"].get_text()), len(pin["title"]) - 3, seat)
+                self.assertLess(len(item["layout"].get_text()), len(pin["title"]), seat)
         self.assertEqual([item["layout"].get_text() for item in table.pins["ui-polish"]["texts"]], ["ui-polish", "ui-poli…"])
         self.assertEqual(table.pins["ui-polish"]["late"], 1)
         table.place_labels(False)

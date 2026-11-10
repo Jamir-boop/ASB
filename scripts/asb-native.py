@@ -13703,13 +13703,13 @@ class RoundTable(Gtk.Overlay):
         size = 12 * self.window.text_scale
         # The whole name on one line (at most 24 characters), on two lines at its last break (each line 4 to 24 characters),
         # then cut to 10 and to 7 characters when it is 3 or more characters shorter than the title. A cut that saves less is a late
-        # text: a seat that is not chosen tries it only before its label hides.
+        # text: a seat that is not chosen tries it only before its label hides. A cut as long as the title is no text.
         names = [seat_label_text(title)]
         split = max((match.end() for match in re.finditer(r"[-_. ]", title) if match.end() < len(title)), default=0)
         if split and title[:split].strip("-_. ") and 4 <= split <= 24 and 4 <= len(title) - split <= 24:
             names.append(title[:split] + "\n" + title[split:])
         whole = len(names)
-        cuts = [title[:length].rstrip("-_. ") + "…" for length in (10, 7) if len(title) > length]
+        cuts = [cut for cut in (title[:length].rstrip("-_. ") + "…" for length in (10, 7) if len(title) > length) if len(cut) < len(title)]
         names += [cut for cut in cuts if len(cut) <= len(title) - 3]
         late = len(dict.fromkeys(names))
         names += [cut for cut in cuts if len(cut) > len(title) - 3]
