@@ -1308,7 +1308,7 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual(asb.usage_bucket_progress({"unit": "week", "startsMs": []}, hour), "")
         self.assertEqual(asb.usage_bucket_progress({"unit": "week", "startsMs": [hour]}, None), "")
         # Daylight saving days: 23 hours in spring and 25 in autumn (local time).
-        os.environ["TZ"] = "Europe/Berlin"
+        os.environ["TZ"] = "CET-1CEST,M3.5.0,M10.5.0/3"  # Europe/Berlin as a POSIX rule: some CI images have no zone files
         time.tzset()
         spring, autumn = datetime(2026, 3, 29).timestamp() * 1000, datetime(2026, 10, 25).timestamp() * 1000
         self.assertEqual(asb.usage_bucket_progress({"unit": "day", "startsMs": [spring]}, spring + 5 * 3_600_000), "hour 6 of 23")
