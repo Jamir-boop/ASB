@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.15.0 - 2026-11-10
+
+- ASB Bridge is still `0.8.1`: it did not change.
 - Messages and Usage now follow the GNOME Large Text setting: their text, the drawn chart and table labels, the row heights, the Messages ledger width, and the layout breakpoints grow with the text scale, also while a window is open. Their figures use the interface font with tabular figures, not a monospace font.
 - The Messages round table shows its chords in one neutral gray with at least 3:1 contrast on the window and the machine sectors. The chord under the pointer and the focused chord show in the accent color, and their seats get an accent ring. Under the pointer, the other chords and seats dim; with the keyboard focus, they keep their colors, and only the other seat names dim. An open thread keeps its chords in the accent and gives its seats an outer accent ring, and the rest of the table keeps its colors until you point to another chord or seat. A chord shows both names and the counts of each direction in its tooltip. A key line at the bottom left of the table explains the chord widths (`Line width: 4, 35, and 139 messages`, with a sample for each count), the dashed `Not sent` line, `Some not sent`, and the dashed `Offline` arc, when it has room. A not-sent mark keeps the error color also on a chosen chord.
 - The Messages center now shows `Newest message`, the route, its time and status, and `Select a session or a line to read its messages`. A long route breaks before its arrow, and names never get a hyphen at a line break. Machine names stay 12 px inside the table (the ring gets smaller when a name does not fit), and pins are opaque. Seat labels stand on a plate in the table background and try nine places around their seat, then a cut to 10 and to 7 characters, before they hide; the seats with the most messages place first, and the focused seat and the seats of an open thread always show their whole label. Opening a thread never moves the seats.
@@ -138,6 +141,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Preferences > Appearance now shows Pets as four picture tiles. Hover makes a pet walk; a choice makes it hop. Below the caption, the chosen pet carries a message between two sample cards on a 116 px stage every 4.6 s while the section shows. With GNOME animations off, the tiles stay still and the two marks light for 2 s after a choice.
 - Added **Pets** to the Android app. Settings > Appearance > Pets (Off, the default, Crab, Pigeon, or Cat) shows the same four picture tiles and stage as the PC; a tap makes the pet hop. With a pet on, a message on the session list shows the pixel pet with the board motion instead of the light, when both cards are on the screen; else the light plays. With animations off, the two marks light for 2 s, as before. The phone keeps its own choice.
 - Fixed Usage with Large Text in a 360 px window with a wide font such as DejaVu Sans: the toolbar and the page fit the window, and the Totals titles and the token type names break between their words in place of being cut. The narrow hourly chart keeps its first label, and the next tick that fits names the new day. The CLI and machine glyphs of view-only cards center on their caption in each font.
+
+See [ASB 1.15.0 release notes](docs/releases/v1.15.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.14.0 - 2026-11-01
 
