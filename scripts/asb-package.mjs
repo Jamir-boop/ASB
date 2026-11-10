@@ -102,12 +102,21 @@ async function version(root) {
   if (!/^\d+\.\d+\.\d+$/.test(value)) throw new Error('ASB package version must use MAJOR.MINOR.PATCH.');
   return value;
 }
+// A git archive fills src/build.txt (export-subst); a build from a checkout (CI, a clone) fills it from git here.
+function buildStamp(source, bytes) {
+  if (bytes.toString('utf8') !== '$Format:%H %ct$\n') return bytes;
+  try {
+    const stamp = execFileSync('git', ['log', '-1', '--format=%H %ct'], { cwd: source, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+    return /^[0-9a-f]{40} [0-9]{1,12}\n$/.test(stamp) ? Buffer.from(stamp) : bytes;
+  } catch { return bytes; }
+}
 async function copyRuntime(source, destination, signal) {
   const hashes = {};
   for (const file of RUNTIME_FILES) {
     signal?.throwIfAborted();
-    const bytes = await contents(path.join(source, file));
+    let bytes = await contents(path.join(source, file));
     if (!bytes) throw new Error(`Missing runtime file: ${file}`);
+    if (file === 'src/build.txt') bytes = buildStamp(source, bytes);
     signal?.throwIfAborted();
     const target = path.join(destination, file);
     await mkdir(path.dirname(target), { recursive: true });

@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ASB_APP_ID } from '../scripts/asb-icon.mjs';
 import { build, checkRuntime, contents, enablePanel, formatStringList, gnomeShellMajor, install, PANEL_UUID, parseStringList, replace, RUNTIME_FILES,
-  safeParents, uninstall } from '../scripts/asb-package.mjs';
+  safeParents, stage, uninstall } from '../scripts/asb-package.mjs';
 
 test('release runtime includes the Claude remote reader imported by the switchboard', () => {
   assert.ok(RUNTIME_FILES.includes('src/claude-remote-data.mjs'));
@@ -791,4 +791,9 @@ test('build metadata is shipped and git archives substitute its commit and time'
   const text = execFileSync('tar', ['-xOf', '-', 'src/build.txt'], { input: archive, encoding: 'utf8' });
   assert.match(text, /^[0-9a-f]{40} [0-9]{1,12}\n$/);
   assert.equal(text.trim(), execFileSync('git', ['log', '-1', '--format=%H %ct'], { cwd, encoding: 'utf8' }).trim());
+  // A build from the checkout itself (CI, a clone) fills the build file from git too.
+  const staged = await mkdtemp(path.join(os.tmpdir(), 'asb-stage-'));
+  t.after(() => rm(staged, { recursive: true, force: true }));
+  await stage(staged);
+  assert.equal(await readFile(path.join(staged, 'src/build.txt'), 'utf8'), text);
 });
