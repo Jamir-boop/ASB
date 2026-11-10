@@ -692,7 +692,8 @@ private fun SessionLine(title: String, app: String?, dot: Pair<Color, Boolean>?,
         }
         Row(if (more == null) Modifier else Modifier.clearAndSetSemantics { contentDescription = spoken },
             horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.width(32.dp)) {
+            // The rest row has no app glyph: its name takes that column too, so that `Other sessions (3430)` and its arrow fit.
+            if (!rest) Box(Modifier.width(32.dp)) {
                 if (app != null) Icon(painterResource(appMark(app)), contentDescription = appLabel(app), tint = colors.text, modifier = Modifier.size(14.dp))
             }
             // An unpriced session with no priced part shows Unpriced (null), as an unpriced model.
