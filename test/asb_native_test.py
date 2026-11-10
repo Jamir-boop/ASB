@@ -15580,7 +15580,11 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         middle = y + height / 2
         found = [pixel(x - 2, middle), pixel(x + width + 1, middle), pixel(x + width / 2, y - 2), pixel(x + width / 2, y + height + 1)]
         if isinstance(widget, asb.UsageChart):
-            found = [pixel(x, middle), pixel(x + width - 1, middle), pixel(x + width / 2, y), pixel(x + width / 2, y + height - 1)]
+            # The chart draws its ring 1 px out from its ring box.
+            left, top, right, bottom = widget.ring_box()
+            middle = y + (top + bottom) / 2
+            found = [pixel(x + left - 1, middle), pixel(x + right + 1, middle), pixel(x + (left + right) / 2, y + top - 1),
+                     pixel(x + (left + right) / 2, y + bottom + 1)]
         # The renderer may round a channel of an OKLab accent one step away.
         near = lambda first, second: all(abs(int(first[index:index + 2], 16) - int(second[index:index + 2], 16)) <= 1 for index in (1, 3, 5))
         self.assertTrue(all(near(item, color) for item in found), (widget, found, color))
@@ -15935,9 +15939,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(keys.emit("key-pressed", asb.Gdk.KEY_Tab, 0, asb.Gdk.ModifierType(0)))
         self.drain(.1)
         self.ring_pixels(window, chart, window.palette["accent"])
-        rules = window.css.to_string().split("asb-usage-chart:focus-visible {")[1].split("}")[0]
-        self.assertIn("outline-width: 2px", rules)
-        self.assertIn(f"outline-color: {asb.rgba(window.palette['accent']).to_string()}", rules)
+        # The chart draws its own ring: no CSS outline.
+        self.assertNotIn("asb-usage-chart:focus-visible", window.css.to_string())
         self.assert_no_new_warnings()
 
     def test_ring_grows_with_large_text_and_folds_keep_user_state(self):
@@ -16243,7 +16246,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertLessEqual(left + width, chart.get_width() - 6)
             self.assertLessEqual(top + height, chart.get_height() - 6)
         rules = window.css.to_string()
-        self.assertIn("border-top-left-radius: 6px", rules.split("asb-usage-chart {")[1].split("}")[0])
+        self.assertIn("outline-style: none", rules.split("asb-usage-chart {")[1].split("}")[0])
         with patch.object(chart, "text", wraps=chart.text) as text:
             chart.snapshot_labels(asb.Gtk.Snapshot(), asb.rgba(window.palette["dim"]), asb.rgba(window.palette["text"]))
         total = next(call for call in text.call_args_list if call.args[0].startswith("Total "))
@@ -16423,6 +16426,39 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 self.assertEqual(right(text), right(head) - head.get_style_context().get_padding().right)
         # The rest row of Sessions keeps its chevron.
         self.assertEqual(icon_name(self.children(self.children(window.session_more)[0])[1]), "pan-down-symbolic")
+        self.assert_no_new_warnings()
+
+    def test_W7_U_S4_the_chart_focus_ring_keeps_off_its_labels(self):
+        for dpi, size in ((98304, (948, 760)), (98304, (360, 760)), (147456, (948, 760)), (147456, (360, 760))):
+            self.set_text_dpi(dpi)
+            window = self.window(size=size, period="all")
+            chart = window.chart
+            window.set_focus_visible(True)
+            chart.grab_focus()
+            self.drain(.2)
+            self.assertTrue(chart.has_focus())
+            with patch.object(chart, "label", wraps=chart.label) as label:
+                chart.do_snapshot(asb.Gtk.Snapshot())
+            boxes = []
+            for call in label.call_args_list:
+                layout, x, y = call.args[1:4]
+                extents = layout.get_pixel_extents()[1]
+                boxes.append((x + extents.x, y + extents.y, x + extents.x + extents.width, y + extents.y + extents.height))
+            # Gridline, tick, and end labels (or the key in the narrow chart).
+            self.assertGreater(len(boxes), 8, (dpi, size))
+            left, top, right, bottom = chart.ring_box()
+            for box in boxes:
+                self.assertGreaterEqual(box[0] - left, 6, (dpi, size, box))
+                self.assertGreaterEqual(box[1] - top, 6, (dpi, size, box))
+                self.assertGreaterEqual(right - box[2], 6, (dpi, size, box))
+                self.assertGreaterEqual(bottom - box[3], 6, (dpi, size, box))
+            # The 2 px ring stands inside the widget.
+            self.assertGreaterEqual(min(left, top) - 2, 0, (dpi, size))
+            self.assertLessEqual(right + 2, chart.get_width(), (dpi, size))
+            self.assertLessEqual(bottom + 2, chart.get_height(), (dpi, size))
+            with self.subTest(dpi=dpi, size=size):
+                self.ring_pixels(window, chart, window.palette["accent"])
+            window.destroy()
         self.assert_no_new_warnings()
 
 

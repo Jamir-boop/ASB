@@ -17643,6 +17643,7 @@ class UsageChart(Gtk.Widget):
     the drawn series) is the accent over its area and draws last, and the top gridline follows it. The insets and the label room
     follow the measured text at the GNOME text scale."""
     TOP, PLOT = 8, 136  # The plot runs from TOP to BOTTOM = TOP + PLOT.
+    RING = 8  # The room of the focus ring outside the labels: a 6 px gap and the 2 px ring.
     TOTAL = "asb-total"  # The key of the Total line.
     LABEL = "Usage over time"
     KEY_WIDTH = 520  # Under this width (times the text scale) the end labels are a key under the plot.
@@ -17657,6 +17658,7 @@ class UsageChart(Gtk.Widget):
         self.targets, self.starts, self.progress = {}, {}, 1
         self.hover = self.tip = None
         self.pointer = None
+        self.drawn = []  # The boxes of the labels drawn last (do_snapshot).
         self.order, self.paths, self.current, self.paths_key, self.path_builds = [], [], [], None, 0
         self.text_scale, self.LEFT, self.RIGHT, self.end_texts = 1, 48, 0, {}
         self.BOTTOM = self.TOP + self.PLOT
@@ -17672,6 +17674,8 @@ class UsageChart(Gtk.Widget):
         focus = Gtk.EventControllerFocus()
         focus.connect("leave", lambda *_: self.pointer is None and self.set_hover(None))
         self.add_controller(focus)
+        # The chart draws its own focus ring.
+        self.connect("state-flags-changed", lambda *_args: self.queue_draw())
         self.animation = Adw.TimedAnimation.new(self, 0, 1, 220, Adw.CallbackAnimationTarget.new(self.advance))
         self.animation.set_easing(Adw.Easing.LINEAR)
 
@@ -17704,8 +17708,8 @@ class UsageChart(Gtk.Widget):
         """The text scale of the labels: the label room under the plot and the insets follow the measured text."""
         self.text_scale = scale
         self.label_height = self.text("Ag").get_pixel_extents()[1].height
-        # The top axis label centers on the top gridline: half a label and 1 px stand above it.
-        self.TOP = max(8, math.ceil(self.label_height / 2 + 1))
+        # The top axis label centers on the top gridline: half a label and the ring room stand above it.
+        self.TOP = math.ceil(self.label_height / 2 + self.RING)
         self.BOTTOM = self.TOP + self.PLOT
         self.HEIGHT = self.BOTTOM + 6 + self.label_height + 6 * scale + 2
         self.set_size_request(-1, self.HEIGHT)
@@ -17780,7 +17784,7 @@ class UsageChart(Gtk.Widget):
         if self.end_texts and 0 <= width < self.KEY_WIDTH * self.text_scale:
             columns, lines = self.key_columns(width), len(self.header_lines(width - 16 * self.text_scale))
             rows = (len(self.end_texts) + columns - 1) // columns
-            return math.ceil(self.key_top() + lines * self.label_height + 4 + rows * self.row_height())
+            return math.ceil(self.key_top() + lines * self.label_height + 4 + rows * self.row_height() + self.RING)
         return self.HEIGHT
 
     def do_get_request_mode(self):
@@ -17863,7 +17867,7 @@ class UsageChart(Gtk.Widget):
             return [], [], []
         last = len(self.bars) - 1
         ends, height = [self.targets[(last, key)] if final else self.value_y(last, key) for key in keys], self.label_height
-        top = max(self.TOP, len(self.header_lines(self.label_column_width())) * height + 4)
+        top = max(self.TOP, self.RING + len(self.header_lines(self.label_column_width())) * height + 4)
         tops = usage_end_label_tops(ends, height, top, self.BOTTOM)
         for index, end in enumerate(ends):
             # A label that moved less than 6 px goes back to its line end where it overlaps no other label.
@@ -18050,8 +18054,29 @@ class UsageChart(Gtk.Widget):
         return self.paths
 
     def do_snapshot(self, snapshot):
-        if not ACTIVITY_PATHS or not self.bars:
-            return
+        self.drawn = []
+        if ACTIVITY_PATHS and self.bars:
+            self.snapshot_chart(snapshot)
+        if self.get_state_flags() & Gtk.StateFlags.FOCUS_VISIBLE:
+            # The 2 px accent focus ring with 6 px corners, its inner edge 6 px outside the plot and every label.
+            left, top, right, bottom = self.ring_box()
+            rounded = Gsk.RoundedRect()
+            rounded.init_from_rect(Graphene.Rect().init(left - 2, top - 2, right - left + 4, bottom - top + 4), 6)
+            snapshot.append_border(rounded, [2] * 4, [alpha_color(self.get_root().palette["accent"])] * 4)
+
+    def label(self, snapshot, layout, x, y, color):
+        """Draw a chart label and keep its box for the focus ring."""
+        extents = layout.get_pixel_extents()[1]
+        self.drawn.append((x + extents.x, y + extents.y, x + extents.x + extents.width, y + extents.y + extents.height))
+        snapshot_layout(snapshot, layout, x, y, color)
+
+    def ring_box(self):
+        """The inner edge of the focus ring: the plot and the labels drawn last, 6 px out."""
+        boxes = [(self.LEFT, self.TOP, self.plot_right(), self.BOTTOM)] + self.drawn
+        return (min(box[0] for box in boxes) - 6, min(box[1] for box in boxes) - 6,
+                max(box[2] for box in boxes) + 6, max(box[3] for box in boxes) + 6)
+
+    def snapshot_chart(self, snapshot):
         palette, chart_width, right = self.get_root().palette, self.get_width(), self.plot_right()
         dim, rule, text = alpha_color(palette["dim"]), alpha_color(palette["rule"]), alpha_color(palette["text"])
         for line in range(len(self.axis) + 1):
@@ -18060,7 +18085,7 @@ class UsageChart(Gtk.Widget):
             if line:
                 layout = self.text(self.axis[line - 1])
                 extents = layout.get_pixel_extents()[1]
-                snapshot_layout(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
+                self.label(snapshot, layout, self.LEFT - 8 - extents.width, y - extents.height / 2, dim)
         paths = self.series_paths()
         for _key, color, line, area in paths:
             if line is None:
@@ -18116,7 +18141,7 @@ class UsageChart(Gtk.Widget):
         for _index, label, left in usage_axis_labels(self.buckets, centers, chart_width - 8 * self.text_scale, self.label_step(), measure, self.narrow,
                                                  16 * self.text_scale):
             left = max(8 * self.text_scale, left)
-            snapshot_layout(snapshot, layouts[label], left, self.BOTTOM + 6, dim)
+            self.label(snapshot, layouts[label], left, self.BOTTOM + 6, dim)
         if self.tip:
             index = self.tip["index"]
             usage_rect(snapshot, math.floor(centers[index]), self.TOP, 1, self.BOTTOM - self.TOP, dim)
@@ -18150,7 +18175,7 @@ class UsageChart(Gtk.Widget):
         if place:
             lines, left, top = place
             for line, text_line in enumerate(lines):
-                snapshot_layout(snapshot, self.text(text_line), left, top + line * self.label_height, dim)
+                self.label(snapshot, self.text(text_line), left, top + line * self.label_height, dim)
         leader, dotted, s = Gsk.Stroke.new(1), self.dotted_ends(), self.text_scale
         for key, label, left, top, _width, height in labels:
             # A label that moved 6 px or more from its line end has a leader in the line color from the end ring; when two or
@@ -18163,7 +18188,7 @@ class UsageChart(Gtk.Widget):
                 builder.move_to(right + 3.75, end)
                 builder.line_to(left - 2, middle)
                 snapshot.append_stroke(builder.to_path(), leader, alpha_color(colors[key]))
-            snapshot_layout(snapshot, self.text(label, 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL), left, top, text)
+            self.label(snapshot, self.text(label, 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL), left, top, text)
         s, row = self.text_scale, self.row_height()
         for key, name, value, left, top, width in entries:
             middle = top + (row - self.label_height) / 2
@@ -18171,11 +18196,11 @@ class UsageChart(Gtk.Widget):
             figure = self.text(value, 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL, mono=True)
             figure_width = figure.get_pixel_extents()[1].width
             end = left + width
-            snapshot_layout(snapshot, figure, end - figure_width, middle, text)
+            self.label(snapshot, figure, end - figure_width, middle, text)
             title = self.text(name, 11, Pango.Weight.BOLD if key == self.TOTAL else Pango.Weight.NORMAL)
             title.set_width(int(max(1, end - figure_width - 8 - (left + 14 * s)) * Pango.SCALE))
             title.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-            snapshot_layout(snapshot, title, left + 14 * s, middle, text)
+            self.label(snapshot, title, left + 14 * s, middle, text)
 
     def snapshot_tip(self, snapshot, palette, text, rule):
         tip = self.tip
@@ -18457,8 +18482,7 @@ class UsageWindow(ActivityWindow):
 {scope} .linked > button:checked:disabled {{ background: {palette['track']}; color: {palette['dim']}; filter: none; }}
 {scope} .linked > button:checked:disabled > * {{ filter: none; }}
 {scope} asb-usage-round:focus-visible {{ outline: none; }}
-{scope} asb-usage-chart {{ border-radius: 6px; }}
-{scope} asb-usage-chart:focus-visible {{ outline: 2px solid {palette['accent']}; outline-offset: -2px; }}
+{scope} asb-usage-chart {{ outline: none; }}
 {scope} .asb-usage-key {{ font-size: {12 * s:g}px; color: {palette['text']}; }}
 {scope} .asb-usage-check {{ min-height: {22 * s:g}px; font-size: {12 * s:g}px; color: {palette['text']}; border-spacing: {round(8 * s) + 1}px; }}
 {scope} .asb-usage-check:disabled {{ filter: none; opacity: 1; }}
