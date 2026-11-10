@@ -11290,6 +11290,10 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.message_time_name((hour, hour + 3_600_000), hour + 60_000), "16:00 so far")
         self.assertEqual(asb.message_time_name((hour, hour + 3_600_000), hour + 60_000, partial=False), "16:00")
         self.assertEqual(asb.message_time_name((day, next_day), next_day), "Sat, Oct 24")
+        # Round 7 (T3): the key line names a day without its weekday; an hour stays as it is.
+        self.assertEqual(asb.message_time_name((day, next_day), partial=False, weekday=False), "Oct 24")
+        self.assertEqual(asb.message_time_name((day, next_day), day, weekday=False), "Oct 24 so far")
+        self.assertEqual(asb.message_time_name((hour, hour + 3_600_000), partial=False, weekday=False), "16:00")
         reply = {"buckets": {"unit": "day", "startsMs": [day]}}
         self.assertEqual(asb.message_bucket_end(reply), next_day)
         self.assertIsInstance(asb.message_bucket_end(reply), int)

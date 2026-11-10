@@ -2943,12 +2943,14 @@ def message_bucket_partial(reply):
     return bool(starts) and now is not None and starts[-1] <= now < message_bucket_end(reply)
 
 
-def message_time_name(key, now_ms=None, partial=True):
-    """The name of a time thread (key = (start, end) of a count strip bucket): `16:00` for an hour, `Sat, Oct 24` for a day,
-    then ` so far` while the bucket holds now_ms (with partial)."""
+def message_time_name(key, now_ms=None, partial=True, weekday=True):
+    """The name of a time thread (key = (start, end) of a count strip bucket): `16:00` for an hour, `Sat, Oct 24` for a day
+    (`Oct 24` without weekday), then ` so far` while the bucket holds now_ms (with partial)."""
     start, end = key
-    weekday = ACTIVITY_WEEKDAYS[datetime.fromtimestamp(start / 1000).weekday()]
-    name = format_clock(start) if end - start == 3_600_000 else f"{weekday}, {format_day(start)}"
+    day = format_day(start)
+    if weekday:
+        day = f"{ACTIVITY_WEEKDAYS[datetime.fromtimestamp(start / 1000).weekday()]}, {day}"
+    name = format_clock(start) if end - start == 3_600_000 else day
     return name + (" so far" if partial and now_ms is not None and start <= now_ms < end else "")
 
 
@@ -13778,10 +13780,11 @@ class RoundTable(Gtk.Overlay):
         self.thread_memo = ((thread["kind"], thread["key"]), self.window.data, self.view, counts)
         return counts
 
-    def thread_name(self):
-        """The name of an open status or time thread in the key and the tooltips: the status, or the hour or day."""
+    def thread_name(self, weekday=True):
+        """The name of an open status or time thread in the key and the tooltips: the status, or the hour or day (the key names a
+        day without its weekday)."""
         thread = self.window.thread
-        return ACTIVITY_STATUS_LABELS[thread["key"]] if thread["kind"] == "status" else message_time_name(thread["key"], partial=False)
+        return ACTIVITY_STATUS_LABELS[thread["key"]] if thread["kind"] == "status" else message_time_name(thread["key"], partial=False, weekday=weekday)
 
     def layout_table(self, preserve_labels=False):
         width, height = self.canvas.get_width(), self.canvas.get_height()
@@ -14153,7 +14156,8 @@ class RoundTable(Gtk.Overlay):
 
     def layout_key(self, boxes):
         """The key line at the bottom left: chord widths with the smallest and the largest seated pair counts, a not-sent chord,
-        and an offline arc when a machine is offline. It shows only when it touches no pin, label, or arc."""
+        and an offline arc when a machine is offline. It shows only when it touches no pin, label, or arc; a key that does not fit
+        drops its last parts first (Offline, Some not sent, Not sent), and its accessible description names only the shown parts."""
         self.key = None
         self.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
         geometry, scale = self.geometry, self.window.text_scale
@@ -14170,7 +14174,7 @@ class RoundTable(Gtk.Overlay):
         middle = round(high / 4)
         text = (f"{format_count(low)} to {format_count(high)}" if low != high else format_count(high)) + (" messages" if high != 1 else " message")
         if status:
-            text += f" ({self.thread_name()})"
+            text += f" ({self.thread_name(weekday=False)})"
         rest = [("bad", "Not sent")]
         if any(chord["fails"] for chord in self.chords):
             rest.append(("mixed", "Some not sent"))
@@ -14178,9 +14182,9 @@ class RoundTable(Gtk.Overlay):
             rest.append(("offline", "Offline"))
         others = boxes + [(item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]) for entries in self.machine_items.values() for item in entries]
 
-        def build(scale_item):
+        def build(scale_item, rest=rest):
             """The key items and their box. scale_item names three counts of the width scale (the smallest, a quarter of the
-            largest, the largest) instead of two samples."""
+            largest, the largest) instead of two samples; rest is the other parts that it names."""
             x, items = 12, []
             if scale_item:
                 # `Line width:`, then three groups of a 16 px sample, 4 px, and its count, 10 px apart, then ` messages`.
@@ -14219,8 +14223,11 @@ class RoundTable(Gtk.Overlay):
         # The width scale is a square root, so the key also names a middle count; a status thread keeps its two accent samples (its
         # scale is linear up to 7), and so does a key whose middle count is not between its ends or whose longer item does not fit.
         items, box, height, shown, words = build(True) if not status and low < middle < high else (None, None, 0, False, None)
-        if not shown:
-            items, box, height, shown, words = build(False)
+        # Then the two-sample form with one part less each time, from the end (Offline, then Some not sent, then Not sent).
+        for count in range(len(rest), -1, -1):
+            if shown:
+                break
+            items, box, height, shown, words = build(False, rest[:count])
         # A status thread draws the two width samples in the accent at its smallest and largest lit widths.
         widths = (status_chord_width(low, high), status_chord_width(high, high)) if status else (1.5, 8.5)
         self.key = {"items": items, "box": box, "middle": box[1] + height / 2, "shown": shown, "widths": widths, "accent": bool(status)}
