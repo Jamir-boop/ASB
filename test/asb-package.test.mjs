@@ -776,11 +776,17 @@ test('panel uninstall keeps linked folders and their outside empty icons folder'
 
 test('build metadata is shipped and git archives substitute its commit and time', async (t) => {
   assert.ok(RUNTIME_FILES.includes('src/build.txt'));
-  assert.equal(await readFile(new URL('../src/build.txt', import.meta.url), 'utf8'), '$Format:%H %ct$\n');
+  const source = await readFile(new URL('../src/build.txt', import.meta.url), 'utf8');
   assert.ok((await readFile(new URL('../.gitattributes', import.meta.url), 'utf8')).split('\n').includes('src/build.txt export-subst'));
   const cwd = fileURLToPath(new URL('..', import.meta.url));
   try { execFileSync('git', ['rev-parse', '--git-dir'], { cwd, stdio: 'pipe' }); }
-  catch { t.skip('Git archive check skipped outside a git checkout.'); return; }
+  catch {
+    // A git archive export (such as a source download from GitHub) already has the commit and time.
+    assert.match(source, /^(\$Format:%H %ct\$|[0-9a-f]{40} [0-9]{1,12})\n$/);
+    t.skip('Git archive check skipped outside a git checkout.');
+    return;
+  }
+  assert.equal(source, '$Format:%H %ct$\n');
   const archive = execFileSync('git', ['archive', 'HEAD', 'src/build.txt'], { cwd });
   const text = execFileSync('tar', ['-xOf', '-', 'src/build.txt'], { input: archive, encoding: 'utf8' });
   assert.match(text, /^[0-9a-f]{40} [0-9]{1,12}\n$/);
