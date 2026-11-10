@@ -16409,11 +16409,22 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
 
     def test_W7_U_S3_the_ranked_head_has_an_arrow(self):
         window = self.window(period="all")
-        # The x of the heads and of the first row's cells, by column, before this change (948 x 760).
-        columns = {"cost": [24, 232, 406, 541, 620, 800], "tokens": [24, 230, 401, 533, 610, 790]}
         right = lambda widget: widget.compute_bounds(window)[1].get_x() + widget.compute_bounds(window)[1].get_width()  # noqa: E731
+
+        def xs(grid, row):
+            cells = sorted(((grid.query_child(child)[0], child) for child in self.children(grid) if grid.query_child(child)[1] == row), key=lambda item: item[0])
+            return [round(cell.compute_bounds(window)[1].get_x()) for _column, cell in cells]
         for metric, ranked in (("cost", "Cost"), ("tokens", "Tokens")):
             window.metric_buttons[metric].set_active(True)
+            self.drain(.2)
+            # The x of the heads and of the first row's cells, by column, as with the old 12 px arrow icon: an empty 12 px arrow slot.
+            arrows = [self.children(self.children(self.ranked_head(grid))[0])[0] for grid in (window.models, window.sessions)]
+            for arrow in arrows:
+                arrow.set_label("")
+            self.drain(.2)
+            columns = {grid: [xs(grid, row) for row in (0, 1)] for grid in (window.models, window.sessions)}
+            for arrow in arrows:
+                arrow.set_label("↓")
             self.drain(.2)
             for grid in (window.models, window.sessions):
                 heads = [child for child in self.children(grid) if child.has_css_class("asb-usage-head")]
@@ -16428,10 +16439,9 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                 head = self.ranked_head(grid)
                 self.assertEqual(head.get_tooltip_text(), f"Ranked by {metric}")
                 self.assert_accessible_label(head, f"{ranked}, sorted from high to low")
+                self.assertEqual(len(columns[grid][0]), 6)
                 for row in (0, 1):
-                    cells = sorted(((grid.query_child(child)[0], child) for child in self.children(grid) if grid.query_child(child)[1] == row),
-                                   key=lambda item: item[0])
-                    self.assertEqual([round(cell.compute_bounds(window)[1].get_x()) for _column, cell in cells], columns[metric], (metric, row))
+                    self.assertEqual(xs(grid, row), columns[grid][row], (metric, row))
                 # The head text stays right-aligned with its numbers: the head ends where the number cell ends, its text at the end.
                 number = next(child for child in self.children(grid) if grid.query_child(child)[:2] == (3, 1))
                 self.assertEqual(right(head), right(number))
