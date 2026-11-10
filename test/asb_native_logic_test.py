@@ -1669,6 +1669,9 @@ class UsageLogicChecks(unittest.TestCase):
         self.assertEqual([text for _index, text, _left in wide], ["Sun 19:00", "22:00", "Mon 01:00", "04:00", "07:00", "10:00", "13:00", "16:00"])
         narrow = asb.usage_axis_labels(buckets, [index * 352 / 23 for index in range(24)], 352, 3, measure, ends=True)
         self.assertEqual([text for _index, text, _left in narrow], ["Sun 17:00", "Mon 01:00", "07:00", "10:00", "16:00"])
+        # A wide font: the narrow chart keeps its first label, and the next tick that fits names Monday.
+        wide_font = asb.usage_axis_labels(buckets, [index * 352 / 23 for index in range(24)], 352, 3, lambda text: 12 * len(text), ends=True)
+        self.assertEqual([text for _index, text, _left in wide_font], ["Sun 17:00", "Mon 07:00", "16:00"])
         # U7c: 16 px stand beside each label with a weekday (and the last label); 4 px between regular labels.
         for labels in (wide, narrow):
             for (index, text, left), (following, after, start) in zip(labels, labels[1:]):

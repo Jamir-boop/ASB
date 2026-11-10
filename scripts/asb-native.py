@@ -2318,26 +2318,31 @@ def usage_hour_text(starts, index, weekday):
 def usage_hour_labels(starts, centers, chart_width, step, measure, ends, end_gap):
     """The x labels of an hourly chart, as usage_axis_labels: the ticks are every step-th point from the last (and the first in
     the narrow chart), and a label with a weekday (usage_hour_weekdays) or at an end keeps end_gap px from its neighbors: it
-    stays, and a regular neighbor that comes nearer is dropped. Regular labels keep 4 px between them."""
+    stays, and a regular neighbor that comes nearer is dropped. Regular labels keep 4 px between them. A weekday label that does
+    not fit gives its tick up, and the weekday names are chosen again over the other ticks: the next tick names the new day."""
     last = len(centers) - 1
     ticks = sorted(set(range(last, -1, -step)) | ({0} if ends else set()))
-    named = usage_hour_weekdays(starts, ticks)
-    texts = {index: usage_hour_text(starts, index, index in named) for index in ticks}
+    while True:
+        named = usage_hour_weekdays(starts, ticks)
+        texts = {index: usage_hour_text(starts, index, index in named) for index in ticks}
 
-    def box(index):
-        width = measure(texts[index])
-        x = centers[index] - (width / 2 if 0 < index < last or not last else width if index == last else 0)
-        x = min(max(x, 0), chart_width - width)
-        return x, x + width
-    strong = [index for index in [last] + sorted(named - {last}, reverse=True) + ([0] if ends else []) if index in texts]
-    kept = {}
-    # The strong labels first (the last, the weekdays from the right, then a narrow chart's first), then the regular ones from the right.
-    for index in list(dict.fromkeys(strong)) + [index for index in reversed(ticks) if index not in strong]:
-        left, right = box(index)
-        if all(right + (end_gap if index in strong or other in strong else 4) <= kept[other][0] or
-               kept[other][1] + (end_gap if index in strong or other in strong else 4) <= left for other in kept):
-            kept[index] = (left, right)
-    return [(index, texts[index], kept[index][0]) for index in sorted(kept)]
+        def box(index):
+            width = measure(texts[index])
+            x = centers[index] - (width / 2 if 0 < index < last or not last else width if index == last else 0)
+            x = min(max(x, 0), chart_width - width)
+            return x, x + width
+        strong = [index for index in [last] + ([0] if ends else []) + sorted(named - {last}, reverse=True) if index in texts]
+        kept = {}
+        # The strong labels first (the last, a narrow chart's first, then the weekdays from the right), then the regular ones from the right.
+        for index in list(dict.fromkeys(strong)) + [index for index in reversed(ticks) if index not in strong]:
+            left, right = box(index)
+            if all(right + (end_gap if index in strong or other in strong else 4) <= kept[other][0] or
+                   kept[other][1] + (end_gap if index in strong or other in strong else 4) <= left for other in kept):
+                kept[index] = (left, right)
+        dropped = named - set(kept)
+        if not dropped:
+            return [(index, texts[index], kept[index][0]) for index in sorted(kept)]
+        ticks = [index for index in ticks if index not in dropped]
 
 
 def activity_palette(colors):
