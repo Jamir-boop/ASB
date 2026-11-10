@@ -15729,6 +15729,10 @@ class MessagesWindow(ActivityWindow):
         content.append(Gtk.Image(icon_name=ACTIVITY_STATUS_ICONS["not-sent"], pixel_size=round(14 * scale), valign=Gtk.Align.CENTER))
         self.not_sent_label = Gtk.Label(valign=Gtk.Align.BASELINE_FILL)
         content.append(self.not_sent_label)
+        # The dim row chevron after the text: the count opens a thread, as each other opener of the ledger.
+        chevron = Gtk.Image(icon_name="go-next-symbolic", pixel_size=round(12 * scale), valign=Gtk.Align.CENTER)
+        chevron.add_css_class("asb-dim")
+        content.append(chevron)
         self.not_sent = Gtk.Button(has_frame=False, child=content, valign=Gtk.Align.BASELINE_FILL, visible=False)
         self.not_sent.add_css_class("asb-msg-notsent")
         self.not_sent.add_css_class("asb-msg-ledger-row")
@@ -15780,6 +15784,7 @@ class MessagesWindow(ActivityWindow):
         self.not_sent.update_property([Gtk.AccessibleProperty.LABEL], [tip])
         self.not_sent.get_child().set_spacing(round(4 * scale))
         self.not_sent.get_child().get_first_child().set_pixel_size(round(14 * scale))
+        self.not_sent.get_child().get_last_child().set_pixel_size(round(12 * scale))
         self.not_sent.set_visible(failed > 0)
         name = f"{format_count(view['total'])} message{'' if view['total'] == 1 else 's'}"
         self.total_row.update_property([Gtk.AccessibleProperty.LABEL], [f"{name}, {format_count(failed)} not sent" if failed else name])

@@ -19430,6 +19430,31 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 window.close_thread(); self.drain(.3)
             window.destroy()
 
+    def test_W8_S2_the_not_sent_count_ends_with_the_row_chevron(self):
+        for size, large in (((968, 760), False), ((480, 760), False), ((968, 760), True)):
+            if large:
+                self.large_text()
+            window = self.window(size, period="24h")
+            scale, palette = window.text_scale, window.palette
+            self.assertEqual(scale, 1.5 if large else 1)
+            self.assertTrue(window.not_sent.get_mapped(), size)
+            icon, text, chevron = UsageWindowCheck.children(window.not_sent.get_child())
+            self.assertEqual((icon.get_icon_name(), icon.get_pixel_size()), ("action-unavailable-symbolic", round(14 * scale)))
+            self.assertIs(text, window.not_sent_label)
+            self.assertEqual(text.get_label(), "4 not sent")
+            self.assertEqual((chevron.get_icon_name(), chevron.get_pixel_size()), ("go-next-symbolic", round(12 * scale)))
+            self.assertTrue(chevron.has_css_class("asb-dim"))
+            right = text.compute_bounds(window.not_sent)[1]
+            self.assertEqual(chevron.compute_bounds(window.not_sent)[1].get_x() - right.get_x() - right.get_width(), round(4 * scale), size)
+            self.assertEqual((asb.hex_color(text.get_color()), asb.hex_color(icon.get_color())), (palette["bad"], palette["bad"]))
+            self.assertEqual(asb.hex_color(chevron.get_color()), palette["dim"])
+            tip = "Show the 4 messages that were not sent"
+            self.assertEqual(window.not_sent.get_tooltip_text(), tip)
+            self.assert_accessible_label(window.not_sent, tip)
+            window.not_sent.emit("clicked"); self.drain(.3)
+            self.assertEqual((window.thread["kind"], window.thread["key"]), ("status", "not-sent"))
+            window.destroy()
+
     def icon_contrast(self, window, button):
         """The largest channel difference between a pixel of the button in the rendered window and its fill at the middle of its left side."""
         data, stride = self.pixels(window)
