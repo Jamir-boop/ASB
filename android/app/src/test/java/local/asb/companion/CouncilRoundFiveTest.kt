@@ -244,7 +244,7 @@ class CouncilRoundFiveTest {
     }
 
     @Test fun eachSessionRowReadsAsOneSentence() {
-        assertEquals("Fix the build, Codex, Desk, $12.00, 25.0% of the total", sessionSpoken("Fix the build", "Codex", "Desk", "$12.00", .25))
-        assertEquals("Other sessions (10), 1.2M, 40.0% of the total", sessionSpoken("Other sessions (10)", null, null, "1.2M", .4))
+        assertEquals("Fix the build, Codex, Desk, $12.00, 25.0% of the cost", sessionSpoken("Fix the build", "Codex", "Desk", "$12.00", .25, Metric.COST))
+        assertEquals("Other sessions (10), 1.2M, 40.0% of the tokens", sessionSpoken("Other sessions (10)", null, null, "1.2M", .4, Metric.TOKENS))
     }
 }

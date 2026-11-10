@@ -250,10 +250,12 @@ fun currentBucketName(unit: String): String = when (unit) {
 }
 
 /**
- * The tooltip title of a chart bucket: the long name, or [first] (the partial first bucket). The current (last) bucket names its
- * running part at [nowMs], as the PC header: `This week so far · day 1 of 7` (without [nowMs]: `This week so far`).
+ * The tooltip title of a chart bucket: the long name (an hour starts with its weekday: `Sun 22:00`), or [first] (the partial first
+ * bucket). The current (last) bucket names its running part at [nowMs], as the PC header: `This week so far · day 1 of 7`
+ * (without [nowMs]: `This week so far`).
  */
 fun tooltipTitle(startMs: Long, unit: String, last: Boolean, first: String? = null, nowMs: Long? = null): String = when {
+    !last && unit == "hour" -> first ?: hourText(startMs, weekday = true)
     !last -> first ?: bucketLabel(startMs, unit, last, short = false)
     nowMs == null -> currentBucketName(unit)
     else -> "${currentBucketName(unit)} · ${bucketProgress(unit, startMs, nowMs)}"
@@ -265,10 +267,11 @@ fun tooltipTitle(startMs: Long, unit: String, last: Boolean, first: String? = nu
  * right. Each label names its bucket, the last one too. Month labels are measured with the year, then show it on the leftmost
  * label and where the year changes. A partial first bucket has the label [first] (`From Jul 16`), which always shows when it
  * fits beside the last label; labels between them make room for it. A regular label keeps [endGap] (not [gap]) before an end
- * label: the last label, and the kept [first] label.
+ * label: the last label, and the kept [first] label. An hourly chart has the labels of [hourAxisLabels].
  */
 fun axisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Float, gap: Float, measure: (String) -> Float,
     first: String? = null, endGap: Float = gap): List<AxisLabel> {
+    if (unit == "hour") return hourAxisLabels(starts, centers, width, gap, measure, endGap)
     val n = centers.size
     val text = { i: Int -> if (i == 0 && first != null) first else bucketLabel(starts.getOrElse(i) { 0L }, unit, last = false, short = true, first = true) }
     // The left x of a label: the last label ends at the right edge of the chart, the others are centered inside it.
@@ -348,4 +351,48 @@ fun compactStateText(row: Thread, nowMs: Long): String {
     val left = limitLeft(row, nowMs)
     val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
     return if (left > 0) "Resets in ${limitText(left)}" else cardStateLabel(row) + if (working.isNotEmpty()) " · $working" else ""
+}
+
+/**
+ * Port of usage_hour_weekdays: the tick indexes (in order) whose hour label names its weekday: the first when its bucket is on an
+ * earlier local day than the last bucket, and each one on a later local day than the tick before it.
+ */
+fun hourWeekdays(starts: List<Long>, ticks: List<Int>): Set<Int> {
+    val day = { index: Int -> local(starts.getOrElse(index) { 0L }).toLocalDate() }
+    val named = mutableSetOf<Int>()
+    if (ticks.isNotEmpty() && day(ticks[0]) < day(starts.lastIndex)) named += ticks[0]
+    ticks.zipWithNext { previous, index -> if (day(index) > day(previous)) named += index }
+    return named
+}
+
+/** An hour label: the clock, after its weekday when [weekday] (`Mon 01:00`). */
+fun hourText(startMs: Long, weekday: Boolean): String =
+    if (weekday) "${WEEKDAY.format(local(startMs))} ${formatTime(startMs)}" else formatTime(startMs)
+
+/**
+ * Port of usage_hour_labels: the x labels of an hourly chart at the [chartLabelShown] ticks. The last label and each label with
+ * a weekday ([hourWeekdays]) are strong: they are placed first and keep [endGap] from their neighbors, and a regular neighbor
+ * that comes nearer is dropped; regular labels keep [gap]. The places are those of [axisLabels].
+ */
+fun hourAxisLabels(starts: List<Long>, centers: List<Float>, width: Float, gap: Float, measure: (String) -> Float,
+    endGap: Float = gap): List<AxisLabel> {
+    val n = centers.size
+    val ticks = (0 until n).filter { chartLabelShown(n, "hour", it) }
+    val named = hourWeekdays(starts, ticks)
+    val texts = ticks.associateWith { hourText(starts.getOrElse(it) { 0L }, it in named) }
+    val box = { i: Int ->
+        val w = measure(texts.getValue(i))
+        val left = if (i == n - 1) width - w else centers[i].coerceIn(w / 2, maxOf(w / 2, width - w / 2)) - w / 2
+        left to left + w
+    }
+    val strong = (listOf(n - 1) + named.sortedDescending()).distinct().filter { it in texts }
+    val kept = mutableMapOf<Int, Pair<Float, Float>>()
+    for (i in strong + ticks.reversed().filter { it !in strong }) {
+        val (left, right) = box(i)
+        if (kept.all { (other, place) ->
+                val room = if (i in strong || other in strong) endGap else gap
+                right + room <= place.first || place.second + room <= left
+            }) kept[i] = left to right
+    }
+    return kept.keys.sorted().map { AxisLabel(it, texts.getValue(it)) }
 }

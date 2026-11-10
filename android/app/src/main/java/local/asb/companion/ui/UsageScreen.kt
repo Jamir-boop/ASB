@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -82,6 +83,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import local.asb.companion.R
+import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.Metric
 import local.asb.companion.data.RoundArc
@@ -99,6 +101,7 @@ import local.asb.companion.data.makerRows
 import local.asb.companion.data.machineRows
 import local.asb.companion.data.modelRows
 import local.asb.companion.data.SessionsView
+import local.asb.companion.data.USAGE_SESSION_ROWS
 import local.asb.companion.data.usageAxis
 import local.asb.companion.data.usageCostBasis
 import local.asb.companion.data.usageSessions
@@ -228,11 +231,11 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         RoundChart(reply, totals, metric, colors)
         Spacer(Modifier.height(16.dp))
         SectionTitle("Machines", colors)
-        for (row in machineRows(totals, metric)) {
+        for (row in machineRows(totals, metric, reply)) {
             val machine = machines[row.key]
             UsageRowView(row, metric, colors, sub = machine?.let(::machineStateLine),
-                spoken = listOf(machine?.name.orEmpty(), machine?.let(::machineStateLine).orEmpty(), formatValue(row.value, metric),
-                    formatShare(row.share), appSplit(row, metric)).filter { it.isNotEmpty() }.joinToString(", "), bar = {
+                spoken = listOf(machine?.name.orEmpty(), machine?.let(::machineStateLine).orEmpty(), rowWord(row) ?: formatValue(row.value, metric),
+                    if (rowWord(row) == null) formatShare(row.share) else "", appSplit(row, metric)).filter { it.isNotEmpty() }.joinToString(", "), bar = {
                 val segments = row.segments.filter { it.second > 0 }
                 Row(Modifier.fillMaxWidth(row.share.toFloat().coerceIn(0f, 1f)).height(10.dp), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
                     for ((app, value) in segments) Box(Modifier.weight(value.toFloat()).height(10.dp)
@@ -294,10 +297,12 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
         Spacer(Modifier.height(28.dp))
         SectionTitle("Models", colors)
         ModelsTable(totals, metric, colors)
-        usageSessions(reply, totals, metric)?.let { sessions ->
+        // The rows that the rest row button added stay over a live refresh, not over a new period, metric, or machine filter.
+        var extra by remember(sessionScope(reply.period, metric, totals.machineIds)) { mutableIntStateOf(0) }
+        usageSessions(reply, totals, metric, USAGE_SESSION_ROWS + extra)?.let { sessions ->
             Spacer(Modifier.height(28.dp))
             SectionTitle("Sessions", colors)
-            SessionsTable(sessions, reply.machines.associate { it.machineId to it.name }, metric, colors)
+            SessionsTable(sessions, machines, hues, metric, colors) { extra += USAGE_SESSION_ROWS }
         }
     }
 }
@@ -321,10 +326,11 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
                 if (start < size.width) drawRoundRect(colors.track, Offset(start, 0f), Size(size.width - start, size.height),
                     CornerRadius(2.dp.toPx()))
             }) { bar() }
-            Text(if (row.unpriced) formatCost(null) else formatValue(row.value, metric), fontSize = 13.sp, style = figures,
-                color = if (row.unpriced) colors.muted else colors.text, textAlign = TextAlign.End,
+            val word = rowWord(row)
+            Text(word ?: formatValue(row.value, metric), fontSize = 13.sp, style = figures,
+                color = if (word != null) colors.muted else colors.text, textAlign = TextAlign.End,
                 maxLines = 1, modifier = Modifier.width(84.dp))
-            Text(if (row.unpriced) "" else formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
+            Text(if (word != null) "" else formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
                 modifier = Modifier.width(44.dp))
         }
         HorizontalDivider(thickness = 1.dp, color = colors.rule)
@@ -571,21 +577,44 @@ private fun TypeBlock(title: String, shares: List<TypeShare>, format: (Double) -
     }
 }
 
+/** The measure columns of Models and Sessions in order: the ranked measure first (Cost, then Tokens in Cost; Tokens, then Cost in Tokens). */
+internal fun measureColumns(metric: Metric): List<String> = if (metric == Metric.COST) listOf("Cost", "Tokens") else listOf("Tokens", "Cost")
+
+/** The TalkBack name of the ranked head: `Tokens, sorted from high to low`. */
+internal fun rankedHeadName(metric: Metric): String = "${measureColumns(metric)[0]}, sorted from high to low"
+
+private fun measureWidth(title: String) = if (title == "Cost") 80.dp else 64.dp
+
 @Composable
-private fun TableHeader(first: String, colors: ActivityColors) {
+private fun TableHeader(first: String, metric: Metric, colors: ActivityColors) {
     val header = TextStyle(fontSize = 11.sp, color = colors.muted)
     Row(Modifier.fillMaxWidth().height(30.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(first, style = header, modifier = Modifier.weight(1f))
         Text("App", style = header, modifier = Modifier.width(32.dp))
-        Text("Cost", style = header, textAlign = TextAlign.End, modifier = Modifier.width(80.dp))
-        Text("Tokens", style = header, textAlign = TextAlign.End, modifier = Modifier.width(64.dp))
+        val (ranked, other) = measureColumns(metric)
+        // The ranked head: the text color, `↓` in a 12 dp column 4 dp before the right-aligned text.
+        Row(Modifier.width(measureWidth(ranked)).clearAndSetSemantics { contentDescription = rankedHeadName(metric) },
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+            Text("↓", style = header.copy(color = colors.text), textAlign = TextAlign.End, modifier = Modifier.width(12.dp))
+            Text(ranked, style = header.copy(color = colors.text), maxLines = 1)
+        }
+        Text(other, style = header, textAlign = TextAlign.End, modifier = Modifier.width(measureWidth(other)))
     }
     HorizontalDivider(thickness = 1.dp, color = colors.rule)
 }
 
+/** The Cost and Tokens cells of a Models or Sessions row in [measureColumns] order. */
+@Composable
+private fun MeasureCells(metric: Metric, cost: String, costInk: Color, tokens: String, tokensInk: Color) {
+    for (title in measureColumns(metric)) {
+        Text(if (title == "Cost") cost else tokens, fontSize = 12.sp, style = figures, color = if (title == "Cost") costInk else tokensInk,
+            textAlign = TextAlign.End, maxLines = 1, modifier = Modifier.width(measureWidth(title)))
+    }
+}
+
 @Composable
 private fun ModelsTable(totals: UsageTotals, metric: Metric, colors: ActivityColors) {
-    TableHeader("Model", colors)
+    TableHeader("Model", metric, colors)
     for (row in modelRows(totals, metric)) {
         key(row.model, row.app) {
             Row(Modifier.fillMaxWidth().height(34.dp).semantics(mergeDescendants = true) {},
@@ -595,51 +624,87 @@ private fun ModelsTable(totals: UsageTotals, metric: Metric, colors: ActivityCol
                 Box(Modifier.width(32.dp)) {
                     Icon(painterResource(appMark(row.app)), contentDescription = appLabel(row.app), tint = colors.text, modifier = Modifier.size(14.dp))
                 }
-                Text(formatCost(row.cost), fontSize = 12.sp, style = figures,
-                    color = if (row.cost == null) colors.muted else colors.text, textAlign = TextAlign.End, maxLines = 1,
-                    modifier = Modifier.width(80.dp))
-                Text(formatTokens(row.tokens), fontSize = 12.sp, style = figures, color = colors.text, textAlign = TextAlign.End,
-                    maxLines = 1, modifier = Modifier.width(64.dp))
+                MeasureCells(metric, formatCost(row.cost), if (row.cost == null) colors.muted else colors.text, formatTokens(row.tokens), colors.text)
             }
             HorizontalDivider(thickness = 1.dp, color = colors.rule)
         }
     }
 }
 
-/** The TalkBack text of a Sessions row: `<title>, <app>, <machine>, <value>, <percent> of the total`; the rest row has no app. */
-internal fun sessionSpoken(title: String, app: String?, machine: String?, value: String, share: Double): String =
-    (listOf(title) + listOfNotNull(app, machine) + listOf(value, "${formatShare(share)} of the total")).joinToString(", ")
+/**
+ * The TalkBack text of a Sessions row: `<title>, <app>, <machine>, <value>, <percent> of the cost` (`of the tokens` in Tokens);
+ * the rest row has no app and no machine.
+ */
+internal fun sessionSpoken(title: String, app: String?, machine: String?, value: String, share: Double, metric: Metric): String =
+    (listOf(title) + listOfNotNull(app, machine) + listOf(value, "${formatShare(share)} of the ${if (metric == Metric.COST) "cost" else "tokens"}"))
+        .joinToString(", ")
+
+/** The machine of a Sessions row sentence: its name, with ` (offline)` for an offline machine. */
+internal fun sessionMachine(name: String, offline: Boolean): String = name + if (offline) " (offline)" else ""
+
+/** The scope of the rows that the rest row button added: they reset when the period, the metric, or the machine chips change. */
+internal fun sessionScope(period: String, metric: Metric, on: List<String>): List<Any> = listOf(period, metric, on)
+
+/** The TalkBack name of the rest row button: `Show 8 more sessions` (the count of the next step). */
+internal fun moreSessionsLabel(next: Int): String = "Show $next more session${if (next == 1) "" else "s"}"
 
 /** The Sessions table, in the Models columns: the top sessions, then the muted rest row; each row is one TalkBack node. */
 @Composable
-private fun SessionsTable(sessions: SessionsView, names: Map<String, String>, metric: Metric, colors: ActivityColors) {
-    TableHeader("Session", colors)
+private fun SessionsTable(sessions: SessionsView, machines: Map<String, ActivityMachine>, hues: Map<String, Color>, metric: Metric,
+    colors: ActivityColors, onMore: () -> Unit) {
+    TableHeader("Session", metric, colors)
     for (row in sessions.rows) {
         key(row.machineId, row.app, row.id) {
-            SessionLine(row.title, row.app, if (row.unpriced && row.cost == 0.0) null else row.cost, row.tokens, false, colors,
-                sessionSpoken(row.title, appLabel(row.app), names[row.machineId].orEmpty(), formatValue(row.value, metric), row.share))
+            val machine = machines[row.machineId]
+            SessionLine(row.title, row.app, (hues[row.machineId] ?: colors.text) to machineOffline(machine),
+                if (row.unpriced && row.cost == 0.0) null else row.cost, row.tokens, metric, false, colors,
+                sessionSpoken(row.title, appLabel(row.app), sessionMachine(machine?.name.orEmpty(), machineOffline(machine)),
+                    formatValue(row.value, metric), row.share, metric))
         }
     }
     sessions.other?.let {
-        SessionLine(it.label, null, it.cost, it.tokens, true, colors, sessionSpoken(it.label, null, null, formatValue(it.value, metric), it.share))
+        SessionLine(it.label, null, null, it.cost, it.tokens, metric, true, colors,
+            sessionSpoken(it.label, null, null, formatValue(it.value, metric), it.share, metric),
+            more = if (it.next > 0) moreSessionsLabel(it.next) else null, onMore = onMore)
     }
 }
 
+/**
+ * One Sessions row: the machine [dot] (hue, offline) 6 dp before the title. With [more], the name of the rest row is a flat button
+ * (the label, 6 dp, a muted 12 sp `▾`), at least 48 dp high, with the TalkBack name [more]; the cells then read the row sentence.
+ */
 @Composable
-private fun SessionLine(title: String, app: String?, cost: Double?, tokens: Long, rest: Boolean, colors: ActivityColors, spoken: String) {
+private fun SessionLine(title: String, app: String?, dot: Pair<Color, Boolean>?, cost: Double?, tokens: Long, metric: Metric, rest: Boolean,
+    colors: ActivityColors, spoken: String, more: String? = null, onMore: () -> Unit = {}) {
     val ink = if (rest) colors.muted else colors.text
-    Row(Modifier.fillMaxWidth().height(34.dp).clearAndSetSemantics { contentDescription = spoken },
+    Row(Modifier.fillMaxWidth().heightIn(min = 34.dp).then(if (more == null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier),
         horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        // A title is a name, so it is cut in the middle.
-        Text(title, fontSize = 12.sp, color = ink, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = Modifier.weight(1f))
-        Box(Modifier.width(32.dp)) {
-            if (app != null) Icon(painterResource(appMark(app)), contentDescription = appLabel(app), tint = colors.text, modifier = Modifier.size(14.dp))
+        Box(Modifier.weight(1f)) {
+            Row(if (more == null) Modifier else Modifier.heightIn(min = 48.dp).semantics { contentDescription = more }
+                .clickable(role = Role.Button, onClick = onMore).padding(end = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                dot?.let { (hue, offline) -> MachineDot(hue, offline) }
+                // A title is a name, so it is cut in the middle.
+                Text(title, fontSize = 12.sp, color = ink, maxLines = 1, overflow = TextOverflow.MiddleEllipsis,
+                    modifier = Modifier.weight(1f, fill = false).clearAndSetSemantics {})
+                if (more != null) Text("\u25be", fontSize = 12.sp, color = colors.muted, modifier = Modifier.clearAndSetSemantics {})
+            }
         }
-        // An unpriced session with no priced part shows Unpriced (null), as an unpriced model.
-        Text(formatCost(cost), fontSize = 12.sp, style = figures, color = if (cost == null) colors.muted else ink, textAlign = TextAlign.End,
-            maxLines = 1, modifier = Modifier.width(80.dp))
-        Text(formatTokens(tokens), fontSize = 12.sp, style = figures, color = ink, textAlign = TextAlign.End,
-            maxLines = 1, modifier = Modifier.width(64.dp))
+        Row(if (more == null) Modifier else Modifier.clearAndSetSemantics { contentDescription = spoken },
+            horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(32.dp)) {
+                if (app != null) Icon(painterResource(appMark(app)), contentDescription = appLabel(app), tint = colors.text, modifier = Modifier.size(14.dp))
+            }
+            // An unpriced session with no priced part shows Unpriced (null), as an unpriced model.
+            MeasureCells(metric, formatCost(cost), if (cost == null) colors.muted else ink, formatTokens(tokens), ink)
+        }
     }
     HorizontalDivider(thickness = 1.dp, color = colors.rule)
+}
+
+/** The muted word of an overview row in place of its value: `No data`, or `Unpriced` (port of usage_row_value); null for a number. */
+internal fun rowWord(row: UsageRow): String? = when {
+    row.noData -> "No data"
+    row.unpriced -> formatCost(null)
+    else -> null
 }

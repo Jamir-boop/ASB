@@ -7,6 +7,7 @@ import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.log10
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlinx.serialization.Serializable
@@ -471,8 +472,10 @@ fun arrivals(previous: Set<String>?, messages: List<ActivityMessage>, nowMs: Lon
 
 enum class Metric { COST, TOKENS }
 
-data class Amount(val cost: Double = 0.0, val tokens: Long = 0) {
-    operator fun plus(other: Amount) = Amount(cost + other.cost, tokens + other.tokens)
+/** [unpricedTokens]: the tokens of the records with no price; [priced]: a record has a price (for `Unpriced` rows). */
+data class Amount(val cost: Double = 0.0, val tokens: Long = 0, val unpricedTokens: Long = 0, val priced: Boolean = false) {
+    operator fun plus(other: Amount) = Amount(cost + other.cost, tokens + other.tokens, unpricedTokens + other.unpricedTokens,
+        priced || other.priced)
     fun value(metric: Metric): Double = if (metric == Metric.COST) cost else tokens.toDouble()
 }
 
@@ -531,7 +534,8 @@ fun usageTotals(reply: ActivityUsage, off: Set<String> = emptySet()): UsageTotal
     val unpricedModels = mutableListOf<String>()
     for (record in records) {
         val app = usageAppKey(record.app)
-        val amount = Amount(record.cost?.total ?: 0.0, record.tokens.processed)
+        val amount = Amount(record.cost?.total ?: 0.0, record.tokens.processed, if (record.cost == null) record.tokens.processed else 0,
+            record.cost != null)
         byMachine[record.machineId] = byMachine[record.machineId].orZero() + amount
         val machineApps = byMachineApp.getValue(record.machineId)
         machineApps[app] = machineApps[app].orZero() + amount
@@ -606,24 +610,36 @@ fun toggleMachine(machineIds: List<String>, off: Set<String>, id: String): Set<S
     else -> off + id
 }
 
-data class UsageRow(val key: String, val value: Double, val share: Double, val segments: List<Pair<String, Double>>, val unpriced: Boolean = false)
+/** [unpriced]: a Cost row whose tokens all have no price (`Unpriced`); [noData]: a machine with no report in the period (`No data`). */
+data class UsageRow(val key: String, val value: Double, val share: Double, val segments: List<Pair<String, Double>>, val unpriced: Boolean = false,
+    val noData: Boolean = false)
 
-/** One row per machine that is on, with its app segments. */
-fun machineRows(totals: UsageTotals, metric: Metric): List<UsageRow> {
+/**
+ * One row per machine that is on, with its app segments. As usage_row_value: an offline machine of [reply] with no tokens whose
+ * last report is before the first bucket has [UsageRow.noData]; in Cost, a machine whose tokens all have no price is unpriced.
+ */
+fun machineRows(totals: UsageTotals, metric: Metric, reply: ActivityUsage? = null): List<UsageRow> {
     val total = if (metric == Metric.COST) totals.cost else totals.tokens.toDouble()
+    val machines = reply?.machines.orEmpty().associateBy { it.machineId }
+    val first = reply?.buckets?.startsMs?.firstOrNull()
     return totals.machineIds.map { id ->
-        val value = totals.byMachine[id].orZero().value(metric)
+        val amount = totals.byMachine[id].orZero()
+        val value = amount.value(metric)
+        val machine = machines[id]
+        val noData = machine != null && first != null && machine.state !in setOf("local", "online") && amount.tokens == 0L &&
+            machine.lastReportAtMs < first
         UsageRow(id, value, if (total > 0) value / total else 0.0,
-            totals.apps.map { it to totals.byMachineApp[id]?.get(it).orZero().value(metric) })
+            totals.apps.map { it to totals.byMachineApp[id]?.get(it).orZero().value(metric) }, !noData && amount.allUnpriced(metric), noData)
     }
 }
 
-/** One row per app with tokens. */
+/** One row per app with tokens; in Cost, an app whose tokens all have no price is unpriced. */
 fun appRows(totals: UsageTotals, metric: Metric): List<UsageRow> {
     val total = if (metric == Metric.COST) totals.cost else totals.tokens.toDouble()
     return totals.apps.filter { totals.byApp[it].orZero().tokens > 0 }.map { app ->
-        val value = totals.byApp[app].orZero().value(metric)
-        UsageRow(app, value, if (total > 0) value / total else 0.0, listOf(app to value))
+        val amount = totals.byApp[app].orZero()
+        val value = amount.value(metric)
+        UsageRow(app, value, if (total > 0) value / total else 0.0, listOf(app to value), amount.allUnpriced(metric))
     }
 }
 
@@ -730,17 +746,20 @@ const val USAGE_SESSION_ROWS = 8
 data class SessionRow(val id: String, val app: String, val title: String, val machineId: String, val value: Double, val cost: Double,
     val tokens: Long, val share: Double, val unpriced: Boolean = false)
 
-/** The rest row: [label] is `Other sessions (N)`, or `Usage with no session` when no other session is left. */
-data class SessionRest(val label: String, val value: Double, val cost: Double, val tokens: Long, val share: Double)
+/**
+ * The rest row: [label] is `Other sessions (N)`, or `Usage with no session` when no other session is left; [next] is how many more
+ * sessions its button shows (at most [USAGE_SESSION_ROWS], 0 when no other session has a value).
+ */
+data class SessionRest(val label: String, val value: Double, val cost: Double, val tokens: Long, val share: Double, val next: Int = 0)
 
 data class SessionsView(val rows: List<SessionRow>, val other: SessionRest?)
 
 /**
- * Port of usage_sessions: the [USAGE_SESSION_ROWS] sessions of the machines that are on with the highest value (ties go to the
- * title, then the ID), then a rest row with the rest of the filtered totals, so the rows add up to the totals. Null when the
- * machines that are on have no session in the period (or the reply has no sessions part).
+ * Port of usage_sessions: the [shown] sessions (8, more after a tap on the rest row) of the machines that are on with the highest
+ * value (ties go to the title, then the ID), then a rest row with the rest of the filtered totals, so the rows add up to the
+ * totals. Null when the machines that are on have no session in the period (or the reply has no sessions part).
  */
-fun usageSessions(reply: ActivityUsage, totals: UsageTotals, metric: Metric): SessionsView? {
+fun usageSessions(reply: ActivityUsage, totals: UsageTotals, metric: Metric, shown: Int = USAGE_SESSION_ROWS): SessionsView? {
     val sessions = reply.sessions ?: return null
     val on = totals.machineIds.toSet()
     val count = on.sumOf { sessions.counts[it] ?: 0 }
@@ -751,16 +770,18 @@ fun usageSessions(reply: ActivityUsage, totals: UsageTotals, metric: Metric): Se
         val value = if (metric == Metric.COST) it.cost else it.tokens.processed.toDouble()
         SessionRow(it.id, usageAppKey(it.app), it.title, it.machineId, value, it.cost, it.tokens.processed, share(value), it.unpriced)
     }.sortedWith(compareByDescending<SessionRow> { it.value }.thenBy { it.title }.thenBy { it.id })
-    val shown = rows.filter { it.value > 0 }.take(USAGE_SESSION_ROWS)
-    val more = count - shown.size
+    val valued = rows.filter { it.value > 0 }
+    val top = valued.take(shown)
+    val more = count - top.size
     // The member sessions cover the member's own hours, so the rest is never below 0.
-    val cost = max(0.0, totals.cost - shown.sumOf { it.cost })
-    val tokens = max(0L, totals.tokens - shown.sumOf { it.tokens })
+    val cost = max(0.0, totals.cost - top.sumOf { it.cost })
+    val tokens = max(0L, totals.tokens - top.sumOf { it.tokens })
     val value = if (metric == Metric.COST) cost else tokens.toDouble()
     val untied = on.any { (sessions.none[it]?.tokens?.processed ?: 0) > 0 }
     val other = if (more > 0 || (untied && value > 0))
-        SessionRest(if (more > 0) "Other sessions ($more)" else "Usage with no session", value, cost, tokens, share(value)) else null
-    return SessionsView(shown, other)
+        SessionRest(if (more > 0) "Other sessions ($more)" else "Usage with no session", value, cost, tokens, share(value),
+            min(USAGE_SESSION_ROWS, valued.size - top.size)) else null
+    return SessionsView(top, other)
 }
 
 /** Port of oklab: Björn Ottosson's OKLab (L, a, b) of an sRGB hex color. */
@@ -862,3 +883,6 @@ fun modelRows(totals: UsageTotals, metric: Metric): List<ModelRow> {
     return totals.models.filter { it.tokens > 0 }
         .sortedWith(compareByDescending<ModelRow> { priced(it) }.thenByDescending { it.value(metric) })
 }
+
+/** A Cost row whose tokens all have no price (port of the `Unpriced` case of usage_row_value). */
+private fun Amount.allUnpriced(metric: Metric) = metric == Metric.COST && unpricedTokens > 0 && !priced
