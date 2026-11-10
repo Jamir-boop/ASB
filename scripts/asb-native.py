@@ -19045,7 +19045,8 @@ class UsageWindow(ActivityWindow):
                     swatch.add_css_class("asb-usage-swatch")
                     swatch.add_css_class(f"asb-usage-type-{part}")
                     line.append(swatch)
-                    line.append(self.text(USAGE_PART_LABELS[part], (), ellipsize=Pango.EllipsizeMode.END, hexpand=True))
+                    # The part name breaks between its words when the line is short (Large Text in the smallest window), never cut.
+                    line.append(self.text(USAGE_PART_LABELS[part], (), wrap=True, hexpand=True))
                     line.append(self.text("", ("asb-mono",), 1))
                     line.append(self.text("", ("asb-mono", "asb-dim"), 1, width_request=52))
                     block.append(line)
