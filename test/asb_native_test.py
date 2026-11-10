@@ -15518,7 +15518,19 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         # A window that opens with Large Text on draws its ring and chart text at the text scale too.
         self.assertEqual((narrow.round.text_scale, narrow.chart.text_scale, narrow.chart.HEIGHT), (1.5, 1.5, window.chart.HEIGHT))
         self.assertLessEqual(narrow.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[0], 360)
-        self.assertEqual(self.cut_labels(narrow), [])
+        # A session title is cut in the middle only when it is wider than all the room that the other columns leave it (they keep
+        # their natural widths); a wide font (DejaVu Sans) cuts a title earlier. Nothing else is cut.
+        titles, width = [], lambda cell: round(cell.compute_bounds(narrow.sessions)[1].get_width())  # noqa: E731
+        for cells in narrow.session_rows:
+            title = cells["Session"]
+            if isinstance(title, asb.Gtk.Label) and title.get_layout().is_ellipsized():
+                titles.append(title.get_label())
+                others = [cell for key, cell in cells.items() if key != "Session" and cell.get_parent() is narrow.sessions]
+                self.assertEqual(title.get_ellipsize(), asb.Pango.EllipsizeMode.MIDDLE)
+                self.assertEqual([width(cell) for cell in others], [cell.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1] for cell in others], title.get_label())
+                self.assertEqual(width(title) + sum(width(cell) for cell in others), narrow.sessions.get_width(), title.get_label())
+                self.assertGreater(title.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1], width(title), title.get_label())
+        self.assertEqual([text for text in self.cut_labels(narrow) if text not in titles], [])
         self.assertEqual(self.font_px(narrow.total_figures[0].get_first_child()), 18)
         self.set_text_dpi(98304)
         self.assertEqual((window.text_scale, self.font_px(small), window.chart.HEIGHT), (1, 12, height))
