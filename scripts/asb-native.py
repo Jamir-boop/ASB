@@ -19031,15 +19031,16 @@ class UsageWindow(ActivityWindow):
         return [(name, 0), ("App", 0), (machines, 0), (first, 1), ("Share", 0), (other, 1)]
 
     def table_head(self, columns, title, xalign):
-        """A column head of Models or Sessions (dim, 11 px). The head of the ranked measure is in the text color with a 12 px down
-        arrow 4 px before its right-aligned text; the share head names its measure (`Share of cost`)."""
+        """A column head of Models or Sessions (dim, 11 px). The head of the ranked measure is in the text color, its right-aligned
+        text 4 px after a down arrow `↓` in a 12 px column (`↓ Cost`); the share head names its measure (`Share of cost`)."""
         first, last = columns[2 if self.small else 3][0], columns[-1][0]
         expand = title in (columns[0][0], "App", "Machines", "Machine", last)
         if title == first:
             s, hidden = self.text_scale, Gtk.AccessibleRole.PRESENTATION
-            head = Gtk.Box(hexpand=expand, accessible_role=Gtk.AccessibleRole.COLUMN_HEADER)
+            head = Gtk.Box(hexpand=expand, accessible_role=Gtk.AccessibleRole.COLUMN_HEADER, tooltip_text=f"Ranked by {self.metric}")
             inner = Gtk.Box(spacing=round(4 * s), halign=Gtk.Align.END, valign=Gtk.Align.CENTER, hexpand=True)
-            inner.append(Gtk.Image(icon_name="pan-down-symbolic", pixel_size=round(12 * s), accessible_role=hidden))
+            # The arrow in a 12 px column, so the column keeps the width it had with the old arrow icon.
+            inner.append(self.text("↓", (), 1, width_request=round(12 * s), accessible_role=hidden))
             inner.append(self.text(title, (), 1, accessible_role=hidden))
             head.append(inner)
             head.add_css_class("asb-usage-ranked")

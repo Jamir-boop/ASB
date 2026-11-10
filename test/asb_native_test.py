@@ -13517,8 +13517,8 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(GTK_WARNINGS[self.warnings:], [])
 
     def heads(self, grid):
-        """The head texts of the Models or Sessions table (the ranked head is a box with its arrow and its text)."""
-        return [self.labels(child)[0] for child in self.children(grid) if child.has_css_class("asb-usage-head")]
+        """The head texts of the Models or Sessions table (the ranked head is a box with its arrow and its text), without the arrow."""
+        return [self.labels(child)[-1] for child in self.children(grid) if child.has_css_class("asb-usage-head")]
 
     def test_a_new_usage_window_reads_all_time_first(self):
         routes = []
@@ -14614,7 +14614,7 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
         for grid, name, machines in ((window.models, "Model", "Machines"), (window.sessions, "Session", "Machine")):
             self.assertEqual(self.heads(grid), [name, "App", machines, "Cost", "Share of cost", "Tokens"])
             head = self.ranked_head(grid)
-            self.assertEqual(self.labels(head), ["Cost"])
+            self.assertEqual(self.labels(head), ["↓", "Cost"])
             self.assert_accessible_label(head, "Cost, sorted from high to low")
         window.metric_buttons["tokens"].set_active(True)
         self.drain(.1)
@@ -14623,10 +14623,10 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
             head = self.ranked_head(grid)
             self.assert_accessible_label(head, "Tokens, sorted from high to low")
             arrow, text = self.children(self.children(head)[0])
-            self.assertEqual((icon_name(arrow), arrow.get_pixel_size(), self.children(head)[0].get_spacing()), ("pan-down-symbolic", 12, 4))
+            self.assertEqual((arrow.get_label(), arrow.get_width(), arrow.get_xalign(), self.children(head)[0].get_spacing()), ("↓", 12, 1, 4))
             self.assertEqual(asb.hex_color(text.get_color()), palette["text"])
             self.assertEqual(asb.hex_color(arrow.get_color()), palette["text"])
-            # The text stays right-aligned with its values; the arrow stands directly before it.
+            # The text stays right-aligned with its values; the arrow stands 4 px before it.
             text_box, arrow_box = (widget.compute_bounds(window)[1] for widget in (text, arrow))
             self.assertAlmostEqual(arrow_box.get_x() + arrow_box.get_width() + 4, text_box.get_x(), delta=.5)
             self.assertTrue(head.has_css_class("asb-usage-cost"))
@@ -16389,6 +16389,40 @@ class UsageWindowCheck(ActivityFixture, unittest.TestCase):
                     and node.get_bounds().get_width() == width and node.get_bounds().get_height() == height]
         self.assertEqual(["#" + "".join(f"{round(value * 255):02x}" for value in (node.get_color().red, node.get_color().green, node.get_color().blue))
                           for node in surfaces], [body])
+        self.assert_no_new_warnings()
+
+    def test_W7_U_S3_the_ranked_head_has_an_arrow(self):
+        window = self.window(period="all")
+        # The x of the heads and of the first row's cells, by column, before this change (948 x 760).
+        columns = {"cost": [24, 232, 406, 541, 620, 800], "tokens": [24, 230, 401, 533, 610, 790]}
+        right = lambda widget: widget.compute_bounds(window)[1].get_x() + widget.compute_bounds(window)[1].get_width()  # noqa: E731
+        for metric, ranked in (("cost", "Cost"), ("tokens", "Tokens")):
+            window.metric_buttons[metric].set_active(True)
+            self.drain(.2)
+            for grid in (window.models, window.sessions):
+                heads = [child for child in self.children(grid) if child.has_css_class("asb-usage-head")]
+                texts = [" ".join(self.labels(head)) for head in heads]
+                self.assertEqual([text for text in texts if text.startswith("↓ ")], [f"↓ {ranked}"], (metric, texts))
+                for head in heads:
+                    stack = [head]
+                    while stack:
+                        node = stack.pop()
+                        self.assertNotIsInstance(node, asb.Gtk.Image)
+                        stack += self.children(node)
+                head = self.ranked_head(grid)
+                self.assertEqual(head.get_tooltip_text(), f"Ranked by {metric}")
+                self.assert_accessible_label(head, f"{ranked}, sorted from high to low")
+                for row in (0, 1):
+                    cells = sorted(((grid.query_child(child)[0], child) for child in self.children(grid) if grid.query_child(child)[1] == row),
+                                   key=lambda item: item[0])
+                    self.assertEqual([round(cell.compute_bounds(window)[1].get_x()) for _column, cell in cells], columns[metric], (metric, row))
+                # The head text stays right-aligned with its numbers: the head ends where the number cell ends, its text at the end.
+                number = next(child for child in self.children(grid) if grid.query_child(child)[:2] == (3, 1))
+                self.assertEqual(right(head), right(number))
+                text = self.children(self.children(head)[0])[1]
+                self.assertEqual(right(text), right(head) - head.get_style_context().get_padding().right)
+        # The rest row of Sessions keeps its chevron.
+        self.assertEqual(icon_name(self.children(self.children(window.session_more)[0])[1]), "pan-down-symbolic")
         self.assert_no_new_warnings()
 
 
