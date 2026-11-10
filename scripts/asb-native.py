@@ -14645,9 +14645,10 @@ class RoundTable(Gtk.Overlay):
                     continue
                 layout, x, y, alpha, dim = drawn[seat_id]
                 left, top, right, bottom = self.label_plate(layout, x, y)
-                rounded = Gsk.RoundedRect()
-                rounded.init_from_rect(Graphene.Rect().init(left, top, right - left, bottom - top), 3)
-                snapshot.push_rounded_clip(rounded)
+                # The clip is the plate grown by 1 px at each side out to whole pixels: an anti-aliased clip edge would draw a casing and
+                # a stroke again at part coverage over a chord and leave a darker seam in it.
+                left, top, right, bottom = math.floor(left) - 1, math.floor(top) - 1, math.ceil(right) + 1, math.ceil(bottom) + 1
+                snapshot.push_clip(Graphene.Rect().init(left, top, right - left, bottom - top))
                 for chord, tone in tones:
                     if tone in ("rest", "dim") and chord["key"] in keys:
                         self.snapshot_chord(snapshot, chord, fade, tone, palette, gray)

@@ -19876,6 +19876,59 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertTrue([(x, y) for x, y in points if self.near_color(rows[y][x], color, 24)])
         self.assertFalse([(x, y) for x, y in points if self.near_color(before[y][x], color, 24)])
 
+    def edge_samples(self, table, seat, key):
+        """The points of the center line of a chord from 3 px outside to 3 px inside each edge of the plate of a label that it
+        crosses, every 0.5 px of its length."""
+        label = table.labels[seat]
+        plate = table.label_plate(table.pins[seat]["texts"][label["text"]]["layout"], label["box"][0] + 1, label["box"][1])
+        curve = next(chord for chord in table.chords if chord["key"] == key)["table"]
+        length = curve[1][-1]
+        inside = lambda x, y: plate[0] <= x <= plate[2] and plate[1] <= y <= plate[3]  # noqa: E731
+        steps = math.ceil(length * 2)
+        flags = [inside(*asb.curve_point(curve, index / steps)) for index in range(steps + 1)]
+        samples = []
+        for index in range(1, steps + 1):
+            if flags[index] != flags[index - 1]:
+                at = index / steps * length
+                samples.append([asb.curve_point(curve, (at + offset / 2) / length) for offset in range(-6, 7)])
+        return samples
+
+    def assert_no_seam(self, table, rows, seat, key, color):
+        alone = self.label_alone(table, seat)
+        pins = [asb.table_point(table.geometry, table.geometry["Rp"], angle) for angle in table.geometry["seat"].values()]
+        # The not-sent ends of mixed pairs: dashed over a casing in the window color.
+        ends = [(points, None) for chord in table.chords for points in chord["fails"]]
+        edges = self.edge_samples(table, seat, key)
+        self.assertTrue(edges, (seat, key))
+        checked = 0
+        for points in edges:
+            for x, y in points:
+                point = round(x), round(y)
+                if (not self.glyph_free(alone, *point, 3) or any(math.dist(point, pin) < 22 for pin in pins)
+                        or any(asb.curve_distance(end, *point) < 6 for end in ends)):
+                    continue
+                checked += 1
+                self.assertTrue(self.near_color(rows[point[1]][point[0]], color, 13), (seat, key, point, rows[point[1]][point[0]], color))
+        self.assertGreater(checked, 4, (seat, key))
+
+    def test_W8_T2_no_seam_where_a_chord_crosses_a_plate_edge(self):
+        window = self.cascadia_window("7d")
+        table, palette = window.table, window.palette
+        # T1: the rest chord of docs and api-docs at the edges of the ui-polish plate.
+        api = next(key for key in table.chord_keys if set(key) == {"docs", "api-docs"})
+        rows = self.table_pixels(table)
+        self.assert_no_seam(table, rows, "ui-polish", api, table.chord_gray(palette))
+        # The m14 state: the status thread of No receipt; each lit chord wider than 3 px at each plate edge that it crosses.
+        window.open_thread("status", "written"); self.drain(.4)
+        rows = self.table_pixels(table)
+        counts = table.thread_counts()
+        crossings = [(seat, key) for seat, keys in table.lit_over.items() for key in keys
+                     if asb.status_chord_width(counts[key], max(counts.values())) > 3 and not next(chord for chord in table.chords if chord["key"] == key)["bad"]]
+        # ui-polish (the m14 seam), parser-review, and api-docs.
+        self.assertEqual({seat for seat, _key in crossings}, {"ui-polish", "parser-review", "api-docs"})
+        for seat, key in crossings:
+            self.assert_no_seam(table, rows, seat, key, palette["accent"])
+
     def stacked_pairs(self, table):
         """The pairs of shown labels of different seats with the stacked fault (the rule of faults in place_labels)."""
         geometry, scale = table.geometry, table.window.text_scale
