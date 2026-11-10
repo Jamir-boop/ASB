@@ -17333,9 +17333,12 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         window = self.window((480, 760), period="24h")
         table = window.table
         # Labels place from the largest ring of their pins (11 px past the pin); at 480 px migrations finds no place there, and its
-        # last try places it from its pin itself (no rings), with the 2 px own-pin rule.
-        self.assertEqual(sum(item["shown"] for item in table.labels.values()), 12)
-        self.assertEqual({seat for seat, item in table.labels.items() if item["ring"] == 0}, {"migrations"})
+        # last try places it from its pin itself (no rings), with the 2 px own-pin rule. Round 7 (T2): in the small table schema
+        # can only stack, so it hides, and assets, bridge-tests, docs, and notes, whose free candidates with rings stack, take the
+        # last try too.
+        self.assertEqual(sorted(seat for seat, item in table.labels.items() if not item["shown"]), ["schema"])
+        self.assertEqual({seat for seat, item in table.labels.items() if item["shown"] and item["ring"] == 0},
+                         {"assets", "bridge-tests", "docs", "migrations", "notes"})
         # Each label draws at its box, the last-try label too.
         with patch.object(table, "snapshot_label") as labels:
             table.draw(asb.Gtk.Snapshot())
@@ -19303,20 +19306,33 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual([item["layout"].get_text() for item in table.pins["ui-polish"]["texts"]], ["ui-polish", "ui-poli…"])
         self.assertEqual(table.pins["ui-polish"]["late"], 1)
         table.place_labels(False)
-        # F2: ui-polish shows its late cut by the step late, release-plan shows whole, and no label hides.
-        self.assertEqual((text("ui-polish"), table.label_steps["ui-polish"][0]), ("ui-poli…", "late"))
+        candidate, free, rank = table.label_rules
+        # F2 with round 7 (T2): release-plan shows whole; in the small table each free place of the late cut ui-poli… stacks, so
+        # ui-polish hides, and so does schema.
         self.assertEqual(text("release-plan"), "release-plan")
-        self.assertTrue(all(item["shown"] for item in table.labels.values()))
+        self.assertEqual(sorted(seat for seat, item in table.labels.items() if not item["shown"]), ["schema", "ui-polish"])
+        self.assertEqual(table.label_steps.get("ui-polish"), None)
         self.assertEqual(self.label_order_faults(table), [])
-        # A second pass (preserve) keeps the late label at its text and place.
-        before = dict(table.labels["ui-polish"])
-        table.place_labels()
-        self.assertEqual((table.labels["ui-polish"]["text"], table.labels["ui-polish"]["place"]), (before["text"], before["place"]))
         # A chosen seat never shows a late text: it shows its whole name.
         window.show_session("ui-polish"); self.drain(.3)
         self.assertIn("ui-polish", table.chosen_seats())
         self.assertLess(table.labels["ui-polish"]["text"], table.pins["ui-polish"]["whole"])
         self.assertEqual(text("ui-polish"), "ui-polish")
+        window.destroy()
+        # The step late in 30 days: sync-check has no free usual text and shows its late cut, which does not stack.
+        window = self.window((480, 760), period="30d")
+        table = window.table
+        table.place_labels(False)
+        candidate, free, rank = table.label_rules
+        self.assertEqual([item["layout"].get_text() for item in table.pins["sync-check"]["texts"]], ["sync-check", "sync-\ncheck", "sync-ch…"])
+        self.assertEqual(table.pins["sync-check"]["late"], 2)
+        self.assertEqual((text("sync-check"), table.label_steps["sync-check"][0]), ("sync-ch…", "late"))
+        self.assertEqual([pair for pair in self.stacked_pairs(table) if "sync-check" in pair], [])
+        self.assertEqual(self.label_order_faults(table), [])
+        # A second pass (preserve) keeps the late label at its text and place.
+        before = dict(table.labels["sync-check"])
+        table.place_labels()
+        self.assertEqual((table.labels["sync-check"]["text"], table.labels["sync-check"]["place"]), (before["text"], before["place"]))
 
     def thread_kinds(self, window):
         """Each thread kind as (name, open): pair, session, the five statuses, time, and all."""
@@ -19492,6 +19508,60 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     self.assertTrue(not covered or (name, seat) in exceptions, (name, seat, covered))
             window.destroy()
         print("W7 T1 exceptions:", exceptions)
+
+    def stacked_pairs(self, table):
+        """The pairs of shown labels of different seats with the stacked fault (the rule of faults in place_labels)."""
+        geometry, scale = table.geometry, table.window.text_scale
+        pins = {seat: asb.table_point(geometry, geometry["Rp"], geometry["seat"][seat]) for seat in table.pins}
+        near = lambda box, x, y: math.hypot(min(max(x, box[0]), box[2]) - x, min(max(y, box[1]), box[3]) - y)  # noqa: E731
+        shown = [(seat, label["box"]) for seat, label in table.labels.items() if label["shown"]]
+        pairs = []
+        for index, (seat, box) in enumerate(shown):
+            for other, theirs in shown[index + 1:]:
+                if min(box[2], theirs[2]) - max(box[0], theirs[0]) <= .5:
+                    continue
+                gap = max(theirs[1] - box[3], box[1] - theirs[3])
+                if gap < 12 * scale or gap < max(near(box, *pins[seat]) - 16, near(theirs, *pins[other]) - 16) + 4 * scale:
+                    pairs.append((seat, other))
+        return pairs
+
+    def test_W7_T2_the_small_table_hides_a_label_that_can_only_stack(self):
+        settings = asb.Gtk.Settings.get_default()
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if self.has_cascadia() else [])
+        found = {}
+        for name in fonts:
+            settings.set_property("gtk-font-name", name)
+            window = self.window((480, 760), period="24h")
+            table = window.table
+            candidate, free, rank = table.label_rules
+            # The rule is on in the small table (no center disc).
+            self.assertLess(table.geometry["S"], 480, name)
+            for preserve in (False, True):
+                table.place_labels(preserve)
+                chosen = table.chosen_seats()
+                self.assertEqual([pair for pair in self.stacked_pairs(table) if not set(pair) & set(chosen)], [], (name, preserve))
+                self.assertEqual(self.label_order_faults(table), [], (name, preserve))
+                for seat, label in table.labels.items():
+                    if not label["shown"]:
+                        # A hidden label had no free candidate in any text; its pin keeps the whole title as its tooltip.
+                        pin = table.pins[seat]
+                        self.assertFalse(any(free(seat, candidate(seat, text, place)) for text in range(len(pin["texts"])) for place in range(9)), (name, seat))
+                        self.assertEqual(table.proxies[("pin", seat)].get_tooltip_text(), pin["tip"])
+                        self.assertTrue(table.proxies[("pin", seat)].name.startswith(pin["title"] + ", "))
+            found[name] = ({seat: table.pins[seat]["texts"][label["text"]]["layout"].get_text() for seat, label in table.labels.items() if label["shown"]},
+                           sorted(seat for seat, label in table.labels.items() if not label["shown"]))
+            # A chosen seat shows its whole name, also where it stacks.
+            window.show_session("docs"); self.drain(.3)
+            self.assertEqual((table.labels["docs"]["shown"], table.labels["docs"]["text"]), (True, 0))
+            window.destroy()
+            # At 968 x 760 the rule is off, also with a thread open: the table has its center disc.
+            window = self.window(period="24h")
+            self.assertGreaterEqual(window.table.geometry["S"], 480)
+            window.show_session("docs"); self.drain(.3)
+            self.assertGreaterEqual(window.table.geometry["S"], 480)
+            print("W7 T2 S", name, table.geometry["S"], window.table.geometry["S"])
+            window.destroy()
+        print("W7 T2 labels:", found)
 
     def test_W7_T3_the_key_line_drops_parts_before_it_hides(self):
         if not self.has_cascadia():
@@ -21287,11 +21357,12 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             table = window.table
             for seat in table.open_lit()[1]:
                 x, y = asb.table_point(table.geometry, table.geometry["Rp"], table.geometry["seat"][seat])
-                ring = (x - 22, y - 22, x + 22, y + 22)
+                # The open ring is a circle that reaches 21.75 px from the pin center (its 3 px ring at 20.25 px). Round 7 (T2): at
+                # 480 px docs takes its last try and sits 23.4 px from release-plan, in the corner of the 44 px square around it.
                 for other, label in table.labels.items():
                     if label["shown"] and other != seat:
                         box = label["box"]
-                        self.assertFalse(box[0] < ring[2] and ring[0] < box[2] and box[1] < ring[3] and ring[1] < box[3], (size, seat, other))
+                        self.assertGreaterEqual(math.hypot(min(max(x, box[0]), box[2]) - x, min(max(y, box[1]), box[3]) - y), 22, (size, seat, other))
             window.close(); self.drain(.05)
 
     def test_RoundTable_pointer_hover_keeps_label_places(self):
@@ -21781,6 +21852,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 geometry = table.geometry
                 shown = [label for label in table.labels.values() if label["shown"]]
                 self.assertGreaterEqual(len(shown), 8)
+                # Round 7 (T2): the small table hides the labels that can only stack; no two shown labels stack.
+                hidden = ["schema", "ui-polish"] if font.startswith("Cascadia") else ["schema"]
+                self.assertEqual(sorted(seat for seat, label in table.labels.items() if not label["shown"]), hidden)
+                self.assertEqual(self.stacked_pairs(table), [])
                 for index, first in enumerate(shown):
                     a = first["box"]
                     for second in shown[index + 1:]:

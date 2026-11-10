@@ -13927,7 +13927,8 @@ class RoundTable(Gtk.Overlay):
         A free candidate stays 2 px inside the table, off the center disc and the machine band, and touches no pin ring, machine
         label, not-sent end, the key line, or other label (6 px times the text scale wider at each side). Its box is also nearer its
         own pin circle than every other pin circle by 4 px times the text scale or more. Each pin counts with the largest ring that
-        it can get (pin_ring), so a label keeps its place when its seat lights.
+        it can get (pin_ring), so a label keeps its place when its seat lights. In the small table (S under 480 px, no center
+        disc) a candidate with the stacked fault is not free for a seat that is not chosen, so such a label hides.
 
         The order of the candidates (rank): the whole names before the cut ones first; then no stacked or stray fault (a label
         that stacks with the label of another seat, or whose center is not nearer its own pin); then a plate that covers no more
@@ -14023,7 +14024,7 @@ class RoundTable(Gtk.Overlay):
                     and all(near(box, x, y) > radius - shrink - .5 for x, y, radius in circles.values())
                     and all(other == seat_id or near(box, x, y) - radius + shrink >= own + margin * scale for other, (x, y, radius) in circles.items())
                     and all(near(box, x, y) >= radius for x, y, radius in ends)
-                    and (not labels or not blockers(seat_id, box)))
+                    and (not labels or not (blockers(seat_id, box) or (not disc and seat_id not in chosen and stacked(seat_id, box)))))
 
         def blockers(seat_id, box):
             return [other for other, item in self.labels.items() if other != seat_id and item["shown"] and
@@ -14052,10 +14053,9 @@ class RoundTable(Gtk.Overlay):
                 cache[key] = (ink, heavy, any(near(box, x, y) < radius for x, y, radius in widest[seat_id]), strict, covered)
             return cache[key]
 
-        def faults(seat_id, box):
-            """stacked: a shown label of another seat overlaps the box in x by more than 0.5 px with a vertical gap under 12 px, or under
-            4 px more than the gap of one of the two labels to its own 16 px pin. stray: the center of the box is not 4 px or more
-            nearer its own pin center than each other pin center."""
+        def stacked(seat_id, box):
+            """A shown label of another seat overlaps the box in x by more than 0.5 px with a vertical gap under 12 px, or under 4 px
+            more than the gap of one of the two labels to its own 16 px pin."""
             own = near(box, *circles[seat_id][:2]) - 16
             for other, item in self.labels.items():
                 theirs = item["box"]
@@ -14064,6 +14064,13 @@ class RoundTable(Gtk.Overlay):
                 gap = max(theirs[1] - box[3], box[1] - theirs[3])
                 if gap < 12 * scale or gap < max(own, near(theirs, *circles[other][:2]) - 16) + 4 * scale:
                     return True
+            return False
+
+        def faults(seat_id, box):
+            """stacked (above), or stray: the center of the box is not 4 px or more nearer its own pin center than each other pin
+            center."""
+            if stacked(seat_id, box):
+                return True
             x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
             mine = math.hypot(x - circles[seat_id][0], y - circles[seat_id][1])
             return any(other != seat_id and math.hypot(x - px, y - py) - mine < 4 * scale for other, (px, py, _radius) in circles.items())
