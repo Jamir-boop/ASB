@@ -17314,10 +17314,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
     def test_M2_status_chords_use_their_status_counts_and_restore_the_key(self):
         window = self.window()
         table = window.table
-        totals = table.key["items"][0]["layout"].get_text()
+        totals = self.key_text(table.key["items"][0])
         window.open_thread("status", "written"); self.drain(.3)
         counts = [window.view["pairs"][key]["by"].get("written", 0) for key in table.chord_keys]
-        self.assertEqual(table.key["items"][0]["layout"].get_text(), f"Line width: {min(count for count in counts if count)} to {max(counts)} messages (No receipt)")
+        self.assertEqual(self.key_text(table.key["items"][0]), f"Line width: {min(count for count in counts if count)} to {max(counts)} messages (No receipt)")
         for chord in table.chords:
             if chord["bad"]:
                 continue
@@ -17327,7 +17327,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             self.assertAlmostEqual(snapshot.append_stroke.call_args_list[0].args[1].get_line_width(),
                                    1.5 + min(count, 7 * count / max(counts)) if count else chord["width"], places=5)
         window.close_thread(); self.drain(.2)
-        self.assertEqual(table.key["items"][0]["layout"].get_text(), totals)
+        self.assertEqual(self.key_text(table.key["items"][0]), totals)
 
     def test_M3_labels_stay_nearer_their_pins_and_keep_valid_places(self):
         window = self.window((480, 760), period="24h")
@@ -18610,7 +18610,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         counts = [window.view["pairs"][key]["by"]["written"] for key in table.chord_keys if window.view["pairs"][key]["by"].get("written")]
         low, high = min(counts), max(counts)
         text = f"Line width: {low} to {high} messages (No receipt)" if low != high else f"Line width: {high} message{'' if high == 1 else 's'} (No receipt)"
-        self.assertEqual(table.key["items"][0]["layout"].get_text(), text)
+        self.assertEqual(self.key_text(table.key["items"][0]), text)
         self.assertEqual(table.key["widths"], (1.5 + min(low, 7 * low / high), 1.5 + min(high, 7)))
         self.assertTrue(table.key["accent"])
         with patch.object(table, "update_property") as update:
@@ -19130,14 +19130,14 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual((table.key["items"][0]["kind"], table.key["accent"]), ("chords", True))
         window.open_thread("status", "written"); self.drain(.3)
         self.assertEqual(table.key["items"][0]["kind"], "chords")
-        self.assertRegex(table.key["items"][0]["layout"].get_text(), r"^Line width: [\d,]+ to [\d,]+ messages \(No receipt\)$")
+        self.assertRegex(self.key_text(table.key["items"][0]), r"^Line width: [\d,]+ to [\d,]+ messages \(No receipt\)$")
         window.close_thread(); self.drain(.3)
         # The two-sample form when the middle count is not between the two ends.
         view = table.view
         table.view = dict(view, pairs={key: dict(pair, n=max(pair["n"], 100)) for key, pair in view["pairs"].items()})
         table.place_labels(False)
         self.assertEqual(table.key["items"][0]["kind"], "chords")
-        self.assertEqual(table.key["items"][0]["layout"].get_text(), "Line width: 100 to 139 messages")
+        self.assertEqual(self.key_text(table.key["items"][0]), "Line width: 100 to 139 messages")
         table.view = view
         table.place_labels(False)
         self.assertEqual(table.key["items"][0]["kind"], "scale")
@@ -19146,7 +19146,11 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         table.layout_key([(box[2] - 2, box[1], box[2] - 1, box[3])])
         self.assertTrue(table.key["shown"])
         self.assertEqual(table.key["items"][0]["kind"], "chords")
-        self.assertEqual(table.key["items"][0]["layout"].get_text(), "Line width: 4 to 139 messages")
+        self.assertEqual(self.key_text(table.key["items"][0]), "Line width: 4 to 139 messages")
+
+    def key_text(self, item):
+        """The text of the first key item as one line: `Line width:` and the text of each sample."""
+        return " ".join([item["layout"].get_text()] + [group["layout"].get_text() for group in item.get("groups", ())])
 
     def has_cascadia(self):
         # Pango's own font list: the tests run with a temporary HOME, where fc-list does not see the user fonts.
@@ -19929,6 +19933,66 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         for seat, key in crossings:
             self.assert_no_seam(table, rows, seat, key, palette["accent"])
 
+    def key_parts(self, table):
+        """The first key item, its `Line width:` text end, and its groups (sample left, sample right, count text left and width)."""
+        item = table.key["items"][0]
+        end = item["tx"] + item["layout"].get_pixel_extents()[1].width
+        return item, end, [(group["x"], group["x"] + 16, group["tx"], group["layout"].get_pixel_extents()[1].width, group["layout"].get_text()) for group in item["groups"]]
+
+    def assert_key_order(self, table, texts, description):
+        item, end, groups = self.key_parts(table)
+        self.assertEqual((item["x"], item["tx"], item["layout"].get_text()), (12, 12, "Line width:"))
+        self.assertEqual([group[4] for group in groups], texts)
+        # The gap after `Line width:` is the gap of the three-sample key (6 px).
+        self.assertEqual(groups[0][0], end + 6)
+        for left, right, text_left, _width, _text in groups:
+            self.assertEqual(text_left - right, 4)
+        if len(groups) == 2:
+            self.assertEqual(groups[1][0] - (groups[0][2] + groups[0][3]), 10)
+        with patch.object(table, "update_property") as update:
+            table.layout_key([])
+        self.assertTrue(table.key["shown"])
+        self.assertTrue(update.call_args.args[1][0].startswith(description + ", "), (update.call_args.args[1][0], description))
+        # The samples draw at their places, before their counts.
+        palette = table.window.palette
+        with patch.object(asb, "snapshot_stroke") as strokes, patch.object(asb, "snapshot_layout") as layouts:
+            table.snapshot_key(Mock(), palette, table.chord_gray(palette))
+        color = palette["accent"] if table.key["accent"] else table.chord_gray(palette)
+        self.assertEqual([(call.args[1].get_bounds()[1].get_x(), call.args[1].get_bounds()[1].get_width(), asb.hex_color(call.args[3]))
+                          for call in strokes.call_args_list[:len(groups)]], [(group[0], 16, color) for group in groups])
+        self.assertEqual([(call.args[1].get_text(), call.args[2]) for call in layouts.call_args_list[:len(groups) + 1]],
+                         [(group[4], group[2]) for group in groups] + [("Line width:", 12)])
+
+    def test_W8_T3_each_key_starts_with_line_width(self):
+        window = self.window(period="7d")
+        table = window.table
+        # (a) The rest two-sample key: the middle count is not between the ends.
+        view = table.view
+        table.view = dict(view, pairs={key: dict(pair, n=max(pair["n"], 100)) for key, pair in view["pairs"].items()})
+        table.layout_key([])
+        self.assert_key_order(table, ["100 to", "139 messages"], "Line width: 100 to 139 messages")
+        table.view = view
+        table.layout_key([])
+        # (b) A status thread with two counts.
+        window.open_thread("status", "written"); self.drain(.4)
+        counts = [count for count in table.thread_counts().values() if count]
+        low, high = min(counts), max(counts)
+        self.assertLess(low, high)
+        self.assert_key_order(table, [f"{low} to", f"{high} messages (No receipt)"], f"Line width: {low} to {high} messages (No receipt)")
+        self.assertEqual([group["width"] for group in table.key["items"][0]["groups"]], list(table.key["widths"]))
+        # (d) One lit count: one sample at that width before its text.
+        key = next(iter(table.chord_keys))
+        with patch.object(table, "thread_counts", return_value=dict.fromkeys(table.chord_keys, 0) | {key: 3}):
+            table.layout_key([])
+            self.assert_key_order(table, ["3 messages (No receipt)"], "Line width: 3 messages (No receipt)")
+            self.assertEqual(table.key["items"][0]["groups"][0]["width"], asb.status_chord_width(3, 3))
+        window.close_thread(); self.drain(.3)
+        # (c) A time thread.
+        starts = window.data["buckets"]["startsMs"]
+        window.open_time(next(index for index, start in enumerate(starts) if asb.format_day(start) == "Oct 22")); self.drain(.4)
+        self.assertEqual(window.thread["kind"], "time")
+        self.assert_key_order(table, ["1 to", "29 messages (Oct 22)"], "Line width: 1 to 29 messages (Oct 22)")
+
     def stacked_pairs(self, table):
         """The pairs of shown labels of different seats with the stacked fault (the rule of faults in place_labels)."""
         geometry, scale = table.geometry, table.window.text_scale
@@ -20023,7 +20087,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     tries[-1].append(text)
             self.assertTrue(table.key["shown"], (width, tries))
             items = [item["layout"].get_text() for item in table.key["items"]]
-            self.assertEqual(items[0], first, width)
+            self.assertEqual(self.key_text(table.key["items"][0]), first, width)
             parts = items[1:]
             self.assertEqual(parts, [names[item["kind"]] for item in table.key["items"][1:]])
             # The shown key is the last try, and each try before it had one part more (the longest list that fits).
@@ -20031,7 +20095,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             full = tries[0][1:]
             self.assertEqual(full, ["Not sent", "Some not sent", "Offline"])
             self.assertEqual([attempt[1:] for attempt in tries], [full[:count] for count in range(3, len(parts) - 1, -1)])
-            self.assertEqual(update.call_args.args[1][0], ", ".join(items))
+            self.assertEqual(update.call_args.args[1][0], ", ".join([first] + parts))
             print("W7 T3 key", width or table.canvas.get_width(), items)
         table.layout_table()
         # A box at the end of the full key: the key drops Offline, then also Some not sent, and stays shown.
@@ -20041,7 +20105,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
             with patch.object(table, "update_property") as update:
                 table.layout_key([(blocked, box[1], blocked + 1, box[3])])
             self.assertTrue(table.key["shown"], parts)
-            self.assertEqual([item["layout"].get_text() for item in table.key["items"]], [first] + parts)
+            self.assertEqual([self.key_text(table.key["items"][0])] + [item["layout"].get_text() for item in table.key["items"][1:]], [first] + parts)
             self.assertEqual(update.call_args.args[1][0], ", ".join([first] + parts))
         # With no room for the first item the key hides.
         table.layout_key([(13, box[1], 14, box[3])])
@@ -20164,7 +20228,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         short = asb.message_time_name(window.thread["key"], partial=False, weekday=False)
         self.assertEqual(short, "Oct 22")
         text = f"Line width: {low} to {largest} messages ({short})" if low != largest else f"Line width: {largest} message{'' if largest == 1 else 's'} ({short})"
-        self.assertEqual((table.key["items"][0]["kind"], table.key["items"][0]["layout"].get_text()), ("chords", text))
+        self.assertEqual((table.key["items"][0]["kind"], self.key_text(table.key["items"][0])), ("chords", text))
         self.assertEqual((table.key["widths"], table.key["accent"]), ((asb.status_chord_width(low, largest), asb.status_chord_width(largest, largest)), True))
         with patch.object(table, "update_property") as update:
             table.place_labels(False)
@@ -20190,7 +20254,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 moved[key] = moved.get(key, 0) + 1
         self.assertEqual(table.open_lit()[0], set(moved))
         name = asb.message_time_name(following, partial=False)
-        self.assertTrue(table.key["items"][0]["layout"].get_text().endswith(f"({asb.message_time_name(following, partial=False, weekday=False)})"))
+        self.assertTrue(self.key_text(table.key["items"][0]).endswith(f"({asb.message_time_name(following, partial=False, weekday=False)})"))
         for key in table.chord_keys:
             tip = table.proxies[("chord", key)].get_tooltip_text()
             self.assertEqual(tip.endswith(f"\n{name}: {moved[key]}") if key in moved else day not in tip and name not in tip, True, tip)

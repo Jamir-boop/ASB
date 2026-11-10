@@ -14182,9 +14182,10 @@ class RoundTable(Gtk.Overlay):
             return
         low, high = min(counts), max(counts)
         middle = round(high / 4)
-        text = (f"{format_count(low)} to {format_count(high)}" if low != high else format_count(high)) + (" messages" if high != 1 else " message")
-        if status:
-            text += f" ({self.thread_name(weekday=False)})"
+        tail = format_count(high) + (" messages" if high != 1 else " message") + (f" ({self.thread_name(weekday=False)})" if status else "")
+        text = (f"{format_count(low)} to " if low != high else "") + tail
+        # A status thread draws the width samples in the accent at its smallest and largest lit widths.
+        widths = (status_chord_width(low, high), status_chord_width(high, high)) if status else (1.5, 8.5)
         rest = [("bad", "Not sent")]
         if any(chord["fails"] for chord in self.chords):
             rest.append(("mixed", "Some not sent"))
@@ -14196,27 +14197,25 @@ class RoundTable(Gtk.Overlay):
             """The key items and their box. scale_item names three counts of the width scale (the smallest, a quarter of the
             largest, the largest) instead of two samples; rest is the other parts that it names."""
             x, items = 12, []
+            # `Line width:`, then groups of a 16 px sample, 4 px, and its count text, 10 px apart: the three counts (then ` messages`),
+            # else the smallest count (then ` to`) and the rest of the text, or one sample before the text of one count.
             if scale_item:
-                # `Line width:`, then three groups of a 16 px sample, 4 px, and its count, 10 px apart, then ` messages`.
-                layout = activity_layout(self, "Line width:", 11 * scale)
-                logical = layout.get_pixel_extents()[1]
-                groups, left, height = [], x + logical.width + 6, logical.height
-                for index, count in enumerate((low, middle, high)):
-                    words = format_count(count) + (" messages" if index == 2 else "")
-                    count_layout = activity_layout(self, words, 11 * scale)
-                    extents = count_layout.get_pixel_extents()[1]
-                    groups.append({"x": left, "width": 1.5 + 7 * math.sqrt(count / high), "layout": count_layout, "tx": left + 20 * scale, "h": extents.height})
-                    height = max(height, extents.height)
-                    left += 20 * scale + extents.width + (10 * scale if index < 2 else 0)
-                items.append({"kind": "scale", "x": x, "layout": layout, "tx": x, "w": left - x, "h": height, "groups": groups})
-                x = left + 14
+                parts = [(1.5 + 7 * math.sqrt(count / high), format_count(count) + (" messages" if index == 2 else "")) for index, count in enumerate((low, middle, high))]
                 words = [f"Line width: {format_count(low)}, {format_count(middle)}, and {format_count(high)} messages"]
             else:
-                layout = activity_layout(self, f"Line width: {text}", 11 * scale)
-                logical = layout.get_pixel_extents()[1]
-                items.append({"kind": "chords", "x": x, "layout": layout, "tx": x + 36 * scale + 6, "w": logical.width, "h": logical.height})
-                x += 36 * scale + 6 + logical.width + 14
+                parts = [(widths[0], f"{format_count(low)} to"), (widths[1], tail)] if low != high else [(widths[1], tail)]
                 words = [f"Line width: {text}"]
+            layout = activity_layout(self, "Line width:", 11 * scale)
+            logical = layout.get_pixel_extents()[1]
+            groups, left, height = [], x + logical.width + 6, logical.height
+            for index, (width, part) in enumerate(parts):
+                count_layout = activity_layout(self, part, 11 * scale)
+                extents = count_layout.get_pixel_extents()[1]
+                groups.append({"x": left, "width": width, "layout": count_layout, "tx": left + 20 * scale, "h": extents.height})
+                height = max(height, extents.height)
+                left += 20 * scale + extents.width + (10 * scale if index < len(parts) - 1 else 0)
+            items.append({"kind": "scale" if scale_item else "chords", "x": x, "layout": layout, "tx": x, "w": left - x, "h": height, "groups": groups})
+            x = left + 14
             for kind, part in rest:
                 layout = activity_layout(self, part, 11 * scale)
                 _ink, logical = layout.get_pixel_extents()
@@ -14238,8 +14237,6 @@ class RoundTable(Gtk.Overlay):
             if shown:
                 break
             items, box, height, shown, words = build(False, rest[:count])
-        # A status thread draws the two width samples in the accent at its smallest and largest lit widths.
-        widths = (status_chord_width(low, high), status_chord_width(high, high)) if status else (1.5, 8.5)
         self.key = {"items": items, "box": box, "middle": box[1] + height / 2, "shown": shown, "widths": widths, "accent": bool(status)}
         if self.key["shown"]:
             self.update_property([Gtk.AccessibleProperty.DESCRIPTION], [", ".join(words)])
@@ -14694,16 +14691,12 @@ class RoundTable(Gtk.Overlay):
 
         for item in self.key["items"]:
             x = item["x"]
-            if item["kind"] == "scale":
-                # Three 16 px butt-capped samples at the widths of the smallest, the middle, and the largest count, each before its count.
-                for group in item["groups"]:
-                    segment(group["x"], group["x"] + 16 * scale, group["width"], gray)
-                    snapshot_layout(snapshot, group["layout"], group["tx"], middle - group["h"] / 2, dim)
-            elif item["kind"] == "chords":
-                # Two 16 px butt-capped segments at the smallest and the largest width, 4 px apart.
+            if item["kind"] in ("scale", "chords"):
+                # 16 px butt-capped samples (the accent in a status thread), each 4 px before its count.
                 color = palette["accent"] if self.key["accent"] else gray
-                for left, width in zip((x, x + 20 * scale), self.key["widths"]):
-                    segment(left, left + 16 * scale, width, color)
+                for group in item["groups"]:
+                    segment(group["x"], group["x"] + 16 * scale, group["width"], color)
+                    snapshot_layout(snapshot, group["layout"], group["tx"], middle - group["h"] / 2, dim)
             elif item["kind"] == "bad":
                 segment(x, x + 18 * scale, 2, message_status_colors(palette)["not-sent"], [5, 5])
             elif item["kind"] == "mixed":
