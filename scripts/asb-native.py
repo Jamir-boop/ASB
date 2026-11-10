@@ -15466,7 +15466,6 @@ class MessagesWindow(ActivityWindow):
 {scope} .asb-msg-recent label {{ font-weight: normal; font-size: {px(12)}; }}
 {scope} .asb-msg-thead {{ background: {palette['win']}; border-bottom: 2px solid {palette['accent']}; padding: 16px 18px 10px; }}
 {scope} .asb-msg-back {{ min-width: 28px; min-height: {px(28)}; padding: 0; }}
-{scope} .asb-msg-step {{ min-width: {px(24)}; min-height: {px(24)}; padding: 0; }}
 {scope} .asb-msg-route {{ font-size: {px(13)}; font-weight: 600; min-height: {px(28)}; }}
 {scope} .asb-msg-tlist {{ padding: 0 18px {px(16)}; }}
 {scope} .asb-msg-tmore {{ margin-top: 10px; }}
@@ -16243,11 +16242,11 @@ class MessagesWindow(ActivityWindow):
         self.thread_route.set_attributes(no_hyphens(self.thread_route.get_attributes()))
         line = Gtk.Box(spacing=8)
         line.append(self.thread_route)
-        # A time thread: two flat 24 px buttons to the previous and the next bucket with messages, 4 px apart.
+        # A time thread: two buttons with the Back button look to the previous and the next bucket with messages, 4 px apart.
         self.thread_steps = Gtk.Box(spacing=round(4 * self.text_scale), valign=Gtk.Align.CENTER, visible=False)
         for name, icon, direction in (("thread_up", "go-up-symbolic", -1), ("thread_down", "go-down-symbolic", 1)):
-            button = Gtk.Button(icon_name=icon, has_frame=False)
-            button.add_css_class("asb-msg-step")
+            button = Gtk.Button(icon_name=icon)
+            button.add_css_class("asb-msg-back")
             button.connect("clicked", lambda item, step=direction: self.step_time(step, item))
             setattr(self, name, button)
             self.thread_steps.append(button)
@@ -16383,11 +16382,12 @@ class MessagesWindow(ActivityWindow):
             strip.keyboard = True
             strip.set_hover(strip.open)
         unit = "hour" if strip.unit == "hour" else "day"
-        for button, index, side, key in zip((self.thread_up, self.thread_down), self.time_steps(), ("Previous", "Next"), ("Alt+Up", "Alt+Down")):
+        for button, index, side, key, edge in zip((self.thread_up, self.thread_down), self.time_steps(), ("Previous", "Next"), ("Alt+Up", "Alt+Down"),
+                                                  ("earlier", "later")):
             button.set_sensitive(index is not None)
             if index is None:
-                button.set_tooltip_text(None)
-                button.update_property([Gtk.AccessibleProperty.LABEL], [f"{side} {unit}"])
+                button.set_tooltip_text(f"No {edge} {unit} with messages")
+                button.update_property([Gtk.AccessibleProperty.LABEL], [f"No {edge} {unit} with messages"])
                 continue
             tip = strip.tip(index)
             button.set_tooltip_text(f"{tip} ({key})")

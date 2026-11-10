@@ -18112,9 +18112,10 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         # N4: the step buttons, their tooltips and names with the fixture counts.
         up, down = window.thread_up, window.thread_down
         self.assertEqual((up.get_icon_name(), down.get_icon_name(), up.get_has_frame(), down.get_has_frame()),
-                         ("go-up-symbolic", "go-down-symbolic", False, False))
-        self.assertEqual((up.get_width(), up.get_height(), down.get_width()), (24, 24, 24))
-        self.assertEqual(round(down.compute_bounds(up)[1].get_x() - up.get_width()), 4)
+                         ("go-up-symbolic", "go-down-symbolic", True, True))
+        back = window.thread_back
+        self.assertEqual((up.get_width(), up.get_height(), down.get_width()), (back.get_width(), back.get_height(), back.get_width()))
+        self.assertEqual(round(down.compute_bounds(up)[1].get_x() - up.compute_bounds(up)[1].get_width()), 4)
         self.assertIs(window.thread_steps.get_parent(), window.thread_route.get_parent())
         self.assertEqual(strip.buckets[1][1:], (94, 0))
         self.assertEqual(strip.buckets[3][1], 91)
@@ -19296,6 +19297,57 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         for name, show in self.thread_kinds(window)[2:3]:
             show(); self.drain(.4)
             self.assertEqual(window.ledger.get_width(), window.narrow_box.get_width(), name)
+
+    def icon_contrast(self, window, button):
+        """The largest channel difference between a pixel of the button in the rendered window and its fill at the middle of its left side."""
+        data, stride = self.pixels(window)
+        box = button.compute_bounds(window)[1]
+        left, top = round(box.get_x()), round(box.get_y())
+        width, height = round(box.get_width()), round(box.get_height())
+        pixel = lambda x, y: data[y * stride + x * 4:][:3]  # noqa: E731
+        fill = pixel(left + 3, top + height // 2)
+        return max(max(abs(a - b) for a, b in zip(pixel(x, y), fill)) for x in range(left + 3, left + width - 3) for y in range(top + 3, top + height - 3))
+
+    def test_W7_S2_the_step_buttons_have_the_back_button_look(self):
+        settings = asb.Gtk.Settings.get_default()
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if self.has_cascadia() else [])
+        for font in fonts:
+            settings.set_property("gtk-font-name", font)
+            window = self.window(period="7d")
+            day = self.thread_kinds(window)[-2][1]
+            day(); self.drain(.4)
+            back, up, down, strip = window.thread_back, window.thread_up, window.thread_down, window.thread_strip
+            size = lambda widget: (widget.compute_bounds(window)[1].get_width(), widget.compute_bounds(window)[1].get_height())  # noqa: E731
+            for button in (up, down):
+                self.assertTrue(button.has_css_class("asb-msg-back") and button.get_has_frame(), font)
+                self.assertEqual(size(button), size(back), font)
+                self.assertEqual(button.get_first_child().get_color().to_string(), back.get_first_child().get_color().to_string(), font)
+            # The title shows whole, and the steps keep the title line height.
+            self.assertEqual(window.thread_route.get_label(), "Thu, Oct 22")
+            self.assertFalse(window.thread_route.get_layout().is_ellipsized(), font)
+            self.assertEqual(window.thread_steps.get_parent().get_height(), window.thread_route.get_height(), font)
+            self.assertEqual(window.ledger.compute_bounds(window)[1].get_width(), round(340 * window.text_scale), font)
+            self.assertEqual(up.get_tooltip_text(), f"{asb.format_day(window.data['buckets']['startsMs'][1])}: 94 messages (Alt+Up)")
+            full = [index for index, bucket in enumerate(strip.buckets) if bucket[1]]
+            for index, button, other, text, key in ((full[0], up, down, "No earlier day with messages", "Alt+Down"),
+                                                    (full[-1], down, up, "No later day with messages", "Alt+Up")):
+                window.open_time(index, True); self.drain(.4)
+                self.assertFalse(button.get_sensitive())
+                self.assertEqual(button.get_tooltip_text(), text)
+                self.assert_accessible_label(button, text)
+                # A dim icon on an insensitive step button: less contrast to the button fill at its middle left.
+                self.assertLess(self.icon_contrast(window, button), self.icon_contrast(window, other) - 40)
+                self.assertTrue(other.get_sensitive())
+                self.assertRegex(other.get_tooltip_text(), r"^\w+ \d+: \d+ messages? \(Alt\+(Up|Down)\)$")
+                self.assertTrue(other.get_tooltip_text().endswith(f"({key})"))
+            window.destroy()
+        # 24 hours names the hour.
+        window = self.window(period="24h")
+        strip = window.thread_strip
+        full = [index for index, bucket in enumerate(window.count_strip.buckets) if bucket[1]]
+        window.open_time(full[0]); self.drain(.4)
+        self.assertEqual(window.thread_up.get_tooltip_text(), "No earlier hour with messages")
+        self.assert_accessible_label(window.thread_up, "No earlier hour with messages")
 
     def test_W6_TT1_TT5_an_open_time_thread_lights_its_chords(self):
         window = self.window(period="7d")
