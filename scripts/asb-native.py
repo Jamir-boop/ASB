@@ -16226,10 +16226,11 @@ class MessagesWindow(ActivityWindow):
             text(f"{message_end_title(record, 'from', seats)} →\u00a0{message_end_title(record, 'to', seats)}", "asb-msg-c-route", wrap=True)
             when = message_time(record["atMs"], self.data.get("nowMs") or self.clock(), self.period)
             status = message_status(record)
-            line = text(f"{when} · {message_status_label(record, self.view["seats"], self.view["machines"])}", "asb-msg-tiny", dim=True)
+            label = message_status_label(record, self.view["seats"], self.view["machines"])
+            line = text(f"{when} · {label}", "asb-msg-tiny", dim=True)
             if status != "accepted":
                 line.set_markup(f"{GLib.markup_escape_text(when)} · <span foreground=\"{status_text_on(self.palette, status, self.palette['win'])}\">"
-                                f"{GLib.markup_escape_text(message_status_label(record, self.view["seats"], self.view["machines"]))}</span>")
+                                f"{GLib.markup_escape_text(label)}</span>")
             hint = text(MESSAGE_CENTER_HINT, "asb-msg-tiny", wrap=True, dim=True)
         elif empty:
             period = dict(self.PERIODS)[self.period]

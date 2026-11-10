@@ -11743,5 +11743,27 @@ class BoardWindowsLogicChecks(unittest.TestCase):
                     self.assertNotIn("ASB_OPEN_WINDOW", os.environ)
 
 
+class OldPythonSyntaxChecks(unittest.TestCase):
+    @unittest.skipIf(sys.version_info < (3, 12), "the tokenizer splits f-strings only from Python 3.12")
+    def test_f_strings_parse_on_python_3_10(self):
+        # Python 3.10 and 3.11 (Ubuntu 22.04, Debian 12) refuse the quote of an f-string and a backslash inside its replacement fields.
+        import tokenize
+        found = []
+        for path in sorted(itertools.chain(SOURCE.parent.glob("*.py"), Path(__file__).parent.glob("*.py"))):
+            quotes = []
+            with open(path, "rb") as file:
+                for token in tokenize.tokenize(file.readline):
+                    if token.type == tokenize.FSTRING_START:
+                        quote = token.string.lstrip("rRfF")
+                        if quotes and quote.startswith(quotes[-1]):
+                            found.append((path.name, token.start[0]))
+                        quotes.append(quote)
+                    elif token.type == tokenize.FSTRING_END:
+                        quotes.pop()
+                    elif quotes and token.type == tokenize.STRING and (token.string.lstrip("rRbBuU").startswith(quotes[-1]) or "\\" in token.string):
+                        found.append((path.name, token.start[0]))
+        self.assertEqual(found, [])
+
+
 if __name__ == "__main__":
     unittest.main()
