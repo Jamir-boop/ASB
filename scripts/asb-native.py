@@ -13702,13 +13702,17 @@ class RoundTable(Gtk.Overlay):
         title = seat.get("title") or "Unlisted sessions"
         size = 12 * self.window.text_scale
         # The whole name on one line (at most 24 characters), on two lines at its last break (each line 4 to 24 characters),
-        # then cut to 10 and to 7 characters, each only when it is 3 or more characters shorter than the title.
+        # then cut to 10 and to 7 characters when it is 3 or more characters shorter than the title. A cut that saves less is a late
+        # text: a seat that is not chosen tries it only before its label hides.
         names = [seat_label_text(title)]
         split = max((match.end() for match in re.finditer(r"[-_. ]", title) if match.end() < len(title)), default=0)
         if split and title[:split].strip("-_. ") and 4 <= split <= 24 and 4 <= len(title) - split <= 24:
             names.append(title[:split] + "\n" + title[split:])
         whole = len(names)
-        names += [cut for cut in (title[:length].rstrip("-_. ") + "…" for length in (10, 7)) if len(cut) <= len(title) - 3]
+        cuts = [title[:length].rstrip("-_. ") + "…" for length in (10, 7) if len(title) > length]
+        names += [cut for cut in cuts if len(cut) <= len(title) - 3]
+        late = len(dict.fromkeys(names))
+        names += [cut for cut in cuts if len(cut) > len(title) - 3]
         texts = []
         for text in dict.fromkeys(names):
             layout = activity_layout(self, text, size)
@@ -13718,7 +13722,7 @@ class RoundTable(Gtk.Overlay):
         labels = seat.get("labels") or []
         return {"title": title, "tip": f"{title}\n{unlisted_tip(labels)}" if len(labels) > 1 else title,
                 "app": message_app(seat), "machine": seat.get("machineId", ""), "hue": self.window.machine_hue(index if index is not None else 0),
-                "offline": machine.get("state") == "offline", "whole": whole, "texts": texts, "layout": texts[0]["layout"], "w": texts[0]["w"], "h": texts[0]["h"],
+                "offline": machine.get("state") == "offline", "whole": whole, "late": late, "texts": texts, "layout": texts[0]["layout"], "w": texts[0]["w"], "h": texts[0]["h"],
                 "label": f"{title}, {ACTIVITY_APP_LABELS[message_app(seat)]}, {machine.get('name', '')}: {counts['sent']} outgoing, {counts['received']} incoming"}
 
     def sync_proxies(self):
@@ -13913,17 +13917,18 @@ class RoundTable(Gtk.Overlay):
         """Each seat label takes the first free candidate (a text in a place) in a fixed order. The places are nine: inward, under,
         over, left, or right of its pin, then under-right, under-left, over-right, or over-left. The texts are the whole name on one
         line (at most 24 characters, then …), on two lines at its last break (each line at most 24 characters), then cut to 10 and
-        to 7 characters. The chosen seats place first, then the seats lit by an open thread or by the keyboard focus, then the
-        others; within each group by message count, then the newest, then circle order.
+        to 7 characters when the cut is 3 or more characters shorter (a cut that saves less is a late text). The chosen seats place
+        first, then the seats lit by an open thread or by the keyboard focus, then the others; within each group by message count,
+        then the newest, then circle order.
 
         A free candidate stays 2 px inside the table, off the center disc and the machine band, and touches no pin ring, machine
         label, not-sent end, the key line, or other label (6 px times the text scale wider at each side). Its box is also nearer its
         own pin circle than every other pin circle by 4 px times the text scale or more. Each pin counts with the largest ring that
         it can get (pin_ring), so a label keeps its place when its seat lights.
 
-        The order of the candidates (rank): no stacked or stray fault first (a label that stacks with the label of another
-        seat, or whose center is not nearer its own pin); the whole names before the cut ones; then a plate that covers no more than
-        12 px of a chord of 5 px or more; off the exit of the seat's widest chord; one line before two (and 10 before 7
+        The order of the candidates (rank): the whole names before the cut ones first; then no stacked or stray fault (a label
+        that stacks with the label of another seat, or whose center is not nearer its own pin); then a plate that covers no more
+        than 12 px of a chord of 5 px or more; off the exit of the seat's widest chord; one line before two (and 10 before 7
         characters); off the seat's own chord exits and off each all-not-sent chord; less chord ink under the plate, in steps of
         8 px²; and last the order of the nine places.
 
@@ -13931,8 +13936,9 @@ class RoundTable(Gtk.Overlay):
         label. When no candidate is free, the repair step moves the one other (not chosen) label that blocks a candidate to a free
         candidate of its own, and the seat then takes its first free candidate. When that also fails, the seat tries its
         candidates again with 2 px times the text scale for the own-pin rule, then from the 16 px pin itself (no rings). A chosen
-        seat that still finds no place shows its one-line whole name inward; another seat hides its label. Pointer hover never
-        moves or widens a label."""
+        seat that still finds no place shows its one-line whole name inward. Another seat then tries its late texts in the same
+        three ways (step late), and hides its label only when they also find no place. With preserve, a late label first tries
+        its current text and place too. Pointer hover never moves or widens a label."""
         geometry, scale = self.geometry, self.window.text_scale
         disc = geometry["S"] >= 480
         cx, cy = geometry["cx"], geometry["cy"]
@@ -14055,7 +14061,7 @@ class RoundTable(Gtk.Overlay):
 
         def rank(seat_id, item):
             ink, heavy, wide, strict = facts(seat_id, item)
-            return (faults(seat_id, item["box"]), item["text"] >= self.pins[seat_id]["whole"], heavy, wide, item["text"], not strict,
+            return (item["text"] >= self.pins[seat_id]["whole"], faults(seat_id, item["box"]), heavy, wide, item["text"], not strict,
                     int(ink // 8), item["place"])
 
         def ranked(seat_id, texts, ring=None):
@@ -14070,10 +14076,11 @@ class RoundTable(Gtk.Overlay):
 
         for seat_id in order:
             pin, found = self.pins[seat_id], None
-            texts = range(pin["whole"] if seat_id in chosen else len(pin["texts"]))
+            texts = range(pin["whole"] if seat_id in chosen else pin["late"])
+            late = range(0) if seat_id in chosen else range(pin["late"], len(pin["texts"]))
             options = ranked(seat_id, texts)
             old = previous.get(seat_id)
-            if old and old["shown"] and old["text"] in texts:
+            if old and old["shown"] and (old["text"] in texts or old["text"] in late):
                 item = candidate(seat_id, old["text"], old["place"])
                 if free(seat_id, item):
                     found = placed(seat_id, item, "kept")
@@ -14110,6 +14117,11 @@ class RoundTable(Gtk.Overlay):
                 found = next((placed(seat_id, item, "last") for item in ranked(seat_id, texts, 0) if free(seat_id, item, margin=2, shrink=11)), None)
             if found is None and seat_id in chosen:
                 found = placed(seat_id, candidate(seat_id, 0, 0), "chosen")
+            if found is None and late:
+                # A short cut is better than a hidden label: the usual rule, the 2 px rule, then from the 16 px pin.
+                found = (next((placed(seat_id, item, "late") for item in ranked(seat_id, late) if free(seat_id, item)), None)
+                         or next((placed(seat_id, item, "late") for item in ranked(seat_id, late) if free(seat_id, item, margin=2)), None)
+                         or next((placed(seat_id, item, "late") for item in ranked(seat_id, late, 0) if free(seat_id, item, margin=2, shrink=11)), None))
             self.labels[seat_id] = found or {"box": (0, 0, 0, 0), "shown": False, "text": 0, "place": 0, "ring": 0}
         if self.key and self.key["shown"] and any(item["shown"] and hit(item["box"], self.key["box"]) for item in self.labels.values()):
             self.key["shown"] = False

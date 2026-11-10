@@ -19070,9 +19070,14 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertEqual(table.key["items"][0]["kind"], "chords")
         self.assertEqual(table.key["items"][0]["layout"].get_text(), "Line width: 4 to 139 messages")
 
+    def has_cascadia(self):
+        # Pango's own font list: the tests run with a temporary HOME, where fc-list does not see the user fonts.
+        return any(family.get_name() == "Cascadia Code NF" for family in asb.Gtk.Label().get_pango_context().list_families())
+
     def label_order_faults(self, table):
         """The shown labels that a free candidate earlier in the order of the rank of label_rules could replace (none when the rules hold): a label
-        of the first step has no free candidate before it; a label of a later step (repair, 2 px, the last try) has no free one."""
+        of the first step has no free candidate before it; a label of a later step (repair, 2 px, the last try, a late text) has no
+        free one of the usual texts. The order starts with whole before cut, so a shown cut label had no free whole-name candidate."""
         candidate, free, rank = table.label_rules
         chosen = table.chosen_seats()
         wrong = []
@@ -19081,11 +19086,11 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 continue
             pin = table.pins[seat]
             step, placed = table.label_steps[seat]
-            texts = range(pin["whole"] if seat in chosen else len(pin["texts"]))
+            texts = range(pin["whole"] if seat in chosen else pin["late"])
             others = [candidate(seat, text, place) for text in texts for place in range(9)]
             if step == "first":
                 wrong += [(seat, other["text"], other["place"]) for other in others if rank(seat, other) < placed and free(seat, other)]
-            elif step in ("repair", "margin", "last"):
+            elif step in ("repair", "margin", "last", "late"):
                 wrong += [(seat, other["text"], other["place"]) for other in others if free(seat, other)]
         return wrong
 
@@ -19093,10 +19098,11 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         window = self.window(period="7d")
         table = window.table
         texts = lambda seat: [text["layout"].get_text() for text in table.pins[seat]["texts"]]  # noqa: E731
-        self.assertEqual(texts("ui-polish"), ["ui-polish"])
-        self.assertEqual(texts("release-plan"), ["release-plan", "release-\nplan", "release…"])
+        self.assertEqual(texts("ui-polish"), ["ui-polish", "ui-poli…"])
+        self.assertEqual(table.pins["ui-polish"]["late"], 1)
+        self.assertEqual(texts("release-plan"), ["release-plan", "release-\nplan", "release…", "release-pl…"])
         for pin in table.pins.values():
-            for text in pin["texts"][pin["whole"]:]:
+            for text in pin["texts"][pin["whole"]:pin["late"]]:
                 self.assertLessEqual(len(text["layout"].get_text()), len(pin["title"]) - 3)
         # The own exit zone of a seat runs 40 px past the pin rim at a not-sent end of the chord at that seat, else 28 px.
         exits = table.kept_off[0]
@@ -19115,7 +19121,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         settings = asb.Gtk.Settings.get_default()
         font = settings.get_property("gtk-font-name")
         self.addCleanup(settings.set_property, "gtk-font-name", font)
-        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if "Cascadia Code" in subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True).stdout else [])
+        fonts = ["Cantarell 11"] + (["Cascadia Code NF 11"] if self.has_cascadia() else [])
         for name in fonts:
             settings.set_property("gtk-font-name", name)
             for size in ((968, 760), (480, 760)):
@@ -19182,7 +19188,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
                     mine = math.hypot(x - pins[seat][0], y - pins[seat][1])
                     stray = any(math.hypot(x - px, y - py) - mine < 4 for other, (px, py) in pins.items() if other != seat)
-                    self.assertEqual(rank(seat, item)[0], stacked or stray, (seat, text, place))
+                    self.assertEqual(rank(seat, item)[:2], (text >= table.pins[seat]["whole"], stacked or stray), (seat, text, place))
         # No two shown labels of different seats stack where a candidate without the fault was free (the order check), and every
         # shown label keeps its center nearer its own pin.
         self.assertEqual(self.label_order_faults(table), [])
@@ -19205,6 +19211,40 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         table.label_cache["old"] = True
         table.layout_table()
         self.assertNotIn("old", table.label_cache)
+
+    def test_W6_F1_F2_whole_names_first_and_a_short_cut_before_a_label_hides(self):
+        settings = asb.Gtk.Settings.get_default()
+        font = settings.get_property("gtk-font-name")
+        self.addCleanup(settings.set_property, "gtk-font-name", font)
+        if not self.has_cascadia():
+            self.skipTest("Cascadia Code is not installed")
+        settings.set_property("gtk-font-name", "Cascadia Code NF 11")
+        window = self.window((480, 760), period="24h")
+        table = window.table
+        text = lambda seat: table.pins[seat]["texts"][table.labels[seat]["text"]]["layout"].get_text()  # noqa: E731
+        # A title has a late text only when its cut is less than 3 characters shorter.
+        for seat, pin in table.pins.items():
+            for item in pin["texts"][pin["whole"]:pin["late"]]:
+                self.assertLessEqual(len(item["layout"].get_text()), len(pin["title"]) - 3, seat)
+            for item in pin["texts"][pin["late"]:]:
+                self.assertGreater(len(item["layout"].get_text()), len(pin["title"]) - 3, seat)
+        self.assertEqual([item["layout"].get_text() for item in table.pins["ui-polish"]["texts"]], ["ui-polish", "ui-poli…"])
+        self.assertEqual(table.pins["ui-polish"]["late"], 1)
+        table.place_labels(False)
+        # F2: ui-polish shows its late cut by the step late, release-plan shows whole, and no label hides.
+        self.assertEqual((text("ui-polish"), table.label_steps["ui-polish"][0]), ("ui-poli…", "late"))
+        self.assertEqual(text("release-plan"), "release-plan")
+        self.assertTrue(all(item["shown"] for item in table.labels.values()))
+        self.assertEqual(self.label_order_faults(table), [])
+        # A second pass (preserve) keeps the late label at its text and place.
+        before = dict(table.labels["ui-polish"])
+        table.place_labels()
+        self.assertEqual((table.labels["ui-polish"]["text"], table.labels["ui-polish"]["place"]), (before["text"], before["place"]))
+        # A chosen seat never shows a late text: it shows its whole name.
+        window.show_session("ui-polish"); self.drain(.3)
+        self.assertIn("ui-polish", table.chosen_seats())
+        self.assertLess(table.labels["ui-polish"]["text"], table.pins["ui-polish"]["whole"])
+        self.assertEqual(text("ui-polish"), "ui-polish")
 
     def test_W6_TT1_TT5_an_open_time_thread_lights_its_chords(self):
         window = self.window(period="7d")
@@ -20818,7 +20858,9 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                              (3, (x - 16 - 3 * scale - pin["w"], y - pin["h"] / 2)),
                              (4, (x + 16 + 3 * scale, y - pin["h"] / 2))):
             self.assertEqual(table.label_place_with(pin, angle, geometry, 0, place, scale), point)
-        self.assertEqual([item["layout"].get_text() for item in pin["texts"]], ["parser-review", "parser-\nreview", "parser…"])
+        # The 10-character cut saves less than 3 characters: a late text, after the others.
+        self.assertEqual([item["layout"].get_text() for item in pin["texts"]], ["parser-review", "parser-\nreview", "parser…", "parser-rev…"])
+        self.assertEqual(pin["late"], 3)
         # Block every candidate: only the chosen seat keeps its full text, inward.
         table.machine_items = {"desk": [{"x": 0, "y": 0, "w": geometry["W"], "h": geometry["H"]}]}
         table.hover["focus"] = seat
@@ -21354,7 +21396,8 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     a = first["box"]
                     for second in shown[index + 1:]:
                         b = second["box"]
-                        if a[1] < b[3] and b[1] < a[3]:
+                        # Rows that share more than half a pixel, the overlap tolerance of the table (hit in place_labels).
+                        if a[1] < b[3] - .5 and b[1] < a[3] - .5:
                             self.assertGreaterEqual(max(b[0] - a[2], a[0] - b[2]), 6 - .5, (a, b))
                     corners = [math.hypot(x - geometry["cx"], y - geometry["cy"]) for x in (a[0], a[2]) for y in (a[1], a[3])]
                     near_x, near_y = min(max(geometry["cx"], a[0]), a[2]), min(max(geometry["cy"], a[1]), a[3])
