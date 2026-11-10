@@ -19738,6 +19738,144 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertGreater(count, 5)
         self.assertEqual(share, 0)
 
+    def cascadia_window(self, period):
+        if not self.has_cascadia():
+            self.skipTest("Cascadia Code is not installed")
+        asb.Gtk.Settings.get_default().set_property("gtk-font-name", "Cascadia Code NF 11")
+        return self.window(period=period)
+
+    def plate_points(self, table, seat, key, alone, avoid=(), body=False):
+        """The points of the center line of a chord (with body, also the points across its stroke up to 1 px inside its edges) 1 px or
+        more inside the plate of a label, 3 px or more from each glyph of the label alone, and 3 px or more outside each chord of avoid
+        (keys), as rounded pixels."""
+        label = table.labels[seat]
+        plate = table.label_plate(table.pins[seat]["texts"][label["text"]]["layout"], label["box"][0] + 1, label["box"][1])
+        chords = {chord["key"]: chord for chord in table.chords}
+        curve = chords[key]["table"]
+        steps = math.ceil(curve[1][-1] * 2)
+        reach = int(chords[key]["width"] / 2 - 1) if body else 0
+        points = []
+        for index in range(steps + 1):
+            (x, y), (nx, ny) = asb.curve_point(curve, index / steps), asb.curve_point(curve, min(1, (index + 1) / steps))
+            (px, py) = asb.curve_point(curve, max(0, (index - 1) / steps))
+            length = math.hypot(nx - px, ny - py) or 1
+            points += [(x - (ny - py) / length * offset, y + (nx - px) / length * offset) for offset in range(-reach, reach + 1)]
+        found = []
+        for x, y in points:
+            point = round(x), round(y)
+            if body:
+                # The plate fill checks: the whole pixel 1 px or more inside the plate, whose corners have a 3 px radius.
+                cx, cy = point[0] + .5, point[1] + .5
+                nx, ny = min(max(cx, plate[0] + 3), plate[2] - 3), min(max(cy, plate[1] + 3), plate[3] - 3)
+                if math.hypot(cx - nx, cy - ny) > 3 - 1 - math.sqrt(.5) or min(cx - plate[0], cy - plate[1], plate[2] - cx, plate[3] - cy) < 1.5:
+                    continue
+            elif min(x - plate[0], y - plate[1], plate[2] - x, plate[3] - y) < 1:
+                continue
+            if self.glyph_free(alone, *point, 3) and all(asb.curve_distance(chords[other]["table"], *point) > chords[other]["width"] / 2 + 3 for other in avoid):
+                found.append(point)
+        return sorted(set(found))
+
+    def near_color(self, pixel, color, tolerance):
+        return all(abs(a - b) <= tolerance for a, b in zip(pixel, tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))))
+
+    def test_W8_T1_a_wide_rest_chord_of_another_pair_draws_over_a_plate(self):
+        window = self.cascadia_window("7d")
+        table, palette = window.table, window.palette
+        gray = table.chord_gray(palette)
+        widths = {chord["key"]: chord["width"] for chord in table.chords}
+        api = next(key for key in table.chord_keys if set(key) == {"docs", "api-docs"})
+        own = next(key for key in table.chord_keys if set(key) == {"release-plan", "ui-polish"})
+        thin = next(key for key in table.chord_keys if set(key) == {"parser-review", "render-farm"})
+        covers = self.plate_covers(table, "ui-polish", table.labels["ui-polish"])
+        # The m02 case: a chord of another pair 5 px or wider, more than 12 px inside the ui-polish plate.
+        self.assertGreater(covers[api], 12)
+        self.assertGreaterEqual(widths[api], 5)
+        rows = self.table_pixels(table)
+        self.assertEqual(table.lit_over, {})
+        self.assertEqual(table.rest_over["ui-polish"], [api])
+        alone = self.label_alone(table, "ui-polish")
+        points = self.plate_points(table, "ui-polish", api, alone)
+        self.assertGreaterEqual(len(points), 3)
+        for x, y in points:
+            self.assertTrue(self.near_color(rows[y][x], gray, 2), (x, y, rows[y][x], gray))
+        # The label text draws again over its 2 px casing: the window color at 24 offsets, then the text color.
+        with patch.object(asb, "snapshot_layout") as layouts:
+            table.draw(asb.Gtk.Snapshot())
+        layout = table.pins["ui-polish"]["texts"][table.labels["ui-polish"]["text"]]["layout"]
+        self.assertEqual([asb.hex_color(call.args[4]) for call in layouts.call_args_list if call.args[1] is layout][-25:], [palette["win"]] * 24 + [palette["text"]])
+        # A thinner sent chord of another pair with 24 px inside a plate (api-docs) stays under it: the plate fill shows across it.
+        self.assertGreater(self.plate_covers(table, "api-docs", table.labels["api-docs"])[thin], 20)
+        self.assertLess(widths[thin], 5)
+        self.assertNotIn("api-docs", table.rest_over)
+        self.assert_plate_fill(table, rows, "api-docs", thin)
+        # The chord of ui-polish's own seat crosses its plate too, but so near the glyphs that the own-seat pixel test uses another
+        # state (test_W8_T1_a_wide_chord_at_its_own_seat_stays_under_its_plate).
+        self.assertGreater(covers[own], 12)
+        self.assertNotIn(own, table.rest_over["ui-polish"])
+        # While the pointer dims the table (here on a seat away from the chord), the part over the plate has the dim color of the
+        # chord outside the plate.
+        table.hover["seat"] = "bridge-tests"
+        self.assertEqual(table.chord_tone(next(chord for chord in table.chords if chord["key"] == api), table.state(), table.lit(table.state())), "dim")
+        rows = self.table_pixels(table)
+        self.assertIn(api, table.rest_over["ui-polish"])
+        alone = self.label_alone(table, "ui-polish")
+        inside = self.plate_points(table, "ui-polish", api, alone)
+        dim = asb.mix_color(palette["win"], gray, .35)
+        chord = next(chord for chord in table.chords if chord["key"] == api)
+        # A point of the chord halfway along, away from each label plate and pin.
+        middle = tuple(round(value) for value in asb.curve_point(chord["table"], .5))
+        self.assertTrue(self.near_color(rows[middle[1]][middle[0]], dim, 2), (middle, rows[middle[1]][middle[0]], dim))
+        for x, y in inside:
+            self.assertTrue(all(abs(a - b) <= 2 for a, b in zip(rows[y][x], rows[middle[1]][middle[0]])), (x, y, rows[y][x], dim))
+        table.hover["seat"] = None
+        # A wide chord of another pair with 12 px or less inside a plate stays under it (24 hours: 5.6 px of a 5.7 px chord).
+        window.set_period("24h"); self.drain(.4)
+        covers = self.plate_covers(table, "ui-polish", table.labels["ui-polish"])
+        widths = {chord["key"]: chord["width"] for chord in table.chords}
+        self.assertTrue(0 < covers[api] <= 12 and widths[api] >= 5, (covers[api], widths[api]))
+        rows = self.table_pixels(table)
+        self.assertNotIn(api, table.rest_over.get("ui-polish", ()))
+        alone = self.label_alone(table, "ui-polish")
+        self.assert_plate_fill(table, rows, "ui-polish", api, 1)
+
+    def assert_plate_fill(self, table, rows, seat, key, least=3):
+        """The points across the stroke of a chord inside the plate of a label, 3 px or more from its glyphs and from each chord that
+        draws over that plate, show the plate fill of the label alone."""
+        alone = self.label_alone(table, seat)
+        points = self.plate_points(table, seat, key, alone, table.rest_over.get(seat, []) + table.lit_over.get(seat, []), body=True)
+        self.assertGreaterEqual(len(points), least, (seat, key))
+        for x, y in points:
+            self.assertTrue(all(abs(a - b) <= 2 for a, b in zip(rows[y][x], alone(x, y))), (seat, key, x, y, rows[y][x], alone(x, y)))
+
+    def test_W8_T1_a_wide_chord_at_its_own_seat_stays_under_its_plate(self):
+        # 60 more messages from schema to migrations make their chord 6.3 px wide, with 26.6 px under the migrations plate.
+        now = self.sample["nowMs"]
+        self.extra = [[f"m-own-{index}", "schema", "migrations", now - 1000 - index, "accepted", "", None] for index in range(60)]
+        window = self.cascadia_window("7d")
+        table = window.table
+        own = next(chord for chord in table.chords if set(chord["key"]) == {"schema", "migrations"})
+        self.assertGreater(own["width"], 6)
+        self.assertGreater(self.plate_covers(table, "migrations", table.labels["migrations"])[own["key"]], 25)
+        rows = self.table_pixels(table)
+        self.assertNotIn(own["key"], table.rest_over.get("migrations", ()))
+        self.assert_plate_fill(table, rows, "migrations", own["key"])
+
+    def test_W8_T1_an_all_not_sent_chord_of_another_pair_draws_its_dashes_over_a_plate(self):
+        window = self.cascadia_window("24h")
+        table, palette = window.table, window.palette
+        bad = next(chord for chord in table.chords if set(chord["key"]) == {"parser-review", "render-farm"})
+        self.assertTrue(bad["bad"])
+        self.assertGreater(self.plate_covers(table, "api-docs", table.labels["api-docs"])[bad["key"]], 13)
+        rows = self.table_pixels(table)
+        self.assertIn(bad["key"], table.rest_over["api-docs"])
+        with patch.object(table, "plate_crossings", return_value={}):
+            before = self.table_pixels(table)
+        color = asb.message_status_colors(palette)["not-sent"]
+        # The pixels at 1 px or less from the center line inside the plate: one is on a dash (the not-sent color); before T1 none is.
+        points = {(x + dx, y + dy) for x, y in self.plate_points(table, "api-docs", bad["key"], lambda x, y: (0, 0, 0)) for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
+        self.assertTrue([(x, y) for x, y in points if self.near_color(rows[y][x], color, 24)])
+        self.assertFalse([(x, y) for x, y in points if self.near_color(before[y][x], color, 24)])
+
     def stacked_pairs(self, table):
         """The pairs of shown labels of different seats with the stacked fault (the rule of faults in place_labels)."""
         geometry, scale = table.geometry, table.window.text_scale
