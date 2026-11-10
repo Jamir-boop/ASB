@@ -17953,7 +17953,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         window = self.window()
         # S5: the plural head sentence, with the first word of each sentence kept with the next word.
         window.open_thread("status", "not-sent"); self.drain(.3)
-        self.assertEqual(window.thread_tip.get_label(), "ASB did not send these messages. Each one shows the reason, when ASB has it.")
+        self.assertEqual(window.thread_tip.get_label(), "ASB did not send these messages. Each shows its reason, if known.")
         self.assertEqual(window.thread_route.get_tooltip_text(), asb.MESSAGE_STATUS_HEADS["not-sent"][0])
         self.assertEqual(window.legend_rows["not-sent"].get_tooltip_text(), asb.MESSAGE_STATUS_TIPS["not-sent"])
         window.close_thread(); self.drain(.3)
@@ -17962,7 +17962,7 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.sample = dict(sample, messages=[record for record in sample["messages"] if record[4] != "held"] + [held])
         window = self.window()
         window.open_thread("status", "held"); self.drain(.3)
-        self.assertEqual(window.thread_route.get_tooltip_text(), "The receiver holds this message until its receive setting accepts it.")
+        self.assertEqual(window.thread_route.get_tooltip_text(), "The receiver holds this message until its setting accepts it.")
         self.sample = sample
         window = self.window()
         # S6: a day thread has no day line, and its head has the weekday.
@@ -19387,6 +19387,48 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         for name, show in self.thread_kinds(window)[2:3]:
             show(); self.drain(.4)
             self.assertEqual(window.ledger.get_width(), window.narrow_box.get_width(), name)
+
+    def test_W8_S1_the_status_sentence_stands_4_px_under_the_count(self):
+        window = self.window()
+        titles = window.thread_tip.get_parent()
+        for name, show in self.thread_kinds(window):
+            show(); self.drain(.4)
+            visible = [child for child in UsageWindowCheck.children(titles) if child.get_visible()]
+            if name in asb.MESSAGE_STATUS_HEADS:
+                # The sentence box starts 4 px under the count line, so its ink is 4 px lower than with no gap (2 px to 6 px in Cantarell).
+                self.assertEqual(window.thread_tip.get_margin_top(), 4)
+                top = window.thread_tip.compute_point(window.thread_counts, asb.Graphene.Point().init(0, 0))[1].y
+                self.assertEqual(top - window.thread_counts.get_height(), 4, name)
+                self.assertEqual(titles.get_height(), sum(child.get_height() for child in visible) + 4, name)
+            else:
+                # A head with no sentence keeps its height: the route line and the count line only.
+                self.assertEqual(visible, [titles.get_first_child(), window.thread_counts], name)
+                self.assertEqual(titles.get_height(), sum(child.get_height() for child in visible), name)
+            window.close_thread(); self.drain(.3)
+
+    def test_W8_S1_each_status_sentence_takes_two_lines_and_three_in_large_text(self):
+        settings = asb.Gtk.Settings.get_default()
+        self.addCleanup(settings.set_property, "gtk-font-name", settings.get_property("gtk-font-name"))
+        if not self.has_cascadia():
+            self.skipTest("Cascadia Code is not installed")
+        settings.set_property("gtk-font-name", "Cascadia Code NF 11")
+        for scale, most in ((1, 2), (1.5, 3)):
+            if scale == 1.5:
+                self.large_text()
+            window = self.window()
+            self.assertEqual(window.text_scale, scale)
+            for name in asb.MESSAGE_STATUS_HEADS:
+                window.open_thread("status", name); self.drain(.4)
+                for form in asb.MESSAGE_STATUS_HEADS[name]:
+                    with patch.dict(asb.MESSAGE_STATUS_HEADS, {name: (form, form)}):
+                        window.render_thread(); self.drain(.2)
+                    layout = window.thread_tip.get_layout()
+                    self.assertEqual(layout.get_text().replace("\u00a0", " "), form)
+                    self.assertFalse(layout.is_ellipsized(), (scale, form))
+                    self.assertLessEqual(layout.get_line_count(), most, (scale, form))
+                    self.assertEqual(window.thread_route.get_tooltip_text(), form)
+                window.close_thread(); self.drain(.3)
+            window.destroy()
 
     def icon_contrast(self, window, button):
         """The largest channel difference between a pixel of the button in the rendered window and its fill at the middle of its left side."""

@@ -3054,10 +3054,10 @@ MESSAGE_STATUS_TIPS = {"accepted": "The receiving session took the message.",
 MESSAGE_STATUS_HEADS = {
     "accepted": ("The receiving sessions took these messages.", "The receiving session took this message."),
     "written": ("ASB sent these messages to the receiver. No receipt came back.", "ASB sent this message to the receiver. No receipt came back."),
-    "held": ("The receiver holds these messages until its receive setting accepts them.",
-             "The receiver holds this message until its receive setting accepts it."),
-    "not-sent": ("ASB did not send these messages. Each one shows the reason, when ASB has it.",
-                 "ASB did not send this message. It shows the reason, when ASB has it."),
+    "held": ("The receiver holds these messages until its setting accepts them.",
+             "The receiver holds this message until its setting accepts it."),
+    "not-sent": ("ASB did not send these messages. Each shows its reason, if known.",
+                 "ASB did not send this message. It shows its reason, if known."),
     "unknown": ("These messages can have gone out, but ASB has no proof.", "This message can have gone out, but ASB has no proof.")}
 MESSAGE_NEXT_PERIOD = {"24h": "7d", "7d": "30d"}
 
@@ -16341,8 +16341,9 @@ class MessagesWindow(ActivityWindow):
         self.thread_counts.add_css_class("asb-mono")
         self.thread_counts.add_css_class("asb-dim")
         titles.append(self.thread_counts)
-        # A status thread head shows the status sentence under the count: at most three lines, then ….
+        # A status thread head shows the status sentence 4 px under the count: at most three lines, then ….
         self.thread_tip = label("", "asb-msg-head-tip")
+        self.thread_tip.set_margin_top(4)
         self.thread_tip.add_css_class("asb-dim")
         self.thread_tip.set_wrap(True)
         self.thread_tip.set_wrap_mode(Pango.WrapMode.WORD)

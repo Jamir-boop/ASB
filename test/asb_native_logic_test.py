@@ -10957,10 +10957,10 @@ class MessagesLogicChecks(unittest.TestCase):
         self.assertEqual(asb.MESSAGE_STATUS_HEADS, {
             "accepted": ("The receiving sessions took these messages.", "The receiving session took this message."),
             "written": ("ASB sent these messages to the receiver. No receipt came back.", "ASB sent this message to the receiver. No receipt came back."),
-            "held": ("The receiver holds these messages until its receive setting accepts them.",
-                     "The receiver holds this message until its receive setting accepts it."),
-            "not-sent": ("ASB did not send these messages. Each one shows the reason, when ASB has it.",
-                         "ASB did not send this message. It shows the reason, when ASB has it."),
+            "held": ("The receiver holds these messages until its setting accepts them.",
+                     "The receiver holds this message until its setting accepts it."),
+            "not-sent": ("ASB did not send these messages. Each shows its reason, if known.",
+                         "ASB did not send this message. It shows its reason, if known."),
             "unknown": ("These messages can have gone out, but ASB has no proof.", "This message can have gone out, but ASB has no proof.")})
         self.assertEqual(asb.MESSAGE_STATUS_TIPS["written"], "ASB sent the message to the receiver. No receipt came back.")
         # S7: the status icon of a thread block has the color of its status word: 3:1 or more on each machine tint.
