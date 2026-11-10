@@ -246,9 +246,9 @@ class CouncilRoundSevenMessagesTest {
     }
 
     @Test fun aKeyThatDoesNotFitDropsItsLastPartsFirst() {
-        // The two-sample key is 216 dp wide alone, 302 with Not sent, 418 with Some not sent, and 500 with Offline.
+        // The two-sample key is 218 dp wide alone, 304 with Not sent, 420 with Some not sent, and 502 with Offline (round 8).
         fun words(limit: Float) = planKey(listOf(1, 2), null, rest, measure, 1f, 400f) { it.right <= limit }!!.let { it.shown to it.words }
-        assertEquals(true to "Line width: 1 to 2 messages, Not sent, Some not sent, Offline", words(500f))
+        assertEquals(true to "Line width: 1 to 2 messages, Not sent, Some not sent, Offline", words(502f))
         assertEquals(true to "Line width: 1 to 2 messages, Not sent, Some not sent", words(420f))
         assertEquals(true to "Line width: 1 to 2 messages, Not sent", words(310f))
         assertEquals(true to "Line width: 1 to 2 messages", words(220f))

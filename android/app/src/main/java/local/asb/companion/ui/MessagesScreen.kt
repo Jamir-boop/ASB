@@ -84,6 +84,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.painter.Painter
@@ -989,10 +990,18 @@ private fun DrawScope.drawTable(
         }
         drawText(labels.texts.getValue(id)[spot.text], color = textColor(id), topLeft = Offset(spot.box.left + 1 * dp, spot.box.top))
     }
-    // A lit chord draws again over the plates that it crosses, and those labels draw again over a casing.
-    for ((id, keys) in plateCrossings(labels.spots, labels.inputs, labels.lines, lit.chords, dp)) {
+    // A lit chord, and a wide or all-not-sent rest or dim chord of another pair, draw again over the plates that they cross, and
+    // those labels draw again over a casing. The clip is a plain rectangle on whole pixels (plateClip), so no seam shows.
+    val litOver = plateCrossings(labels.spots, labels.inputs, labels.lines, lit.chords, dp)
+    val restOver = restCrossings(labels.spots, labels.inputs, labels.lines, dp)
+    for (id in litOver.keys + restOver.keys) {
         val spot = labels.spots[id] ?: continue
-        clipPlate(plate(id, spot)) { drawLit(keys.toSet()) }
+        val box = plateClip(plate(id, spot), dp)
+        val rest = restOver[id].orEmpty().filter { it !in lit.chords }.toSet()
+        clipRect(box.left, box.top, box.right, box.bottom) {
+            for (chord in chordList) if (chord.key in rest) curves[chord.key]?.let { drawChord(chord, it, "all") }
+            drawLit(litOver[id].orEmpty().toSet())
+        }
         drawCasedText(labels.texts.getValue(id)[spot.text], Offset(spot.box.left + 1 * dp, spot.box.top), background, textColor(id), dp)
     }
     // Pins are opaque: the background fill, then the ring, after all chords and not-sent ends. A lit pin has a 2 dp accent ring with a
@@ -1058,14 +1067,10 @@ private fun DrawScope.drawKey(key: KeyPlan, texts: Map<String, TextLayoutResult>
     for (item in key.items) {
         val left = item.x
         when (item.kind) {
-            // Three 16 dp butt-capped samples at the widths of the smallest, the middle, and the largest count, each before its count.
-            "scale" -> for (group in item.groups) {
-                drawLine(gray, Offset(group.x, middle), Offset(group.x + 16 * dp, middle), group.width * dp, StrokeCap.Butt)
+            // 16 dp butt-capped samples (the accent for a chosen bucket), each 4 dp before its count.
+            "scale", "chords" -> for (group in item.groups) {
+                drawLine(if (key.accent) colors.accent else gray, Offset(group.x, middle), Offset(group.x + 16 * dp, middle), group.width * dp, StrokeCap.Butt)
                 text(group.text, group.tx)
-            }
-            // Two 16 dp butt-capped segments at the smallest and the largest width, 4 dp apart; in the accent for a chosen bucket.
-            "chords" -> for ((start, width) in listOf(left to key.widths.first, left + 20 * dp to key.widths.second)) {
-                drawLine(if (key.accent) colors.accent else gray, Offset(start, middle), Offset(start + 16 * dp, middle), width * dp, StrokeCap.Butt)
             }
             "bad" -> drawLine(bad, Offset(left, middle), Offset(left + 18 * dp, middle), 2 * dp, pathEffect = dashes)
             // A gray chord, a 2 dp gap, then a 3 dp dashed not-sent end over its casing in the background color, as on the table.

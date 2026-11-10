@@ -229,6 +229,29 @@ internal fun strayFault(box: Rect, pin: Offset?, others: List<Offset>, dp: Float
     return others.any { (box.center - it).getDistance() - mine < 4 * dp }
 }
 
+/**
+ * The rest crossings of the labels (the PC rest_over): the seats whose label plate a chord of another pair (that does not end at
+ * the seat) crosses with more than 12 dp of its center line, when the chord is 5 dp or wider at rest or all not sent; with the keys
+ * of those chords. Such a chord draws again over the plate in its rest or dim tone.
+ */
+internal fun restCrossings(spots: Map<String, SeatLabelSpot?>, seats: List<SeatLabelInput>, lines: List<ChordLine>, dp: Float): Map<String, List<String>> {
+    val byId = seats.associateBy { it.id }
+    return spots.mapNotNull { (id, spot) ->
+        val seat = byId[id] ?: return@mapNotNull null
+        spot ?: return@mapNotNull null
+        val plate = labelPlate(spot.box, seat.inks[spot.text], dp)
+        lines.filter { id != it.a && id != it.b && (it.width >= 5 * dp || it.weight == 3) && it.inside(plate) > 12 * dp }.map { it.key }
+            .takeIf { it.isNotEmpty() }?.let { id to it }
+    }.toMap()
+}
+
+/**
+ * The clip of the chords that draw again over a [plate]: the plate grown by 1 dp at each side, out to whole pixels, so that no
+ * anti-aliased clip edge draws a casing and a stroke again at part coverage (a darker seam in the chord).
+ */
+internal fun plateClip(plate: Rect, dp: Float): Rect = Rect(kotlin.math.floor(plate.left - dp), kotlin.math.floor(plate.top - dp),
+    ceil(plate.right + dp), ceil(plate.bottom + dp))
+
 /** The facts of a label candidate that depend only on the geometry (the PC facts). */
 internal class LabelFacts(val ink: Float, val heavy: Boolean, val wide: Boolean, val strict: Boolean, val covered: Set<String>)
 
@@ -514,10 +537,13 @@ internal fun offlineDashes(ri: Float, ro: Float, start: Float, end: Float, dp: F
 /** Port of status_chord_width: the width (dp) of a chord lit by a chosen bucket, linear up to 7 messages. */
 internal fun statusChordWidth(count: Int, largest: Int): Float = 1.5f + min(count.toFloat(), 7f * count / max(1, largest))
 
-/** A width group of the three-sample key: its 16 dp sample at [x], [width] dp wide, then its [text] at [tx]. */
+/** A width group of the key: its 16 dp sample at [x], [width] dp wide, then its [text] at [tx]. */
 internal class KeyGroup(val x: Float, val width: Float, val text: String, val tx: Float)
 
-/** A key part: its [kind] (scale, chords, bad, mixed, offline), its left [x], its [text] at [tx], and the [groups] of the scale. */
+/**
+ * A key part: its [kind] (scale, chords, bad, mixed, offline), its left [x], its [text] at [tx], and the [groups] of the width
+ * samples (scale and chords).
+ */
 internal class KeyItem(val kind: String, val x: Float, val text: String, val tx: Float, val groups: List<KeyGroup> = emptyList())
 
 /**
@@ -532,10 +558,11 @@ internal fun keyMiddle(high: Int): Int = kotlin.math.round(high / 4.0).toInt()
 
 /**
  * Port of layout_key. [counts] are the seated pair counts (with a chosen bucket, the counts in the bucket named [bucket], which
- * light chords); [rest] the other parts ([bad] Not sent, [mixed] Some not sent, [offline] Offline). The key names three counts (the
- * smallest, a quarter of the largest, the largest: `Line width: 4, 35, and 139 messages`) when the middle count is between the
- * ends and that key fits; else two samples (`Line width: 1 to 34 messages`, with `(Oct 22)` for a bucket in two accent samples),
- * with one part less each time from the end (Offline, Some not sent, Not sent) until it fits. [measure] gives the size of a text;
+ * light chords); [rest] the other parts ([bad] Not sent, [mixed] Some not sent, [offline] Offline). Each key starts with
+ * `Line width:`, then groups of a 16 dp sample 4 dp before its text, 10 dp apart. The key names three counts (the smallest, a
+ * quarter of the largest, the largest: `Line width: 4, 35, and 139 messages`) when the middle count is between the ends and that
+ * key fits; else two samples (`1 to`, then `34 messages`, with `(Oct 22)` for a bucket, in the accent), or one sample for one
+ * count, with one part less each time from the end (Offline, Some not sent, Not sent) until it fits. [measure] gives the size of a text;
  * [fits] says whether a key box can show; the key stands 12 dp over [bottom]. Null with no counts.
  */
 internal fun planKey(counts: List<Int>, bucket: String?, rest: List<Pair<String, String>>, measure: (String) -> Size, dp: Float,
@@ -547,35 +574,30 @@ internal fun planKey(counts: List<Int>, bucket: String?, rest: List<Pair<String,
     val middle = keyMiddle(high)
     val status = bucket != null
     val count = { n: Int -> formatCount(n.toLong()) }
-    val text = (if (low != high) "${count(low)} to ${count(high)}" else count(high)) + (if (high != 1) " messages" else " message") +
-        (bucket?.let { " ($it)" } ?: "")
+    val tail = count(high) + (if (high != 1) " messages" else " message") + (bucket?.let { " ($it)" } ?: "")
+    val text = (if (low != high) "${count(low)} to " else "") + tail
+    val widths = if (status) statusChordWidth(low, high) to statusChordWidth(high, high) else 1.5f to 8.5f
     fun build(three: Boolean, parts: List<Pair<String, String>>): KeyPlan {
         var x = 12 * dp
         val items = mutableListOf<KeyItem>()
         val words = mutableListOf<String>()
-        var height: Float
-        if (three) {
-            val head = measure("Line width:")
-            var left = x + head.width + 6 * dp
-            height = head.height
-            val groups = listOf(low, middle, high).mapIndexed { i, n ->
-                val words2 = count(n) + if (i == 2) " messages" else ""
-                val size = measure(words2)
-                height = max(height, size.height)
-                KeyGroup(left, 1.5f + 7 * kotlin.math.sqrt(n.toFloat() / high), words2, left + 20 * dp).also {
-                    left += 20 * dp + size.width + if (i < 2) 10 * dp else 0f
-                }
-            }
-            items += KeyItem("scale", x, "Line width:", x, groups)
-            x = left + 14 * dp
-            words += "Line width: ${count(low)}, ${count(middle)}, and ${count(high)} messages"
-        } else {
-            val size = measure("Line width: $text")
-            height = size.height
-            items += KeyItem("chords", x, "Line width: $text", x + 36 * dp + 6 * dp)
-            x += 36 * dp + 6 * dp + size.width + 14 * dp
-            words += "Line width: $text"
+        // The samples (width and text): the three counts, else the smallest count (then ` to`) and the rest, or one count.
+        val samples = when {
+            three -> listOf(low, middle, high).mapIndexed { i, n -> 1.5f + 7 * kotlin.math.sqrt(n.toFloat() / high) to count(n) + if (i == 2) " messages" else "" }
+            low != high -> listOf(widths.first to "${count(low)} to", widths.second to tail)
+            else -> listOf(widths.second to tail)
         }
+        words += if (three) "Line width: ${count(low)}, ${count(middle)}, and ${count(high)} messages" else "Line width: $text"
+        val head = measure("Line width:")
+        var left = x + head.width + 6 * dp
+        var height = head.height
+        val groups = samples.mapIndexed { i, (width, words2) ->
+            val size = measure(words2)
+            height = max(height, size.height)
+            KeyGroup(left, width, words2, left + 20 * dp).also { left += 20 * dp + size.width + if (i < samples.lastIndex) 10 * dp else 0f }
+        }
+        items += KeyItem(if (three) "scale" else "chords", x, "Line width:", x, groups)
+        x = left + 14 * dp
         for ((kind, part) in parts) {
             val size = measure(part)
             height = max(height, size.height)
@@ -585,7 +607,6 @@ internal fun planKey(counts: List<Int>, bucket: String?, rest: List<Pair<String,
             words += part
         }
         val box = Rect(12 * dp, bottom - 12 * dp - height, x - 14 * dp, bottom - 12 * dp)
-        val widths = if (status) statusChordWidth(low, high) to statusChordWidth(high, high) else 1.5f to 8.5f
         return KeyPlan(items, box, box.top + height / 2, fits(box), words.joinToString(", "), widths, status)
     }
     var plan = if (!status && low < middle && middle < high) build(true, rest) else null
