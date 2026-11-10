@@ -22361,9 +22361,11 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                 geometry = table.geometry
                 shown = [label for label in table.labels.values() if label["shown"]]
                 self.assertGreaterEqual(len(shown), 8)
-                # Round 7 (T2): the small table hides the labels that can only stack; no two shown labels stack.
-                hidden = ["schema", "ui-polish"] if font.startswith("Cascadia") else ["schema"]
-                self.assertEqual(sorted(seat for seat, label in table.labels.items() if not label["shown"]), hidden)
+                # Round 7 (T2): the small table hides the labels that can only stack; no two shown labels stack. Which labels can
+                # only stack comes from the font metrics: the list holds where the font is installed, not for a fallback font.
+                if font.rsplit(" ", 1)[0] in WidgetCheck.font_families():
+                    hidden = ["schema", "ui-polish"] if font.startswith("Cascadia") else ["schema"]
+                    self.assertEqual(sorted(seat for seat, label in table.labels.items() if not label["shown"]), hidden)
                 self.assertEqual(self.stacked_pairs(table), [])
                 for index, first in enumerate(shown):
                     a = first["box"]
@@ -22414,8 +22416,11 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
                     # R2: in Cascadia the one-line parser-review fits only on the exit of its widest chord: it takes two lines.
                     # Round 7 (T1): in Cascadia each free one-line sync-check place has a fault or covers more than 12 px of a chord of
                     # another pair (render-farm and parser-review): it takes two lines.
+                    # These text choices come from the font metrics: they hold where the font is installed, not for a fallback font.
                     whole = 1 if seat in ("parser-review", "sync-check") and font.startswith("Cascadia") else 0
-                    self.assertEqual((table.labels[seat]["shown"], table.labels[seat]["text"]), (True, whole), seat)
+                    self.assertTrue(table.labels[seat]["shown"], seat)
+                    if font.rsplit(" ", 1)[0] in WidgetCheck.font_families():
+                        self.assertEqual(table.labels[seat]["text"], whole, seat)
                 ends = [(x, y, chord["end_width"] / 2) for chord in table.chords for points in chord["fails"] for x, y in points]
                 for seat, label in table.labels.items():
                     if not label["shown"]:
