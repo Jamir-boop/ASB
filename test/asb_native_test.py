@@ -19558,6 +19558,81 @@ class MessagesWindowCheck(ActivityFixture, unittest.TestCase):
         self.assertFalse(table.key["shown"])
         table.layout_table()
 
+    def test_W7_T4_a_focused_chord_marks_its_two_end_pins(self):
+        window = self.window(period="7d")
+        table, palette = window.table, window.palette
+        for app in {pin["app"] for pin in table.pins.values()}:
+            table.icons[app] = Mock()
+
+        def rings(accent=True):
+            """The focus ring radius that each pin draws (None without one): a 4 px window-colored casing under a 2 px ring, in the
+            accent with accent (under pointer hover a dimmed pin mixes it toward the window, as for a focused seat)."""
+            found = {}
+            for seat, pin in table.pins.items():
+                snapshot = Mock()
+                with patch.object(asb, "circle_path", wraps=asb.circle_path) as paths:
+                    table.snapshot_pin(snapshot, pin, 100, 100, seat, table.lit(table.state()), 1, 0, palette)
+                radii = [call.args[2] for call in paths.call_args_list]
+                strokes = [(call.args[1].get_line_width(), asb.hex_color(call.args[2])) for call in snapshot.append_stroke.call_args_list]
+                ring = [width for width, _color in strokes[-2:]] == [4, 2] and strokes[-2][1] == palette["win"] and (not accent or strokes[-1][1] == palette["accent"])
+                found[seat] = radii[-1] if radii[-1] in (20, 24.75) and ring else None
+            return found
+
+        def check(state):
+            key = table.hover["chord_focus"]
+            self.assertTrue(table.proxies[("chord", key)].has_focus(), state)
+            found = rings()
+            self.assertEqual({seat for seat, radius in found.items() if radius}, set(key), state)
+            geometry = table.geometry
+            for seat in key:
+                # The ring of a seat focus: 20 px, or 24.75 px outside an open ring; pin_ring has room for it and its casing.
+                self.assertEqual(found[seat], 24.75 if seat in table.ring_pins() else 20, (state, seat))
+                outer = found[seat] + 2
+                self.assertGreaterEqual(16 + table.pin_ring(seat), outer, (state, seat))
+                x, y = asb.table_point(geometry, geometry["Rp"], geometry["seat"][seat])
+                for other, label in table.labels.items():
+                    if label["shown"]:
+                        box = label["box"]
+                        near = math.hypot(min(max(x, box[0]), box[2]) - x, min(max(y, box[1]), box[3]) - y)
+                        self.assertGreaterEqual(near, outer, (state, seat, other))
+            return key
+
+        # The state of sheet m23: Down from a seat to its widest chord.
+        rest = {seat: (label["text"], label["place"]) for seat, label in table.labels.items()}
+        seat = next(seat for seat in table.pins if table.seat_chords(seat))
+        table.proxies[("pin", seat)].grab_focus(); self.drain(.1)
+        table.step_focus(("pin", seat), "down"); self.drain(.2)
+        key = check("rest")
+        # The focus ring moved from the seat to the chord; no label of a seat that is not chosen moves.
+        chosen = table.chosen_seats()
+        self.assertEqual({other: place for other, place in rest.items() if other not in chosen},
+                         {other: (label["text"], label["place"]) for other, label in table.labels.items() if other not in chosen})
+        # Pointer hover on another chord draws no such ring on its pins.
+        other = next(chord["key"] for chord in table.chords if not set(chord["key"]) & set(key))
+        table.hover["chord"] = other
+        self.assertEqual({seat for seat, radius in rings(False).items() if radius}, set(key))
+        table.hover["chord"] = None
+        # A lit chord of a status thread, a session thread, and a time thread, and the chord of a pair thread.
+        window.open_thread("status", "written"); self.drain(.3)
+        lit = next(iter(table.open_lit()[0]))
+        table.proxies[("chord", lit)].grab_focus(); self.drain(.2)
+        check("status")
+        window.open_thread("session", "docs"); self.drain(.3)
+        lit = next(key for key in table.open_lit()[0])
+        table.proxies[("chord", lit)].grab_focus(); self.drain(.2)
+        check("session")
+        starts = window.data["buckets"]["startsMs"]
+        window.open_time(next(index for index, start in enumerate(starts) if asb.format_day(start) == "Oct 22")); self.drain(.3)
+        lit = next(iter(table.open_lit()[0]))
+        table.proxies[("chord", lit)].grab_focus(); self.drain(.2)
+        check("time")
+        window.open_thread("pair", ("release-plan", "parser-review")); self.drain(.3)
+        table.proxies[("chord", ("release-plan", "parser-review"))].grab_focus(); self.drain(.2)
+        self.assertEqual(check("pair"), ("release-plan", "parser-review"))
+        # Without the focus no pin draws the ring.
+        window.set_focus(None); self.drain(.2)
+        self.assertEqual({seat for seat, radius in rings().items() if radius}, set())
+
     def test_W6_TT1_TT5_an_open_time_thread_lights_its_chords(self):
         window = self.window(period="7d")
         table, palette = window.table, window.palette

@@ -14142,8 +14142,9 @@ class RoundTable(Gtk.Overlay):
         self.label_tips()
 
     def pin_ring(self, _seat_id):
-        """How far the largest rings that a pin can get reach past its 16 px, in every state: the focus ring of an open pin (its
-        2 px ring at radius 24.75 and its 1 px casing). Labels place from there, so a lit or focused seat moves no label."""
+        """How far the largest rings that a pin can get reach past its 16 px, in every state: the focus ring of an open pin, which an
+        end pin of a focused chord also draws (its 2 px ring at radius 24.75 and its 1 px casing). Labels place from there, so a lit or
+        focused seat or chord moves no label."""
         return 11
 
     def label_tips(self):
@@ -14822,7 +14823,9 @@ class RoundTable(Gtk.Overlay):
         else:
             snapshot_stroke(snapshot, circle_path(x, y, 16), 1.5, rgba(tone(palette["light"] if sending else self.pin_hue(pin, palette))), dashes)
         proxy = self.proxies.get(("pin", seat_id))
-        if proxy is not None and proxy.has_focus():
+        # A chord with the keyboard focus marks its two end pins with the focus ring of a seat.
+        chord = self.proxies.get(("chord", self.hover["chord_focus"])) if seat_id in (self.hover["chord_focus"] or ()) else None
+        if (proxy is not None and proxy.has_focus()) or (chord is not None and chord.has_focus()):
             # On an open pin the focus ring is outermost: a 2 px gap outside the open ring (18.75 to 21.75 px).
             path = circle_path(x, y, 24.75 if opened else 20)
             snapshot_stroke(snapshot, path, 4, rgba(win))
