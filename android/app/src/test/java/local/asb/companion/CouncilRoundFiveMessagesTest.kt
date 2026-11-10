@@ -15,7 +15,6 @@ import local.asb.companion.data.ledger
 import local.asb.companion.data.messageBucketPartial
 import local.asb.companion.data.mixColor
 import local.asb.companion.data.offlineBandColor
-import local.asb.companion.ui.LabelOption
 import local.asb.companion.ui.LabelTable
 import local.asb.companion.ui.MESSAGES_EMPTY_HINT
 import local.asb.companion.ui.PIN_RING
@@ -23,12 +22,10 @@ import local.asb.companion.ui.SeatLabelInput
 import local.asb.companion.ui.dashedCircles
 import local.asb.companion.ui.emptyBlockSizes
 import local.asb.companion.ui.exitCircles
-import local.asb.companion.ui.labelOptions
 import local.asb.companion.ui.messageBucketTip
 import local.asb.companion.ui.pinCircle
 import local.asb.companion.ui.pixelCenter
 import local.asb.companion.ui.placeSeatLabels
-import local.asb.companion.ui.regionMachine
 import local.asb.companion.ui.seatDirections
 import local.asb.companion.ui.seatLabelPlace
 import local.asb.companion.ui.seatLabelTexts
@@ -167,22 +164,6 @@ class CouncilRoundFiveMessagesTest {
         assertEquals(2, dashedCircles(3f, { f -> Offset(3f * f, 0f) }, 2f, 1f).size)
     }
 
-    @Test fun labelsTryWholeTextsOffTheWidestExitsFirst() {
-        val options = labelOptions(4, 2)
-        assertEquals(4 * 9 * 3, options.size)
-        // The whole texts: each text off all kept-off shapes, then off the widest exits; then each text with the widest exits.
-        assertEquals(listOf(LabelOption(0, 0, 0), LabelOption(0, 8, 0), LabelOption(0, 0, 1), LabelOption(0, 8, 1),
-            LabelOption(1, 0, 0), LabelOption(1, 8, 0), LabelOption(1, 0, 1), LabelOption(1, 8, 1),
-            LabelOption(0, 0, 2), LabelOption(0, 8, 2), LabelOption(1, 0, 2), LabelOption(1, 8, 2)),
-            options.take(54).filter { it.place == 0 || it.place == 8 })
-        // Then the cut texts in the same order.
-        assertEquals(LabelOption(2, 0, 0), options[54])
-        assertEquals(LabelOption(3, 8, 2), options.last())
-        // A chosen seat has only its whole texts.
-        assertEquals(2 * 9 * 3, labelOptions(2, 2).size)
-        assertEquals(LabelOption(0, 0, 2), labelOptions(1, 1)[18])
-    }
-
     // A top seat (pin at 200, 100) with a 60 × 14 one-line text and a 34 × 28 two-line text. The holes leave the one-line text
     // only its inward box (169, 125) to (231, 139), and the two-line text only its right box (220, 86) to (256, 114).
     private val holes = listOf(Rect(0f, 0f, 400f, 85f), Rect(0f, 85f, 219f, 115f), Rect(257f, 85f, 400f, 115f), Rect(0f, 115f, 400f, 124f),
@@ -225,21 +206,6 @@ class CouncilRoundFiveMessagesTest {
         val near = SeatLabelInput("b", 90f, listOf(Size(40f, 14f)), pin = pinCircle(Offset(236f, 130f), 1f))
         val crowded = LabelTable(center, 100f, 0f, false, 400f, 400f, hole, pins = listOf(a.pin, near.pin!!))
         assertNull(placeSeatLabels(listOf(a, near), emptyList(), mapOf("a" to 2), emptyMap(), crowded, 1f).getValue("a"))
-    }
-
-    // ---------- Task 6: halos ----------
-
-    @Test fun haloFillsFollowTheRegionUnderTheLabel() {
-        val arcs = mapOf("desk" to (-90f to 90f), "laptop" to (170f to 200f))
-        assertEquals("desk", regionMachine(Offset(260f, 200f), center, 40f, 100f, arcs))
-        // The center disc, the band, and the background have no sector tint.
-        assertNull(regionMachine(Offset(230f, 200f), center, 40f, 100f, arcs))
-        assertNull(regionMachine(Offset(310f, 200f), center, 40f, 100f, arcs))
-        assertNull(regionMachine(Offset(200f, 140f), center, 40f, 100f, mapOf("desk" to (0f to 90f))))
-        // A sector across 180°: -175° is inside 170° to 200°.
-        assertEquals("laptop", regionMachine(center + Offset(-60f, -5f), center, 40f, 100f, arcs))
-        // A small table draws no disc: its center belongs to the sector.
-        assertEquals("desk", regionMachine(Offset(210f, 200f), center, 0f, 100f, arcs))
     }
 
     // ---------- Task 7: the offline band ----------

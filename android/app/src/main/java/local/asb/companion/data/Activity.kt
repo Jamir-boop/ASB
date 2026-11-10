@@ -256,6 +256,30 @@ fun messageBucketPartial(reply: ActivityMessages): Boolean {
 fun offlineBandColor(win: String, hue: String): String =
     (45..100).map { mixColor(win, hue, it / 100.0) }.firstOrNull { contrast(it, win) >= 3 } ?: hue
 
+/**
+ * Port of offline_ring_color: the rest ring of an offline pin, the full machine [hue] moved toward [text] until it has 3:1 on the
+ * sector tint of its machine (the hue 3% into [win]).
+ */
+fun offlineRingColor(win: String, text: String, hue: String): String = contrastFloor(hue, text, mixColor(win, hue, .03), 3.0)
+
+/**
+ * Port of thread_counts for a time thread: the messages of each chord in [chords] (by its key) in count strip bucket [index]
+ * (from its start to the next start, or to [ActivityBuckets.endMs], or an hour or a day after its start for the last bucket).
+ */
+fun bucketPairCounts(reply: ActivityMessages, index: Int, chords: List<Chord>): Map<String, Int> {
+    val starts = reply.buckets.startsMs
+    val start = starts.getOrNull(index) ?: return emptyMap()
+    val end = starts.getOrNull(index + 1) ?: reply.buckets.endMs ?: (start + if (reply.buckets.unit == "hour") 3_600_000L else 86_400_000L)
+    val keys = chords.associate { setOf(it.a, it.b) to it.key }
+    val counts = chords.associate { it.key to 0 }.toMutableMap()
+    for (m in reply.messages) {
+        if (m.atMs !in start until end) continue
+        val key = keys[setOf(m.from, m.to)] ?: continue
+        counts[key] = counts.getValue(key) + 1
+    }
+    return counts
+}
+
 /** One count strip bucket: its start, its messages, and its not-sent messages. */
 data class BucketCount(val startMs: Long, val count: Int, val bad: Int)
 

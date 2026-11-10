@@ -4,7 +4,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import kotlin.math.abs
-import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -51,8 +50,9 @@ internal const val PIN_RING = 2f
 
 /**
  * Port of pin_info texts: the whole title on one line (at most 24 characters, then …); the whole title on two lines split after
- * its last `-`, `_`, `.`, or space, when each line has 4 to 24 characters; then the title cut to 10 and to 7
- * characters, without trailing separators before the ….
+ * its last `-`, `_`, `.`, or space, when each line has 4 to 24 characters; then the title cut to 10 and to 7 characters, without
+ * trailing separators before the …, when the cut is 3 or more characters shorter than the title; last the late cuts, which save
+ * 1 or 2 characters ([seatLabelLate]). A cut as long as the title is no text.
  */
 internal fun seatLabelTexts(title: String): List<String> {
     val names = mutableListOf(if (title.length <= 24) title else title.take(24) + "…")
@@ -60,8 +60,15 @@ internal fun seatLabelTexts(title: String): List<String> {
     if (split > 0 && title.take(split).trim('-', '_', '.', ' ').isNotEmpty() && split in 4..24 && title.length - split in 4..24) {
         names += title.take(split) + "\n" + title.drop(split)
     }
-    names += listOf(10, 7).filter { title.length > it }.map { title.take(it).trimEnd('-', '_', '.', ' ') + "…" }
-    return names.distinct()
+    val cuts = listOf(10, 7).filter { title.length > it }.map { title.take(it).trimEnd('-', '_', '.', ' ') + "…" }.filter { it.length < title.length }
+    val (normal, late) = cuts.partition { it.length <= title.length - 3 }
+    return (names + normal + late).distinct()
+}
+
+/** The index in [texts] (from [seatLabelTexts] of [title]) of the first late cut, a cut that saves 1 or 2 characters; else the size. */
+internal fun seatLabelLate(texts: List<String>, title: String): Int {
+    val whole = seatLabelWholeCount(texts)
+    return texts.indices.firstOrNull { it >= whole && texts[it].length > title.length - 3 } ?: texts.size
 }
 
 /** How many of [texts] (from [seatLabelTexts]) are the whole title: the one-line text, and the two-line text when there is one. */
@@ -105,25 +112,36 @@ internal fun seatLabelPlace(center: Offset, rp: Float, degrees: Float, size: Siz
 
 /**
  * A seat to label: its angle on the pin circle, the size of each of its [seatLabelTexts], how many of them are [whole]
- * ([seatLabelWholeCount]), and its own [pin] circle; with a pin, a label stays nearer it than the pin of every other seat. [exits]
- * are the own exit circles of its chords ([exitCircles]), and [widest] those of its chord or chords with the largest rest width.
+ * ([seatLabelWholeCount]), the index of its first [late] cut ([seatLabelLate]), the [inks] box of each text (from its top left),
+ * and its own [pin] circle; with a pin, a label stays nearer it than the pin of every other seat. [exits] are the own exit circles
+ * of its chords ([exitCircles]), and [widest] those of its chord or chords with the largest rest width.
  */
 internal class SeatLabelInput(val id: String, val degrees: Float, val sizes: List<Size>, val whole: Int = 1,
     val pin: Pair<Offset, Float>? = null, val exits: List<Pair<Offset, Float>> = emptyList(),
-    val widest: List<Pair<Offset, Float>> = emptyList())
+    val widest: List<Pair<Offset, Float>> = emptyList(), val late: Int = sizes.size,
+    val inks: List<Rect> = sizes.map { Rect(Offset.Zero, it) })
 
 /** A placed label: the index of its text, its place, and its box (1 dp wider on each side than the text). */
 internal data class SeatLabelSpot(val text: Int, val place: Int, val box: Rect)
 
+/** The center line of a chord at rest: its [key], its two seats, its rest [width], its ink [weight] (3 for an all-not-sent chord). */
+internal class ChordLine(val key: String, val a: String, val b: String, val width: Float, val weight: Int, val points: List<Offset>) {
+    val bounds: Rect = Rect(points.minOf { it.x }, points.minOf { it.y }, points.maxOf { it.x }, points.maxOf { it.y })
+
+    /** The length of the line inside [box]. */
+    fun inside(box: Rect): Float = if (!overlaps(bounds, box)) 0f else points.zipWithNext().sumOf { (p, q) -> segmentInside(p, q, box).toDouble() }.toFloat()
+}
+
 /**
  * The table that the labels avoid: the center disc [rc] (when [disc]), the machine band from [ri] to [ro], [blocked] (the machine
  * labels and the shown key line), [circles] (center, radius: the not-sent end points), and [pins] (the [pinCircle] of each pin).
- * The [dashed] circles of the all-not-sent chords ([dashedCircles]) are kept-off shapes of every label.
+ * The [dashed] circles of the all-not-sent chords ([dashedCircles]) are kept-off shapes of every label; [lines] are the chord
+ * center lines at rest, for the chord ink under a plate.
  */
 internal class LabelTable(val center: Offset, val rp: Float, val rc: Float, val disc: Boolean, val width: Float, val height: Float,
     val blocked: List<Rect>, val ri: Float = Float.MAX_VALUE, val ro: Float = Float.MAX_VALUE,
     val circles: List<Pair<Offset, Float>> = emptyList(), val pins: List<Pair<Offset, Float>> = emptyList(),
-    val dashed: List<Pair<Offset, Float>> = emptyList())
+    val dashed: List<Pair<Offset, Float>> = emptyList(), val lines: List<ChordLine> = emptyList())
 
 /** A pin as a label obstacle: the outer edge of its largest ring (16 + [PIN_RING] dp), less the PC 0.5 tolerance. */
 internal fun pinCircle(pin: Offset, dp: Float): Pair<Offset, Float> = pin to (16 + PIN_RING - .5f) * dp
@@ -149,21 +167,89 @@ internal fun dashedCircles(length: Float, pointAt: (Float) -> Offset, width: Flo
 /** A not-sent end point as a label obstacle: half the end width and 1 dp. */
 internal fun endCircle(point: Offset, endWidth: Float, dp: Float): Pair<Offset, Float> = point to endWidth / 2 + 1 * dp
 
+/** Port of overlaps: the boxes touch or overlap. */
+internal fun overlaps(a: Rect, b: Rect): Boolean = a.left <= b.right && b.left <= a.right && a.top <= b.bottom && b.top <= a.bottom
+
+/** Port of segment_inside: the length of the segment [a] to [b] inside [box], by Liang-Barsky clipping. */
+internal fun segmentInside(a: Offset, b: Offset, box: Rect): Float {
+    val dx = b.x - a.x
+    val dy = b.y - a.y
+    var low = 0f
+    var high = 1f
+    for ((p, q) in listOf(-dx to a.x - box.left, dx to box.right - a.x, -dy to a.y - box.top, dy to box.bottom - a.y)) {
+        if (p == 0f) {
+            if (q < 0) return 0f
+        } else if (p < 0) low = max(low, q / p) else high = min(high, q / p)
+    }
+    return max(0f, high - low) * hypot(dx, dy)
+}
+
+/** Port of label_plate: the plate of a label whose [box] is 1 dp wider than its text: 3 dp outside the [ink] box of the text. */
+internal fun labelPlate(box: Rect, ink: Rect, dp: Float): Rect {
+    val x = box.left + 1 * dp
+    return Rect(x + ink.left - 3 * dp, box.top + ink.top - 3 * dp, x + ink.right + 3 * dp, box.top + ink.bottom + 3 * dp)
+}
+
+/**
+ * Port of plate_crossings: the seats whose label plate a chord of [keys] crosses (its center line 1 dp or more inside the plate),
+ * with the keys of those chords.
+ */
+internal fun plateCrossings(spots: Map<String, SeatLabelSpot?>, seats: List<SeatLabelInput>, lines: List<ChordLine>, keys: Set<String>,
+    dp: Float): Map<String, List<String>> {
+    val byId = seats.associateBy { it.id }
+    return spots.mapNotNull { (id, spot) ->
+        val seat = byId[id] ?: return@mapNotNull null
+        spot ?: return@mapNotNull null
+        val plate = labelPlate(spot.box, seat.inks[spot.text], dp)
+        lines.filter { it.key in keys && it.inside(plate) >= 1 * dp }.map { it.key }.takeIf { it.isNotEmpty() }?.let { id to it }
+    }.toMap()
+}
+
+/** The distance from [p] to the nearest point of [box]. */
+private fun nearest(box: Rect, p: Offset): Float = hypot(p.x.coerceIn(box.left, box.right) - p.x, p.y.coerceIn(box.top, box.bottom) - p.y)
+
+/**
+ * The stacked fault of a label [box] of the pin at [pin]: a shown label of another seat ([others]: its box and its pin) overlaps it
+ * in x by more than 0.5 dp with a vertical gap under 12 dp, or under 4 dp more than the gap of one of the two labels to its own
+ * 16 dp pin.
+ */
+internal fun stackedFault(box: Rect, pin: Offset?, others: List<Pair<Rect, Offset?>>, dp: Float): Boolean {
+    val own = pin?.let { nearest(box, it) - 16 * dp } ?: 0f
+    return others.any { (theirs, theirPin) ->
+        if (min(box.right, theirs.right) - max(box.left, theirs.left) <= .5f) return@any false
+        val gap = max(theirs.top - box.bottom, box.top - theirs.bottom)
+        gap < 12 * dp || gap < max(own, theirPin?.let { nearest(theirs, it) - 16 * dp } ?: 0f) + 4 * dp
+    }
+}
+
+/** The stray fault of a label [box] of the pin at [pin]: its center is not 4 dp or more nearer [pin] than each of the [others] pins. */
+internal fun strayFault(box: Rect, pin: Offset?, others: List<Offset>, dp: Float): Boolean {
+    pin ?: return false
+    val mine = (box.center - pin).getDistance()
+    return others.any { (box.center - it).getDistance() - mine < 4 * dp }
+}
+
+/** The facts of a label candidate that depend only on the geometry (the PC facts). */
+internal class LabelFacts(val ink: Float, val heavy: Boolean, val wide: Boolean, val strict: Boolean, val covered: Set<String>)
+
 /**
  * Port of place_labels. The [chosen] seats place first (in that order) and show only their whole texts; then the [partners] (the
  * seats lit by the selection), then the other seats; each group by message count, then the newest activity, then circle order
- * ([seats] order). Each label takes the first free place in [labelOptions] order. A free place stays 2 dp inside the table, off
- * the center disc (when [LabelTable.disc]), off the machine band, off each blocked box and circle, 6 dp from each placed label on
- * its left and right, and at least 4 dp nearer its own pin circle than every other pin circle.
+ * ([seats] order). Each seat takes the first free candidate (a text in one of the nine places) in the [labelRank] order. A free
+ * candidate stays 2 dp inside the table, off the center disc (when [LabelTable.disc]), off the machine band, off each blocked box
+ * and circle, 6 dp from each placed label on its left and right, and at least 4 dp nearer its own pin circle than every other pin
+ * circle. With no center disc (the small table), a candidate with a stacked fault is not free for a seat that is not chosen.
  *
- * A seat in [previous] (the last placement, kept over a selection change) first tries its text and place there. With no free
- * place, one placed label that is not chosen and blocks a place can move to another free place with its text; the move stays only
- * when both labels are then free. Then the seat tries all its texts and places with 2 dp for the own-pin rule, then once more placed
- * from the 16 dp pin itself (no rings, the pin circles at 16 dp). Then a chosen seat shows its one-line text inward, and another
- * seat hides (null).
+ * A seat in [previous] (the last placement, kept over a selection change) first tries its text and place there; a seat that is not
+ * chosen does not keep a label whose plate covers more than 12 dp of a chord of another pair in [litChords]. With no free
+ * candidate, one placed label that is not chosen and blocks a candidate can move to a free candidate with its text; the seat then
+ * takes its first free candidate. Then the seat tries all its texts and places with 2 dp for the own-pin rule, then once more
+ * placed from the 16 dp pin itself (no rings, the pin circles at 16 dp). Then a chosen seat shows its one-line text inward, and
+ * another seat tries its late cuts in the same three passes before it hides (null).
  */
 internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, messages: Map<String, Int>, activity: Map<String, Long>,
-    table: LabelTable, dp: Float, partners: Set<String> = emptySet(), previous: Map<String, SeatLabelSpot?> = emptyMap()): Map<String, SeatLabelSpot?> {
+    table: LabelTable, dp: Float, partners: Set<String> = emptySet(), previous: Map<String, SeatLabelSpot?> = emptyMap(),
+    litChords: Set<String> = emptySet()): Map<String, SeatLabelSpot?> {
     val c = table.center
     fun hit(a: Rect, b: Rect) = a.left < b.right - .5f && b.left < a.right - .5f && a.top < b.bottom - .5f && b.top < a.bottom - .5f
     fun near(box: Rect, p: Offset = c): Float = hypot(p.x.coerceIn(box.left, box.right) - p.x, p.y.coerceIn(box.top, box.bottom) - p.y)
@@ -185,6 +271,10 @@ internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, 
     fun blockers(id: String, b: Rect): List<String> = spots.filter { (other, spot) ->
         other != id && spot != null && hit(Rect(spot.box.left - room, spot.box.top, spot.box.right + room, spot.box.bottom), b)
     }.keys.toList()
+    fun stacked(seat: SeatLabelInput, b: Rect): Boolean = stackedFault(b, seat.pin?.first,
+        spots.filter { (other, spot) -> other != seat.id && spot != null }.map { (other, spot) -> spot!!.box to byId[other]?.pin?.first }, dp)
+    fun faults(seat: SeatLabelInput, b: Rect): Boolean =
+        stacked(seat, b) || strayFault(b, seat.pin?.first, seats.filter { it.id != seat.id }.mapNotNull { it.pin?.first }, dp)
     // The distance to a pin circle: from its center to the nearest point of the box, less its radius ([shrink] less with no rings).
     fun nearerOwnPin(seat: SeatLabelInput, b: Rect, margin: Float, shrink: Float): Boolean {
         val own = seat.pin ?: return true
@@ -196,42 +286,61 @@ internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, 
         // A box is free of a circle when the nearest point of the box is farther than the radius from the circle center.
         return inside && !(table.disc && onDisc(b)) && !onBand(b) && table.blocked.none { hit(it, b) } &&
             table.circles.none { near(b, it.first) <= it.second } && table.pins.none { near(b, it.first) <= it.second - shrink } &&
-            nearerOwnPin(seat, b, margin, shrink) && (!labels || blockers(seat.id, b).isEmpty())
+            nearerOwnPin(seat, b, margin, shrink) &&
+            (!labels || (blockers(seat.id, b).isEmpty() && (table.disc || seat.id in chosen || !stacked(seat, b))))
     }
-    fun fits(seat: SeatLabelInput, b: Rect, tier: Int) = when (tier) {
-        0 -> !touches(b, seat.exits) && !touches(b, table.dashed)
-        1 -> !touches(b, seat.widest)
-        else -> true
+    val cache = HashMap<Pair<String, Rect>, LabelFacts>()
+    fun facts(seat: SeatLabelInput, spot: SeatLabelSpot): LabelFacts = cache.getOrPut(seat.id to spot.box) {
+        val plate = labelPlate(spot.box, seat.inks[spot.text], dp)
+        var ink = 0f
+        var heavy = false
+        val covered = HashSet<String>()
+        for (line in table.lines) {
+            val inside = line.inside(plate)
+            if (inside <= 0) continue
+            ink += inside * line.width * line.weight
+            val own = seat.id == line.a || seat.id == line.b
+            if (inside > 12 * dp && !own) covered += line.key
+            heavy = heavy || (inside > 12 * dp && (line.width >= 5 * dp || !own))
+        }
+        LabelFacts(ink, heavy, touches(spot.box, seat.widest), !touches(spot.box, seat.exits) && !touches(spot.box, table.dashed), covered)
     }
+    fun rank(seat: SeatLabelInput, spot: SeatLabelSpot): LabelRank {
+        val f = facts(seat, spot)
+        return LabelRank(spot.text >= seat.whole, faults(seat, spot.box), f.heavy, f.wide, spot.text, !f.strict, (f.ink / (8 * dp * dp)).toInt(), spot.place)
+    }
+    fun ranked(seat: SeatLabelInput, texts: IntRange, ring: Float = PIN_RING): List<SeatLabelSpot> =
+        texts.flatMap { text -> (0..8).map { SeatLabelSpot(text, it, box(seat, text, it, ring)) } }.sortedBy { rank(seat, it) }
+    fun firstFree(seat: SeatLabelInput, options: List<SeatLabelSpot>, margin: Float = 4f, shrink: Float = 0f) =
+        options.firstOrNull { free(seat, it.box, margin = margin, shrink = shrink) }
     val order = seats.withIndex().sortedWith(compareBy<IndexedValue<SeatLabelInput>>(
         { chosen.indexOf(it.value.id).let { i -> if (i < 0) chosen.size else i } }, { if (it.value.id in partners) 0 else 1 },
         { -(messages[it.value.id] ?: 0) }, { -(activity[it.value.id] ?: 0L) }, { it.index })).map { it.value }
     for (seat in order) {
         val isChosen = seat.id in chosen
-        val texts = if (isChosen) min(seat.whole, seat.sizes.size) else seat.sizes.size
-        val options = labelOptions(texts, seat.whole).toMutableList()
-        previous[seat.id]?.takeIf { it.text < texts }?.let { options.add(0, LabelOption(it.text, it.place, 2)) }
-        fun firstFree(margin: Float, ring: Float = PIN_RING) = options.firstNotNullOfOrNull { (text, place, tier) ->
-            box(seat, text, place, ring).takeIf { free(seat, it, margin = margin, shrink = (PIN_RING - ring) * dp) && fits(seat, it, tier) }
-                ?.let { SeatLabelSpot(text, place, it) }
+        val texts = 0 until if (isChosen) min(seat.whole, seat.sizes.size) else min(seat.late, seat.sizes.size)
+        val late = if (isChosen) IntRange.EMPTY else min(seat.late, seat.sizes.size) until seat.sizes.size
+        val options = ranked(seat, texts)
+        var found: SeatLabelSpot? = null
+        previous[seat.id]?.takeIf { it.text in texts || it.text in late }?.let { old ->
+            val item = SeatLabelSpot(old.text, old.place, box(seat, old.text, old.place))
+            // A kept label of a seat that is not chosen must not cover a lit chord of another pair.
+            if (free(seat, item.box) && (isChosen || facts(seat, item).covered.none { it in litChords })) found = item
         }
-        var found = firstFree(4f)
-        // Repair: move the one label that blocks a place to a free place with its text, when both labels are then free.
-        if (found == null) repair@ for ((text, place, tier) in options) {
-            val b = box(seat, text, place)
-            val blocked = blockers(seat.id, b)
-            if (!free(seat, b, labels = false) || !fits(seat, b, tier) || blocked.size != 1 || blocked[0] in chosen) continue
+        if (found == null) found = firstFree(seat, options)
+        // Repair: move the one label that blocks a candidate to a free candidate with its text; the seat then takes its first free one.
+        if (found == null) repair@ for (item in options) {
+            val blocked = blockers(seat.id, item.box)
+            if (!free(seat, item.box, labels = false) || blocked.size != 1 || blocked[0] in chosen) continue
             val other = blocked[0]
             val old = spots.getValue(other)!!
             val otherSeat = byId.getValue(other)
-            val item = SeatLabelSpot(text, place, b)
             spots[seat.id] = item
-            for (keep in 0..2) for (move in 0..8) {
-                val moved = box(otherSeat, old.text, move)
-                if (!free(otherSeat, moved) || !fits(otherSeat, moved, keep)) continue
-                spots[other] = SeatLabelSpot(old.text, move, moved)
-                if (free(seat, b)) {
-                    found = item
+            for (moved in ranked(otherSeat, old.text..old.text)) {
+                if (!free(otherSeat, moved.box)) continue
+                spots[other] = moved
+                if (free(seat, item.box)) {
+                    found = options.first { free(seat, it.box) }
                     break@repair
                 }
                 spots[other] = old
@@ -239,39 +348,52 @@ internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, 
             spots[other] = old
             spots.remove(seat.id)
         }
-        // A crowded seat: its own pin may be nearer by 2 dp only.
-        if (found == null) found = firstFree(2f)
-        // The last try before a hidden label: places from the 16 dp pin itself, as if no pin had rings; a ring can then draw under it.
-        if (found == null) found = firstFree(2f, ring = 0f)
+        // A crowded seat: its own pin may be nearer by 2 dp only; then the last try places from the 16 dp pin itself, as if no pin had
+        // rings (a ring can then draw under the label).
+        if (found == null) found = firstFree(seat, options, 2f) ?: firstFree(seat, ranked(seat, texts, 0f), 2f, PIN_RING * dp)
         // No free place: a chosen seat shows its one-line text inward, and the other labels avoid it.
         if (found == null && isChosen) found = SeatLabelSpot(0, 0, box(seat, 0, 0))
+        // A short cut is better than a hidden label: the usual rule, the 2 dp rule, then from the 16 dp pin.
+        if (found == null && !late.isEmpty()) {
+            val cuts = ranked(seat, late)
+            found = firstFree(seat, cuts) ?: firstFree(seat, cuts, 2f) ?: firstFree(seat, ranked(seat, late, 0f), 2f, PIN_RING * dp)
+        }
         spots[seat.id] = found
     }
     return spots
 }
 
-/** A label option of [labelOptions]: a text, a place, and a tier (0: touches no kept-off circle, 1: no circle of widest, 2: any). */
-internal data class LabelOption(val text: Int, val place: Int, val tier: Int)
-
 /**
- * The order in which a label tries its [texts] (the first [whole] are the whole-name texts, the others the cut texts): for each
- * group in order, for each text its nine places that touch no kept-off circle, then its nine places that touch no circle of
- * widest; then for each text of the group its nine places that touch a circle of widest.
+ * The order of the label candidates (the PC rank): a whole name before a cut; no stacked or stray fault; a plate that covers no
+ * more than 12 dp of a chord of 5 dp or more, or of a chord of another pair; off the exit of the seat's widest chord; the text
+ * (one line before two, 10 characters before 7); off the kept-off shapes; less chord ink under the plate (in steps of 8 dp²);
+ * then the order of the nine places.
  */
-internal fun labelOptions(texts: Int, whole: Int): List<LabelOption> = listOf(0 until min(whole, texts), min(whole, texts) until texts).flatMap { group ->
-    group.flatMap { text -> (0..1).flatMap { tier -> (0..8).map { LabelOption(text, it, tier) } } } +
-        group.flatMap { text -> (0..8).map { LabelOption(text, it, 2) } }
+internal data class LabelRank(val cut: Boolean, val fault: Boolean, val heavy: Boolean, val wide: Boolean, val text: Int,
+    val loose: Boolean, val ink: Int, val place: Int) : Comparable<LabelRank> {
+    override fun compareTo(other: LabelRank): Int = compareValuesBy(this, other, { it.cut }, { it.fault }, { it.heavy }, { it.wide },
+        { it.text }, { it.loose }, { it.ink }, { it.place })
 }
 
 /**
- * Port of region_fill: the machine whose sector holds [point] (between the drawn center disc, radius [inner], and [ri]), whose
- * sector tint is the fill there; null for the center disc and the background.
+ * What the table lights: a chosen chord, the chords of a chosen seat, or (with neither) the chords with a message in the chosen
+ * bucket ([counts], their counts there), and their pins.
  */
-internal fun regionMachine(point: Offset, center: Offset, inner: Float, ri: Float, ranges: Map<String, Pair<Float, Float>>): String? {
-    val radius = hypot(point.x - center.x, point.y - center.y)
-    if (radius <= inner || radius >= ri) return null
-    val angle = Math.toDegrees(atan2((point.y - center.y).toDouble(), (point.x - center.x).toDouble())).toFloat()
-    return ranges.entries.firstOrNull { (_, arc) -> ((angle - arc.first) % 360 + 360) % 360 < arc.second - arc.first }?.key
+internal data class TableLit(val chords: Set<String>, val pins: Set<String>, val counts: Map<String, Int>?) {
+    val lighting get() = chords.isNotEmpty() || pins.isNotEmpty()
+}
+
+internal fun tableLit(chordList: List<Chord>, selected: String?, selectedChord: Chord?, bucket: Map<String, Int>?): TableLit = when {
+    selectedChord != null -> TableLit(setOf(selectedChord.key), setOf(selectedChord.a, selectedChord.b), null)
+    // A selected seat lights its chords and their other ends.
+    selected != null -> chordList.filter { selected == it.a || selected == it.b }.let { lit ->
+        TableLit(lit.map { it.key }.toSet(), lit.flatMap { listOf(it.a, it.b) }.toSet() + selected, null)
+    }
+    // A bucket with no seated pair lights nothing and keeps the gray key.
+    bucket != null && chordList.any { (bucket[it.key] ?: 0) > 0 } -> chordList.filter { (bucket[it.key] ?: 0) > 0 }.let { lit ->
+        TableLit(lit.map { it.key }.toSet(), lit.flatMap { listOf(it.a, it.b) }.toSet(), bucket)
+    }
+    else -> TableLit(emptySet(), emptySet(), null)
 }
 
 /** The fill of a Busiest pairs or Between machines share bar: its count over the period [total] (D14 A). */
@@ -322,8 +444,158 @@ internal fun stripY(value: Int, largest: Int, plot: Float, inset: Float): Float 
 internal fun stripBucketAt(x: Float, count: Int, width: Float, inset: Float): Int? =
     (0 until count).minByOrNull { abs(stripX(it, count, width, inset) - x) }
 
-/** The left x of a tip [textWidth] wide, centered on [x] and kept inside the strip. */
-internal fun stripTipLeft(x: Float, textWidth: Float, width: Float): Float = (x - textWidth / 2).coerceIn(0f, max(0f, width - textWidth))
+/**
+ * Port of hover_names: where the readout of the chosen bucket stands in the name row: true with its left x when it fits between
+ * the end names ([firstWidth] wide at the left, the last name starting at [lastLeft]; [ends] false with one name) with 12 dp from
+ * each, else false (the end names hide) with the left x of the readout centered in the row, at most [width] wide.
+ */
+internal fun stripReadoutPlace(readout: Float, firstWidth: Float, lastLeft: Float, width: Float, ends: Boolean, dp: Float): Pair<Boolean, Float> {
+    val left = firstWidth + 12 * dp
+    val right = lastLeft - 12 * dp
+    if (ends && readout <= right - left) return true to left + (right - left - readout) / 2
+    return false to (width - min(readout, width)) / 2
+}
+
+/** The radius of a not-sent dot of the strip: 3 dp, or 2 dp when two buckets are less than 14 dp apart. */
+internal fun stripDotRadius(count: Int, width: Float, inset: Float, dp: Float): Float =
+    if (count > 1 && stripX(1, count, width, inset) - stripX(0, count, width, inset) < 14 * dp) 2 * dp else 3 * dp
+
+/** Port of monotone_tangents: the tangent at each point of a monotone cubic curve (no overshoot between points). */
+internal fun monotoneTangents(points: List<Offset>): List<Float> {
+    if (points.size < 2) return listOf(0f)
+    val slopes = points.zipWithNext { p, q -> if (q.x == p.x) 0f else (q.y - p.y) / (q.x - p.x) }
+    val tangents = MutableList(points.size) { 0f }
+    tangents[0] = slopes.first()
+    tangents[points.lastIndex] = slopes.last()
+    for (i in 1 until points.lastIndex) tangents[i] = if (slopes[i - 1] * slopes[i] <= 0) 0f else (slopes[i - 1] + slopes[i]) / 2
+    for (i in slopes.indices) {
+        val slope = slopes[i]
+        if (slope == 0f) {
+            tangents[i] = 0f
+            tangents[i + 1] = 0f
+            continue
+        }
+        val a = tangents[i] / slope
+        val b = tangents[i + 1] / slope
+        val magnitude = a * a + b * b
+        if (magnitude > 9) {
+            val scale = 3 / kotlin.math.sqrt(magnitude)
+            tangents[i] = scale * a * slope
+            tangents[i + 1] = scale * b * slope
+        }
+    }
+    return tangents
+}
+
+/** Port of smooth_curve: the cubic segments (from, control 1, control 2, to) through [points], controls at one third of each step. */
+internal fun smoothCurve(points: List<Offset>): List<List<Offset>> {
+    if (points.size < 2) return emptyList()
+    val tangents = monotoneTangents(points)
+    return points.zipWithNext().mapIndexed { i, (p, q) ->
+        val dx = q.x - p.x
+        listOf(p, Offset(p.x + dx / 3, p.y + tangents[i] * dx / 3), Offset(q.x - dx / 3, q.y - tangents[i + 1] * dx / 3), q)
+    }
+}
+
+/**
+ * Port of offline_dashes: the dashes of an offline band from [start] to [end] degrees as (start, end) angles: about 12 dp dashes
+ * with 4 dp gaps at the middle radius of the band from [ri] to [ro], a whole number of them, so that the arc starts and ends with a
+ * whole dash.
+ */
+internal fun offlineDashes(ri: Float, ro: Float, start: Float, end: Float, dp: Float): List<Pair<Float, Float>> {
+    val middle = (ri + ro) / 2
+    val length = Math.toRadians((end - start).toDouble()).toFloat() * middle
+    val count = max(1, kotlin.math.round((length + 4 * dp) / (16 * dp)).toInt())
+    val dash = (length + 4 * dp) / count - 4 * dp
+    val degrees = { px: Float -> if (middle > 0) Math.toDegrees((px / middle).toDouble()).toFloat() else 0f }
+    return (0 until count).map { start + degrees(it * (dash + 4 * dp)) to start + degrees(it * (dash + 4 * dp) + dash) }
+}
+
+/** Port of status_chord_width: the width (dp) of a chord lit by a chosen bucket, linear up to 7 messages. */
+internal fun statusChordWidth(count: Int, largest: Int): Float = 1.5f + min(count.toFloat(), 7f * count / max(1, largest))
+
+/** A width group of the three-sample key: its 16 dp sample at [x], [width] dp wide, then its [text] at [tx]. */
+internal class KeyGroup(val x: Float, val width: Float, val text: String, val tx: Float)
+
+/** A key part: its [kind] (scale, chords, bad, mixed, offline), its left [x], its [text] at [tx], and the [groups] of the scale. */
+internal class KeyItem(val kind: String, val x: Float, val text: String, val tx: Float, val groups: List<KeyGroup> = emptyList())
+
+/**
+ * A key line: its [items], its [box], its middle y, whether it [shown], its accessible [words], the two sample [widths] (dp) of the
+ * two-sample form, and whether they are in the [accent].
+ */
+internal class KeyPlan(val items: List<KeyItem>, val box: Rect, val middle: Float, val shown: Boolean, val words: String,
+    val widths: Pair<Float, Float>, val accent: Boolean)
+
+/** The middle count of the three-sample key: a quarter of [high], rounded half to even as Python round does. */
+internal fun keyMiddle(high: Int): Int = kotlin.math.round(high / 4.0).toInt()
+
+/**
+ * Port of layout_key. [counts] are the seated pair counts (with a chosen bucket, the counts in the bucket named [bucket], which
+ * light chords); [rest] the other parts ([bad] Not sent, [mixed] Some not sent, [offline] Offline). The key names three counts (the
+ * smallest, a quarter of the largest, the largest: `Line width: 4, 35, and 139 messages`) when the middle count is between the
+ * ends and that key fits; else two samples (`Line width: 1 to 34 messages`, with `(Oct 22)` for a bucket in two accent samples),
+ * with one part less each time from the end (Offline, Some not sent, Not sent) until it fits. [measure] gives the size of a text;
+ * [fits] says whether a key box can show; the key stands 12 dp over [bottom]. Null with no counts.
+ */
+internal fun planKey(counts: List<Int>, bucket: String?, rest: List<Pair<String, String>>, measure: (String) -> Size, dp: Float,
+    bottom: Float, fits: (Rect) -> Boolean): KeyPlan? {
+    val shown = counts.filter { it > 0 }
+    if (shown.isEmpty()) return null
+    val low = shown.min()
+    val high = shown.max()
+    val middle = keyMiddle(high)
+    val status = bucket != null
+    val count = { n: Int -> formatCount(n.toLong()) }
+    val text = (if (low != high) "${count(low)} to ${count(high)}" else count(high)) + (if (high != 1) " messages" else " message") +
+        (bucket?.let { " ($it)" } ?: "")
+    fun build(three: Boolean, parts: List<Pair<String, String>>): KeyPlan {
+        var x = 12 * dp
+        val items = mutableListOf<KeyItem>()
+        val words = mutableListOf<String>()
+        var height: Float
+        if (three) {
+            val head = measure("Line width:")
+            var left = x + head.width + 6 * dp
+            height = head.height
+            val groups = listOf(low, middle, high).mapIndexed { i, n ->
+                val words2 = count(n) + if (i == 2) " messages" else ""
+                val size = measure(words2)
+                height = max(height, size.height)
+                KeyGroup(left, 1.5f + 7 * kotlin.math.sqrt(n.toFloat() / high), words2, left + 20 * dp).also {
+                    left += 20 * dp + size.width + if (i < 2) 10 * dp else 0f
+                }
+            }
+            items += KeyItem("scale", x, "Line width:", x, groups)
+            x = left + 14 * dp
+            words += "Line width: ${count(low)}, ${count(middle)}, and ${count(high)} messages"
+        } else {
+            val size = measure("Line width: $text")
+            height = size.height
+            items += KeyItem("chords", x, "Line width: $text", x + 36 * dp + 6 * dp)
+            x += 36 * dp + 6 * dp + size.width + 14 * dp
+            words += "Line width: $text"
+        }
+        for ((kind, part) in parts) {
+            val size = measure(part)
+            height = max(height, size.height)
+            val sample = (if (kind == "offline") 20 else 18) * dp
+            items += KeyItem(kind, x, part, x + sample + 6 * dp)
+            x += sample + 6 * dp + size.width + 14 * dp
+            words += part
+        }
+        val box = Rect(12 * dp, bottom - 12 * dp - height, x - 14 * dp, bottom - 12 * dp)
+        val widths = if (status) statusChordWidth(low, high) to statusChordWidth(high, high) else 1.5f to 8.5f
+        return KeyPlan(items, box, box.top + height / 2, fits(box), words.joinToString(", "), widths, status)
+    }
+    var plan = if (!status && low < middle && middle < high) build(true, rest) else null
+    // Then the two-sample form with one part less each time, from the end.
+    for (n in rest.size downTo 0) {
+        if (plan?.shown == true) break
+        plan = build(false, rest.take(n))
+    }
+    return plan
+}
 
 /** Port of the chord tooltip: one part per direction (`release-plan → parser-review: 75`), then `Not sent: 3` when the pair has some. */
 internal fun chordText(chord: Chord, title: (String) -> String): String =

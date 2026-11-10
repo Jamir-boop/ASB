@@ -73,6 +73,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -80,9 +81,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.painter.Painter
@@ -134,6 +135,8 @@ import local.asb.companion.data.BucketCount
 import local.asb.companion.data.messageBucketPartial
 import local.asb.companion.data.messageBuckets
 import local.asb.companion.data.offlineBandColor
+import local.asb.companion.data.offlineRingColor
+import local.asb.companion.data.bucketPairCounts
 import local.asb.companion.data.BusyPair
 import local.asb.companion.data.UNLISTED
 import local.asb.companion.data.busiestPairs
@@ -464,7 +467,8 @@ private fun LiveMark(colors: ActivityColors) {
 
 /** A quadratic chord with a length table, so a light moves at the speed the preview's getPointAtLength gives. */
 private class Curve(val p0: Offset, val q: Offset, val p2: Offset) {
-    private val points = Array(49) { at(it / 48f) }
+    /** The 49 points of the length table, for the chord ink under a label plate. */
+    val points = List(49) { at(it / 48f) }
     private val lengths = FloatArray(49).also { for (i in 1..48) it[i] = it[i - 1] + (points[i] - points[i - 1]).getDistance() }
 
     fun at(t: Float): Offset {
@@ -488,13 +492,17 @@ private class Curve(val p0: Offset, val q: Offset, val p2: Offset) {
 }
 
 /**
- * A chord to draw (the PC layout_table chords): its stroke runs from [trim].first to [trim].second of the length, and each
- * not-sent receiver end of a mixed pair is a polyline of points 4 dp apart, from the pin rim, [endWidth] (3 dp) wide.
+ * A chord to draw (the PC layout_table chords): [width] is its rest width; its stroke runs from [trim].first to [trim].second of
+ * the length, less the gap at a not-sent end for the drawn width ([strokeTrim]); each not-sent receiver end of a mixed pair is a
+ * polyline of points 4 dp apart, from the pin rim, [endWidth] (3 dp) wide.
  */
 private class ChordDraw(val curve: Curve, val width: Float, val ends: List<List<Offset>>, val trim: Pair<Float, Float>, val endWidth: Float) {
+    /** The part of the length that a stroke [width] wide draws. */
+    fun drawn(width: Float, dp: Float): Pair<Float, Float> = if (ends.isEmpty()) trim else strokeTrim(trim, curve.length, width, dp)
+
     /** The trimmed stroke: the whole curve, or a polyline when an end cuts it. */
-    fun stroke(dp: Float): Path = if (ends.isEmpty()) curve.path else {
-        val (low, high) = trim
+    fun stroke(width: Float, dp: Float): Path = if (ends.isEmpty()) curve.path else {
+        val (low, high) = drawn(width, dp)
         val steps = max(2, kotlin.math.ceil((high - low) * curve.length / (4 * dp)).toInt())
         polyline((0..steps).map { curve.pointAtLength(low + (high - low) * it / steps) })
     }
@@ -515,7 +523,7 @@ private fun chordDraw(chord: Chord, curve: Curve, nMax: Int, dp: Float): ChordDr
             trim = if (forward) trim.first to min(trim.second, far / length) else max(trim.first, far / length) to trim.second
         }
     }
-    return ChordDraw(curve, width, ends, if (ends.isEmpty()) trim else strokeTrim(trim, length, width, dp), 3 * dp)
+    return ChordDraw(curve, width, ends, trim, 3 * dp)
 }
 
 private fun polyline(points: List<Offset>): Path = Path().apply {
@@ -720,12 +728,24 @@ private fun MessagesContent(
                         chord.key to geom.curve(chord.a, chord.b, seats[chord.a]?.machineId == seats[chord.b]?.machineId)?.let { chordDraw(chord, it, nMax, dp) }
                     }
                 }
+                // A chosen seat or chord has priority over a chosen bucket, which lights the chords with a message in it.
+                val inBucket = remember(reply, chordList, bucket) { bucket?.let { bucketPairCounts(reply, it, chordList) } }
+                val lit = tableLit(chordList, selectedSeat, selectedChord, inBucket)
+                val bucketName = bucket?.let { buckets.getOrNull(it) }?.let { stripBucketName(it.startMs, reply.buckets.unit) }
+                // The selected seat and the two seats of the selected chord place first and show their whole label.
+                val chosen = listOfNotNull(selectedSeat, selectedChord?.a, selectedChord?.b).distinct()
+                val labelPx = with(density) { 12.sp.toPx() }
+                val labels = remember(geom, curves, lit, chosen, bucketName, titles, colors, measurer, labelPx) {
+                    tableLabels(reply, geom, seated, chordList, curves, machines, colors, measurer, dp, labelPx, titles, labelMemory, lit, chosen, bucketName)
+                }
+                // The words of the shown key parts are also the description of the table.
+                val described = labels.key?.takeIf { labels.keyShown }?.let { "$summary. ${it.words}" } ?: summary
                 val currentOnSeat by rememberUpdatedState(onSeat)
                 val currentOnChord by rememberUpdatedState(onChord)
                 val currentOnClear by rememberUpdatedState(onClear)
                 Canvas(
                     Modifier.size(sideDp)
-                        .semantics { contentDescription = summary }
+                        .semantics { contentDescription = described }
                         .pointerInput(geom, curves) {
                             detectTapGestures { point ->
                                 val seat = seated.map { it.id }.minByOrNull { id -> geom.pin(id)?.let { (it - point).getDistance() } ?: Float.MAX_VALUE }
@@ -740,8 +760,7 @@ private fun MessagesContent(
                             }
                         },
                 ) {
-                    drawTable(reply, geom, seated, chordList, curves, machines, hues, selectedSeat, selectedChord, flights,
-                        frameNanos, marks, colors, gray, measurer, dp, titles, labelMemory)
+                    drawTable(geom, seated, chordList, curves, machines, hues, lit, labels, flights, frameNanos, marks, colors, gray, dp)
                 }
                 // TalkBack reaches each seat in circle order; a tap selects it, as a tap on its pin.
                 for (seat in seated) {
@@ -765,64 +784,150 @@ private fun MessagesContent(
     }
 }
 
-private fun DrawScope.drawTable(
+/** The seat labels and the key line of the table, placed in the composition so that TalkBack hears the shown key parts. */
+private class TableLabels(val inputs: List<SeatLabelInput>, val spots: Map<String, SeatLabelSpot?>, val texts: Map<String, List<TextLayoutResult>>,
+    val lines: List<ChordLine>, val key: KeyPlan?, val keyTexts: Map<String, TextLayoutResult>) {
+    /** A chosen label without a free place can cover the key, which then hides. */
+    val keyShown = key != null && key.shown && spots.values.none { it != null && it.box.overlaps(key.box) }
+}
+
+/** The ink box of [layout] from its top left: the ink of each line ([paint] at the label size) at its line start and baseline. */
+private fun inkBox(layout: TextLayoutResult, paint: android.graphics.Paint): Rect {
+    val text = layout.layoutInput.text.text
+    var ink: Rect? = null
+    for (line in 0 until layout.lineCount) {
+        val part = text.substring(layout.getLineStart(line), layout.getLineEnd(line, visibleEnd = true))
+        if (part.isBlank()) continue
+        val bounds = android.graphics.Rect()
+        paint.getTextBounds(part, 0, part.length, bounds)
+        val left = layout.getLineLeft(line)
+        val base = layout.getLineBaseline(line)
+        val box = Rect(left + bounds.left, base + bounds.top, left + bounds.right, base + bounds.bottom)
+        ink = ink?.let { Rect(min(it.left, box.left), min(it.top, box.top), max(it.right, box.right), max(it.bottom, box.bottom)) } ?: box
+    }
+    return ink ?: Rect(0f, 0f, layout.size.width.toFloat(), layout.size.height.toFloat())
+}
+
+private fun tableLabels(
     reply: ActivityMessages, geom: TableGeom, seated: List<Seat>, chordList: List<Chord>, curves: Map<String, ChordDraw?>,
-    machines: Map<String, ActivityMachine>, hues: Map<String, Color>, selected: String?,
-    selectedChord: Chord?, flights: List<Flight>, frameNanos: Long, marks: Map<String, Painter>, colors: ActivityColors,
-    gray: Color, measurer: TextMeasurer, dp: Float, titles: Map<String, String>, memory: LabelMemory,
+    machines: Map<String, ActivityMachine>, colors: ActivityColors, measurer: TextMeasurer, dp: Float, labelPx: Float,
+    titles: Map<String, String>, memory: LabelMemory, lit: TableLit, chosen: List<String>, bucketName: String?,
+): TableLabels {
+    val c = geom.c
+    val size = Size(geom.side, geom.side)
+    // The key line keeps off the pin squares and the machine labels.
+    val pinBoxes = seated.mapNotNull { geom.pin(it.id) }.map { Rect(it, (16 + PIN_RING) * dp) }
+    val others = pinBoxes + geom.labels.map { it.box }
+    val keyStyle = TextStyle(color = colors.muted, fontSize = 11.sp)
+    val keyTexts = HashMap<String, TextLayoutResult>()
+    val measureKey = { text: String ->
+        keyTexts.getOrPut(text) { measurer.measure(text, keyStyle, maxLines = 1) }.size.let { Size(it.width.toFloat(), it.height.toFloat()) }
+    }
+    val rest = listOf("bad" to "Not sent") + (if (chordList.any { it.mixed }) listOf("mixed" to "Some not sent") else emptyList()) +
+        if (geom.ranges.keys.any { machineOffline(machines[it]) }) listOf("offline" to "Offline") else emptyList()
+    val counts = lit.counts?.let { bucket -> chordList.map { bucket[it.key] ?: 0 } } ?: chordList.map { it.n }
+    val key = planKey(counts, bucketName.takeIf { lit.counts != null }, rest, measureKey, dp, size.height) { box ->
+        // It stays inside the table, outside the outer ring, and off the pins and the machine labels.
+        val near = Offset(c.x.coerceIn(box.left, box.right), c.y.coerceIn(box.top, box.bottom))
+        box.right <= size.width - 12 * dp && (near - c).getDistance() > geom.ro + 2 * dp && others.none { it.overlaps(box) }
+    }
+    // Seat labels (the PC place_labels): nine places each, with the whole text on one and on two lines, then cut to 10 and to 7
+    // characters, then the late cuts, else none.
+    val machineBoxes = geom.labels.map { Rect(it.box.left - 1 * dp, it.box.top, it.box.right + 1 * dp, it.box.bottom) }
+    val labelStyle = TextStyle(color = colors.text, fontSize = 12.sp, textAlign = TextAlign.Center)
+    val names = seated.associate { seat -> seat.id to seatLabelTexts(titles[seat.id] ?: UNLISTED) }
+    val texts = names.mapValues { (_, list) -> list.map { measurer.measure(it, labelStyle, maxLines = 2) } }
+    val paint = android.graphics.Paint().apply { textSize = labelPx; isAntiAlias = true }
+    val messages = seatCounts(reply.messages).mapValues { it.value.sent + it.value.received }
+    // Kept-off shapes: the own exits of each seat, by the rest width of their chord, and every all-not-sent chord.
+    val exits = HashMap<String, MutableList<Pair<Float, List<Pair<Offset, Float>>>>>()
+    for (chord in chordList) {
+        val draw = curves[chord.key] ?: continue
+        for ((id, start) in listOf(chord.a to true, chord.b to false)) {
+            exits.getOrPut(id) { mutableListOf() } += draw.width to exitCircles(draw.curve.length, draw.curve::pointAtLength, start, draw.width, dp)
+        }
+    }
+    val dashed = chordList.filter { it.bad }.flatMap { chord ->
+        curves[chord.key]?.let { dashedCircles(it.curve.length, it.curve::pointAtLength, it.width, dp) }.orEmpty()
+    }
+    // The center lines of the chords at rest, for the chord ink under a plate (3 times for an all-not-sent chord).
+    val lines = chordList.mapNotNull { chord ->
+        curves[chord.key]?.let { ChordLine(chord.key, chord.a, chord.b, it.width, if (chord.bad) 3 else 1, it.curve.points) }
+    }
+    val inputs = seated.filter { it.id in geom.angles }.map { seat ->
+        val own = exits[seat.id].orEmpty()
+        val widest = own.maxOfOrNull { it.first }
+        val list = names.getValue(seat.id)
+        SeatLabelInput(seat.id, geom.angles.getValue(seat.id), texts.getValue(seat.id).map { Size(it.size.width.toFloat(), it.size.height.toFloat()) },
+            seatLabelWholeCount(list), pinCircle(geom.pin(seat.id)!!, dp), own.flatMap { it.second },
+            own.filter { it.first == widest }.flatMap { it.second }, seatLabelLate(list, titles[seat.id] ?: UNLISTED),
+            texts.getValue(seat.id).map { inkBox(it, paint) })
+    }
+    // The pins and the not-sent end points are circles (the key line keeps the pin squares).
+    val pinCircles = seated.mapNotNull { geom.pin(it.id) }.map { pinCircle(it, dp) }
+    val circles = curves.values.filterNotNull().flatMap { draw -> draw.ends.flatten().map { endCircle(it, draw.endWidth, dp) } }
+    val blocked = machineBoxes + listOfNotNull(key?.box?.takeIf { key.shown })
+    // A selection change keeps the labels that are still free; a period change, other seats, or another size places from the start.
+    val reset = listOf(reply.period, seated.map { it.id }, size)
+    val spots = placeSeatLabels(inputs, chosen, messages, activityTimes(reply.messages),
+        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro, circles, pinCircles, dashed, lines), dp,
+        lit.pins - chosen.toSet(), if (memory.reset == reset) memory.spots else emptyMap(), lit.chords)
+    memory.reset = reset
+    memory.spots = spots
+    return TableLabels(inputs, spots, texts, lines, key, keyTexts)
+}
+
+private fun DrawScope.drawTable(
+    geom: TableGeom, seated: List<Seat>, chordList: List<Chord>, curves: Map<String, ChordDraw?>,
+    machines: Map<String, ActivityMachine>, hues: Map<String, Color>, lit: TableLit, labels: TableLabels,
+    flights: List<Flight>, frameNanos: Long, marks: Map<String, Painter>, colors: ActivityColors, gray: Color, dp: Float,
 ) {
     if (geom.ranges.isEmpty()) return
     val c = geom.c
     val background = colors.background
     val dash = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))
     val r0 = if (geom.small) 0f else geom.rc
+    fun tint(id: String) = hues[id]?.copy(alpha = if (machineOffline(machines[id])) .03f else .05f)
+    // An offline sector draws no dashed radial edges: its dashed band, its dashed pin rings, and its Offline label say it.
+    for ((id, range) in geom.ranges) tint(id)?.let { drawPath(sectorPath(c, r0, geom.ri, range.first, range.second), it) }
     for ((id, range) in geom.ranges) {
-        val offline = machineOffline(machines[id])
         val hue = hues[id] ?: continue
-        // An offline sector draws no dashed radial edges.
-        drawPath(sectorPath(c, r0, geom.ri, range.first, range.second), hue.copy(alpha = if (offline) .03f else .05f))
-    }
-    for ((id, range) in geom.ranges) {
-        val offline = machineOffline(machines[id])
-        val hue = hues[id] ?: continue
-        val band = sectorPath(c, geom.ri, geom.ro, range.first, range.second)
-        drawPath(band, if (offline) hexColor(offlineBandColor(background.hex(), hue.hex())) else hue.copy(alpha = .85f))
-        if (offline) drawPath(band, hue, style = Stroke(1 * dp, pathEffect = dash))
+        if (machineOffline(machines[id])) {
+            // A row of about 12 dp dashes with 4 dp gaps.
+            val color = hexColor(offlineBandColor(background.hex(), hue.hex()))
+            for ((start, end) in offlineDashes(geom.ri, geom.ro, range.first, range.second, dp)) drawPath(sectorPath(c, geom.ri, geom.ro, start, end), color)
+        } else drawPath(sectorPath(c, geom.ri, geom.ro, range.first, range.second), hue.copy(alpha = .85f))
     }
     // Chords: at rest one neutral gray; a selection lights its chords in the accent, and the others mix 35% toward the background.
-    val litChords = when {
-        selectedChord != null -> setOf(selectedChord.key)
-        selected != null -> chordList.filter { selected == it.a || selected == it.b }.map { it.key }.toSet()
-        else -> emptySet()
-    }
-    // A selected seat lights its chords and their other ends.
-    val litPins = when {
-        selectedChord != null -> setOf(selectedChord.a, selectedChord.b)
-        selected != null -> chordList.filter { it.key in litChords }.flatMap { listOf(it.a, it.b) }.toSet() + selected
-        else -> emptySet()
-    }
-    val lighting = litChords.isNotEmpty() || litPins.isNotEmpty()
+    val lighting = lit.lighting
     val flying = if (lighting) emptySet() else flights.filter { it.startNanos <= frameNanos }.mapNotNull { pairKey(it.message, seated) }.toSet()
     val bad = statusColor("not-sent", colors)
     val dimGray = mixToward(background, gray, .35)
     val dimBad = mixToward(background, bad, .35)
     val badDash = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp))
     val endDash = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))
+    val largest = lit.counts?.values?.maxOrNull() ?: 1
     // Port of snapshot_chord: part is "casing", "stroke", or "ends" for the three passes of the lit chords, else "all".
     fun drawChord(chord: Chord, draw: ChordDraw, part: String) {
-        val lit = chord.key in litChords
-        val dim = !lit && (lighting || (flying.isNotEmpty() && chord.key !in flying))
+        val isLit = chord.key in lit.chords
+        val dim = !isLit && (lighting || (flying.isNotEmpty() && chord.key !in flying))
         // A selection never recolors a not-sent mark: a lit all-not-sent chord stays dashed in the not-sent color, 3 dp wide.
         val color = when {
             chord.bad -> if (dim) dimBad else bad
-            lit -> colors.accent
+            isLit -> colors.accent
             else -> if (dim) dimGray else gray
         }
-        val width = if (chord.bad && lit) 3 * dp else draw.width
-        if (lit && part in setOf("all", "casing")) drawPath(draw.curve.path, background, style = Stroke(width + 2 * dp, cap = StrokeCap.Round))
-        if (part in setOf("all", "stroke") && draw.trim.second > draw.trim.first) {
+        // A chord lit by a chosen bucket has the width of its count there (status_chord_width).
+        val count = lit.counts?.get(chord.key) ?: 0
+        val width = when {
+            chord.bad -> if (isLit) 3 * dp else draw.width
+            isLit && count > 0 -> statusChordWidth(count, largest) * dp
+            else -> draw.width
+        }
+        if (isLit && part in setOf("all", "casing")) drawPath(draw.curve.path, background, style = Stroke(width + 2 * dp, cap = StrokeCap.Round))
+        if (part in setOf("all", "stroke") && draw.drawn(width, dp).let { it.second > it.first }) {
             // An all-not-sent chord: 5 dp on and 5 dp off with butt caps.
-            drawPath(draw.stroke(dp), color, style = if (chord.bad) Stroke(width, cap = StrokeCap.Butt, pathEffect = badDash)
+            drawPath(draw.stroke(width, dp), color, style = if (chord.bad) Stroke(width, cap = StrokeCap.Butt, pathEffect = badDash)
                 else Stroke(width, cap = StrokeCap.Round))
         }
         // A mixed pair: each receiver end with not-sent messages is 3 dp, 4 dp on and 3 dp off from the rim, with butt caps, in the
@@ -832,11 +937,14 @@ private fun DrawScope.drawTable(
             drawPath(polyline(end), if (dim) dimBad else bad, style = Stroke(draw.endWidth, pathEffect = endDash))
         }
     }
-    for (chord in chordList) if (chord.key !in litChords) curves[chord.key]?.let { drawChord(chord, it, "all") }
-    // The lit chords draw last, so that no chord crosses them: all casings, then all strokes, then all not-sent dashes.
-    for (part in listOf("casing", "stroke", "ends")) {
-        for (chord in chordList) if (chord.key in litChords) curves[chord.key]?.let { drawChord(chord, it, part) }
+    fun drawLit(keys: Set<String>) {
+        // The lit chords draw last, so that no chord crosses them: all casings, then all strokes, then all not-sent dashes.
+        for (part in listOf("casing", "stroke", "ends")) {
+            for (chord in chordList) if (chord.key in keys) curves[chord.key]?.let { drawChord(chord, it, part) }
+        }
     }
+    for (chord in chordList) if (chord.key !in lit.chords) curves[chord.key]?.let { drawChord(chord, it, "all") }
+    drawLit(lit.chords)
     if (!geom.small) drawCircle(background, geom.rc, c)
     if (!geom.small) drawCircle(colors.rule, geom.rc, c, style = Stroke(1 * dp))
     // Lights: glow, a tail of 8 circles over the last 20% of the elapsed time, and the head.
@@ -861,73 +969,51 @@ private fun DrawScope.drawTable(
         }
         drawCircle(LIGHT, 3 * dp, head, alpha = fade)
     }
-    // Seat labels (the PC place_labels): nine places each, with the whole text on one and on two lines, then cut to 10 and to 7
-    // characters, else none.
-    val machineBoxes = geom.labels.map { Rect(it.box.left - 1 * dp, it.box.top, it.box.right + 1 * dp, it.box.bottom) }
-    val pinBoxes = seated.mapNotNull { geom.pin(it.id) }.map { Rect(it, (16 + PIN_RING) * dp) }
-    val key = layoutKey(geom, chordList, machines, colors, measurer, dp, size, pinBoxes + geom.labels.map { it.box })
-    val labelStyle = TextStyle(color = colors.text, fontSize = 12.sp, textAlign = TextAlign.Center)
-    val names = seated.associate { seat -> seat.id to seatLabelTexts(titles[seat.id] ?: UNLISTED) }
-    val texts = names.mapValues { (_, list) -> list.map { measurer.measure(it, labelStyle, maxLines = 2) } }
-    // The selected seat and the two seats of the selected chord place first and show their whole label.
-    val chosen = listOfNotNull(selected, selectedChord?.a, selectedChord?.b).distinct().filter { id -> seated.any { it.id == id } }
-    val counts = seatCounts(reply.messages).mapValues { it.value.sent + it.value.received }
-    // Kept-off shapes: the own exits of each seat, by the rest width of their chord, and every all-not-sent chord.
-    val exits = HashMap<String, MutableList<Pair<Float, List<Pair<Offset, Float>>>>>()
-    for (chord in chordList) {
-        val draw = curves[chord.key] ?: continue
-        for ((id, start) in listOf(chord.a to true, chord.b to false)) {
-            exits.getOrPut(id) { mutableListOf() } += draw.width to exitCircles(draw.curve.length, draw.curve::pointAtLength, start, draw.width, dp)
-        }
-    }
-    val dashed = chordList.filter { it.bad }.flatMap { chord ->
-        curves[chord.key]?.let { dashedCircles(it.curve.length, it.curve::pointAtLength, it.width, dp) }.orEmpty()
-    }
-    val inputs = seated.filter { it.id in geom.angles }.map { seat ->
-        val own = exits[seat.id].orEmpty()
-        val widest = own.maxOfOrNull { it.first }
-        SeatLabelInput(seat.id, geom.angles.getValue(seat.id), texts.getValue(seat.id).map { Size(it.size.width.toFloat(), it.size.height.toFloat()) },
-            seatLabelWholeCount(names.getValue(seat.id)), pinCircle(geom.pin(seat.id)!!, dp), own.flatMap { it.second },
-            own.filter { it.first == widest }.flatMap { it.second })
-    }
-    // The pins and the not-sent end points are circles (the key line keeps the pin squares).
-    val pinCircles = seated.mapNotNull { geom.pin(it.id) }.map { pinCircle(it, dp) }
-    val circles = curves.values.filterNotNull().flatMap { draw -> draw.ends.flatten().map { endCircle(it, draw.endWidth, dp) } }
-    val blocked = machineBoxes + listOfNotNull(key?.box?.takeIf { key.shown })
-    // A selection change keeps the labels that are still free; a period change, other seats, or another size places from the start.
-    val reset = listOf(reply.period, seated.map { it.id }, size)
-    val spots = placeSeatLabels(inputs, chosen, counts, activityTimes(reply.messages),
-        LabelTable(c, geom.rp, geom.rc, !geom.small, size.width, size.height, blocked, geom.ri, geom.ro, circles, pinCircles, dashed), dp,
-        litPins - chosen.toSet(),
-        if (memory.reset == reset) memory.spots else emptyMap())
-    memory.reset = reset
-    memory.spots = spots
-    val arcs = geom.ranges.mapValues { it.value.first to it.value.second }
-    for ((id, spot) in spots) {
+    val inputs = labels.inputs.associateBy { it.id }
+    fun plate(id: String, spot: SeatLabelSpot): Rect = labelPlate(spot.box, inputs.getValue(id).inks[spot.text], dp)
+    fun clipPlate(rect: Rect, block: DrawScope.() -> Unit) =
+        clipPath(Path().apply { addRoundRect(RoundRect(rect, CornerRadius(3 * dp))) }, block = block)
+    // While the table dims, the labels of seats that are not lit draw in the muted color.
+    fun textColor(id: String) = if (lighting && id !in lit.pins) colors.muted else colors.text
+    for ((id, spot) in labels.spots) {
         if (spot == null) continue
-        // The halo has the fill of the region under the label center: the sector tint there, or the background (also the disc).
-        val halo = regionMachine(spot.box.center, c, r0, geom.ri, arcs)?.let { machine ->
-            hues[machine]?.copy(alpha = if (machineOffline(machines[machine])) .03f else .05f)?.compositeOver(background)
-        } ?: background
-        // While the table dims, the labels of seats that are not lit draw in the muted color.
-        drawHaloText(texts.getValue(id)[spot.text], Offset(spot.box.left + 1 * dp, spot.box.top), halo, dp,
-            if (lighting && id !in litPins) colors.muted else null)
+        // The plate: the table draws its background again in it (the background, each sector tint, and the center disc with its rule),
+        // so no chord at rest and no dim chord shows under the label.
+        clipPlate(plate(id, spot)) {
+            drawRect(background)
+            for ((machine, range) in geom.ranges) tint(machine)?.let { drawPath(sectorPath(c, r0, geom.ri, range.first, range.second), it) }
+            if (!geom.small) {
+                drawCircle(background, geom.rc, c)
+                drawCircle(colors.rule, geom.rc, c, style = Stroke(1 * dp))
+            }
+        }
+        drawText(labels.texts.getValue(id)[spot.text], color = textColor(id), topLeft = Offset(spot.box.left + 1 * dp, spot.box.top))
     }
-    // A chosen label without a free place can cover the key, which then hides.
-    val keyShown = key != null && key.shown && spots.values.none { it != null && it.box.overlaps(key.box) }
+    // A lit chord draws again over the plates that it crosses, and those labels draw again over a casing.
+    for ((id, keys) in plateCrossings(labels.spots, labels.inputs, labels.lines, lit.chords, dp)) {
+        val spot = labels.spots[id] ?: continue
+        clipPlate(plate(id, spot)) { drawLit(keys.toSet()) }
+        drawCasedText(labels.texts.getValue(id)[spot.text], Offset(spot.box.left + 1 * dp, spot.box.top), background, textColor(id), dp)
+    }
     // Pins are opaque: the background fill, then the ring, after all chords and not-sent ends. A lit pin has a 2 dp accent ring with a
-    // 1 dp background casing on each side; the others mix toward the background.
+    // 1 dp background casing on each side; the others mix toward the background. An offline pin has a dashed ring in every state.
     for (seat in seated) {
         val pin = geom.pin(seat.id) ?: continue
         val offline = machineOffline(machines[seat.machineId])
         val hue = hues[seat.machineId] ?: colors.text
-        val chosen = seat.id in litPins
-        val factor = (if (offline) .75 else 1.0) * (if (lighting && !chosen) .35 else 1.0)
+        val chosen = seat.id in lit.pins
+        val dim = if (lighting && !chosen) .35 else 1.0
+        val factor = (if (offline) .75 else 1.0) * dim
+        val ring = if (offline) PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp)) else null
         drawCircle(background, 16 * dp, pin)
         if (chosen) {
             drawCircle(background, 16 * dp, pin, style = Stroke(4 * dp))
-            drawCircle(colors.accent, 16 * dp, pin, style = Stroke(2 * dp))
-        } else drawCircle(mixToward(background, hue, factor), 16 * dp, pin, style = Stroke(1.5f * dp, pathEffect = if (offline) dash else null))
+            drawCircle(colors.accent, 16 * dp, pin, style = Stroke(2 * dp, pathEffect = ring))
+        } else {
+            // The rest ring of an offline pin: the machine hue moved toward the text until it has 3:1 on its sector tint.
+            val rest = if (offline) hexColor(offlineRingColor(background.hex(), colors.text.hex(), hue.hex())) else hue
+            drawCircle(mixToward(background, rest, dim), 16 * dp, pin, style = Stroke(1.5f * dp, pathEffect = ring))
+        }
         val mark = marks[appKey(seat.app)] ?: continue
         translate(pin.x - 7 * dp, pin.y - 7 * dp) {
             // The app glyphs use the muted text color of the unlit seat labels.
@@ -938,7 +1024,7 @@ private fun DrawScope.drawTable(
     // The Offline sample takes the hue of the offline machine, or the muted color when several machines are offline.
     val offline = geom.ranges.keys.filter { machineOffline(machines[it]) }
     val offlineColor = offline.singleOrNull()?.let { hues[it] } ?: colors.muted
-    key?.takeIf { keyShown }?.let { drawKey(it, colors, gray, offlineColor, geom.ro - geom.ri, dp) }
+    labels.key?.takeIf { labels.keyShown }?.let { drawKey(it, labels.keyTexts, colors, gray, offlineColor, geom.ro - geom.ri, dp) }
 }
 
 /** The last seat label placement, kept while the period, the seated seats, and the size stay the same. */
@@ -947,65 +1033,39 @@ private class LabelMemory {
     var spots: Map<String, SeatLabelSpot?> = emptyMap()
 }
 
-/** Port of snapshot_label: a 3 dp halo in the background color, from copies of the text around its place, then the text. */
-private fun DrawScope.drawHaloText(layout: TextLayoutResult, topLeft: Offset, halo: Color, dp: Float, color: Color? = null) {
-    for ((radius, steps) in listOf(1.5f to 8, 3f to 16)) {
+/**
+ * Port of snapshot_cased_text: the text of a label that a lit chord crosses, over a 2 dp casing in the [casing] color: the text at
+ * 24 offsets (16 at 2 dp, 8 at 1 dp), which rounds the corners as a round join does, then the text in [color].
+ */
+private fun DrawScope.drawCasedText(layout: TextLayoutResult, topLeft: Offset, casing: Color, color: Color, dp: Float) {
+    for ((radius, steps) in listOf(2f to 16, 1f to 8)) {
         for (step in 0 until steps) {
             val angle = 2 * Math.PI * step / steps
-            drawText(layout, color = halo, topLeft = topLeft + Offset(radius * dp * cos(angle).toFloat(), radius * dp * sin(angle).toFloat()))
+            drawText(layout, color = casing, topLeft = topLeft + Offset(radius * dp * cos(angle).toFloat(), radius * dp * sin(angle).toFloat()))
         }
     }
-    if (color != null) drawText(layout, color = color, topLeft = topLeft) else drawText(layout, topLeft = topLeft)
-}
-
-/** The key line: its items (kind, left x, text), its box, and whether it shows. */
-private class KeyLayout(val items: List<Triple<String, Float, TextLayoutResult>>, val box: Rect, val middle: Float, val shown: Boolean)
-
-/**
- * Port of layout_key: at the bottom left, a thin and a thick chord sample with the smallest and the largest pair counts, a dashed
- * Not sent sample, a Some not sent sample when a pair has both, and an Offline arc when a machine is offline. It shows only when
- * it touches none of [boxes] and stays outside the outer ring; null with no chords.
- */
-private fun layoutKey(geom: TableGeom, chordList: List<Chord>, machines: Map<String, ActivityMachine>, colors: ActivityColors,
-    measurer: TextMeasurer, dp: Float, size: Size, boxes: List<Rect>): KeyLayout? {
-    if (chordList.isEmpty()) return null
-    val low = chordList.minOf { it.n }
-    val high = chordList.maxOf { it.n }
-    val words = if (low != high) "${formatCount(low.toLong())} to ${formatCount(high.toLong())} messages" else plural(high, "message")
-    val parts = listOf("chords" to "Line width: $words", "bad" to "Not sent") +
-        (if (chordList.any { it.mixed }) listOf("mixed" to "Some not sent") else emptyList()) +
-        if (geom.ranges.keys.any { machineOffline(machines[it]) }) listOf("offline" to "Offline") else emptyList()
-    val style = TextStyle(color = colors.muted, fontSize = 11.sp)
-    var x = 12 * dp
-    val items = parts.map { (kind, text) ->
-        val layout = measurer.measure(text, style, maxLines = 1)
-        Triple(kind, x, layout).also { x += keySample(kind) * dp + 6 * dp + layout.size.width + 14 * dp }
-    }
-    val height = items.maxOf { it.third.size.height }.toFloat()
-    val box = Rect(12 * dp, size.height - 12 * dp - height, x - 14 * dp, size.height - 12 * dp)
-    val near = Offset(geom.c.x.coerceIn(box.left, box.right), geom.c.y.coerceIn(box.top, box.bottom))
-    val clear = box.right <= size.width - 12 * dp && (near - geom.c).getDistance() > geom.ro + 2 * dp
-    return KeyLayout(items, box, box.top + height / 2, clear && boxes.none { it.overlaps(box) })
-}
-
-/** The width in dp of a key sample: the two chord samples 36, the Offline band piece 20, the others 18. */
-private fun keySample(kind: String): Int = when (kind) {
-    "chords" -> 36
-    "offline" -> 20
-    else -> 18
+    drawText(layout, color = color, topLeft = topLeft)
 }
 
 /** Port of snapshot_key; [band] is the width of the machine band. */
-private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Color, offline: Color, band: Float, dp: Float) {
+private fun DrawScope.drawKey(key: KeyPlan, texts: Map<String, TextLayoutResult>, colors: ActivityColors, gray: Color, offline: Color,
+    band: Float, dp: Float) {
     val middle = key.middle
     val bad = statusColor("not-sent", colors)
     val dashes = PathEffect.dashPathEffect(floatArrayOf(5 * dp, 5 * dp))
     val endDash = PathEffect.dashPathEffect(floatArrayOf(4 * dp, 3 * dp))
-    for ((kind, left, layout) in key.items) {
-        when (kind) {
-            // Two 16 dp butt-capped segments, 1.5 and 8.5 dp wide, 4 dp apart.
-            "chords" -> for ((start, width) in listOf(left to 1.5f * dp, left + 20 * dp to 8.5f * dp)) {
-                drawLine(gray, Offset(start, middle), Offset(start + 16 * dp, middle), width, StrokeCap.Butt)
+    fun text(words: String, x: Float) = texts.getValue(words).let { drawText(it, topLeft = Offset(x, middle - it.size.height / 2f)) }
+    for (item in key.items) {
+        val left = item.x
+        when (item.kind) {
+            // Three 16 dp butt-capped samples at the widths of the smallest, the middle, and the largest count, each before its count.
+            "scale" -> for (group in item.groups) {
+                drawLine(gray, Offset(group.x, middle), Offset(group.x + 16 * dp, middle), group.width * dp, StrokeCap.Butt)
+                text(group.text, group.tx)
+            }
+            // Two 16 dp butt-capped segments at the smallest and the largest width, 4 dp apart; in the accent for a chosen bucket.
+            "chords" -> for ((start, width) in listOf(left to key.widths.first, left + 20 * dp to key.widths.second)) {
+                drawLine(if (key.accent) colors.accent else gray, Offset(start, middle), Offset(start + 16 * dp, middle), width * dp, StrokeCap.Butt)
             }
             "bad" -> drawLine(bad, Offset(left, middle), Offset(left + 18 * dp, middle), 2 * dp, pathEffect = dashes)
             // A gray chord, a 2 dp gap, then a 3 dp dashed not-sent end over its casing in the background color, as on the table.
@@ -1014,16 +1074,12 @@ private fun DrawScope.drawKey(key: KeyLayout, colors: ActivityColors, gray: Colo
                 drawLine(colors.background, Offset(left + 8 * dp, middle), Offset(left + 18 * dp, middle), 5 * dp)
                 drawLine(bad, Offset(left + 8 * dp, middle), Offset(left + 18 * dp, middle), 3 * dp, pathEffect = endDash)
             }
-            // A 20 dp straight piece of the offline band at its real width: its fill and its dashed long edges.
-            else -> {
-                val half = band / 2
-                drawRect(hexColor(offlineBandColor(colors.background.hex(), offline.hex())), Offset(left, middle - half), Size(20 * dp, band))
-                for (edge in listOf(middle - half + .5f * dp, middle + half - .5f * dp)) {
-                    drawLine(offline, Offset(left, edge), Offset(left + 20 * dp, edge), 1 * dp, pathEffect = endDash)
-                }
+            // A 20 dp straight piece of the offline band at its real width: two 8 dp dashes with a 4 dp gap.
+            else -> for (start in listOf(left, left + 12 * dp)) {
+                drawRect(hexColor(offlineBandColor(colors.background.hex(), offline.hex())), Offset(start, middle - band / 2), Size(8 * dp, band))
             }
         }
-        drawText(layout, topLeft = Offset(left + keySample(kind) * dp + 6 * dp, middle - layout.size.height / 2f))
+        text(item.text, item.tx)
     }
 }
 
@@ -1170,9 +1226,11 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
 /**
  * Port of CountStrip: messages over time, a 24 dp plot (3 dp insets) over a 16 dp tick row. A 2 dp line in the rest chord [gray]
  * joins the bucket points, each on a device pixel center, over a 1 dp baseline in the rule color at the y of count 0; a bucket with
- * a not-sent message has a 3 dp dot in the not-sent color. When the last bucket is the current one ([partial]), the segment into it
- * is dashed and its point is a hollow ring. The tick row names the first and the last bucket with a caption between them, or the
- * [chosen] bucket (a tap or a drag chooses the nearest one), which has a 1 dp muted line and a dot at its point.
+ * a not-sent message has a dot in the not-sent color (3 dp, or 2 dp when two buckets are less than 14 dp apart). The line is the
+ * monotone cubic curve of the Usage chart. When the last bucket is the current one ([partial]), the segment into it is dashed, its
+ * point is a hollow ring, and a not-sent mark on it is a ring. The tick row names the first and the last bucket with a caption
+ * between them; while a bucket is [chosen] (a tap or a drag chooses the nearest one), which has a 1 dp muted line and a dot at its
+ * point, its readout stands in place of the caption.
  */
 @Composable
 private fun CountStrip(buckets: List<BucketCount>, unit: String, partial: Boolean, gray: Color, colors: ActivityColors, chosen: Int?,
@@ -1184,6 +1242,10 @@ private fun CountStrip(buckets: List<BucketCount>, unit: String, partial: Boolea
     val tip = chosen?.let { index ->
         buckets.getOrNull(index)?.let { messageBucketTip(it.startMs, it.count, it.bad, unit, partial && index == buckets.lastIndex) }
     }
+    val readout = chosen?.let { index ->
+        buckets.getOrNull(index)?.let { messageBucketReadout(it.startMs, it.count, it.bad, unit, partial && index == buckets.lastIndex) }
+    }
+    val readoutStyle = TextStyle(fontSize = 11.sp, color = colors.text)
     val currentChoose by rememberUpdatedState(onChoose)
     Canvas(modifier.fillMaxWidth().height(40.dp)
         .clearAndSetSemantics { contentDescription = listOfNotNull(name, tip).joinToString(", ") }
@@ -1207,15 +1269,30 @@ private fun CountStrip(buckets: List<BucketCount>, unit: String, partial: Boolea
         drawLine(colors.rule, Offset(points.first().x, zero), Offset(points.last().x, zero), 1 * dp)
         val point = chosen?.let { points.getOrNull(it) }
         if (point != null) drawLine(colors.muted, Offset(point.x, 0f), Offset(point.x, plot), 1 * dp)
-        val solid = if (current) points.dropLast(1) else points
-        if (solid.size > 1) drawPath(polyline(solid), gray, style = Stroke(2 * dp, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        // The monotone cubic curve of the Usage chart through the points; the segment into the current bucket is dashed.
+        val segments = smoothCurve(points)
+        fun curve(parts: List<List<Offset>>) = Path().apply {
+            moveTo(parts[0][0].x, parts[0][0].y)
+            for ((_, c1, c2, to) in parts) cubicTo(c1.x, c1.y, c2.x, c2.y, to.x, to.y)
+        }
+        val solid = if (current) segments.dropLast(1) else segments
+        if (solid.isNotEmpty()) drawPath(curve(solid), gray, style = Stroke(2 * dp, cap = StrokeCap.Round, join = StrokeJoin.Round))
         if (current) {
             // The current bucket is not complete: a dashed segment into a hollow point.
-            drawLine(gray, points[points.size - 2], points.last(), 2 * dp, StrokeCap.Butt, PathEffect.dashPathEffect(floatArrayOf(3 * dp, 3 * dp)))
+            drawPath(curve(segments.takeLast(1)), gray, style = Stroke(2 * dp, cap = StrokeCap.Butt,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(3 * dp, 3 * dp))))
             drawCircle(colors.background, 3 * dp, points.last())
             drawCircle(gray, 3 * dp, points.last(), style = Stroke(1.5f * dp))
         }
-        for ((p, b) in points.zip(buckets)) if (b.bad > 0) drawCircle(bad, 3 * dp, p)
+        val dot = stripDotRadius(buckets.size, size.width, inset, dp)
+        points.zip(buckets).forEachIndexed { i, (p, b) ->
+            if (b.bad == 0) return@forEachIndexed
+            if (current && i == points.lastIndex) {
+                // A not-sent mark on the current bucket: a ring of the dot radius in the not-sent color, the background inside.
+                drawCircle(colors.background, dot, p)
+                drawCircle(bad, dot, p, style = Stroke(1.5f * dp))
+            } else drawCircle(bad, dot, p)
+        }
         if (chosen != null && point != null) {
             // A not-sent dot keeps its color and gets a 1 dp ring in the text color; another bucket gets a dot over a 1 dp casing.
             if (buckets[chosen].bad > 0) drawCircle(colors.text, 3.5f * dp, point, style = Stroke(1 * dp))
@@ -1225,15 +1302,27 @@ private fun CountStrip(buckets: List<BucketCount>, unit: String, partial: Boolea
             }
         }
         val top = plot + 2 * dp
-        if (tip != null && point != null) {
-            val layout = measurer.measure(tip, style, maxLines = 1)
-            drawText(layout, topLeft = Offset(stripTipLeft(point.x, layout.size.width.toFloat(), size.width), top))
+        val first = measurer.measure(stripFirstName(buckets.first().startMs, buckets.last().startMs, unit), style, maxLines = 1)
+        val last = measurer.measure(stripBucketName(buckets.last().startMs, unit), style, maxLines = 1)
+        val lastLeft = size.width - last.size.width
+        // While a bucket is chosen, its readout stands in place of the caption, in the text color; when it does not fit between the
+        // end names (12 dp from each), the end names hide, and then it ellipsizes at its end.
+        val readoutPlace = readout?.let { words ->
+            val whole = measurer.measure(words, readoutStyle, maxLines = 1)
+            val (ends, x) = stripReadoutPlace(whole.size.width.toFloat(), first.size.width.toFloat(), lastLeft, size.width, buckets.size > 1, dp)
+            Triple(if (ends || whole.size.width <= size.width) whole else measurer.measure(words, readoutStyle, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, constraints = androidx.compose.ui.unit.Constraints(maxWidth = size.width.toInt())), ends, x)
+        }
+        if (readoutPlace != null) {
+            val (layout, ends, x) = readoutPlace
+            if (ends) {
+                drawText(first, topLeft = Offset(0f, top))
+                drawText(last, topLeft = Offset(lastLeft, top))
+            }
+            drawText(layout, topLeft = Offset(x, top))
         } else {
-            val first = measurer.measure(stripFirstName(buckets.first().startMs, buckets.last().startMs, unit), style, maxLines = 1)
             drawText(first, topLeft = Offset(0f, top))
             if (buckets.size > 1) {
-                val last = measurer.measure(stripBucketName(buckets.last().startMs, unit), style, maxLines = 1)
-                val lastLeft = size.width - last.size.width
                 drawText(last, topLeft = Offset(lastLeft, top))
                 // The caption, centered between the names with 12 dp from each; the not-sent part goes first when it does not fit.
                 val per = measurer.measure(if (unit == "hour") "per hour" else "per day", style, maxLines = 1)

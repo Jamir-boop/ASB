@@ -28,7 +28,6 @@ import local.asb.companion.ui.seatLabelTexts
 import local.asb.companion.ui.seatLabelWholeCount
 import local.asb.companion.ui.stripBucketAt
 import local.asb.companion.ui.stripBucketName
-import local.asb.companion.ui.stripTipLeft
 import local.asb.companion.ui.stripX
 import local.asb.companion.ui.stripY
 import local.asb.companion.ui.strokeTrim
@@ -77,10 +76,12 @@ class CouncilRoundFourMessagesTest {
         assertEquals(listOf("abcdefghijklmnopqrst-uvw…", "abcdefghijklmnopqrst-\nuvwxyzabcdef", "abcdefghij…", "abcdefg…"),
             seatLabelTexts("abcdefghijklmnopqrst-uvwxyzabcdef"))
         assertEquals(2, seatLabelWholeCount(seatLabelTexts("abcdefghijklmnopqrst-uvwxyzabcdef")))
-        assertEquals(listOf("render-farm", "render-\nfarm", "render-far…", "render…"), seatLabelTexts("render-farm"))
+        // Round 7: a cut as long as the title is no text.
+        assertEquals(listOf("render-farm", "render-\nfarm", "render…"), seatLabelTexts("render-farm"))
         assertEquals(2, seatLabelWholeCount(seatLabelTexts("render-farm")))
         // A cut drops trailing separators before the ….
-        assertEquals("parser…", seatLabelTexts("parser-review").last())
+        // Round 7: the late cut `parser-rev…` (it saves 2 characters) comes last.
+        assertEquals(listOf("parser-review", "parser-\nreview", "parser…", "parser-rev…"), seatLabelTexts("parser-review"))
         // A break needs text on both sides.
         assertEquals(listOf("-docs"), seatLabelTexts("-docs"))
         assertEquals(listOf("docs-"), seatLabelTexts("docs-"))
@@ -237,9 +238,5 @@ class CouncilRoundFourMessagesTest {
         assertEquals(1, stripBucketAt(27f, 3, 100f, 3f))
         assertEquals(2, stripBucketAt(400f, 3, 100f, 3f))
         assertNull(stripBucketAt(10f, 0, 100f, 3f))
-        // The tip centers on its bucket and stays inside the strip.
-        assertEquals(0f, stripTipLeft(5f, 40f, 100f))
-        assertEquals(30f, stripTipLeft(50f, 40f, 100f))
-        assertEquals(60f, stripTipLeft(98f, 40f, 100f))
     }
 }

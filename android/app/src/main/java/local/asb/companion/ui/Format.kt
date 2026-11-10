@@ -162,6 +162,11 @@ fun messageBucketTip(startMs: Long, count: Int, bad: Int, unit: String, partial:
     "${stripBucketName(startMs, unit)}${if (partial) " so far" else ""}: ${formatCount(count.toLong())} message${if (count == 1) "" else "s"}" +
         if (bad > 0) ", ${formatCount(bad.toLong())} not sent" else ""
 
+/** Port of message_bucket_readout: the name row text of the chosen strip bucket, `Oct 22 · 84 messages · 2 not sent`. */
+fun messageBucketReadout(startMs: Long, count: Int, bad: Int, unit: String, partial: Boolean = false): String =
+    "${stripBucketName(startMs, unit)}${if (partial) " so far" else ""} · ${formatCount(count.toLong())} message${if (count == 1) "" else "s"}" +
+        if (bad > 0) " · ${formatCount(bad.toLong())} not sent" else ""
+
 /** Today, Yesterday, or the date, by local calendar day. */
 fun dayText(ms: Long, nowMs: Long): String = when (ChronoUnit.DAYS.between(local(ms).toLocalDate(), local(nowMs).toLocalDate())) {
     0L -> "Today"

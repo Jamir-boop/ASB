@@ -91,7 +91,8 @@ class CouncilRoundTwoTest {
         assertEquals(listOf("Short"), seatLabelTexts("Short"))
         // Round 4: a two-line text after the last break, and a cut drops trailing separators.
         assertEquals(listOf("Nine char", "Nine \nchar", "Nine ch…"), seatLabelTexts("Nine char"))
-        assertEquals(listOf("Twelve chars", "Twelve \nchars", "Twelve cha…", "Twelve…"), seatLabelTexts("Twelve chars"))
+        // Round 7: a cut that saves 1 or 2 characters is a late cut, after the others.
+        assertEquals(listOf("Twelve chars", "Twelve \nchars", "Twelve…", "Twelve cha…"), seatLabelTexts("Twelve chars"))
         val long = "A title that is longer than 24 characters"
         assertEquals(listOf(long.take(24) + "…", long.take(10) + "…", long.take(7) + "…"), seatLabelTexts(long))
     }
