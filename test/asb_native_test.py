@@ -387,8 +387,9 @@ class WidgetCheck(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(self.close_windows)
-        if shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"):
+        if shutil.which("xdotool") and (os.environ.get("DISPLAY") in (":9", ":10") or os.environ.get("ASB_TEST_DISPOSABLE_DISPLAY") == "1"):
             # A pointer that an earlier test left where a later popover maps makes GTK log a Gdk-CRITICAL at a popover grab.
+            # On a new X server the pointer starts in the screen center, over the test window, and hovers a card.
             subprocess.run(["xdotool", "mousemove", "9999", "9999"], check=True)
 
     def close_windows(self):

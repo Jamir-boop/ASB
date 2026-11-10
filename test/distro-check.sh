@@ -323,7 +323,7 @@ check_widgets() {
     *) fail "No widget test packages for the $family family." ;;
   esac
   # A 1440 px test window must fit the screen, and GTK sizes a window exactly only with a compositor selection owner.
-  as_user "ASB_TRAY=0 PYTHONDONTWRITEBYTECODE=1 timeout 2400 dbus-run-session -- xvfb-run -a -e /tmp/asb-widgets-xvfb.log -s '-screen 0 1600x1000x24 -noreset' python3 -I /asb/test/compositor-stub.py python3 -m unittest discover -s /asb/test -p asb_native_test.py" || {
+  as_user "ASB_TRAY=0 ASB_TEST_DISPOSABLE_DISPLAY=1 PYTHONDONTWRITEBYTECODE=1 timeout 2400 dbus-run-session -- xvfb-run -a -e /tmp/asb-widgets-xvfb.log -s '-screen 0 1600x1000x24 -noreset' python3 -I /asb/test/compositor-stub.py python3 -m unittest discover -s /asb/test -p asb_native_test.py" || {
     cat /tmp/asb-widgets-xvfb.log >&2 || true
     fail "The board widget tests failed."
   }
