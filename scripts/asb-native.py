@@ -13342,13 +13342,16 @@ class ActivityWindow(Adw.Window):
         checked = contrast_floor(palette["accent"], palette["text"], raised)
         # An unchecked toggle label is regular and dim, with 4.5:1 on the strongest unchecked fill (GNOME: 10 % of the label color).
         unchecked = contrast_floor(palette["dim"], palette["text"], mix_color(palette["win"], palette["text"], .10))
-        # The toolbar images are 16 px icons times the text scale (the ASB mark in a slot 4 px wider). Their buttons give back the
-        # growth from their side padding, so the toolbar still fits the smallest window.
+        # The toolbar images are 16 px icons times the text scale (the ASB mark in a slot 4 px wider). The toolbar buttons give back
+        # the growth from their side padding, and the row and the period button from their gaps, so the toolbar still fits the
+        # smallest window with a wide font (DejaVu Sans) too.
         icon = round(16 * s)
         give = (icon - 16) // 2
         self.app_mark.set_pixel_size(icon)
         self.app_mark.set_size_request(icon + 4, -1)
-        controls = f"{scope} .asb-activity-toolbar windowcontrols button image {{ padding: {max(0, 4 - give)}px; }}\n" if give else ""
+        self.toolbar.set_spacing(4 - give // 2)
+        controls = (f"{scope} .asb-activity-toolbar windowcontrols button image {{ padding: {max(0, 4 - give)}px; }}\n"
+                    f"{scope} .asb-activity-toolbar .asb-period-menu > button > box {{ border-spacing: {max(0, 6 - give)}px; }}\n") if give else ""
         hues = "".join(f"{scope} .asb-activity-hue-{index} {{ background: {self.machine_hue(index)}; }}\n"
                        f"{scope} .asb-activity-hue-{index}.asb-activity-hollow {{ background: none; border: 1.5px solid {self.machine_hue(index)}; min-width: 4px; min-height: 4px; }}\n"
                        for index in range(len(MACHINE_HUES)))
@@ -13371,7 +13374,8 @@ class ActivityWindow(Adw.Window):
 {scope} .asb-activity-toolbar .asb-period-menu arrow {{ min-width: {icon}px; min-height: {icon}px; }}
 {controls}{scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
 {scope} .asb-activity-toolbar menubutton > button {{ min-height: {24 * s:g}px; padding: 0 8px; font-size: {12 * s:g}px; }}
-{scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar menubutton > button {{ padding: 0 {max(0, 8 - give)}px; }}
+{scope} .asb-activity-toolbar .asb-period-menu > button, {scope} .asb-activity-toolbar .linked > button,
+{scope} .asb-activity-toolbar menubutton > button {{ padding: 0 {max(0, 8 - give)}px; }}
 {scope} .asb-period-menu > popover {{ padding: 0; }}
 {scope} .asb-period-item {{ font-size: {13 * s:g}px; min-height: {28 * s:g}px; }}
 {scope} .asb-period-shortcut {{ font-size: {12 * s:g}px; }}
@@ -18564,6 +18568,7 @@ class UsageWindow(ActivityWindow):
 {scope} .asb-usage-legend {{ min-height: {22 * s:g}px; font-size: {12 * s:g}px; }}
 {scope} .asb-usage-cell {{ min-height: {34 * s:g}px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: {12 * s:g}px; }}
 {scope} .asb-usage-head {{ min-height: {30 * s:g}px; padding-right: 10px; border-bottom: 1px solid {rule}; font-size: {11 * s:g}px; color: {palette['dim']}; }}
+{scope} .asb-usage-small-layout .asb-usage-cell, {scope} .asb-usage-small-layout .asb-usage-head {{ padding-right: 6px; }}
 {scope} .asb-usage-swatch {{ min-width: {8 * s:g}px; min-height: {8 * s:g}px; border-radius: 2px; }}
 {scope} .asb-usage-key-dot {{ min-width: {8 * s:g}px; min-height: {8 * s:g}px; border-radius: 50%; }}
 {scope} .asb-activity-dot {{ min-width: {7 * s:g}px; min-height: {7 * s:g}px; }}
@@ -18714,6 +18719,7 @@ class UsageWindow(ActivityWindow):
             getattr(self.content, f"set_margin_{side}")(14 if self.small else 24)
         # The small Models table has no Machines column: no machine key stands above it.
         self.model_keys.set_visible(not self.small)
+        (self.content.add_css_class if self.small else self.content.remove_css_class)("asb-usage-small-layout")
         self.overview.set_orientation(Gtk.Orientation.VERTICAL if self.narrow else Gtk.Orientation.HORIZONTAL)
         self.round_cell.set_size_request(-1 if self.narrow else 340, -1)
         self.round_cell.set_valign(Gtk.Align.CENTER if self.narrow else Gtk.Align.START)
@@ -19003,7 +19009,8 @@ class UsageWindow(ActivityWindow):
             self.total_figures = []
             for title, _value in figures:
                 figure = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                figure.append(self.text(title, ("asb-usage-small", "asb-dim")))
+                # The title breaks between its words when two figures do not fit a line of the smallest window (Large Text, a wide font).
+                figure.append(self.text(title, ("asb-usage-small", "asb-dim"), wrap=True))
                 figure.append(self.text("", ("asb-mono", "asb-usage-figure")))
                 self.figures.append(figure)
                 figure.get_parent().set_focusable(False)
