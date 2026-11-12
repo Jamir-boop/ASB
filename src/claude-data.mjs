@@ -254,6 +254,15 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
       ...(workflow ? { runId: result.runId } : {}),
     }, MAX_ASB_SESSION_COUNT);
   }
+  // A TaskStop result ends a background agent or workflow at once: a stopped workflow gets no task notification.
+  if (event.type === 'user' && ['local_agent', 'local_workflow'].includes(result?.task_type) && typeof result.task_id === 'string'
+    && typeof result.message === 'string' && result.message.startsWith('Successfully stopped task')) {
+    const agent = lifecycle.agents.get(result.task_id);
+    if (agent && !agent.endedAtMs && timestampMs >= agent.launchedAtMs) {
+      agent.endedAtMs = timestampMs;
+      agent.kind = 'cancelled';
+    }
+  }
   // A busy chat gets the notification as a queued attachment. Its timestamp is the end of the task, not the delivery.
   const notice = event.type === 'user' ? text : event.type === 'attachment' && event.attachment?.type === 'queued_command'
     && typeof event.attachment.prompt === 'string' ? event.attachment.prompt.trim() : '';

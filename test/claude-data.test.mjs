@@ -1272,6 +1272,32 @@ test('a background workflow keeps its chat Working until the task notification',
   }
 });
 
+test('a TaskStop result ends a background workflow or agent of the chat', async (t) => {
+  const stop = (offset, toolUseResult) => [
+    resumeEvent('assistant', offset, { message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `stop${offset}`, name: 'TaskStop', input: { task_id: toolUseResult.task_id } }] } }),
+    resumeEvent('user', offset + 100, { message: { content: [{ type: 'tool_result', tool_use_id: `stop${offset}` }] }, toolUseResult }),
+  ];
+  const stopped = (task_id, task_type = 'local_workflow', message = `Successfully stopped task: ${task_id} (x)`) => ({ message, task_id, task_type, command: 'x' });
+  for (const maxBytes of [0, 256]) {
+    const { step, projectsDir } = await resumeFixture(t, 'none', workflowLaunch(), [], maxBytes);
+    await workflowLogs(projectsDir, 'project/cli_root', -20_000);
+    assert.deepEqual(await step(), [true, 'working'], `run ${maxBytes}`);
+    // Another task, a failed stop, and a stopped shell do not end the run.
+    assert.deepEqual(await step([...stop(-18_000, stopped('wtask0002')), ...stop(-17_000, stopped('wtask0001', 'local_workflow', 'No task found with ID: wtask0001')),
+      ...stop(-16_000, stopped('wtask0001', 'local_bash')), resumeEnd(-15_500)]), [true, 'working'], `other stops ${maxBytes}`);
+    assert.deepEqual(await step([...stop(-12_000, stopped('wtask0001')), resumeEnd(-11_500)]), [false, 'idle'], `stopped ${maxBytes}`);
+  }
+  // A background agent with no notification after its stop.
+  const agent = await resumeFixture(t, 'none', [
+    resumeEvent('user', -50_000, { message: { content: 'Start an agent.' } }),
+    resumeEvent('assistant', -49_000, { message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'kid', name: 'Agent', input: { prompt: 'x' } }] } }),
+    resumeEvent('user', -48_900, { message: { content: [{ type: 'tool_result', tool_use_id: 'kid' }] }, toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'kid' } }),
+    resumeEnd(-48_000)], []);
+  const before = await agent.step();
+  assert.notDeepEqual(before, [false, 'idle']);
+  assert.deepEqual(await agent.step([...stop(-12_000, stopped('kid', 'local_agent')), resumeEnd(-11_500)]), [false, 'idle']);
+});
+
 test('the folder of a workflow run in another session folder of the same project folder sets the chat state', async (t) => {
   for (const maxBytes of [0, 256]) {
     const other = await resumeFixture(t, 'none', workflowLaunch(), [], maxBytes);
