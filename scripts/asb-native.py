@@ -398,10 +398,10 @@ def mute_button_tip(row, choice, now_ms=None):
     return "Unmute (until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") + ")" if mute_until_ms(row) else "Unmute"
 
 
-COPY_KINDS = ("relative", "absolute")
-COPY_KIND_WORDS = {"relative": "Relative", "absolute": "Absolute"}
-COPY_DONE_TEXT = {"relative": "Relative session copied", "absolute": "Absolute session copied"}
-COPY_KIND_ICONS = {"relative": "asb-link-symbolic", "absolute": "asb-globe-symbolic"}
+COPY_KINDS = ("relative", "absolute", "name")
+COPY_KIND_WORDS = {"relative": "Relative", "absolute": "Absolute", "name": "Name"}
+COPY_DONE_TEXT = {"relative": "Relative session copied", "absolute": "Absolute session copied", "name": "Name copied"}
+COPY_KIND_ICONS = {"relative": "asb-link-symbolic", "absolute": "asb-globe-symbolic", "name": "asb-name-symbolic"}
 COPY_REST_S = .25
 # The keys of row_key on a focused card button.
 COPY_KIND_KEYS = "Alt+Up or Alt+Down changes the kind."
@@ -412,7 +412,7 @@ COPY_WHEEL_STATE = {"ts": 0.0, "acc": 0.0, "armed": True}
 
 def validate_copy_kind(value):
     if value not in COPY_KINDS:
-        raise ValueError("Copy kind must be Relative or Absolute.")
+        raise ValueError("Copy kind must be Relative, Absolute, or Name.")
     return value
 
 
@@ -427,7 +427,10 @@ def validate_pet(value):
 
 
 def card_copy(row, kind="relative"):
-    """(value, its reason, "relative" or "absolute") for the chosen kind: a remote row copies the absolute reference."""
+    """(value, reason, kind) for the chosen kind; remote relative references become absolute."""
+    if kind == "name":
+        name = " ".join(row.get("title", "").split())
+        return (None, "This session has no name.", "name") if name in ("", "Untitled session", "Untitled remote session") else (name, None, "name")
     short, short_reason, full, full_reason = copy_values(row)
     if row.get("remote") is True or kind == "absolute":
         return (full, full_reason, "absolute")
@@ -8761,12 +8764,12 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if not mute_active(widget.asb_thread):
             self.change_mute_for(mute_step(self.mute_for, step))
 
-    def step_copy_kind(self, widget=None):
-        """Toggle the board copy kind. A remote card never moves it."""
+    def step_copy_kind(self, widget=None, step=1):
+        """Cycle the board copy kind, skipping Relative on a remote card."""
         row = getattr(widget, "asb_thread", None) or {}
-        if row.get("remote") is True:
-            return
-        self.change_copy_kind("absolute" if self.copy_kind == "relative" else "relative")
+        kinds = COPY_KINDS[1:] if row.get("remote") is True else COPY_KINDS
+        kind = card_copy(row, self.copy_kind)[2]
+        self.change_copy_kind(kinds[(kinds.index(kind) + step) % len(kinds)])
 
     def set_column_width(self, *_args):
         width = validate_column_width(self.width_control.get_value_as_int())
@@ -8910,7 +8913,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     if copy.asb_card_action == "mute":
                         self.step_mute_for(copy.asb_card, step)
                     else:
-                        self.step_copy_kind(getattr(copy, "asb_card", None))
+                        self.step_copy_kind(getattr(copy, "asb_card", None), step)
                 return True
         self.dismiss_no_open_toast()
         adjustment = self.scroll.get_hadjustment()
@@ -10881,7 +10884,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         widget.asb_drawer_button = drawer
         widget.asb_copy_button = copy
         widget.asb_copy_tag, widget.asb_copy_words = tag, tag_words
-        widget.asb_copy_dot_relative, widget.asb_copy_dot_absolute = dots
+        widget.asb_copy_dot_relative, widget.asb_copy_dot_absolute, widget.asb_copy_dot_name = dots
         widget.asb_mute_button, widget.asb_mute_tag = mute, mute_tag
         widget.asb_mute_words, widget.asb_mute_dots = mute_words, mute_dots
         # The drawer is at the left end, so the other controls keep their x when it shows; the Tab order follows.
@@ -11018,7 +11021,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 mute.asb_card = None
             for name in ("asb_mute_button", "asb_mute_tag", "asb_mute_words", "asb_mute_dots", "asb_actions", "asb_folder", "asb_pin_button", "asb_read_button", "asb_drawer_button", "asb_copy_button", "asb_age_label", "asb_limited",
                          "asb_mute_glyph", "asb_mute_time", "asb_mute_box", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
-                         "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_feedback", "asb_feedback_label", "asb_footer_stack",
+                         "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_copy_dot_name", "asb_feedback", "asb_feedback_label", "asb_footer_stack",
                          "asb_footer_line", "asb_where_box", "asb_compact_pin", "asb_working_time", "asb_state_box",
                          "asb_workspace", "asb_read_slot", "asb_mark_cell", "asb_zoom"):
                 if hasattr(widget, name):
@@ -11642,18 +11645,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             (copy.add_css_class if copied else copy.remove_css_class)("asb-copy-confirmed")
             done = COPY_DONE_TEXT[kind] if copied else None
             # The footer shows the copied text, so a copy keeps the tooltip as it is.
-            # The wheel and Alt+Up or Alt+Down switch the kind, except on a remote card, which copies the absolute reference only.
-            if row.get("remote") is True:
-                tip = reason or f"Copy absolute reference. {copy_relative_reason(row)}"
-            else:
-                tip = (reason or f"Copy {kind} reference.") + " Scroll to change the kind."
+            action = "Copy name" if kind == "name" else f"Copy {kind} reference"
+            tip = (reason or action + ".") + " Scroll to change the kind."
+            if row.get("remote") is True and kind == "absolute":
+                tip = reason or f"Copy absolute reference. {copy_relative_reason(row)} Scroll to change the kind."
             if copy.get_tooltip_text() != tip:
                 copy.set_tooltip_text(tip)
-            copy.update_property([Gtk.AccessibleProperty.LABEL], [f"Copy {kind} reference: " + row.get("title", "Untitled session")])
-            if done or row.get("remote") is not True:
-                copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done or COPY_KIND_KEYS])
-            else:
-                copy.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
+            copy.update_property([Gtk.AccessibleProperty.LABEL], [action + ": " + row.get("title", "Untitled session")])
+            copy.update_property([Gtk.AccessibleProperty.DESCRIPTION], [done or COPY_KIND_KEYS])
             self.update_copy_tag(widget, kind, row.get("remote") is True)
             self.update_copy_feedback(widget, getattr(widget, "asb_mute_done", None) or done)
         mute = getattr(widget, "asb_mute_button", None)
@@ -11681,10 +11680,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         words = getattr(widget, "asb_copy_words", None)
         if words and words.get_visible_child_name() != kind:
-            words.set_transition_type(Gtk.StackTransitionType.SLIDE_UP if kind == "absolute" else Gtk.StackTransitionType.SLIDE_DOWN)
+            # A later kind slides up, an earlier kind slides down.
+            later = COPY_KINDS.index(kind) > COPY_KINDS.index(words.get_visible_child_name() or "relative")
+            words.set_transition_type(Gtk.StackTransitionType.SLIDE_UP if later else Gtk.StackTransitionType.SLIDE_DOWN)
             words.set_visible_child_name(kind)
         for name, dot in (("relative", getattr(widget, "asb_copy_dot_relative", None)),
-                          ("absolute", getattr(widget, "asb_copy_dot_absolute", None))):
+                          ("absolute", getattr(widget, "asb_copy_dot_absolute", None)),
+                          ("name", getattr(widget, "asb_copy_dot_name", None))):
             if dot is None:
                 continue
             (dot.add_css_class if name == kind else dot.remove_css_class)("asb-copy-tag-on")
@@ -11715,16 +11717,16 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         try:
             self.get_clipboard().set(value)
         except (GLib.Error, TypeError) as error:
-            self.open_errors[identity] = f"Cannot copy the {kind} reference: {error}"
+            self.open_errors[identity] = f"Cannot copy the {'name' if kind == 'name' else kind + ' reference'}: {error}"
             self.update_card_actions(widget)
             self.update_open_state(widget)
             return
-        if self.open_errors.get(identity, "").startswith(("Cannot copy the relative reference: ", "Cannot copy the absolute reference: ")):
+        if self.open_errors.get(identity, "").startswith(("Cannot copy the relative reference: ", "Cannot copy the absolute reference: ", "Cannot copy the name: ")):
             self.open_errors.pop(identity)
             self.update_open_state(widget)
         self.confirm_card_feedback(widget)
         if panel:
-            self.confirm_panel_copy(panel, "short" if kind == "relative" else "full")
+            self.confirm_panel_copy(panel, {"relative": "short", "absolute": "full", "name": "name"}[kind])
 
     def cancel_card_copy(self, widget):
         if getattr(widget, "asb_copy_timer", None):
@@ -11924,7 +11926,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.step_mute_for(focus.asb_card, 1 if key == Gdk.KEY_Down else -1)
                 return True
             if getattr(focus, "asb_card_action", None) == "copy":
-                self.step_copy_kind(getattr(focus, "asb_card", None))
+                self.step_copy_kind(getattr(focus, "asb_card", None), 1 if key == Gdk.KEY_Down else -1)
                 return True
         if _state & SHORTCUT_MASK or (self.context_menu and self.context_menu.get_visible()):
             return False
@@ -12001,9 +12003,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         main.append(Gtk.Separator())
         panel.asb_copy = action_row("edit-copy-symbolic", self.panel_copy, "short")
         panel.asb_copy_full = action_row("edit-copy-symbolic", self.panel_copy, "full")
+        panel.asb_copy_name = action_row("edit-copy-symbolic", self.panel_copy, "name")
         for button, text in ((panel.asb_messages, None), (panel.asb_open, None), (panel.asb_actions["mute"], "Mute"), (panel.asb_actions["read"], None),
                              (panel.asb_actions["drawer"], None), (panel.asb_copy, "Copy relative reference"),
-                             (panel.asb_copy_full, "Copy absolute reference")):
+                             (panel.asb_copy_full, "Copy absolute reference"), (panel.asb_copy_name, "Copy name")):
             if text:
                 set_panel_label(button, text)
             button.asb_label.add_css_class("asb-panel-label")
@@ -12024,7 +12027,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_messages.asb_caption.set_label("Between sessions")
         panel.asb_messages.add_css_class("asb-panel-captioned")
         panel.asb_messages.update_property([Gtk.AccessibleProperty.DESCRIPTION], ["Messages between this session and other sessions"])
-        for slot, button in (*panel.asb_actions.items(), ("copy", panel.asb_copy), ("copy", panel.asb_copy_full)):
+        for slot, button in (*panel.asb_actions.items(), ("copy", panel.asb_copy), ("copy", panel.asb_copy_full), ("copy", panel.asb_copy_name)):
             if slot in CARD_ACTION_KEYS:
                 button.asb_hint = label(CARD_ACTION_KEYS[slot], "asb-panel-caption")
                 button.asb_hint.add_css_class("asb-panel-key")
@@ -12092,8 +12095,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_end_timer = None
         self.update_mute_ends(panel)
         # The absolute reference has no spaces: a plain tooltip would be one very wide line.
-        panel.asb_copy_full.set_has_tooltip(True)
-        panel.asb_copy_full.connect("query-tooltip", self.query_copy_tooltip)
+        for button in (panel.asb_copy_full, panel.asb_copy_name):
+            button.set_has_tooltip(True)
+            button.connect("query-tooltip", self.query_copy_tooltip)
         panel.asb_copy_timer, panel.asb_copy_error, panel.asb_copy_values, panel.asb_copied, panel.asb_controls = None, "", None, None, None
         # The card tooltip shows a failed action, but the panel covers the card.
         panel.asb_error = label("", "asb-panel-error")
@@ -12244,7 +12248,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if moves is None:
             controls = {slot: value for slot, value in controls.items() if slot not in ("pin-up", "pin-down")}
         model = tooltip_model(row, now_ms, Path.home(), "", self.drawer_view)
-        values = panel_copy_values(row)
+        values = (*panel_copy_values(row), *card_copy(row, "name")[:2])
         mute_caption = ""
         if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
             mute_caption = "Until " + mute_flag_text(row, now_ms).removeprefix("Muted until ") if mute_until_ms(row) else "Until you unmute"
@@ -12351,9 +12355,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 button.update_property([Gtk.AccessibleProperty.DESCRIPTION], [drawer_caption])
             elif slot not in ("open", "mute"):
                 button.reset_property(Gtk.AccessibleProperty.DESCRIPTION)
-        # Alt+C follows the card choice (always Absolute for a remote card), not the last panel copy.
+        # Alt+C follows the card choice, not the last panel copy.
         kind = card_copy(row, self.copy_kind)[2]
-        for button, copy_kind in ((panel.asb_copy, "relative"), (panel.asb_copy_full, "absolute")):
+        for button, copy_kind in ((panel.asb_copy, "relative"), (panel.asb_copy_full, "absolute"), (panel.asb_copy_name, "name")):
             button.asb_hint.set_visible(copy_kind == kind)
             if copy_kind == kind:
                 button.update_property([Gtk.AccessibleProperty.KEY_SHORTCUTS], [CARD_ACTION_KEYS["copy"]])
@@ -12387,16 +12391,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def panel_copy(self, button, slot):
         panel = button.get_ancestor(Gtk.Popover)
         widget = self.focus_widgets.get(panel.asb_identity)
-        value = panel.asb_copy_values[0 if slot == "short" else 2] if panel.asb_copy_values else None
+        value = panel.asb_copy_values[{"short": 0, "full": 2, "name": 4}[slot]] if panel.asb_copy_values else None
         # An unavailable row is focusable but has no action.
         if not widget or self.closed or not value or panel.asb_identity in self.session_actions:
             return
-        # A copy ends the check on both rows first.
+        # A copy ends the check on all rows first.
         self.clear_copy_feedback(panel)
         try:
             self.get_clipboard().set(value)
         except (GLib.Error, TypeError) as error:
-            panel.asb_copy_error = f"Cannot copy the {'relative' if slot == 'short' else 'absolute'} reference: {error}"
+            what = {"short": "relative reference", "full": "absolute reference", "name": "name"}[slot]
+            panel.asb_copy_error = f"Cannot copy the {what}: {error}"
         else:
             self.confirm_panel_copy(panel, slot)
         self.update_row_panel(panel, widget.asb_thread)
@@ -12419,14 +12424,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.show_copy_rows(panel)
 
     def show_copy_rows(self, panel):
-        """Show the two copy rows from the checked values: caption or reason, tooltip, description, and the copied check."""
+        """Show the three copy rows from the checked values: caption or reason, tooltip, description, and the copied check."""
         if not panel.asb_copy_values:
             return
-        short, short_reason, full, full_reason = panel.asb_copy_values
+        short, short_reason, full, full_reason, name, name_reason = panel.asb_copy_values
         pending = panel.asb_identity in self.session_actions
         for slot, button, value, reason, caption, done in (
                 ("short", panel.asb_copy, short, short_reason, "Relative: in the same app", COPY_DONE_TEXT["relative"]),
-                ("full", panel.asb_copy_full, full, full_reason, "Absolute: with ASB, any machine", COPY_DONE_TEXT["absolute"])):
+                ("full", panel.asb_copy_full, full, full_reason, "Absolute: with ASB, any machine", COPY_DONE_TEXT["absolute"]),
+                ("name", panel.asb_copy_name, name, name_reason, "Name: the session title", COPY_DONE_TEXT["name"])):
             copied = panel.asb_copied == slot
             # One reason for both rows shows once, under row 2.
             note = done if copied else caption if value else "" if slot == "short" and reason == full_reason \
@@ -12530,7 +12536,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         """Fit the panel to its longest row label at open, also the labels that its slots can change to; minimum is 260 px at the
         board zoom."""
         width = minimum
-        rows = [(button, (button.asb_label.get_label(),)) for button in (panel.asb_open, panel.asb_messages, panel.asb_copy, panel.asb_copy_full,
+        rows = [(button, (button.asb_label.get_label(),)) for button in (panel.asb_open, panel.asb_messages, panel.asb_copy, panel.asb_copy_full, panel.asb_copy_name,
                                                                           panel.asb_times_back, *panel.asb_times.values())]
         rows += [(button, (button.asb_label.get_label(), *PANEL_SLOT_LABELS.get(slot, ())))
                  for slot, button in panel.asb_actions.items() if button.get_visible()]
@@ -12682,7 +12688,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if key in (Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab) and not state & SHORTCUT_MASK:
             forward = key == Gdk.KEY_Down or key == Gdk.KEY_Tab and not state & Gdk.ModifierType.SHIFT_MASK
             controls = [button for button in ((panel.asb_times_back, *panel.asb_times.values()) if times else
-                                              (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full))
+                                              (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full, panel.asb_copy_name))
                         if button.get_visible() and button.get_sensitive()]
             focus = self.get_focus()
             index = controls.index(focus) if focus in controls else (-1 if forward else 0)

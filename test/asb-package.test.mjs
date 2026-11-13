@@ -45,6 +45,7 @@ test('release runtime includes the usage glyph of the empty Usage page', () => {
 test('release runtime includes the card copy kind glyphs', () => {
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-link-symbolic.svg'));
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-globe-symbolic.svg'));
+  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-name-symbolic.svg'));
 });
 
 test('release runtime includes the board pets', () => {

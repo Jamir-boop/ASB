@@ -3132,7 +3132,7 @@ class WidgetCheck(unittest.TestCase):
                 if button.get_visible():
                     self.assertTrue(button.has_css_class("flat") and button.has_css_class("asb-panel-action"))
                     self.assertTrue(30 <= button.get_height() <= 32, button.get_height())
-            for button in (panel.asb_copy, panel.asb_copy_full):
+            for button in (panel.asb_copy, panel.asb_copy_full, panel.asb_copy_name):
                 self.assertTrue(button.has_css_class("flat") and button.has_css_class("asb-panel-captioned"))
                 # get_height() leaves out the padding: 5px at the top and the bottom.
                 found, box = button.compute_bounds(panel)
@@ -3180,7 +3180,7 @@ class WidgetCheck(unittest.TestCase):
             window.session_actions.add("second")
             row.asb_thread.update(unread=False, pending=False, pendingSource="")
             window.sync_row_panel()
-            controls = (panel.asb_open, panel.asb_copy, panel.asb_copy_full,
+            controls = (panel.asb_open, panel.asb_copy, panel.asb_copy_full, panel.asb_copy_name,
                         *(button for button in panel.asb_actions.values() if button.get_visible()))
             for control in controls:
                 self.assertTrue(control.get_sensitive())
@@ -3229,6 +3229,8 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_copy_name)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy_full)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Up, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy)
@@ -3240,12 +3242,14 @@ class WidgetCheck(unittest.TestCase):
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_copy_full)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+            self.assertIs(window.get_focus(), panel.asb_copy_name)
+            self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
-            panel.asb_copy_full.grab_focus()
+            panel.asb_copy_name.grab_focus()
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_Tab, 0, 0))
             self.assertIs(window.get_focus(), panel.asb_open)
             self.assertTrue(capture.emit("key-pressed", asb.Gdk.KEY_ISO_Left_Tab, 0, asb.Gdk.ModifierType.SHIFT_MASK))
-            self.assertIs(window.get_focus(), panel.asb_copy_full)
+            self.assertIs(window.get_focus(), panel.asb_copy_name)
             # Escape (the native popover key handler) closes the panel and gives the focus back to the card.
             panel.asb_actions["pin"].grab_focus()
             self.assertTrue(window.get_focus().is_ancestor(panel))
@@ -4545,7 +4549,8 @@ class WidgetCheck(unittest.TestCase):
         reference = "claude-proxy/local_" + "a" * 36
         button, full = panel.asb_copy, panel.asb_copy_full
         self.assertIs(button.get_next_sibling(), full)
-        self.assertIs(full.get_next_sibling(), panel.asb_error)  # The last control of the panel.
+        self.assertIs(full.get_next_sibling(), panel.asb_copy_name)
+        self.assertIs(panel.asb_copy_name.get_next_sibling(), panel.asb_error)  # The last control of the panel.
         self.assertIsInstance(button.get_prev_sibling(), asb.Gtk.Separator)
         self.assertEqual((button.asb_label.get_label(), button.asb_icon.get_icon_name(), button.get_tooltip_text()),
                          ("Copy relative reference", "edit-copy-symbolic", reference))
@@ -4577,7 +4582,7 @@ class WidgetCheck(unittest.TestCase):
         self.drain(1.7)
         self.assertEqual((button.asb_icon.get_icon_name(), button.get_tooltip_text()), ("edit-copy-symbolic", reference))
         self.assert_accessible_label(button, reference, asb.Gtk.AccessibleProperty.DESCRIPTION)
-        # Up and Down reach both copy rows, also the unavailable one, and wrap at the end.
+        # Up and Down reach all three copy rows, also the unavailable one, and wrap at the end.
         last = [control for control in panel.asb_actions.values() if control.get_visible()][-1]
         last.grab_focus()
         keys = next(controller for controller in panel.observe_controllers()
@@ -4586,6 +4591,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(window.get_focus(), button)
         self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
         self.assertIs(window.get_focus(), full)
+        self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
+        self.assertIs(window.get_focus(), panel.asb_copy_name)
         self.assertTrue(keys.emit("key-pressed", asb.Gdk.KEY_Down, 0, 0))
         self.assertIs(window.get_focus(), panel.asb_open)
         # A refresh with a new ID updates the tooltips and ends the feedback of the old copy.
@@ -4788,12 +4795,12 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(clipboard.texts, ["codex/" + app_id] * 2)
         # A remote row copies the absolute reference and shows the same check.
         self.assertEqual((card(remote).get_visible(), card(remote).get_tooltip_text(), card(remote).asb_action),
-                         (True, "Copy absolute reference. Relative works only on this machine. This session runs on homeLP.", "win.copy-reference"))
+                         (True, "Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind.", "win.copy-reference"))
         self.assert_accessible_label(card(remote), "Copy absolute reference: " + window.focus_widgets[remote].asb_thread["title"])
         card(remote).emit("clicked"); self.drain(.1)
         self.assertEqual(clipboard.texts[-1], reference)
         self.assertEqual((card(remote).get_child().get_icon_name(), card(remote).get_tooltip_text()),
-                         ("object-select-symbolic", "Copy absolute reference. Relative works only on this machine. This session runs on homeLP."))
+                         ("object-select-symbolic", "Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind."))
         self.assertTrue(card(remote).has_css_class("asb-copy-confirmed"))
         # With no absolute reference the remote button keeps its place, with no action, and gives the absolute reason.
         reason = "homeLP has an older ASB. Update ASB on that machine."
@@ -4809,7 +4816,7 @@ class WidgetCheck(unittest.TestCase):
         gets["threads"][3].pop("referenceUnavailable"); gets["threads"][3]["reference"] = reference
         window.apply_dashboard(gets, None); self.settle(window)
         self.assertEqual((card(nofull).asb_action, card(nofull).get_tooltip_text(), card(nofull).has_css_class("asb-copy-off")),
-                         ("win.copy-reference", "Copy absolute reference. Relative works only on this machine. This session runs on homeLP.", False))
+                         ("win.copy-reference", "Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind.", False))
         self.assert_accessible_disabled(card(nofull), False)
         window.apply_dashboard(copy.deepcopy(dashboard), None); self.settle(window)
         self.assertEqual((card(nofull).asb_action, card(nofull).get_tooltip_text()), (None, reason))
@@ -4834,6 +4841,88 @@ class WidgetCheck(unittest.TestCase):
         panel.asb_copy.emit("clicked"); self.drain(.1)
         panel.asb_copy_full.emit("clicked"); self.drain(.1)
         self.assertEqual(clipboard.texts[count:], [reference])
+
+    def test_copy_name_card_tag_panel_layout_and_whole_clipboard_value(self):
+        title = "  Review\t" + "the long session title " * 12 + "\n carefully  "
+        name = " ".join(title.split())
+        rows = self.card_rows(("local", {"title": title}),
+                              ("remote", {"title": title, "remote": True, "machineName": "sample-pc", "canOpen": False}),
+                              ("cli", {"title": title, "surface": "cli", "canOpen": False}),
+                              ("empty", {"title": "Untitled session"}))
+        window = self.mute_wheel_board(720, rows)
+        clipboard = SimpleNamespace(set=Mock())
+        window.get_clipboard = lambda: clipboard
+        window.change_copy_kind("name"); self.drain(.2)
+        self.assertEqual(asb.read_layout(window.layout_path)["copyKind"], "name")
+        self.assertGreater(len(name), 85)
+        for identity in ("local", "remote", "cli"):
+            card = window.focus_widgets[identity]
+            button = card.asb_copy_button
+            window.show_copy_tag(button, True); self.drain(.25)
+            self.assertEqual(card.asb_copy_words.get_visible_child_name(), "name")
+            self.assertEqual(card.asb_copy_words.get_child_by_name("name").get_label(), "Name")
+            self.assertEqual(icon_name(button.get_child()), "asb-name-symbolic")
+            dots = (card.asb_copy_dot_relative, card.asb_copy_dot_absolute, card.asb_copy_dot_name)
+            self.assertIs(dots[0].get_parent().get_first_child(), dots[0])
+            self.assertIs(dots[0].get_next_sibling(), dots[1])
+            self.assertIs(dots[1].get_next_sibling(), dots[2])
+            self.assertIsNone(dots[2].get_next_sibling())
+            self.assertEqual([dot.has_css_class("asb-copy-tag-on") for dot in dots], [False, False, True])
+            self.assertEqual(dots[0].has_css_class("asb-copy-tag-off"), identity == "remote")
+            self.assertEqual(button.get_tooltip_text(), "Copy name. Scroll to change the kind.")
+            self.assert_accessible_label(button, "Copy name: " + title)
+            window.set_focus(button)
+            self.assertTrue(window.row_key(None, asb.Gdk.KEY_c, 0, asb.Gdk.ModifierType.ALT_MASK, identity))
+            clipboard.set.assert_called_with(name)
+            self.assertEqual(card.asb_feedback_label.get_label(), "Name copied")
+            window.show_context(card); self.drain(.2)
+            panel = window.context_menu
+            copy = panel.asb_copy_name
+            self.assertIs(panel.asb_copy_full.get_next_sibling(), copy)
+            self.assertEqual(copy.asb_label.get_label(), "Copy name")
+            self.assertEqual(copy.asb_caption.get_label(), "Name: the session title")
+            self.assertEqual(copy.asb_icon.get_icon_name(), "edit-copy-symbolic")
+            self.assertTrue(copy.asb_hint.get_visible())
+            self.assertFalse(panel.asb_copy.asb_hint.get_visible())
+            self.assertFalse(panel.asb_copy_full.asb_hint.get_visible())
+            self.assert_accessible_label(copy, "Alt+C", asb.Gtk.AccessibleProperty.KEY_SHORTCUTS)
+            copy.emit("clicked"); self.drain(.05)
+            clipboard.set.assert_called_with(name)
+            self.assertEqual(copy.asb_caption.get_label(), "Name copied")
+            if identity == "local":
+                clipboard.set.side_effect = TypeError("no clipboard")
+                copy.emit("clicked")
+                self.assertEqual(panel.asb_copy_error, "Cannot copy the name: no clipboard")
+                self.assertIsNone(panel.asb_copied)
+                clipboard.set.side_effect = None
+                copy.emit("clicked")
+                self.assertEqual(panel.asb_copy_error, "")
+            panel.popdown(); self.drain(.1)
+            window.cancel_card_copy(card)
+            if identity == "remote":
+                window.set_focus(button)
+                for key, expected in ((asb.Gdk.KEY_Down, "absolute"), (asb.Gdk.KEY_Down, "name"),
+                                      (asb.Gdk.KEY_Up, "absolute"), (asb.Gdk.KEY_Up, "name")):
+                    self.assertTrue(window.row_key(None, key, 0, asb.Gdk.ModifierType.ALT_MASK, identity))
+                    self.assertEqual(window.copy_kind, expected)
+        restarted = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1",
+                                          {"generatedAtMs": NOW, "providers": [], "threads": rows},
+                                          theme_path=False, layout_path=window.layout_path)
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.copy_kind, "name")
+        empty = window.focus_widgets["empty"]
+        self.assertIsNone(empty.asb_copy_button.asb_action)
+        self.assert_accessible_disabled(empty.asb_copy_button, True)
+        self.assertEqual(empty.asb_copy_button.get_tooltip_text(), "This session has no name. Scroll to change the kind.")
+        window.show_context(empty); self.drain(.2)
+        copy = window.context_menu.asb_copy_name
+        self.assertEqual(copy.asb_caption.get_label(), "This session has no name.")
+        self.assertEqual(copy.asb_tip, "This session has no name.")
+        self.assert_accessible_disabled(copy, True)
+        clipboard.set.reset_mock()
+        copy.emit("clicked")
+        clipboard.set.assert_not_called()
+        window.context_menu.popdown(); self.drain(.1)
 
     def test_card_copy_kind_switch_tag_wheel_keys_click_and_feedback(self):
         patcher = patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)
@@ -4908,11 +4997,13 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual(asb.read_layout(layout_path)["copyKind"], "absolute")
             self.assertEqual(words_of("local").get_visible_child_name(), "absolute")
             self.assertEqual(words_of("local-2").get_visible_child_name(), "absolute")
-            # A remote card keeps Absolute and its wheel does not move the board kind.
+            # A remote card cycles Absolute and Name, skipping Relative.
             motion("m:0123456789abcdef:remote", True)
             self.drain(.3)
             self.assertEqual(copy_of("m:0123456789abcdef:remote").asb_tag_shown, True)
             self.assertEqual(words_of("m:0123456789abcdef:remote").get_visible_child_name(), "absolute")
+            self.assertTrue(window.scroll_horizontal(None, 0, -1))
+            self.assertEqual(window.copy_kind, "name")
             self.assertTrue(window.scroll_horizontal(None, 0, -1))
             self.assertEqual(window.copy_kind, "absolute")
             motion("m:0123456789abcdef:remote", False)
@@ -4963,11 +5054,11 @@ class WidgetCheck(unittest.TestCase):
             # A remote card keeps Absolute and its tag, and the Relative reason is its tooltip.
             remote_copy = copy_of("m:0123456789abcdef:remote")
             self.assertEqual((remote_copy.get_tooltip_text(), remote_copy.asb_action),
-                             ("Copy absolute reference. Relative works only on this machine. This session runs on homeLP.", "win.copy-reference"))
+                             ("Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind.", "win.copy-reference"))
             remote_copy.emit("clicked"); self.drain(.1)
             self.assertEqual(clipboard.texts[-1], absolute)
             self.assertEqual(cards["m:0123456789abcdef:remote"].asb_feedback_label.get_label(), "Absolute session copied")
-            self.assertEqual(remote_copy.get_tooltip_text(), "Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
+            self.assertEqual(remote_copy.get_tooltip_text(), "Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind.")
             if output:
                 window.scroll.get_hadjustment().set_value(0); self.drain(.1)
                 self.capture(window, Path(output) / "native-copy-remote-card.png")
@@ -5411,7 +5502,7 @@ class WidgetCheck(unittest.TestCase):
                     window.show_context(card); self.drain(.3)
                     panel = window.context_menu
                     def labels():
-                        return [button.asb_label for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full)
+                        return [button.asb_label for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full, panel.asb_copy_name)
                                 if button.get_visible()]
                     def check():
                         for part in labels():
@@ -5561,7 +5652,7 @@ class WidgetCheck(unittest.TestCase):
             label, tag = (part.compute_bounds(panel)[1] for part in (mute.asb_label, panel.asb_mute_tag))
             self.assertEqual(tag.origin.x - (label.origin.x + label.size.width), 8)
             ends = {slot: round(button.asb_hint.compute_bounds(panel)[1].origin.x + button.asb_hint.compute_bounds(panel)[1].size.width)
-                    for slot, button in (*panel.asb_actions.items(), ("short", panel.asb_copy), ("full", panel.asb_copy_full))
+                    for slot, button in (*panel.asb_actions.items(), ("short", panel.asb_copy), ("full", panel.asb_copy_full), ("name", panel.asb_copy_name))
                     if button.get_visible() and button.asb_hint.get_visible()}
             self.assertIn("mute", ends)
             self.assertGreaterEqual(len(ends), 4)
@@ -5572,7 +5663,7 @@ class WidgetCheck(unittest.TestCase):
             self.assertEqual({(box.size.width, box.size.height) for box in dots}, {(4, 4)})
             self.assertTrue(all(box.origin.x.is_integer() and box.origin.y.is_integer() for box in dots))
             self.assertEqual({round(b.origin.x - a.origin.x) for a, b in zip(dots, dots[1:])}, {6})
-            for slot, button in (("short", panel.asb_copy), ("full", panel.asb_copy_full)):
+            for slot, button in (("short", panel.asb_copy), ("full", panel.asb_copy_full), ("name", panel.asb_copy_name)):
                 self.assertEqual(button.asb_hint.get_visible(), slot == chosen)
                 if slot == chosen:
                     # The caption runs under the hint to the row end; the hint shares the label baseline.
@@ -6336,6 +6427,7 @@ class WidgetCheck(unittest.TestCase):
         theme = asb.Gtk.IconTheme.get_for_display(window.get_display())
         self.assertTrue(theme.has_icon("asb-link-symbolic"))
         self.assertTrue(theme.has_icon("asb-globe-symbolic"))
+        self.assertTrue(theme.has_icon("asb-name-symbolic"))
         self.assertTrue((Path(asb.__file__).parents[1] / "assets" / "icons" / "asb-link-symbolic.svg").exists())
         self.assertTrue((Path(asb.__file__).parents[1] / "assets" / "icons" / "asb-globe-symbolic.svg").exists())
 
@@ -8947,7 +9039,7 @@ class WidgetCheck(unittest.TestCase):
         window = self.card_board(rows)
         window.set_default_size(1004, 640); self.settle(window)
         def main_labels(panel):
-            return [button.asb_label for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full)
+            return [button.asb_label for button in (panel.asb_open, panel.asb_messages, *panel.asb_actions.values(), panel.asb_copy, panel.asb_copy_full, panel.asb_copy_name)
                     if button.get_visible()]
         def assert_uncut(labels):
             for part in labels:
@@ -11957,7 +12049,7 @@ class WidgetCheck(unittest.TestCase):
                 self.assertEqual(mute.get_tooltip_text(), "Click the time to choose it. Scroll or press Left and Right to change it.")
                 self.assertEqual(panel.asb_mute_tag.get_tooltip_text(), "Choose how long to mute")
                 before, height = header(panel), panel.get_child().get_height()
-                padding = bottom_padding(panel, panel.asb_copy_full)
+                padding = bottom_padding(panel, panel.asb_copy_name)
                 open_list(panel)
                 window.session_action.assert_not_called()
                 self.assertEqual(panel.asb_pages.get_visible_child_name(), "times")
@@ -12007,8 +12099,8 @@ class WidgetCheck(unittest.TestCase):
                 panel.asb_times_back.emit("clicked"); self.drain(.4)
                 self.assertEqual((window.mute_for, panel.asb_pages.get_visible_child_name(), window.get_focus()), ("1h", "main", mute))
                 self.assertEqual(header(panel), before)
-                self.assertEqual(bottom_padding(panel, panel.asb_copy_full), padding)
-                print("panel return", side, "title", header(panel)[1], "padding", bottom_padding(panel, panel.asb_copy_full))
+                self.assertEqual(bottom_padding(panel, panel.asb_copy_name), padding)
+                print("panel return", side, "title", header(panel)[1], "padding", bottom_padding(panel, panel.asb_copy_name))
                 open_list(panel)
                 self.assertIs(window.get_focus(), panel.asb_times["1h"])
                 self.assertTrue(window.panel_key(keys(panel), asb.Gdk.KEY_Escape, 0, asb.Gdk.ModifierType(0)))

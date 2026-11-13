@@ -3171,6 +3171,9 @@ class DataChecks(unittest.TestCase):
             asb.write_layout(path, 240, copy_kind="absolute")
             self.assertEqual(asb.read_layout(path)["copyKind"], "absolute")
             self.assertEqual(json.loads(path.read_text())["copyKind"], "absolute")
+            asb.write_layout(path, 240, copy_kind="name")
+            self.assertEqual(asb.read_layout(path)["copyKind"], "name")
+            self.assertEqual(json.loads(path.read_text())["copyKind"], "name")
             # A Relative kind is the default and is not written.
             asb.write_layout(path, 240, copy_kind="relative")
             self.assertEqual(asb.read_layout(path)["copyKind"], "relative")
@@ -3183,7 +3186,7 @@ class DataChecks(unittest.TestCase):
                         asb.write_layout(path, 240, copy_kind=invalid)
                     self.assertEqual(path.read_bytes(), previous)
                 path.write_text(json.dumps({"version": 1, "columnWidth": 240, "copyKind": invalid}))
-                with self.assertRaisesRegex(ValueError, "Copy kind must be Relative or Absolute."):
+                with self.assertRaisesRegex(ValueError, "Copy kind must be Relative, Absolute, or Name."):
                     asb.read_layout(path)
             path.write_text(json.dumps({"version": 1, "columnWidth": 240, "copyKind": "absolute"}))
             asb.write_layout(path, 320)
@@ -3321,6 +3324,34 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(asb.mute_button_tip(row, "1h", NOW), "Unmute (until " + asb.mute_flag_text(row, NOW).removeprefix("Muted until ") + ")")
         self.assertEqual(asb.mute_button_tip(row, "8h", until), "Mute for 8 hours")
 
+    def test_card_copy_name_is_whole_collapsed_and_independent_of_references(self):
+        title = "Review " + "the long session title " * 12
+        for extra in ({}, {"remote": True}, {"surface": "cli"}):
+            for text in ("Plan the garden", title, "  Plan\t the\n garden  "):
+                with self.subTest(extra=extra, title=text):
+                    self.assertEqual(asb.card_copy({"title": text, **extra}, "name"),
+                                     (" ".join(text.split()), None, "name"))
+            for text in ("", " \n\t", "Untitled session", "Untitled remote session"):
+                self.assertEqual(asb.card_copy({"title": text, **extra}, "name"),
+                                 (None, "This session has no name.", "name"))
+        self.assertEqual(asb.COPY_KINDS, ("relative", "absolute", "name"))
+        for kind in asb.COPY_KINDS:
+            self.assertEqual(asb.validate_copy_kind(kind), kind)
+
+    def test_copy_kind_cycle_and_remote_skip_in_both_directions(self):
+        window = object.__new__(Window)
+        window.change_copy_kind = lambda kind: setattr(window, "copy_kind", kind)
+        for remote, kinds in ((False, asb.COPY_KINDS), (True, ("absolute", "name"))):
+            card = SimpleNamespace(asb_thread={"remote": remote})
+            for step in (-1, 1):
+                for n, kind in enumerate(kinds):
+                    window.copy_kind = kind
+                    window.step_copy_kind(card, step)
+                    self.assertEqual(window.copy_kind, kinds[(n + step) % len(kinds)])
+            window.copy_kind = "relative"
+            window.step_copy_kind(card, 1)
+            self.assertEqual(window.copy_kind, "name" if remote else "absolute")
+
     def test_card_copy_kind_rule_for_local_remote_and_missing_values(self):
         full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
         short = "codex/123e4567-e89b-12d3-a456-426614174000"
@@ -3330,7 +3361,7 @@ class DataChecks(unittest.TestCase):
         self.assertEqual(asb.card_copy(local), (short, None, "relative"))
         self.assertEqual(asb.card_copy(local, "relative"), (short, None, "relative"))
         self.assertEqual(asb.card_copy(local, "absolute"), (full, None, "absolute"))
-        # A remote row copies the Absolute reference whatever the board kind is.
+        # A remote row uses Absolute when the chosen reference kind is Relative.
         self.assertEqual(asb.card_copy(remote), (full, None, "absolute"))
         self.assertEqual(asb.card_copy(remote, "relative"), (full, None, "absolute"))
         self.assertEqual(asb.card_copy(remote, "absolute"), (full, None, "absolute"))
@@ -6673,7 +6704,7 @@ class NativeLogicChecks(unittest.TestCase):
             return item
         panel = SimpleNamespace(asb_identity=rows[0]["id"], asb_signature=None, asb_rows=None, asb_controls=None, asb_copy_values=None, asb_copied=None,
                                 asb_copy_error="", asb_title=Mock(), asb_error=Mock(), update_property=Mock(), asb_mute_tag=Mock(),
-                                asb_mute_words=Mock(), asb_mute_dots=[], asb_open=button(), asb_copy=button(), asb_copy_full=button(),
+                                asb_mute_words=Mock(), asb_mute_dots=[], asb_open=button(), asb_copy=button(), asb_copy_full=button(), asb_copy_name=button(),
                                 asb_actions={slot: button() for slot in ("read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard")},
                                 asb_times={choice: button() for choice in asb.MUTE_CHOICES}, asb_pages=Mock(**{"get_visible_child_name.return_value": "main"}))
         gtk = SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0, DISABLED=2, CHECKED=4),
@@ -6898,7 +6929,7 @@ class NativeLogicChecks(unittest.TestCase):
                 ({}, "Mute for 1 hour. Scroll to change.", "Copy relative reference. Scroll to change the kind.", True),
                 ({"muted": True}, "Unmute", "Copy relative reference. Scroll to change the kind.", True),
                 ({"remote": True, "machineName": "studio", "reference": "asb:1/9a8b7c6d5e4f3a2b/codex/5e6f7a8b9c0d1e2f/a"},
-                 "Mute for 1 hour. Scroll to change.", "Copy absolute reference. Relative works only on this machine. This session runs on studio.", False)):
+                 "Mute for 1 hour. Scroll to change.", "Copy absolute reference. Relative works only on this machine. This session runs on studio. Scroll to change the kind.", True)):
             with self.subTest(extra=extra):
                 widget = SimpleNamespace(asb_view="comfortable", asb_thread={"id": "a", "title": "Chat", "state": "idle", **extra},
                                          asb_read_timer=None, asb_copy_timer=None, asb_read_button=Mock(), asb_pin_button=Mock(),
@@ -9237,9 +9268,9 @@ class NativeLogicChecks(unittest.TestCase):
         window.get_clipboard = lambda: clipboard
         row = {"id": "a"}
         window.focus_widgets = {"a": SimpleNamespace(asb_thread=row)}
-        panel = SimpleNamespace(asb_identity="a", asb_copy=Mock(), asb_copy_full=Mock(), asb_copy_timer=None, asb_copy_error="",
-                                asb_copy_values=values, asb_copied=None)
-        for button in (panel.asb_copy, panel.asb_copy_full):
+        panel = SimpleNamespace(asb_identity="a", asb_copy=Mock(), asb_copy_full=Mock(), asb_copy_name=Mock(), asb_copy_timer=None, asb_copy_error="",
+                                asb_copy_values=(*values, "Chat", None), asb_copied=None)
+        for button in (panel.asb_copy, panel.asb_copy_full, panel.asb_copy_name):
             button.get_ancestor = lambda _type: panel
         return window, panel, clipboard, timers, removed, glib, gtk, row
 
@@ -9272,7 +9303,7 @@ class NativeLogicChecks(unittest.TestCase):
             clipboard.set.assert_called_with(full)
             self.assertEqual((removed, panel.asb_copy_timer, panel.asb_copied), ([1], 2, "full"))
             icon.assert_any_call(short.asb_icon, "edit-copy-symbolic")
-            icon.assert_called_with(absolute.asb_icon, "object-select-symbolic")
+            icon.assert_any_call(absolute.asb_icon, "object-select-symbolic")
             short.update_property.assert_called_with([1], ["codex/1"])
             absolute.update_property.assert_called_with([1], ["Absolute session copied"])
             self.assertEqual(absolute.asb_tip, full)
@@ -9326,12 +9357,12 @@ class NativeLogicChecks(unittest.TestCase):
             absolute.asb_caption.set_lines.assert_called_with(2)
             # Different reasons: each row shows its own.
             unknown = "ASB does not know the profile of this session."
-            panel.asb_copy_values = (None, invalid, None, unknown)
+            panel.asb_copy_values = (None, invalid, None, unknown, "Chat", None)
             window.show_copy_rows(panel)
             short.asb_caption.set_label.assert_called_with(invalid)
             absolute.asb_caption.set_label.assert_called_with(unknown)
             # Available again: no DISABLED state.
-            panel.asb_copy_values = ("codex/1", None, None, unknown)
+            panel.asb_copy_values = ("codex/1", None, None, unknown, "Chat", None)
             window.show_copy_rows(panel)
             short.update_state.assert_called_with([0, 2], [False, False])
             short.remove_css_class.assert_any_call("asb-copy-off")
@@ -9500,14 +9531,14 @@ class NativeLogicChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"Gtk": gtk, "GLib": glib}):
             window.update_card_actions(widget)
             self.assertEqual(copy.asb_action, "win.copy-reference")
-            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind.")
             copy.update_property.assert_any_call([0], ["Copy absolute reference: Chat"])
             copy.update_state.assert_called_with([1], [False])
             copy.remove_css_class.assert_any_call("asb-copy-off")
             # The button and the copy-reference action copy the same value; the check shows and the tooltip stays.
             window.copy_reference(None, SimpleNamespace(get_string=lambda: row["id"]))
             clipboard.set.assert_called_once_with(full)
-            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind.")
             SCOPE["set_icon"].assert_called_with(copy.get_child(), "object-select-symbolic")
             # The reference goes away: the signature changes, so the button loses its action and gives the absolute reason.
             widget.asb_copy_timer = None
@@ -9526,7 +9557,7 @@ class NativeLogicChecks(unittest.TestCase):
             window.update_card_actions(widget)
             self.assertEqual(copy.asb_action, "win.copy-reference")
             copy.update_state.assert_called_with([1], [False])
-            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP.")
+            copy.set_tooltip_text.assert_called_with("Copy absolute reference. Relative works only on this machine. This session runs on homeLP. Scroll to change the kind.")
             # A local row, also a view-only CLI row, keeps the relative texts and value.
             for extra in ({}, {"surface": "cli"}):
                 local = {**row, "id": "local" + str(len(extra)), "remote": False, **extra}
@@ -9565,6 +9596,15 @@ class NativeLogicChecks(unittest.TestCase):
                 clipboard.set.side_effect = None
                 window.copy_reference(None, target)
                 self.assertEqual(window.open_errors, {})
+            window.copy_kind = "name"
+            target = SimpleNamespace(get_string=lambda: rows[0]["id"])
+            clipboard.set.side_effect = TypeError("no clipboard")
+            window.copy_reference(None, target)
+            self.assertEqual(window.open_errors, {rows[0]["id"]: "Cannot copy the name: no clipboard"})
+            clipboard.set.side_effect = None
+            window.copy_reference(None, target)
+            clipboard.set.assert_called_with("Chat")
+            self.assertEqual(window.open_errors, {})
             # An error of the other kind (the row changed) is also cleared, and an open error stays.
             window.open_errors[rows[0]["id"]] = "Cannot copy the relative reference: old"
             window.copy_reference(None, SimpleNamespace(get_string=lambda: rows[0]["id"]))
