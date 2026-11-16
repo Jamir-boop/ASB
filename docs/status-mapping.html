@@ -240,11 +240,11 @@
 const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Open', 'Messages', 'Background', 'Usage', 'Rename', 'Archive', 'Windows'];
 // A cell is the mark, then an optional note after one space. A ✗ note starts with what the gap waits on.
 const SUPPORT = [
-  ['Codex app', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✓', '✓', '✗ Codex saves no end of a background command', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Codex CLI', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✗ Codex saves no process ID', '✓ daemon tasks only', '✗ Codex saves no end of a background command', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Codex app', '✓', '✓', '✓', '✓ with ASB Bridge', '✓', '✓', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Codex CLI', '✓', '✓', '✓', '✓ with ASB Bridge, daemon tasks only', '✗ ASB work: terminal tab', '✓ daemon tasks only', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
   ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
   ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
-  ['OpenCode 2', '✓', '✓', '✗ OpenCode: memory only', '✗ OpenCode: memory only', '✗ OpenCode: no session link', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['OpenCode 2', '✓', '✓', '✓ with ASB Bridge', '✓ with ASB Bridge', '✗ ASB work: terminal tab', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
   ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
 ];
 const APP_ICONS = { 'Codex app': ['openai'], 'Codex CLI': ['openai', 'terminal'], 'Claude Desktop Code': ['claude'], 'Claude Code CLI': ['claude', 'terminal'], 'OpenCode 2': ['opencode'], 'Claude Code on the web': ['claude', 'globe'] };
@@ -266,10 +266,10 @@ const FEATURE_NOTES = {
 const ALSO = 'All apps also have Read and Unread, pins, the drawer, Mute for a time (30 min to Always), Discard, Copy (relative reference, absolute reference, or name), sounds, the GNOME top bar, and the phone.';
 const REMOTE = 'Cards of other machines do not open, have no Discard, and copy only the absolute reference or the name.';
 
-const RENAME_CHECKED = 'Checked on 2026-10-26: Codex 0.164.0, OpenCode 2.1.4, Claude Code 2.1.310. On 2026-11-16, Codex 0.169.0 still has thread/name/set; the other notes are not checked again.';
+const RENAME_CHECKED = 'Checked on 2026-10-26: Codex 0.164.0, OpenCode 2.1.4, Claude Code 2.1.310. On 2026-11-16, Codex 0.169.0 still has thread/name/set and adds codex archive; OpenCode 2.3.0 and Claude Code 2.1.325 are not checked again.';
 // [support app names, what the note says]
 const RENAME = [
-  [['Codex app', 'Codex CLI'], 'Codex app and CLI', '`thread/name/set`. An open Codex app may need a reload to show it (not tested).'],
+  [['Codex app', 'Codex CLI'], 'Codex app and CLI', '`thread/name/set`. An open Codex app may need a reload to show it (not tested). Archive: `codex archive <id>` and `codex unarchive <id>` (Codex 0.169).'],
   [['OpenCode 2'], 'OpenCode 2', '`session.update` with `title`, through `opencode api` or the ASB Bridge plugin. `opencode api` starts a stopped OpenCode service.'],
   [['Claude Code CLI'], 'Claude Code CLI', '`claude -r <id> -p "/rename <name>"`, with no model call. Only while the session does not run; its hooks run, and its history gets the command.'],
   [['Claude Desktop Code'], 'Claude Desktop Code', 'No entry point. A write while the app is closed works (tested); the running app writes the old title back.'],
@@ -288,15 +288,15 @@ const ROWS = [
   ['unseen', 'Task ended, you did not see it', '', 'Unread flag', '=', 'ASB saw Working, then Idle', '=', '`time_idle` after `time_viewed`', 'Cached unread mark', 'Idle', 'Dot', 'Yes, until Read'],
   ['failed', 'Task failed', 'Codex and Claude: also a subagent failure that ends last.', '`task_complete` with an error', '=', '`is_error`, or a failed task notification', '=', '`idle_outcome` `failed`', 'Session `failed`', 'Failed', '!', 'Yes, until Read'],
   ['stopped', 'You stopped the task', '', '`turn_aborted` or cancelled', '=', 'Interrupted or cancelled', '=', '`idle_outcome` `interrupted`', 'Not applicable', 'Stopped', 'Stop square', 'No'],
-  ['ask-sync', 'Question, the task waits', '', '`request_user_input`', '=', '`AskUserQuestion`, or a wrap-up with an ask', '`AskUserQuestion`', 'Not saved', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
+  ['ask-sync', 'Question, the task waits', '', '`request_user_input`', '=', '`AskUserQuestion`, or a wrap-up with an ask', '`AskUserQuestion`', 'ASB Bridge: open `form.created`', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
   ['ask-async', 'Question, the task goes on', '', '`request_user_input_async`', '=', '`AskUserQuestion` while a subagent works', '=', 'Not saved', 'Not applicable', 'Working', '?', 'Yes, until Read'],
-  ['approval', 'Approval or plan wait', 'Permission waits show after 10 s. Read only moves the card down.', 'Not saved', '=', 'Live session `waiting`, app log, or `ExitPlanMode`', 'Live session `waiting`, or `ExitPlanMode`', 'Not saved', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
+  ['approval', 'Approval or plan wait', 'Claude permission waits show after 10 s. Codex and OpenCode need ASB Bridge. Read only moves the card down.', 'ASB Bridge: `waitingOnApproval`', '=', 'Live session `waiting`, app log, or `ExitPlanMode`', 'Live session `waiting`, or `ExitPlanMode`', 'ASB Bridge: open `permission.asked`', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
   ['child-run', 'Subagent works after the root ends', '', 'Subagent running', '=', 'Open subagent log', '=', 'Execution claim', 'Not applicable', 'Working', 'None', 'No'],
   ['cli-new', 'CLI session, no prompt yet', '', 'Not applicable', 'Not saved', 'Not applicable', 'Live record, no transcript', 'Not applicable', 'Not applicable', 'Idle', 'None', 'No'],
   ['cli-ended', 'Claude Code process ended during a task', 'Linux and Windows. Reason: "The Claude Code process ended during a task."', 'Not applicable', 'Not saved', 'Open task, no live record', '=', 'Not applicable', 'Not applicable', 'Unknown', 'None', 'No'],
   ['stale', 'No signal for 6 hours', '', 'Old open task', '=', 'Old open turn', '=', 'Old execution claim', 'Old or unknown cache state', 'Unknown', 'None', 'No'],
   ['offline', 'The machine of the card does not answer', 'Machine group only. Reason: "<machine> is not reachable." ASB keeps the marks of the card.', 'No answer from the machine', '=', '=', '=', '=', '=', 'Unknown', 'None', 'No'],
-  ['limit', 'Usage limit stopped the task', 'Grey card with "Resets in 4h32m". After the reset: Stopped with the stop square.', '`usage_limit_exceeded`', '=', '`rate_limit` with a reset time', '=', 'Not read', 'Not read', 'Stopped', '!', 'Yes, until Read'],
+  ['limit', 'Usage limit stopped the task', 'Grey card with "Resets in 4h32m". After the reset: Stopped with the stop square.', '`usage_limit_exceeded`', '=', '`rate_limit` with a reset time', '=', '`provider.quota`, no reset time', 'Not read', 'Stopped', '!', 'Yes, until Read'],
   ['archived', 'Archived', '', 'Archive flag', '=', '`isArchived`', 'Not applicable', '`time_archived`', 'Session `archived`', 'Hidden', 'None', 'No'],
   ['discard', 'Discard result is on', 'A successful end then adds no dot. On an Idle card it waits for the next task.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'Working', 'Hollow dot', 'No'],
   ['manual', 'You marked it Unread in ASB', 'Hidden while Working.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'No change', 'Dot', 'Yes, until Read'],
