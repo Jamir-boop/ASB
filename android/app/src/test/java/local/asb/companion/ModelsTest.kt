@@ -26,6 +26,17 @@ class ModelsTest {
         assertEquals(Message(), AsbJson.decodeFromString<Message>("{}"))
     }
 
+    @Test fun backgroundCountsAreOptionalAndBadValuesAreZero() {
+        fun counts(fields: String) = AsbJson.decodeFromString<Dashboard>("""{"threads":[{"id":"a"$fields}]}""")
+            .threads.single().let { it.backgroundCommands to it.backgroundAgents }
+        assertEquals(0 to 0, counts(""))
+        assertEquals(0 to 0, counts(""","backgroundCommands":0,"backgroundAgents":0"""))
+        assertEquals(1 to 2, counts(""","backgroundCommands":1,"backgroundAgents":2"""))
+        for (bad in listOf("\"3\"", "null", "true", "1.5", "-2", "[]", "{}", "99999999999")) {
+            assertEquals(0 to 0, counts(""","backgroundCommands":$bad,"backgroundAgents":$bad"""))
+        }
+    }
+
     @Test fun malformedRecordsDoNotRemoveValidMessagesOrThreads() {
         val board = AsbJson.decodeFromString<Dashboard>("""{
             "threads":[{"id":"kept"}],

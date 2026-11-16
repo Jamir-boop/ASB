@@ -18,6 +18,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 val AsbJson = Json { ignoreUnknownKeys = true }
@@ -43,6 +44,19 @@ object MillisSerializer : KSerializer<Long> {
     }
 
     override fun serialize(encoder: Encoder, value: Long) = encoder.encodeLong(value)
+}
+
+/** An optional count: absent, negative, or not a whole number is 0, so a bad value cannot fail the row. */
+object CountSerializer : KSerializer<Int> {
+    override val descriptor = PrimitiveSerialDescriptor("local.asb.companion.Count", PrimitiveKind.INT)
+
+    override fun deserialize(decoder: Decoder): Int {
+        if (decoder !is JsonDecoder) return decoder.decodeInt()
+        val value = decoder.decodeJsonElement() as? JsonPrimitive
+        return value?.takeUnless { it.isString }?.intOrNull?.coerceAtLeast(0) ?: 0
+    }
+
+    override fun serialize(encoder: Encoder, value: Int) = encoder.encodeInt(value)
 }
 
 @Serializable
@@ -100,6 +114,9 @@ data class Thread(
     @Serializable(with = MillisSerializer::class)
     val updatedAtMs: Long = 0,
     val subagentCount: Int = 0,
+    // Running background commands and agents; sent only when 1 or more, never by an older engine.
+    @Serializable(with = CountSerializer::class) val backgroundCommands: Int = 0,
+    @Serializable(with = CountSerializer::class) val backgroundAgents: Int = 0,
     val state: String = "unknown",
     val reason: String = "",
     @Serializable(with = MillisSerializer::class)

@@ -4,6 +4,8 @@ import local.asb.companion.R
 import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
 import local.asb.companion.ui.CardTones
+import local.asb.companion.ui.backgroundCounts
+import local.asb.companion.ui.backgroundSentence
 import local.asb.companion.ui.CornerControl
 import local.asb.companion.ui.cardFontScale
 import local.asb.companion.ui.cardTones
@@ -29,6 +31,24 @@ class CardRulesTest {
     private val custom = Palette("custom", "#101418", "#e8e4dc", "#f0b45a", "#a8a29a", "#3a3f46", "#f0b45a", "#f0b45a")
     private val idle = Thread(id = "a", state = "idle", updatedAtMs = now - 60_000)
     private val limited = idle.copy(limitResetsAtMs = now + 60_000)
+    // Synthetic row with both background counts.
+    private val background = idle.copy(id = "bg", title = "Build the docs", backgroundCommands = 1, backgroundAgents = 2)
+
+    @Test fun backgroundCountsShowCommandsThenAgentsAndNothingAtZero() {
+        assertEquals(listOf(R.drawable.ic_bg_command to 1, R.drawable.ic_bg_agent to 2), backgroundCounts(background))
+        assertEquals(listOf(R.drawable.ic_bg_agent to 2), backgroundCounts(background.copy(backgroundCommands = 0)))
+        assertEquals(emptyList<Pair<Int, Int>>(), backgroundCounts(idle))
+    }
+
+    @Test fun backgroundSentenceIsExact() {
+        assertEquals("1 command, 2 agents in the background", backgroundSentence(background))
+        assertEquals("3 commands in the background", backgroundSentence(idle.copy(backgroundCommands = 3)))
+        assertEquals("1 agent in the background", backgroundSentence(idle.copy(backgroundAgents = 1)))
+        assertEquals("", backgroundSentence(idle))
+        // The card joins its parts with ". ", so the sentence reads with its period.
+        assertEquals("Idle. 1 command, 2 agents in the background. 1m",
+            listOf("Idle", backgroundSentence(background), "1m").filter { it.isNotBlank() }.joinToString(". "))
+    }
 
     @Test fun stateToneFollowsUpdateSessionRow() {
         fun state(row: Thread, palette: Palette = gnome) = cardTones(palette, row, false, false, false, now).state

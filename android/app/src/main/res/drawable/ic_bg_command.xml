@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Drawn for ASB, no outside source: a prompt and a cursor (bg-command of the background counters option B). Tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="12dp"
+    android:height="12dp"
+    android:viewportWidth="12"
+    android:viewportHeight="12">
+    <path
+        android:fillColor="#000000"
+        android:pathData="M1 2.6 5.6 6 1 9.4V7.9L3.6 6 1 4.1z" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M6.5 8.4H11v1.5H6.5z" />
+</vector>
