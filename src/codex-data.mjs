@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import zlib from 'node:zlib';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
 import { enrichThreads, threadTree } from './insights.mjs';
+import { processStart } from './claude-registry.mjs';
 
 const execFileAsync = promisify(execFile);
 const nativeSqlite = import('node:sqlite').catch(() => null);
@@ -186,40 +187,85 @@ function sameBridgeSignature(a, b) {
 }
 
 // The receiver view of ASB Bridge: one database for each receiving Codex thread. The message text is never selected.
+// The runtime row also gives the counts and times of the open approvals and questions (Bridge 0.8.1 and later), with the receiver
+// process that wrote them.
 async function readBridgeFile(filePath, to, sinceMs, cacheScope) {
   const [main, wal] = await Promise.all([fs.stat(filePath), fs.stat(`${filePath}-wal`).catch(() => null)]);
-  if (Math.max(main.mtimeMs, wal?.mtimeMs || 0) < sinceMs) return [];
+  // A database with an old file time gives no messages, but a wait can be older than the message window.
+  const fresh = Math.max(main.mtimeMs, wal?.mtimeMs || 0) >= sinceMs;
   // A WAL append does not change the main file.
   const signature = { main: statSignature(main), wal: wal ? statSignature(wal) : null };
   const since = Math.floor(sinceMs / 1000);
-  const cached = bridgeMessageCache.get(filePath, cacheScope);
-  if (cached && sameBridgeSignature(cached.signature, signature) && since >= cached.since) {
-    return cached.messages.filter((message) => message.atMs >= since * 1000);
+  let entry = bridgeMessageCache.get(filePath, cacheScope);
+  if (!entry || !sameBridgeSignature(entry.signature, signature) || since < entry.since) {
+    const columns = new Set((await querySqliteJson(filePath, 'pragma table_info(messages);')).map((row) => row.name));
+    let messages = [];
+    if (fresh && ['peer_id', 'direction', 'status', 'created_at'].every((name) => columns.has(name))) {
+      const hasKind = columns.has('kind');
+      const rows = await querySqliteJson(filePath, `select peer_id, status, created_at${hasKind ? ', kind' : ''}
+        from messages where direction = 'in' and created_at >= ${since};`);
+      messages = rows.filter((row) => BRIDGE_DELIVERED_STATUSES.has(row.status) && (!hasKind || row.kind === 'message')
+        && typeof row.peer_id === 'string' && UUID_RE.test(row.peer_id) && Number.isFinite(Number(row.created_at)))
+        .map((row) => ({ to, from: row.peer_id, atMs: Number(row.created_at) * 1000 }));
+    }
+    entry = { signature, since, messages, waits: await readBridgeWaits(filePath) };
+    bridgeMessageCache.remember(filePath, entry, cacheScope);
   }
-  const columns = new Set((await querySqliteJson(filePath, 'pragma table_info(messages);')).map((row) => row.name));
-  let messages = [];
-  if (['peer_id', 'direction', 'status', 'created_at'].every((name) => columns.has(name))) {
-    const hasKind = columns.has('kind');
-    const rows = await querySqliteJson(filePath, `select peer_id, status, created_at${hasKind ? ', kind' : ''}
-      from messages where direction = 'in' and created_at >= ${since};`);
-    messages = rows.filter((row) => BRIDGE_DELIVERED_STATUSES.has(row.status) && (!hasKind || row.kind === 'message')
-      && typeof row.peer_id === 'string' && UUID_RE.test(row.peer_id) && Number.isFinite(Number(row.created_at)))
-      .map((row) => ({ to, from: row.peer_id, atMs: Number(row.created_at) * 1000 }));
-  }
-  bridgeMessageCache.remember(filePath, { signature, since, messages }, cacheScope);
-  return messages;
+  // A process can end with no file change, so the receiver check runs at each read.
+  const waits = entry.waits && await bridgeReceiverLive(entry.waits) ? entry.waits : null;
+  return { messages: fresh ? entry.messages.filter((message) => message.atMs >= since * 1000) : [], waits };
 }
 
+const BRIDGE_WAIT_COLUMNS = ['approvals', 'questions', 'approval_at', 'question_at'];
+
+async function readBridgeWaits(filePath) {
+  const columns = new Set((await querySqliteJson(filePath, 'pragma table_info(runtime);')).map((row) => row.name));
+  if (!BRIDGE_WAIT_COLUMNS.every((name) => columns.has(name))) return null;
+  const [row] = await querySqliteJson(filePath, `select r.approvals, r.questions, r.approval_at, r.question_at, c.pid, c.proc_start
+    from runtime r left join receiver c on c.singleton = 1 where r.singleton = 1;`);
+  const count = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : 0;
+  const approvals = count(row?.approvals), questions = count(row?.questions);
+  if ((!approvals && !questions) || !Number.isSafeInteger(Number(row.pid)) || Number(row.pid) <= 0 || typeof row.proc_start !== 'string') return null;
+  return { approvals, questions, approvalAtMs: approvals ? count(row.approval_at) : 0, questionAtMs: questions ? count(row.question_at) : 0,
+    pid: Number(row.pid), procStart: row.proc_start };
+}
+
+// The registry rule: on Linux the PID with its recorded start time, on Windows a live PID.
+async function bridgeReceiverLive({ pid, procStart }, platform = process.platform) {
+  if (platform === 'win32') {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+  return await processStart(pid) === procStart;
+}
+
+// The incoming messages of the last window and the open waits of live receivers, by receiving thread.
 export async function readBridgeMessages(codexDir, sinceMs, cacheScope = '') {
   const directory = path.join(codexDir, 'plugin-state', 'asb-bridge');
   const names = await fs.readdir(directory).catch(() => []);
   const results = await Promise.all(names.map((name) => {
     const to = name.endsWith('.sqlite') ? name.slice(0, -'.sqlite'.length) : '';
-    if (!UUID_RE.test(to)) return [];
+    if (!UUID_RE.test(to)) return { to, messages: [], waits: null };
     // A read error on one database skips only that database.
-    return readBridgeFile(path.join(directory, name), to, sinceMs, cacheScope).catch(() => []);
+    return readBridgeFile(path.join(directory, name), to, sinceMs, cacheScope).then((result) => ({ to, ...result }),
+      () => ({ to, messages: [], waits: null }));
   }));
-  return results.flat();
+  return { messages: results.flatMap((result) => result.messages),
+    waits: new Map(results.filter((result) => result.waits).map((result) => [result.to, result.waits])) };
+}
+
+// An open approval waits as a permission prompt does; an open question as a blocking question. Only ASB Bridge counts them.
+export function applyBridgeWaits(thread, waits) {
+  if (!waits) return thread;
+  const next = { ...thread, questionNonBlocking: false };
+  if (waits.approvals) {
+    Object.assign(next, { awaitingPermission: true, pendingToolAtMs: Math.max(Number(thread.pendingToolAtMs || 0), waits.approvalAtMs) });
+  }
+  if (waits.questions) {
+    Object.assign(next, { awaitingUserInput: true, userQuestionBlocking: true,
+      latestBlockingQuestionAtMs: Math.max(Number(thread.latestBlockingQuestionAtMs || 0), waits.questionAtMs),
+      latestUserQuestionAtMs: Math.max(Number(thread.latestUserQuestionAtMs || 0), waits.questionAtMs) });
+  }
+  return next;
 }
 
 export function codexNativeReadStatus(thread, globalState) {
@@ -1192,15 +1238,21 @@ export async function loadCodexDashboard(options = {}) {
     thread.limitResetsAtMs = record ? limitStopResetsAtMs(record.limitWindows, thread.limitStoppedAtMs) : 0;
   }
   const incoming = new Map();
-  for (const { to, from, atMs } of await readBridgeMessages(path.dirname(databasePath), nowMs - SESSION_MESSAGE_WINDOW_MS, options.cacheScope)) {
+  const bridge = await readBridgeMessages(path.dirname(databasePath), nowMs - SESSION_MESSAGE_WINDOW_MS, options.cacheScope);
+  for (const { to, from, atMs } of bridge.messages) {
     incoming.set(to, [...(incoming.get(to) || []), { from, atMs }]);
   }
-  for (const thread of enriched) if (incoming.has(thread.id)) thread.incomingMessages = incoming.get(thread.id);
+  for (const thread of enriched) {
+    if (incoming.has(thread.id)) thread.incomingMessages = incoming.get(thread.id);
+    if (bridge.waits.has(thread.id)) Object.assign(thread, applyBridgeWaits(thread, bridge.waits.get(thread.id)));
+  }
   const result = { generatedAtMs: nowMs, threads: enriched,
     ...(logsUnreadable ? { provider: { installed: true, status: 'warning', message: ROLLOUT_UNREADABLE_MESSAGE } } : {}) };
   // An incoming message shows from 5 s before its time to the end of its window, so the loader runs again at those times.
   const untilMs = Math.min(...enriched.flatMap((thread) => (thread.incomingMessages || [])
-    .flatMap((message) => [message.atMs - 5_000, message.atMs + SESSION_MESSAGE_WINDOW_MS])).map((time) => time + 1).filter((time) => time > nowMs));
+    .flatMap((message) => [message.atMs - 5_000, message.atMs + SESSION_MESSAGE_WINDOW_MS])).map((time) => time + 1).filter((time) => time > nowMs),
+    // A receiver can end with no file change: check it again in 5 s while a wait shows.
+    ...(bridge.waits.size ? [nowMs + 5_000] : []));
   options.fileScan?.loaderCache?.set(key, { result, settings, rows, sessionIndex, globalState, filter: options.rolloutThreadFilter, atMs: nowMs, untilMs,
     files: new Map(options.fileScan.statusFiles) });
   return result;

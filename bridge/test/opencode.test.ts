@@ -1177,3 +1177,50 @@ posix('setup returns a cleanup function only when the required APIs are availabl
     rmSync(root, { recursive: true });
   }
 });
+
+posix('permission and form requests open and close waits, a subagent request waits in its root, and the turn end clears them', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const fake = fakeCtx();
+  const co = ensureCoordinator(configDir, stateDir);
+  try {
+    const instance = { ctx: fake.ctx, directory: '/tmp/opencode-project', disposers: [] };
+    co.instances.set(instance.directory, instance);
+    fake.setSession('ses_wait', { location: { directory: '/tmp/proj' }, title: 'Wait' });
+    fake.setSession('ses_child', { location: { directory: '/tmp/proj' }, title: 'Child', parentID: 'ses_wait' });
+    await handleEvent(co, { id: 'ev_start', type: 'session.execution.started', data: { sessionID: 'ses_wait' } });
+    const file = join(stateDir, `${bridgeIdOf('ses_wait')}.sqlite`);
+    const waits = () => {
+      const db = new Database(file, { readonly: true });
+      try { return db.query<{ approvals: number; questions: number; approval_at: number | null; question_at: number | null }, []>(
+        'SELECT approvals,questions,approval_at,question_at FROM runtime WHERE singleton=1').get()!; } finally { db.close(); }
+    };
+    expect(waits()).toEqual({ approvals: 0, questions: 0, approval_at: null, question_at: null });
+    const before = Date.now();
+    // OpenCode 2.3 shapes: permission.asked { id, sessionID }, form.created { form: { id, sessionID } }.
+    await handleEvent(co, { id: 'ev_p1', type: 'permission.asked', data: { id: 'per_1', sessionID: 'ses_wait', action: 'shell' } });
+    await handleEvent(co, { id: 'ev_p2', type: 'permission.asked', data: { id: 'per_2', sessionID: 'ses_child', action: 'edit' } });
+    await handleEvent(co, { id: 'ev_f1', type: 'form.created', data: { form: { id: 'frm_1', sessionID: 'ses_wait', title: 'Pick' } } });
+    let row = waits();
+    expect({ approvals: row.approvals, questions: row.questions }).toEqual({ approvals: 2, questions: 1 });
+    expect(row.approval_at!).toBeGreaterThanOrEqual(before);
+    expect(row.question_at!).toBeGreaterThanOrEqual(row.approval_at!);
+    // An event that no branch handles and a reply to an unknown request change nothing.
+    await handleEvent(co, { id: 'ev_other', type: 'session.text.delta', data: { sessionID: 'ses_wait' } });
+    await handleEvent(co, { id: 'ev_r0', type: 'permission.replied', data: { sessionID: 'ses_wait', requestID: 'per_9', reply: 'once' } });
+    expect(waits()).toEqual(row);
+    await handleEvent(co, { id: 'ev_r1', type: 'permission.replied', data: { sessionID: 'ses_wait', requestID: 'per_1', reply: 'once' } });
+    await handleEvent(co, { id: 'ev_fr', type: 'form.replied', data: { id: 'frm_1', sessionID: 'ses_wait', answer: {} } });
+    row = waits();
+    expect({ approvals: row.approvals, questions: row.questions, question_at: row.question_at }).toEqual({ approvals: 1, questions: 0, question_at: null });
+    await handleEvent(co, { id: 'ev_f2', type: 'form.created', data: { form: { id: 'frm_2', sessionID: 'ses_wait' } } });
+    await handleEvent(co, { id: 'ev_fc', type: 'form.cancelled', data: { id: 'frm_2', sessionID: 'ses_wait' } });
+    expect(waits().questions).toBe(0);
+    await handleEvent(co, { id: 'ev_f3', type: 'form.created', data: { form: { id: 'frm_3', sessionID: 'ses_wait' } } });
+    await handleEvent(co, { id: 'ev_end', type: 'session.execution.succeeded', data: { sessionID: 'ses_wait' } });
+    expect(waits()).toEqual({ approvals: 0, questions: 0, approval_at: null, question_at: null });
+    expect(co.receivers.get('ses_wait')?.asks.size).toBe(0);
+  } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});

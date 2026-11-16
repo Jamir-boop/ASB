@@ -21,6 +21,10 @@ const SEEN_LIMIT = 256;
 // The event types that handleEvent uses. OpenCode streams many more during a turn.
 const HANDLED_EVENTS = new Set(['session.renamed', 'session.execution.started', 'session.execution.succeeded', 'session.execution.failed',
   'session.execution.interrupted', 'session.archived', 'session.deleted', 'session.inbox.delivered', 'session.inbox.enqueued']);
+// OpenCode 2.3 requests that wait for the user: permission.asked { id, sessionID }, permission.replied { sessionID, requestID },
+// form.created { form: { id, sessionID } }, form.replied and form.cancelled { id, sessionID }.
+const WAIT_EVENTS = new Set(['permission.asked', 'permission.replied', 'form.created', 'form.replied', 'form.cancelled']);
+for (const type of WAIT_EVENTS) HANDLED_EVENTS.add(type);
 
 type SessionInfo = {
   id: string;
@@ -40,6 +44,8 @@ type Receiver = {
   location: string;
   lastActivity: number;
   closed: boolean;
+  // The open requests that wait for the user, by request ID: IDs and times only, in memory only.
+  asks: Map<string, { kind: 'approval' | 'question'; at: number }>;
 };
 
 type Instance = {
@@ -163,7 +169,7 @@ async function registerSessionOnce(co: Coordinator, instance: Instance, session:
   const bridge = new Bridge(bridgeId, co.configDir, co.stateDir, '', host);
   const receiver: Receiver = {
     bridge, host, placeholder, openCodeSessionId: session.id, bridgeId,
-    location: instance.directory, lastActivity: Date.now(), closed: false,
+    location: instance.directory, lastActivity: Date.now(), closed: false, asks: new Map(),
   };
   const generation = bridge.beginSession();
   try {
@@ -240,18 +246,36 @@ function receiverOf(co: Coordinator, openCodeSessionId: string) {
   return co.receivers.get(openCodeSessionId);
 }
 
+function writeWaits(receiver: Receiver) {
+  const open = [...receiver.asks.values()];
+  const count = (kind: string) => open.filter(ask => ask.kind === kind).length;
+  const newest = (kind: string) => Math.max(0, ...open.filter(ask => ask.kind === kind).map(ask => ask.at)) || null;
+  receiver.bridge.setWaits({ approvals: count('approval'), questions: count('question'), approvalAt: newest('approval'), questionAt: newest('question') });
+}
+
 async function handleEvent(co: Coordinator, event: { id?: string; type?: string; data?: Record<string, unknown> }) {
   const type = event.type ?? '';
   if (!HANDLED_EVENTS.has(type)) return;
   const id = event.id;
   if (id && !remember(co, id)) return;
   const data = event.data ?? {};
-  const sessionId = String(data.sessionID ?? data.sessionId ?? '');
+  const form = type === 'form.created' ? (data.form ?? {}) as Record<string, unknown> : undefined;
+  const sessionId = String((form ?? data).sessionID ?? data.sessionId ?? '');
   const instance = sessionId ? await findInstanceFor(co, sessionId) : co.instances.values().next().value;
   if (!instance) return;
   const session = sessionId ? (await getSession(instance, sessionId) ?? { id: sessionId, title: data.title as string | undefined, location: data.location as { directory?: string } | undefined, parentID: data.parentID as string | undefined }) : undefined;
   if (!session) return;
 
+  if (WAIT_EVENTS.has(type)) {
+    // A subagent's request waits in its root session, as OpenCode shows it.
+    const receiver = receiverOf(co, session.parentID ? await rootSessionId(instance, session.id) : session.id);
+    const requestId = String((type === 'permission.replied' ? data.requestID : (form ?? data).id) ?? '');
+    if (!receiver || !requestId) return;
+    if (type === 'permission.asked' || type === 'form.created') receiver.asks.set(requestId, { kind: form ? 'question' : 'approval', at: Date.now() });
+    else receiver.asks.delete(requestId);
+    writeWaits(receiver);
+    return;
+  }
   if (type === 'session.renamed') {
     const receiver = receiverOf(co, session.id);
     if (!receiver) return;
@@ -274,6 +298,9 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     const receiver = receiverOf(co, session.id);
     if (!receiver) return;
     receiver.lastActivity = Date.now();
+    // A turn that ended has no open request.
+    receiver.asks.clear();
+    writeWaits(receiver);
     receiver.bridge.updateRuntime(await receiver.host.runtime());
     return;
   }

@@ -148,7 +148,7 @@ posix('a peer input ID comes from the header at the start of the output or from 
 
 posix('queued work prevents idle and the bridge leaves approval requests to the existing UI', async () => {
   const server = await appServer();
-  const states: { status: string; mode: string }[] = [];
+  const states: { status: string; mode: string; approval?: boolean }[] = [];
   const client = new AppServer(server.path, server.threadId);
   const until = async (predicate: () => boolean) => {
     const deadline = Date.now() + 1000;
@@ -160,7 +160,7 @@ posix('queued work prevents idle and the bridge leaves approval requests to the 
     server.setPermissions({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } });
     await client.runtime();
     await client.observe(state => states.push(state));
-    expect(states.at(-1)).toEqual({ status: 'idle', mode: 'bypass' });
+    expect(states.at(-1)).toEqual({ status: 'idle', mode: 'bypass', approval: false });
     server.setPermissions({ approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } });
     await until(() => states.at(-1)?.mode === 'prompting');
     server.setQueue([{ id: randomUUID() }]);
@@ -177,7 +177,7 @@ posix('queued work prevents idle and the bridge leaves approval requests to the 
 
 posix('an observer disconnect suspends reception until fresh permissions are read', async () => {
   const server = await appServer();
-  const states: { status: string; mode: string }[] = [];
+  const states: { status: string; mode: string; approval?: boolean }[] = [];
   let disconnected = false;
   const stop = await watchCodex({ kind: 'app-server', path: server.path }, server.threadId,
     state => states.push(state), () => { disconnected = true; });
@@ -188,7 +188,7 @@ posix('an observer disconnect suspends reception until fresh permissions are rea
     while (states.at(-1)?.mode !== 'bypass' && !disconnected && Date.now() < deadline) await Bun.sleep(5);
     expect(disconnected).toBe(false);
     expect(states).toContainEqual({ status: 'unknown', mode: 'unknown' });
-    expect(states.at(-1)).toEqual({ status: 'idle', mode: 'bypass' });
+    expect(states.at(-1)).toEqual({ status: 'idle', mode: 'bypass', approval: false });
     expect(server.submissions).toEqual([]);
   } finally { stop(); await server.close(); }
 });

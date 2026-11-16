@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { querySqliteJson, readBridgeMessages, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
+import { applyBridgeWaits, querySqliteJson, readBridgeMessages, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 
 const MAX_THREADS = 5000;
 const SCHEMA_WARNING = 'ASB reads OpenCode 2 sessions only. Update OpenCode.';
@@ -153,14 +153,16 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
   }
   if (typeof stateDir === 'string' && stateDir && result.threads.length) {
     const incoming = new Map();
-    for (const { to, from, atMs } of await readBridgeMessages(stateDir, nowMs - SESSION_MESSAGE_WINDOW_MS, cacheScope)) {
+    const bridge = await readBridgeMessages(stateDir, nowMs - SESSION_MESSAGE_WINDOW_MS, cacheScope);
+    for (const { to, from, atMs } of bridge.messages) {
       if (!incoming.has(to)) incoming.set(to, []);
       incoming.get(to).push({ from, atMs });
     }
-    if (!incoming.size) return result;
+    if (!incoming.size && !bridge.waits.size) return result;
     return { ...result, threads: result.threads.map((thread) => {
-      const messages = incoming.get(opencodeBridgeId(thread.externalId));
-      return messages ? { ...thread, incomingMessages: messages } : thread;
+      const id = opencodeBridgeId(thread.externalId);
+      const messages = incoming.get(id);
+      return applyBridgeWaits(messages ? { ...thread, incomingMessages: messages } : thread, bridge.waits.get(id));
     }) };
   }
   return result;

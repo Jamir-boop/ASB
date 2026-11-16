@@ -16,6 +16,8 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
   const requests: { method: string; params: Record<string, unknown> }[] = [];
   const responses: unknown[] = [];
   let state = 'idle';
+  let activeFlags: string[] = [];
+  const status = () => state === 'active' ? { type: state, activeFlags } : { type: state };
   let permissions: Record<string, unknown> = { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } };
   let items: unknown[] = [];
   let queue: unknown[] = [];
@@ -36,7 +38,7 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
       if (!request.id) return;
       requests.push(request);
       const reply = (result: unknown) => socket.send(JSON.stringify({ id: request.id, result }));
-      const thread = { id: threadId, cwd: root, status: { type: loaded ? state : 'notLoaded' }, canAcceptDirectInput: true };
+      const thread = { id: threadId, cwd: root, status: loaded ? status() : { type: 'notLoaded' }, canAcceptDirectInput: true };
       if (request.method === 'initialize') reply({ userAgent: 'codex/0.159.2', codexHome: root });
       else if (request.method === 'thread/loaded/list') {
         if (loadedListError) socket.send(JSON.stringify({ id: request.id, error: { code: -32603, message: 'Loaded list unavailable' } }));
@@ -48,7 +50,7 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
           throw new Error('The bridge must not override a live thread setting');
         }
         loaded = true;
-        reply({ thread: { ...thread, status: { type: state } }, approvalPolicy: permissions.approvalPolicy, sandbox: permissions.sandboxPolicy });
+        reply({ thread: { ...thread, status: status() }, approvalPolicy: permissions.approvalPolicy, sandbox: permissions.sandboxPolicy });
       } else if (request.method === 'thread/items/list') {
         const start = Number(request.params.cursor ?? 0);
         const limit = request.params.limit ?? 100;
@@ -69,7 +71,8 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
   await once(server, 'listening');
   chmodSync(path, 0o600);
   return { path, root, threadId, turnId, submissions, requests, responses,
-    setState(value: 'idle' | 'active') { state = value; notify('thread/status/changed', { threadId, status: { type: state } }); },
+    // Codex 0.169 ThreadStatus: an active thread has activeFlags, for example ['waitingOnApproval'].
+    setState(value: 'idle' | 'active', flags: string[] = []) { state = value; activeFlags = flags; notify('thread/status/changed', { threadId, status: status() }); },
     setPermissions(value: Record<string, unknown>) { permissions = value; notify('thread/settings/updated', { threadId, threadSettings: value }); },
     setItems(value: unknown[]) { items = value; },
     setQueue(value: unknown[]) { queue = value; notify('thread/queue/changed', { threadId }); },
