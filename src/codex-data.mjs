@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { createReadStream, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
+import zlib from 'node:zlib';
 import { rememberBounded, sameFileSignature, SourceCache, statSignature } from './data-cache.mjs';
 import { enrichThreads, threadTree } from './insights.mjs';
 
@@ -32,6 +34,8 @@ const ROLLOUT_UNREADABLE = Symbol('rollout log cannot be read');
 const ROLLOUT_UNREADABLE_MESSAGE = 'ASB cannot read the Codex session logs, so Codex cards show Unknown.';
 const ROLLOUT_SCAN_CHUNK_BYTES = 1024 * 1024;
 const ROLLOUT_SCAN_OVERLAP_BYTES = 256;
+// The longest line that the stream reader of a compressed log keeps.
+const ROLLOUT_STREAM_LINE_BYTES = 1024 * 1024;
 // The line breaks of node:readline, without the line feed that the scan splits on first.
 const ROLLOUT_LINE_BREAK_RE = /[\r\u2028\u2029]/;
 const QUESTION_CALL_NEEDLE = Buffer.from('request_user_input');
@@ -65,6 +69,7 @@ const codexCacheMetrics = {
   rolloutSignalWrites: 0,
   rolloutSignalEvictions: 0,
   rolloutSignalBytesRead: 0,
+  rolloutDecompressions: 0,
   lifecycleBytesRead: 0,
   lifecycleHits: 0,
   metadataHits: 0,
@@ -444,6 +449,7 @@ export function getCodexCacheStats() {
       writes: codexCacheMetrics.rolloutSignalWrites,
       evictions: codexCacheMetrics.rolloutSignalEvictions,
       bytesRead: codexCacheMetrics.rolloutSignalBytesRead,
+      decompressions: codexCacheMetrics.rolloutDecompressions,
       lifecycleBytesRead: codexCacheMetrics.lifecycleBytesRead,
       lifecycleHits: codexCacheMetrics.lifecycleHits,
     },
@@ -616,6 +622,13 @@ function applyUserQuestionEvent(questions, payload, atMs = 0) {
 }
 
 export function parseRolloutSignals(jsonlText) {
+  const parser = rolloutSignalParser();
+  for (const line of jsonlText.split('\n')) parser.line(line);
+  return parser.finish();
+}
+
+// The per-line state of parseRolloutSignals, so a stream gives the result of its whole text one line at a time.
+function rolloutSignalParser() {
   const questions = new Map();
   const signals = {
     latestAgentFinalAtMs: null,
@@ -624,16 +637,16 @@ export function parseRolloutSignals(jsonlText) {
     latestEventAtMs: null,
   };
 
-  for (const line of jsonlText.split('\n')) {
-    if (!line.trim()) continue;
+  const line = (text) => {
+    if (!text.trim()) return;
 
     let event;
     try {
-      event = JSON.parse(line);
+      event = JSON.parse(text);
     } catch {
-      continue;
+      return;
     }
-    if (!event || typeof event !== 'object') continue;
+    if (!event || typeof event !== 'object') return;
 
     const payload = event.payload || event;
     const timestampMs = eventTimestampMs(event);
@@ -646,16 +659,15 @@ export function parseRolloutSignals(jsonlText) {
 
     if (payload?.type === 'agent_message') {
       if (payload.phase === 'final_answer') signals.latestAgentFinalAtMs = timestampMs || signals.latestAgentFinalAtMs;
-      continue;
+      return;
     }
 
     if (payload?.type === 'user_message') {
       signals.latestUserMessageAtMs = timestampMs || signals.latestUserMessageAtMs;
     }
-  }
+  };
 
-  Object.assign(signals, questionSignals(questions));
-  return finalizeRolloutLifecycle(signals);
+  return { line, finish: () => finalizeRolloutLifecycle(Object.assign(signals, questionSignals(questions))) };
 }
 
 // Returns where line processing must resume: the start of the line with the next question call, else of an unfinished last line, else `size`.
@@ -925,6 +937,50 @@ export async function readTail(filePath, maxBytes = DEFAULT_MAX_ROLLOUT_BYTES, f
   }
 }
 
+// The signals of a compressed log (Codex 0.169 compresses a log after 7 days with no use): parseRolloutSignals of its whole text, one
+// line at a time, so memory stays at one line. Throws when the zstd stream fails or when Node has no zstd (before 22.15).
+// A zstd stream cannot seek, so there is no tail read.
+// shortcut: a line longer than `lineLimit` is skipped (a huge tool output or pasted prompt), upgrade if a lifecycle line can be that long.
+async function readCompressedRolloutSignals(filePath, lineLimit = ROLLOUT_STREAM_LINE_BYTES) {
+  codexCacheMetrics.rolloutDecompressions += 1;
+  const parser = rolloutSignalParser();
+  let pending = [];
+  let pendingBytes = 0;
+  let skipping = false;
+  const take = (piece) => {
+    if (!skipping && pendingBytes + piece.length > lineLimit) {
+      skipping = true;
+      pending = [];
+      pendingBytes = 0;
+    }
+    if (skipping) return;
+    pending.push(piece);
+    pendingBytes += piece.length;
+  };
+  const end = () => {
+    if (!skipping) parser.line(Buffer.concat(pending).toString('utf8'));
+    skipping = false;
+    pending = [];
+    pendingBytes = 0;
+  };
+  const input = createReadStream(filePath);
+  input.on('data', (chunk) => { codexCacheMetrics.rolloutSignalBytesRead += chunk.length; });
+  await pipeline(input, zlib.createZstdDecompress(), async (stream) => {
+    for await (const chunk of stream) {
+      let from = 0;
+      for (let newline = chunk.indexOf(10); newline >= 0; newline = chunk.indexOf(10, from)) {
+        take(chunk.subarray(from, newline));
+        end();
+        from = newline + 1;
+      }
+      // A copy, so a kept piece does not hold the whole decompressed chunk.
+      if (from < chunk.length) take(Buffer.from(chunk.subarray(from)));
+    }
+  });
+  end();
+  return parser.finish();
+}
+
 function hasTurnBoundary(signals) {
   return Boolean(signals.latestUserMessageAtMs || signals.latestAgentFinalAtMs);
 }
@@ -947,14 +1003,31 @@ export async function readRolloutSignals(
     const cached = rolloutSignalCache.get(cacheKey, cacheScope, cacheLimit);
     const reuse = cached && !cached.invalidated && fileScan?.canReuse(rolloutPath);
     if (cached && !reuse) cached.invalidated = true;
-    const stat = reuse ? cached.signature : await fs.stat(rolloutPath);
-    fileScan?.statusFiles?.set(rolloutPath, stat);
+    // Codex deletes the plain log when it compresses it and keeps the plain path in its database; the plain log wins when both exist.
+    let file = reuse ? cached.file || rolloutPath : rolloutPath;
+    const stat = reuse ? cached.signature : await fs.stat(rolloutPath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+      file = `${rolloutPath}.zst`;
+      return fs.stat(file).catch(() => { throw error; });
+    });
+    fileScan?.statusFiles?.set(file, stat);
     const signature = statSignature(stat);
     if (cached && sameFileSignature(cached.signature, signature)) {
       cached.invalidated = false;
       rolloutActivityCache.get(rolloutPath, cacheScope, cacheLimit);
       codexCacheMetrics.rolloutSignalHits += 1;
       return cached.signals;
+    }
+    if (file !== rolloutPath) {
+      codexCacheMetrics.rolloutSignalMisses += 1;
+      // The whole log is parsed, as the full-history scan of a plain log. A failure is kept too, so an unchanged log is not read again.
+      // No saved position: positions need a tail read with guard bytes.
+      const signals = await readCompressedRolloutSignals(file)
+        .catch(() => Object.assign(parseRolloutSignals(''), { [ROLLOUT_UNREADABLE]: true }));
+      delete signals[QUESTION_HISTORY_COMPLETE];
+      rolloutSignalCache.remember(cacheKey, { signature, signals, file }, cacheScope, cacheLimit, codexCacheMetrics,
+        'rolloutSignalWrites', 'rolloutSignalEvictions');
+      return signals;
     }
     // With no result in memory, the saved result of an unchanged log is this result: no tail is read.
     const saved = !cached && rolloutTailPositions ? await savedRolloutTail(rolloutPath, stat, initialBytes, maxBytes).catch(() => null) : null;
@@ -1074,7 +1147,7 @@ async function attachRolloutSignals(threads, {
     }
   });
 
-  return { threads: enriched, logsUnreadable };
+  return { threads: enriched, logsUnreadable, descendantsFor };
 }
 
 // Callers can pass old dashboard options (asbMode, maxOrphanRollouts, and so on). They have no effect.
@@ -1102,7 +1175,13 @@ export async function loadCodexDashboard(options = {}) {
   if (options.codexNativeReadEnabled) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }
-  const { threads: enriched, logsUnreadable } = await attachRolloutSignals(threads, options);
+  const { threads: enriched, logsUnreadable, descendantsFor } = await attachRolloutSignals(threads, options);
+  // A Codex subagent is a child thread: count the unarchived descendants whose logs show a running turn in this scan.
+  for (const thread of enriched) {
+    if (thread.isSubagent) continue;
+    const agents = descendantsFor(thread.id).filter((child) => !child.archived && child.lifecycleRunning === true).length;
+    if (agents > 0) thread.backgroundAgents = agents;
+  }
   // A stop uses the newest window record at or before it, of any session of the same Codex home: a retry can fail with no record of its own.
   const windowRecords = enriched.filter((thread) => thread.limitWindowAtMs > 0);
   for (const thread of enriched) {

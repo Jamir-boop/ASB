@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { getCodexCacheStats, parseRolloutSignals, readRolloutSignals, readTail } from '../src/codex-data.mjs';
 import { expectedSignals, rolloutWriter, seededRandom } from './rollout-writer.mjs';
 
@@ -120,4 +121,91 @@ test('Codex rollout scan does not parse lines before the tail when no question c
   assert.deepEqual(actual, expected);
   assert.equal(parsed, tailLines);
   assert.equal(getCodexCacheStats().rolloutSignals.lifecycleBytesRead - before.lifecycleBytesRead, size);
+});
+
+const NO_ZSTD = !zlib.zstdCompressSync && 'Node has no zstd (before 22.15)';
+
+test('a compressed Codex log gives the signals of its plain twin, and the plain log wins', { skip: NO_ZSTD }, async (t) => {
+  const directory = await temporaryDirectory(t);
+  let running = 0;
+  for (let seed = 1; seed <= 40; seed += 1) {
+    const writer = rolloutWriter(seededRandom(5000 + seed));
+    const body = writer.finish(writer.join([...writer.events(10 + seed), writer.lifecycle(), ...writer.quiet(1024)]));
+    const plain = path.join(directory, `plain-${seed}.jsonl`);
+    const packed = path.join(directory, `packed-${seed}.jsonl`);
+    await fs.writeFile(plain, body);
+    await fs.writeFile(`${packed}.zst`, zlib.zstdCompressSync(body));
+    const expected = await readRolloutSignals(plain);
+    if (expected.agentRunning === true) running += 1;
+    assert.deepEqual(await readRolloutSignals(packed), expected, `seed ${seed}`);
+  }
+  assert.ok(running >= 5, `running: ${running}`);
+
+  // Both files: the plain log is read, never the compressed one.
+  const both = path.join(directory, 'both.jsonl');
+  const line = (type) => `${JSON.stringify({ type: 'event_msg', timestamp: '2026-10-07T12:00:00Z', payload: { type } })}\n`;
+  await fs.writeFile(both, line('task_started'));
+  await fs.writeFile(`${both}.zst`, zlib.zstdCompressSync(line('task_complete')));
+  const before = getCodexCacheStats().rolloutSignals.decompressions;
+  assert.equal((await readRolloutSignals(both)).agentRunning, true);
+  assert.equal(getCodexCacheStats().rolloutSignals.decompressions, before);
+});
+
+test('a warm scan of a compressed Codex log uses the cache, and a change decompresses again', { skip: NO_ZSTD }, async (t) => {
+  const directory = await temporaryDirectory(t);
+  const rolloutPath = path.join(directory, 'warm.jsonl');
+  const line = (type) => `${JSON.stringify({ type: 'event_msg', timestamp: '2026-10-07T12:00:00Z', payload: { type } })}\n`;
+  await fs.writeFile(`${rolloutPath}.zst`, zlib.zstdCompressSync(line('task_started')));
+  const files = new Map();
+  const fileScan = { canReuse: () => true, statusFiles: files };
+  const decompressions = () => getCodexCacheStats().rolloutSignals.decompressions;
+  const before = decompressions();
+  assert.equal((await readRolloutSignals(rolloutPath, { cacheScope: 'zst-warm' })).agentRunning, true);
+  assert.equal(decompressions(), before + 1);
+  assert.equal((await readRolloutSignals(rolloutPath, { cacheScope: 'zst-warm' })).agentRunning, true);
+  assert.equal((await readRolloutSignals(rolloutPath, { cacheScope: 'zst-warm', fileScan })).agentRunning, true);
+  assert.equal(decompressions(), before + 1, 'a warm scan does not decompress');
+  // The status check watches the compressed file, not the absent plain path.
+  assert.deepEqual([...files.keys()], [`${rolloutPath}.zst`]);
+  await fs.writeFile(`${rolloutPath}.zst`, zlib.zstdCompressSync(line('task_started') + line('task_complete')));
+  assert.equal((await readRolloutSignals(rolloutPath, { cacheScope: 'zst-warm' })).agentRunning, false);
+  assert.equal(decompressions(), before + 2);
+});
+
+test('a compressed Codex log is unreadable without zstd or when broken', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const unreadable = (signals) => Object.getOwnPropertySymbols(signals).length === 1 && signals.agentRunning === null;
+  const missing = path.join(directory, 'missing.jsonl');
+  await fs.writeFile(`${missing}.zst`, zlib.zstdCompressSync ? zlib.zstdCompressSync('{}\n') : Buffer.from('synthetic'));
+  // Node before 22.15 has no createZstdDecompress.
+  const create = Object.getOwnPropertyDescriptor(zlib, 'createZstdDecompress');
+  if (create) delete zlib.createZstdDecompress;
+  try {
+    assert.ok(unreadable(await readRolloutSignals(missing)));
+  } finally {
+    if (create) Object.defineProperty(zlib, 'createZstdDecompress', create);
+  }
+  const broken = path.join(directory, 'broken.jsonl');
+  await fs.writeFile(`${broken}.zst`, Buffer.from('not a zstd frame'));
+  assert.ok(unreadable(await readRolloutSignals(broken)));
+  assert.ok(unreadable(await readRolloutSignals(path.join(directory, 'absent.jsonl'))));
+});
+
+test('a compressed Codex log larger than 16 MiB gives the signals of its whole text, and a line over 1 MiB is skipped', { skip: NO_ZSTD }, async (t) => {
+  const directory = await temporaryDirectory(t);
+  const line = (offset, payload) => JSON.stringify({ type: 'event_msg', timestamp: new Date(Date.parse('2026-10-07T12:00:00Z') + offset).toISOString(), payload });
+  // 20 MiB of filler between a turn start and its end, a 2 MiB line with no signal, and an open question at the end.
+  const filler = `${line(1000, { type: 'tool_output', text: 'x'.repeat(1000) })}\n`;
+  const text = [line(0, { type: 'task_started' }), filler.repeat(20 * 1024).trimEnd(),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'tool_output', text: 'y'.repeat(2 * 1024 * 1024) } }),
+    line(2000, { type: 'agent_message', message: 'Done.', phase: 'final_answer' }), line(3000, { type: 'task_complete' }),
+    line(4000, { type: 'user_message', message: 'Please continue.' }), line(5000, { type: 'task_started' })].join('\n');
+  assert.ok(text.length > 22 * 1024 * 1024);
+  const rolloutPath = path.join(directory, 'large.jsonl');
+  await fs.writeFile(`${rolloutPath}.zst`, zlib.zstdCompressSync(text));
+  const expected = Object.fromEntries(Object.entries(parseRolloutSignals(text)));
+  assert.equal(expected.agentRunning, true);
+  const actual = await readRolloutSignals(rolloutPath);
+  assert.deepEqual(actual, expected);
+  assert.equal(Object.getOwnPropertySymbols(actual).length, 0);
 });

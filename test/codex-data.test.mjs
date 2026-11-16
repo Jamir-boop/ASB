@@ -467,3 +467,33 @@ test('opening a Codex thread keeps the time and the place of its row until a new
   database.prepare('update threads set updated_at_ms = ? where id = ?').run(at(0.2), 'opened');
   assert.deepEqual(await order(), [['opened', at(0.2)], ['other', at(50)]], 'a new turn moves the time and the card');
 });
+
+test('a Codex root counts its unarchived running subagents at all levels as background agents, never commands', async (t) => {
+  const nowMs = Date.parse('2026-10-08T12:00:00.000Z');
+  const { dir, databasePath } = await createSyntheticDb(t, `
+    create table threads (id text primary key, rollout_path text, title text, source text, created_at_ms integer, updated_at_ms integer, archived integer);`);
+  const entry = (type) => JSON.stringify({ timestamp: new Date(nowMs - 60_000).toISOString(), type: 'event_msg', payload: { type } });
+  const running = `${entry('task_started')}\n`;
+  const ended = `${entry('task_started')}\n${entry('task_complete')}\n`;
+  const spawn = (parent) => JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: parent } } });
+  const id = (number) => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
+  // Root 1: a running child, an ended child with a running child of its own, and an archived running child. Root 6: one ended child.
+  const rows = [[1, ended, 'vscode'], [2, running, spawn(id(1))], [3, ended, spawn(id(1))], [4, running, spawn(id(3))],
+    [5, running, spawn(id(1)), 1], [6, ended, 'cli'], [7, ended, spawn(id(6))]];
+  const database = new DatabaseSync(databasePath);
+  t.after(() => database.close());
+  const insert = database.prepare('insert into threads values (?, ?, ?, ?, ?, ?, ?)');
+  for (const [number, text, source, archived = 0] of rows) {
+    const rolloutPath = path.join(dir, `rollout-${number}.jsonl`);
+    await fs.writeFile(rolloutPath, text);
+    insert.run(id(number), rolloutPath, `Synthetic ${number}`, source, nowMs - 120_000, nowMs - 60_000 + number, archived);
+  }
+  const { threads } = await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(dir, 'index.jsonl'),
+    globalStatePath: path.join(dir, 'global.json'), nowMs });
+  const roots = threads.filter((thread) => !thread.isSubagent).map((thread) => ({ ...thread, backgroundCommands: 3 }));
+  const board = Object.fromEntries(buildSwitchboardDashboard(roots, [], nowMs).threads.map((row) => [row.id, row]));
+  assert.equal(board[id(1)].backgroundAgents, 2);
+  assert.equal('backgroundAgents' in board[id(6)], false);
+  for (const row of Object.values(board)) assert.equal('backgroundCommands' in row, false);
+  assert.equal(board[id(6)].surface, 'cli');
+});
