@@ -187,7 +187,7 @@ function sameBridgeSignature(a, b) {
 }
 
 // The receiver view of ASB Bridge: one database for each receiving Codex thread. The message text is never selected.
-// The runtime row also gives the counts and times of the open approvals and questions (Bridge 0.8.1 and later), with the receiver
+// The runtime row also gives the counts and times of the open approvals and questions (Bridge 0.9.0 and later), with the receiver
 // process that wrote them.
 async function readBridgeFile(filePath, to, sinceMs, cacheScope) {
   const [main, wal] = await Promise.all([fs.stat(filePath), fs.stat(`${filePath}-wal`).catch(() => null)]);

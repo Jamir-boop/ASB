@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- ASB Bridge is now `0.9.0`: it writes the counts and times of open Codex approvals and OpenCode questions and approvals for the engine.
 - Fixed Codex cards that all showed Unknown after Codex 0.169 compressed old session logs to `.jsonl.zst`: ASB now reads the compressed log when the plain log is gone (Node 22.15 or later), once per change of the file, a line at a time.
 - Codex cards now show the Background agents count: the subagent threads of a chat that run a turn now (app and CLI).
 - An OpenCode session that a usage limit stopped (`provider.quota`) now shows Stopped with `!` and the Failed attention, as a Codex or Claude limit stop with no reset time.
