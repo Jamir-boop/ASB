@@ -99,9 +99,11 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
   assert.equal(threads.ses_archived.archived, true);
   assert.equal(JSON.stringify(result).includes(SECRET), false);
   assert.equal(JSON.stringify(result).includes(PROMPT), false);
-  // Only the background count query reads message data, inside SQLite: it returns a root ID, a kind, and a count.
+  // Only the background count query and the quota query read message data, inside SQLite: they return IDs, kinds, counts,
+  // and one error type.
   for (const text of sql) assert.doesNotMatch(text, /\b(?:account|control_account|credential|kv)\b/i);
-  for (const text of sql.filter((text) => !/^select coalesce\(s\.parent_id, s\.id\) as root, 'commands' as kind, count\(\*\) as n\s/.test(text))) {
+  for (const text of sql.filter((text) => !/^select coalesce\(s\.parent_id, s\.id\) as root, 'commands' as kind, count\(\*\) as n\s/.test(text)
+    && !/^select s\.id as id, json_extract\(case when json_valid\(m\.data\) then m\.data end, '\$\.error\.type'\) as error_type\s/.test(text))) {
     assert.doesNotMatch(text, /\bdata\b/i);
   }
   assert.ok(sql.some((text) => /from session_message/.test(text)));
@@ -306,4 +308,42 @@ test('OpenCode without stateDir ignores a plugin database under the temporary ho
     const result = await loadOpenCodeDashboard({ dataDir: f.dataDir, nowMs: now });
     assert.ok(result.threads.every((thread) => !Object.hasOwn(thread, 'incomingMessages')));
   } finally { f.writer.close(); }
+});
+
+test('OpenCode shows a provider.quota failure as a usage-limit stop with no reset, until a later run', async (t) => {
+  const { dataDir, databasePath } = await fixture(t);
+  const database = createDatabase(databasePath);
+  let seq = 0;
+  const reply = (sessionId, atMs, error, data = null) => database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
+    .run(`msg_${seq += 1}`, sessionId, 'assistant', seq, atMs, atMs,
+      data ?? JSON.stringify({ text: PROMPT, ...(error ? { error: { type: error, message: PROMPT } } : {}) }));
+  const failed = { ...base, time_idle: now - 5 * minute, idle_outcome: 'failed' };
+  addSession(database, { ...failed, id: 'ses_quota' });
+  reply('ses_quota', now - 7 * minute, 'provider.error');
+  reply('ses_quota', now - 6 * minute, 'provider.quota');
+  // A newer reply with another error, a provider error, a broken newest reply, and a quota stop that a new run or turn follows do not count.
+  addSession(database, { ...failed, id: 'ses_old_quota' });
+  reply('ses_old_quota', now - 7 * minute, 'provider.quota');
+  reply('ses_old_quota', now - 6 * minute, 'aborted');
+  addSession(database, { ...failed, id: 'ses_error' });
+  reply('ses_error', now - 6 * minute, 'provider.error');
+  addSession(database, { ...failed, id: 'ses_broken' });
+  reply('ses_broken', now - 7 * minute, 'provider.quota');
+  reply('ses_broken', now - 6 * minute, '', '{"error": {"type": "provider.quota"');
+  addSession(database, { ...failed, id: 'ses_running', time_suspended: now - minute });
+  reply('ses_running', now - 6 * minute, 'provider.quota');
+  addSession(database, { ...base, id: 'ses_done', time_idle: now - minute, idle_outcome: 'succeeded' });
+  reply('ses_done', now - 6 * minute, 'provider.quota');
+  database.close();
+  const { threads } = await loadOpenCodeDashboard({ dataDir, nowMs: now });
+  const byId = Object.fromEntries(threads.map((thread) => [thread.id, thread]));
+  assert.deepEqual([byId.ses_quota.limitStopped, byId.ses_quota.limitStoppedAtMs, 'limitResetsAtMs' in byId.ses_quota],
+    [true, now - 5 * minute, false]);
+  for (const id of ['ses_old_quota', 'ses_error', 'ses_broken', 'ses_running', 'ses_done']) assert.equal('limitStopped' in byId[id], false, id);
+  const rows = Object.fromEntries(buildSwitchboardDashboard(threads, [], now).threads.map((row) => [row.id, row]));
+  assert.deepEqual([rows.ses_quota.state, rows.ses_quota.lastOutcome, rows.ses_quota.failedAtMs, rows.ses_quota.limitResetsAtMs],
+    ['idle', 'limit', now - 5 * minute, 0]);
+  assert.equal(rows.ses_error.lastOutcome, 'failed');
+  assert.equal(rows.ses_running.state, 'working');
+  assert.equal(JSON.stringify(threads).includes(PROMPT), false);
 });

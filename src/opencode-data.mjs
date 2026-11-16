@@ -50,7 +50,7 @@ async function schemaReady(databasePath, query) {
   return SESSION_COLUMNS.every((name) => session.has(name)) && MESSAGE_COLUMNS.every((name) => message.has(name));
 }
 
-function openCodeThread(row, subagents, activity, background = {}) {
+function openCodeThread(row, subagents, activity, background = {}, quotaStop = false) {
   const idleAt = time(row.time_idle);
   const suspendedAt = time(row.time_suspended);
   const nativeUnread = idleAt == null ? null : idleAt > (time(row.time_viewed) ?? 0);
@@ -73,6 +73,8 @@ function openCodeThread(row, subagents, activity, background = {}) {
     latestLifecycleKind: LIFECYCLE_KINDS[row.idle_outcome] || '',
     latestLifecycleAtMs: idleAt,
     latestTaskEndedAtMs: idleAt,
+    // A usage-limit stop with no reset time, as a Codex one: the card shows Stopped with `!`.
+    ...(quotaStop && idleAt != null ? { limitStopped: true, limitStoppedAtMs: idleAt } : {}),
     nativeUnread,
     readStatus: nativeUnread == null ? 'unknown' : nativeUnread ? 'unread' : 'read',
     ...(background.commands > 0 ? { backgroundCommands: background.commands } : {}),
@@ -100,7 +102,7 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
     } else {
       const limit = Math.min(Math.max(Number.parseInt(maxCount, 10) || MAX_THREADS, 1), MAX_THREADS);
       const since = Math.floor(nowMs - BACKGROUND_WINDOW_MS);
-      const [roots, subagentRows, activityRows, backgroundRows] = await Promise.all([
+      const [roots, subagentRows, activityRows, backgroundRows, quotaRows] = await Promise.all([
         query(databasePath, `select id, title, slug, directory, time_created, time_updated,
           time_suspended, time_idle, idle_outcome, time_viewed, time_archived
           from session_v2 where parent_id is null order by time_updated desc limit ${limit};`),
@@ -132,12 +134,19 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
                 and json_extract(u.value, '$.type') = 'tool' and json_extract(u.value, '$.name') = 'subagent'
                 and json_extract(u.value, '$.state.input.background') = 1 and json_extract(u.value, '$.state.metadata.sessionID') = c.id)
           group by c.parent_id;`),
+        // The error type of the newest assistant message of a failed idle root, never text: `provider.quota` is a usage-limit stop.
+        // A later run sets time_suspended or a new idle outcome, so the stop clears.
+        query(databasePath, `select s.id as id, json_extract(${validJson('m.data')}, '$.error.type') as error_type
+          from session_v2 s join session_message m on m.rowid = (select rowid from session_message
+            where session_id = s.id and type = 'assistant' order by time_created desc, rowid desc limit 1)
+          where s.parent_id is null and s.idle_outcome = 'failed' and s.time_suspended is null;`),
       ]);
       const subagents = new Map(subagentRows.map((row) => [row.parent_id, row.n]));
       const activity = new Map(activityRows.map((row) => [row.root, Number(row.at || 0)]));
       const background = new Map();
       for (const { root, kind, n } of backgroundRows) background.set(root, { ...background.get(root), [kind]: Number(n) });
-      const threads = roots.map((row) => openCodeThread(row, subagents, activity.get(row.id), background.get(row.id)));
+      const quota = new Set(quotaRows.filter((row) => row.error_type === 'provider.quota').map((row) => row.id));
+      const threads = roots.map((row) => openCodeThread(row, subagents, activity.get(row.id), background.get(row.id), quota.has(row.id)));
       result = { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
     }
     cache.set(key, { signature, result });
