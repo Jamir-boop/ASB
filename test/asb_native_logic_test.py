@@ -2940,6 +2940,24 @@ class DataChecks(unittest.TestCase):
             self.assertEqual(widget.asb_accessible_label,
                              "Session Chat in Codex. Idle. Usage limit. Resets in 4 hours 33 minutes. On studio. View only.")
 
+    def test_background_counts_and_sentence(self):
+        for row, items, sentence in (
+                ({}, [], ""),
+                ({"backgroundCommands": 0, "backgroundAgents": 0}, [], ""),
+                ({"backgroundCommands": 1}, [("command", 1, "1 command")], "1 command in the background."),
+                ({"backgroundCommands": 3}, [("command", 3, "3 commands")], "3 commands in the background."),
+                ({"backgroundAgents": 1}, [("agent", 1, "1 agent")], "1 agent in the background."),
+                ({"backgroundAgents": 2, "backgroundCommands": 1}, [("command", 1, "1 command"), ("agent", 2, "2 agents")],
+                 "1 command, 2 agents in the background."),
+                # A value that is not a positive whole number shows nothing.
+                ({"backgroundCommands": "2", "backgroundAgents": True}, [], ""),
+                ({"backgroundCommands": -1, "backgroundAgents": 1.5}, [], "")):
+            self.assertEqual((asb.background_counts(row), asb.background_sentence(row)), (items, sentence))
+        model = asb.tooltip_model({"title": "T", "state": "idle", "backgroundAgents": 2, "backgroundCommands": 1}, NOW, "/home/u")
+        self.assertEqual(model["background"], "1 command, 2 agents in the background.")
+        self.assertEqual(asb.tooltip_description(model).split("\n")[2:4], ["Idle · " + asb.row_meta({"state": "idle"}, NOW).split(" · ")[1],
+                                                                           "1 command, 2 agents in the background."])
+
     def test_view_only_rows_where_and_grey_tone(self):
         remote = {"remote": True, "machineName": "homeLP", "surface": "app"}
         cli = {"surface": "cli", "machineName": "This PC"}
@@ -6703,7 +6721,7 @@ class NativeLogicChecks(unittest.TestCase):
             item.get_sensitive.return_value = True
             return item
         panel = SimpleNamespace(asb_identity=rows[0]["id"], asb_signature=None, asb_rows=None, asb_controls=None, asb_copy_values=None, asb_copied=None,
-                                asb_copy_error="", asb_title=Mock(), asb_error=Mock(), update_property=Mock(), asb_mute_tag=Mock(),
+                                asb_copy_error="", asb_title=Mock(), asb_background=Mock(), asb_error=Mock(), update_property=Mock(), asb_mute_tag=Mock(),
                                 asb_mute_words=Mock(), asb_mute_dots=[], asb_open=button(), asb_copy=button(), asb_copy_full=button(), asb_copy_name=button(),
                                 asb_actions={slot: button() for slot in ("read", "drawer", "mute", "pin", "pin-up", "pin-down", "discard")},
                                 asb_times={choice: button() for choice in asb.MUTE_CHOICES}, asb_pages=Mock(**{"get_visible_child_name.return_value": "main"}))
@@ -6773,7 +6791,8 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertTrue(all(size.is_integer() for size in sizes[1.0]))
         for scale in (1.25, 1.5):
             scaled = [new for old, new in zip(sizes[1.0], sizes[scale]) if new != old]
-            self.assertEqual(len(scaled), 16)  # With the zoom badge label, which follows the text scale as the Filters pill does.
+            # With the zoom badge label, which follows the text scale as the Filters pill does, and the background counts.
+            self.assertEqual(len(scaled), 17)
             self.assertTrue(all(new == old * scale or new == old for old, new in zip(sizes[1.0], sizes[scale])))
         for scale, card, state in ((1.0, "13px", "11px"), (1.25, "16.25px", "13.75px"), (1.5, "19.5px", "16.5px")):
             self.assertIn(f"border-radius: 3px; font-size: {card}; }}", css[scale])

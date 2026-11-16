@@ -93,6 +93,20 @@ test('a received export keeps only valid rows and whitelisted fields', () => {
   assert.deepEqual([value.refreshIntervalMs, value.keys.extra, value.keys.missing, value.incoming.length], [5000, ['k'], undefined, 1]);
 });
 
+test('the export and the merge pass the background counts, and a bad count drops the row', () => {
+  const exported = exportLocalSessions(board([claude(1, { backgroundCommands: 2, backgroundAgents: 1 }), claude(2),
+    { id: 'codex:x', externalId: uuid(3), provider: 'codex', title: 'Codex', backgroundCommands: 4, updatedAtMs: nowMs }], B), B, nowMs);
+  const counts = (rows) => rows.map((row) => [row.id.split(':').pop(), row.backgroundCommands, row.backgroundAgents]).sort();
+  assert.deepEqual(counts(exported.rows), [[local(1), 2, 1], [local(2), undefined, undefined], ['x', undefined, undefined]]);
+  const rows = [...exported.rows, ...[0, -1, 1.5, '2', null].map((value, n) => ({ id: `bad${n}`, backgroundCommands: value })),
+    { id: 'badAgents', backgroundAgents: 0 }];
+  const value = validExport({ ...exported, rows }, B);
+  assert.deepEqual(value.rows.map((row) => row.id), exported.rows.map((row) => row.id));
+  const dashboard = board([], A);
+  mergePeerRows(dashboard, [peerState(exported)], A, nowMs);
+  assert.deepEqual(counts(dashboard.threads).filter(([, commands]) => commands), [[local(1), 2, 1]]);
+});
+
 test('a long list sends only its newest rows, so a member does not drop the whole reply', () => {
   // Row 1 is the newest and the row `count` is the oldest. The oldest row has an incoming message from another machine.
   const long = (count, size) => {

@@ -99,7 +99,11 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
   assert.equal(threads.ses_archived.archived, true);
   assert.equal(JSON.stringify(result).includes(SECRET), false);
   assert.equal(JSON.stringify(result).includes(PROMPT), false);
-  for (const text of sql) assert.doesNotMatch(text, /\b(?:account|control_account|credential|kv|data)\b/i);
+  // Only the background count query reads message data, inside SQLite: it returns a root ID, a kind, and a count.
+  for (const text of sql) assert.doesNotMatch(text, /\b(?:account|control_account|credential|kv)\b/i);
+  for (const text of sql.filter((text) => !/^select coalesce\(s\.parent_id, s\.id\) as root, 'commands' as kind, count\(\*\) as n\s/.test(text))) {
+    assert.doesNotMatch(text, /\bdata\b/i);
+  }
   assert.ok(sql.some((text) => /from session_message/.test(text)));
 
   const rows = Object.fromEntries(buildSwitchboardDashboard(result.threads, [], now).threads.map((row) => [row.id, row]));
@@ -121,6 +125,35 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
     assert.equal(row.questionPending, false);
     assert.equal(row.actionRequired, false);
   }
+});
+
+test('OpenCode rows count open background shells and busy subagents', async (t) => {
+  const { dataDir, databasePath } = await fixture(t);
+  const database = createDatabase(databasePath);
+  const part = (shellID, background = true, extra = {}) => ({ type: 'tool', id: `call_${shellID}`, name: 'shell',
+    state: { status: 'completed', input: { command: PROMPT, ...(background ? { background: true } : {}) }, metadata: { shellID, status: 'running' } }, ...extra });
+  let seq = 0;
+  const message = (sessionId, type, data, atMs = now - minute) => database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
+    .run(`msg_${seq += 1}`, sessionId, type, seq, atMs, atMs, JSON.stringify(data));
+  const end = (sessionId, shellID) => message(sessionId, 'synthetic', { text: PROMPT, description: PROMPT,
+    metadata: { source: 'shell', shellID, jobID: 'job_1', state: 'completed', exit: 0, truncated: false } });
+  for (const id of ['ses_main', 'ses_quiet', 'ses_old']) addSession(database, { ...base, id, title: id, time_idle: now - hour });
+  // Two open shells, one ended shell, and a shell in the foreground in the root; one open shell in a child.
+  message('ses_main', 'assistant', { content: [{ type: 'text', text: PROMPT }, part('sh_open1'), part('sh_ended'), part('sh_fore', false)] });
+  end('ses_main', 'sh_ended');
+  addSession(database, { ...base, id: 'ses_busy', parent_id: 'ses_main', time_suspended: now - minute });
+  addSession(database, { ...base, id: 'ses_idle', parent_id: 'ses_main', time_idle: now - minute });
+  message('ses_busy', 'assistant', { content: [part('sh_open2')] });
+  // An end in another session does not end a shell; a shell older than the window does not count.
+  message('ses_quiet', 'assistant', { content: [part('sh_other')] });
+  end('ses_main', 'sh_other');
+  message('ses_old', 'assistant', { content: [part('sh_old')] }, now - 8 * 24 * hour);
+  database.close();
+  const { threads } = await loadOpenCodeDashboard({ dataDir, nowMs: now });
+  const counts = Object.fromEntries(buildSwitchboardDashboard(threads, [], now).threads
+    .map((row) => [row.id, [row.backgroundCommands, row.backgroundAgents]]));
+  assert.deepEqual(counts, { ses_main: [2, 1], ses_quiet: [1, undefined], ses_old: [undefined, undefined] });
+  assert.equal(JSON.stringify(threads).includes(PROMPT), false);
 });
 
 test('OpenCode card times use messages and idle time before record updates', async (t) => {

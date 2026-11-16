@@ -129,11 +129,12 @@
   <h2 id="support">Support by app</h2>
   <div class="scroll">
     <table class="support">
-      <thead><tr><th>App</th><th>Cards</th><th>Status</th><th>Questions</th><th>Approvals</th><th>Open</th><th>Messages</th><th>Rename</th><th>Archive</th><th>Windows</th></tr></thead>
+      <thead><tr><th>App</th><th>Cards</th><th>Status</th><th>Questions</th><th>Approvals</th><th>Open</th><th>Messages</th><th>Background</th><th>Rename</th><th>Archive</th><th>Windows</th></tr></thead>
       <tbody id="support-rows"></tbody>
     </table>
   </div>
   <p>✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.</p>
+  <p>Background counts the commands and subagents that a session runs in the background now.</p>
   <p>All apps also have Read and Unread, pins, the drawer, Mute, Discard, sounds, and the phone. Cards of other machines do not open and have no Discard.</p>
 
   <h2 id="rename">Rename from the board (not built)</h2>
@@ -161,15 +162,15 @@
   <div class="bar edit-only"><button id="copy">Copy result</button><button id="reset">Reset all</button><span id="copied"></span></div>
 </main>
 <script>
-const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Open', 'Messages', 'Rename', 'Archive', 'Windows'];
+const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Open', 'Messages', 'Background', 'Rename', 'Archive', 'Windows'];
 // A cell is the mark, then an optional note after one space.
 const SUPPORT = [
-  ['Codex app', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Codex CLI', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✗ Codex saves no process ID', '✓ daemon tasks only', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
-  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: terminal tab', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
-  ['OpenCode 2', '✓', '✓', '✗ OpenCode: memory only', '✗ OpenCode: memory only', '✗ OpenCode: no session link', '✓ no reference sends to it', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✓', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
+  ['Codex app', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✓', '✓', '✗ Codex saves no end of a background command', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Codex CLI', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✗ Codex saves no process ID', '✓ daemon tasks only', '✗ Codex saves no end of a background command', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
+  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: terminal tab', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
+  ['OpenCode 2', '✓', '✓', '✗ OpenCode: memory only', '✗ OpenCode: memory only', '✗ OpenCode: no session link', '✓ no reference sends to it', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
 ];
 const STATES = ['Working', 'Waiting', 'Idle', 'Unknown', 'Error (new)', 'Failed', 'Stopped', 'Hidden', 'No change'];
 const ICONS = ['None', 'Dot', 'Hollow dot', '?', '!', 'Stop square', 'Lock', '×', 'Check'];

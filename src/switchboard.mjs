@@ -296,6 +296,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         // A working row changes its last event time each scan; its turn start keeps the list tag.
         updatedAtMs: status.state !== 'working' ? updatedAtMs : workingSinceMs > 0 ? workingSinceMs : workingStarts.get(thread.id),
         subagentCount: Number(thread.subagentCount || 0),
+        // Counts only, present only when 1 or more: the shell commands and subagents that the session runs in the background now.
+        ...(!isCodex && thread.backgroundCommands > 0 ? { backgroundCommands: thread.backgroundCommands } : {}),
+        ...(!isCodex && thread.backgroundAgents > 0 ? { backgroundAgents: thread.backgroundAgents } : {}),
         ...status,
         workingSinceMs,
         nativeUnread: thread.source === 'claude-remote-cache' && status.state === 'unknown' ? null : thread.nativeUnread ?? null,

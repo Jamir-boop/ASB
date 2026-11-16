@@ -195,7 +195,7 @@ function initialSignals() {
 function initialClaudeLifecycle() {
   return { running: null, startedAtMs: 0, promptStartedAtMs: 0, activityAtMs: 0, eventAtMs: 0, kind: '', finalAtMs: 0,
     endedAtMs: 0, endKind: '', limitResetsAtMs: 0,
-    agents: new Map(), agentTools: new Map(), wrapUps: new Map(), messages: [] };
+    agents: new Map(), agentTools: new Map(), wrapUps: new Map(), shells: new Map(), messages: [] };
 }
 
 // The Desktop app can end a turn with this tool. Its result ends the turn; the app can write more records after it.
@@ -237,6 +237,12 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   const content = event.message?.content;
   const text = contentText(content).trim();
   const result = event.toolUseResult;
+  // A background shell: a Bash result with a background task ID (also a command that the user or a message moved to the
+  // background), or a Monitor result. Only its ID and start time are kept, never the command.
+  const shellId = event.type === 'user' && result && typeof result === 'object' ? typeof result.backgroundTaskId === 'string'
+    ? result.backgroundTaskId : typeof result.taskId === 'string' && typeof result.persistent === 'boolean'
+      && Number.isFinite(result.timeoutMs) ? result.taskId : '' : '';
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(shellId)) rememberBounded(lifecycle.shells, shellId, timestampMs, MAX_ASB_SESSION_COUNT);
   const launched = event.type === 'user' && result?.isAsync === true && result.status === 'async_launched'
     && /^[A-Za-z0-9_-]+$/.test(String(result.agentId || ''));
   // A message to an ended subagent starts it again in the background, with the same ID and transcript.
@@ -263,6 +269,9 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
       agent.kind = 'cancelled';
     }
   }
+  if (event.type === 'user' && result?.task_type === 'local_bash' && typeof result.task_id === 'string'
+    && typeof result.message === 'string' && result.message.startsWith('Successfully stopped task')
+    && timestampMs >= lifecycle.shells.get(result.task_id)) lifecycle.shells.delete(result.task_id);
   // A busy chat gets the notification as a queued attachment. Its timestamp is the end of the task, not the delivery.
   const notice = event.type === 'user' ? text : event.type === 'attachment' && event.attachment?.type === 'queued_command'
     && typeof event.attachment.prompt === 'string' ? event.attachment.prompt.trim() : '';
@@ -273,6 +282,10 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
     if (agent && timestampMs >= agent.launchedAtMs && ['completed', 'failed', 'cancelled', 'aborted', 'stopped', 'killed'].includes(status)) {
       agent.endedAtMs = timestampMs;
       agent.kind = status === 'completed' ? 'task_complete' : status === 'failed' ? 'failed' : 'cancelled';
+    }
+    // A Monitor also sends notifications with no status while it runs; only an end status ends a shell.
+    if (timestampMs >= lifecycle.shells.get(agentId) && ['completed', 'failed', 'cancelled', 'aborted', 'stopped', 'killed'].includes(status)) {
+      lifecycle.shells.delete(agentId);
     }
     // A delivered notification is a prompt: the app runs the model on it. A stopped or killed task usually gets no reply,
     // and a queued attachment or a transcript-only copy arrives while the chat runs.
@@ -804,6 +817,7 @@ export function baseClaudeThread({
     childWorkUnknown: Boolean(signals?.childWorkUnknown),
     childEndGraceAtMs: signals?.childEndGraceAtMs || 0,
     childWaitAtMs: signals?.childWaitAtMs || 0,
+    backgroundOpen: signals?.backgroundOpen,
     rolloutPath: '',
     gitBranch: signals?.gitBranch || '',
     gitSha: '',
@@ -830,6 +844,17 @@ export function markEndedClaudeProcess(row, registry, nowMs) {
   if (!registry || row.lifecycleRunning !== true || liveClaudeRecord(row, registry)) return row;
   const deadline = Number(row.transcriptActivityAtMs || 0) + PROCESS_START_GRACE_MS;
   return nowMs > deadline ? { ...row, cliProcessEnded: true } : { ...row, cliProcessCheckAtMs: deadline };
+}
+
+// The background counts of a row: only while a live process of the session runs, and only the work that this process started,
+// because an ended or resumed process leaves no end record for its background work. `record` is liveClaudeRecord or undefined.
+export function applyClaudeBackground(thread, record) {
+  const { backgroundOpen, ...row } = thread;
+  if (!record || !backgroundOpen) return row;
+  const count = (times) => times.filter((atMs) => atMs >= Number(record.startedAt || 0)).length;
+  const commands = count(backgroundOpen.commands);
+  const agents = count(backgroundOpen.agents);
+  return { ...row, ...(commands ? { backgroundCommands: commands } : {}), ...(agents ? { backgroundAgents: agents } : {}) };
 }
 
 const CLAUDE_APPROVAL_GRACE_MS = 10_000;
@@ -991,6 +1016,7 @@ export function validClaudeRecord(record) {
     && rows(life.agentTools, 4, ([id, startedAtMs, requestStartedAtMs, workflow]) => positionId(id)
       && finiteNumber(startedAtMs) && finiteNumber(requestStartedAtMs) && [0, 1].includes(workflow))
     && rows(life.wrapUps, 2, ([id, ask]) => positionId(id) && [0, 1].includes(ask))
+    && rows(life.shells, 2, ([id, startedAtMs]) => positionId(id) && finiteNumber(startedAtMs))
     && Array.isArray(life.messages) && life.messages.length <= MAX_INCOMING_MESSAGES
     && life.messages.every((message) => Array.isArray(message) && message.length === 2 && positionId(message[0]) && finiteNumber(message[1]));
 }
@@ -1016,6 +1042,7 @@ export function claudePositionRecords() {
           agent.endedAtMs, agent.kind, agent.runId ?? null]),
         agentTools: [...life.agentTools].map(([id, tool]) => [id, tool.startedAtMs, tool.requestStartedAtMs, tool.workflow ? 1 : 0]),
         wrapUps: [...life.wrapUps].map(([id, ask]) => [id, ask ? 1 : 0]),
+        shells: [...life.shells],
         messages: life.messages.map((message) => [message.from, message.atMs]) } });
   }
   return [...byPath];
@@ -1047,6 +1074,7 @@ async function savedClaudePosition(filePath, stat) {
       agentTools: new Map(life.agentTools.map(([id, startedAtMs, requestStartedAtMs, workflow]) => [id,
         { startedAtMs, requestStartedAtMs, workflow: workflow === 1 }])),
       wrapUps: new Map(life.wrapUps.map(([id, ask]) => [id, ask === 1])),
+      shells: new Map(life.shells),
       messages: life.messages.map(([from, atMs]) => ({ from, atMs })) } };
 }
 
@@ -1231,6 +1259,9 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       childWorkUnknown: unknown,
       childEndGraceAtMs,
       childWaitAtMs,
+      // The start times of the open background shells and agents; applyClaudeBackground counts them for a live process.
+      backgroundOpen: { commands: [...root.shells.values()],
+        agents: [...root.agents.values()].filter((agent) => !agent.endedAtMs).map((agent) => agent.launchedAtMs) },
       latestTaskStartedAtMs: root.promptStartedAtMs,
       latestTaskEndedAtMs: root.endedAtMs,
       latestTaskEndKind: root.endKind,
@@ -1416,6 +1447,7 @@ export async function loadClaudeDesktopCodeThreads({
     .map((thread) => markEndedClaudeProcess(thread, platform === 'linux' || windows ? registry : null, nowMs))
     .map((thread) => {
       const record = liveClaudeRecord(thread, live);
+      thread = applyClaudeBackground(thread, record);
       // An approval counts only while the chat's Claude Code process runs.
       if ((platform === 'linux' || windows) && !record) return thread;
       return applyClaudeAppApproval(thread, approvals, nowMs, record?.startedAt || 0);

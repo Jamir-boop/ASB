@@ -1783,8 +1783,26 @@ def row_where(row):
     return None, ""
 
 
-# The ink rows of the 12-unit view-only glyphs in assets/icons: the terminal from 1 to 11, the machine from 1 to 11.5.
-WHERE_GLYPH_INK = {"asb-terminal-symbolic": (1, 11), "asb-machine-symbolic": (1, 11.5)}
+# The ink rows of the 12-unit footer glyphs in assets/icons: the terminal from 1 to 11, the machine from 1 to 11.5,
+# the command from 2.6 to 9.9, and the agent from 1 to 10.5.
+WHERE_GLYPH_INK = {"asb-terminal-symbolic": (1, 11), "asb-machine-symbolic": (1, 11.5), "asb-command-symbolic": (2.6, 9.9),
+                   "asb-agent-symbolic": (1, 10.5)}
+
+
+def background_counts(row):
+    """The (kind, count, words) of each kind of background work of a row, commands first; a kind at 0 has no item."""
+    items = []
+    for key, kind in (("backgroundCommands", "command"), ("backgroundAgents", "agent")):
+        count = row.get(key)
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            items.append((kind, count, f"{count} {kind}" + ("" if count == 1 else "s")))
+    return items
+
+
+def background_sentence(row):
+    """`1 command, 2 agents in the background.`, or "" when the row runs nothing in the background."""
+    items = background_counts(row)
+    return ", ".join(words for _kind, _count, words in items) + " in the background." if items else ""
 
 
 def no_open_title(row):
@@ -1930,11 +1948,11 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     return {"path": path, "full_path": full_path, "title": row.get("title") or "Untitled session",
             "state": state, "state_text": state_text, "app": app, "app_color": app_color,
             "indicator": shape, "note": note, "flags": flags, "error": error,
-            "reason": row.get("reason", ""), "source": source, "limit": limit}
+            "reason": row.get("reason", ""), "source": source, "limit": limit, "background": background_sentence(row)}
 
 
 def tooltip_description(model):
-    return "\n".join(filter(None, (model["title"], model["full_path"], model["state_text"], model["app"],
+    return "\n".join(filter(None, (model["title"], model["full_path"], model["state_text"], model["background"], model["app"],
                                   model["reason"], model["source"], model["limit"], model["note"] if model["note"] != model["reason"] else "",
                                   model["flags"], model["error"])))
 
@@ -7798,6 +7816,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-toolbar-button.asb-zoom-badge.asb-zoom-ring {{ box-shadow: inset 0 0 0 2px @accent_color; }}
 {base} .asb-toolbar searchentry {{ min-height: 26px; padding-top: 0; padding-bottom: 0; }}
 {base} .asb-state {{ font-size: {11 * scale:g}px; }}
+{base} .asb-background-count {{ font-size: {11 * scale:g}px; font-feature-settings: "tnum"; }}
 {caption}
 {base} .asb-provider {{ opacity: .65; }}
 {base} .asb-message-lit .asb-provider {{ color: @accent_color; opacity: 1; }}
@@ -7920,6 +7939,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel .asb-panel-action:focus-visible {{ outline: 2px solid @accent_color; outline-offset: -2px; }}
 {base} .asb-row-panel .asb-panel-error {{ margin: {zoomed(8, self.board_zoom)}px {zoomed(8, self.board_zoom)}px 0; font-size: {11 * scale:g}px; }}
 {base} .asb-row-panel .asb-panel-caption {{ font-size: {11 * scale:g}px; color: alpha(@window_fg_color, .72); opacity: 1; }}
+{base} .asb-row-panel .asb-panel-background {{ margin: {-zoomed(6, self.board_zoom)}px {zoomed(8, self.board_zoom)}px {zoomed(8, self.board_zoom)}px; }}
 {base} .asb-row-panel button.asb-panel-captioned {{ padding-top: {zoomed(5, self.board_zoom)}px; padding-bottom: {zoomed(5, self.board_zoom)}px; }}
 {base} .asb-row-panel button.asb-copy-off:hover, {base} .asb-row-panel button.asb-copy-off:active {{ background: none; }}
 {base} .asb-row-panel button.asb-action-pending:not(.asb-panel-off) > * {{ opacity: .5; }}
@@ -8078,14 +8098,14 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         # A drawer row is quiet as a read row, but not while the Drawer pill shows it as unread.
         quiet = [base + " .asb-idle-read.asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"]
         parts = (" .asb-title", " .asb-folder", " .asb-state", " .asb-age", " .asb-limit-clock", " .asb-mute-glyph", " .asb-mute-time", " .asb-where",
-                 " .asb-where-icon")
+                 " .asb-where-icon", " .asb-background")
         # The Grey tone of a view-only row with no attention, in both views; hover and focus bring the normal colors back.
         calm = ".asb-unhovered:not(.asb-limited):not(.asb-drawer-lit):not(:focus-within)"
         view_only, view_only_rest = f"{base} .asb-view-only-quiet{calm}", f"{base} .asb-view-only-rest{calm}"
         dismissed = base + " .asb-session.asb-dismissed"
         css += f"""
 {", ".join(row + " .asb-title" for row in quiet)} {{ color: {quiet_title}; opacity: 1; }}
-{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-where", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(row + part for row in quiet for part in (" .asb-folder", " .asb-state", " .asb-age", " .asb-where", " .asb-mute-glyph", " .asb-mute-time", " .asb-background"))} {{ color: {quiet_caption}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + part for part in parts)} {{ color: {limited}; opacity: 1; }}
 {", ".join(base + " .asb-limited" + state + part for state in (".asb-hovered", ":focus-within") for part in parts)} {{ color: {limited_hover}; }}
 {base} .asb-limited:not(.asb-message-lit) .asb-provider {{ opacity: .4; }}
@@ -8105,7 +8125,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 {base} .asb-row-panel .asb-radio-mark.asb-radio-on {{ color: {colors['accent'] if colors else "@accent_bg_color"}; }}
 {base} .asb-row-panel .asb-mute-tag:hover {{ background: alpha({colors['text'] if colors else "@window_fg_color"}, .20); }}
 {view_only} .asb-title {{ color: {quiet_title}; opacity: 1; }}
-{", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time"))} {{ color: {quiet_caption}; opacity: 1; }}
+{", ".join(view_only + part for part in (" .asb-folder", " .asb-age", " .asb-where", " .asb-where-icon", " .asb-mute-glyph", " .asb-mute-time", " .asb-background"))} {{ color: {quiet_caption}; opacity: 1; }}
 {view_only_rest} .asb-state {{ color: {quiet_caption}; opacity: 1; }}
 {base} .asb-session .asb-dot.asb-question.asb-passive {{ min-width: 0; min-height: 0; border-radius: 0; background: none;
     color: {quiet_caption}; font-size: 11px; font-weight: 800; }}
@@ -10749,6 +10769,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         app_label.set_xalign(1)
         app.append(app_label)
         footer.append(app)
+        if model["background"]:
+            background = text(model["background"], "asb-tooltip-muted")
+            footer.append(background)
         root.append(footer)
         if model["limit"] or model["note"] or model["flags"] or model["error"]:
             notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=indent)
@@ -10954,6 +10977,33 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_age_label.set_margin_start(4)
             widget.asb_where_box.set_halign(Gtk.Align.FILL)
             widget.asb_where_icon, widget.asb_where_label = where_icon, where
+        elif name == "background" and getattr(widget, "asb_background_box", None) is None:
+            # After the state, commands first: a 12 px glyph and the count in the quiet caption color; a kind at 0 hides.
+            box = Gtk.Box(spacing=6, valign=Gtk.Align.BASELINE_CENTER)
+            for kind in ("command", "agent"):
+                item = Gtk.Box(spacing=3, visible=False, valign=Gtk.Align.BASELINE_CENTER)
+                icon = self.zoom_icon(Gtk.Image(valign=Gtk.Align.CENTER), 12)
+                set_icon(icon, f"asb-{kind}-symbolic")
+                count = label("", "asb-background-count")
+                count.set_valign(Gtk.Align.BASELINE_CENTER)
+                for part in (icon, count):
+                    part.add_css_class("asb-background")
+                    part.add_css_class("dim-label")
+                # The ink center goes on the cap band of the count (center_where_icon); 1 px down until the font is measured.
+                icon.add_css_class("asb-ink-y1")
+                icon.asb_ink_move = (0, 1)
+                icon.asb_caption = count
+                icon.connect("map", self.where_icon_mapped)
+                icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+                icon_box.append(icon)
+                item.append(icon_box)
+                item.append(count)
+                box.append(item)
+                item.asb_icon, item.asb_count = icon, count
+                setattr(box, "asb_" + kind, item)
+            anchor = widget.asb_state_label if widget.asb_view == "comfortable" else widget.asb_state_box
+            anchor.get_parent().insert_child_after(box, anchor)
+            widget.asb_background_box = box
         elif name == "feedback" and widget.asb_feedback is None:
             feedback = Gtk.Box(spacing=6)
             feedback.add_css_class("asb-copy-feedback")
@@ -11023,7 +11073,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                          "asb_mute_glyph", "asb_mute_time", "asb_mute_box", "asb_where_icon", "asb_where_label", "asb_more_glyph", "asb_copy_tag", "asb_copy_words",
                          "asb_copy_dot_relative", "asb_copy_dot_absolute", "asb_copy_dot_name", "asb_feedback", "asb_feedback_label", "asb_footer_stack",
                          "asb_footer_line", "asb_where_box", "asb_compact_pin", "asb_working_time", "asb_state_box",
-                         "asb_workspace", "asb_read_slot", "asb_mark_cell", "asb_zoom"):
+                         "asb_workspace", "asb_read_slot", "asb_mark_cell", "asb_zoom", "asb_background_box"):
                 if hasattr(widget, name):
                     delattr(widget, name)
             content = Gtk.Box(spacing=6, margin_start=5, margin_end=5, valign=Gtk.Align.CENTER)
@@ -11205,6 +11255,19 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_where_label.set_visible(bool(where))
             if comfortable:
                 widget.asb_where_label.show_age(widget.asb_where_label.age_short)
+        background = background_counts(row)
+        if background:
+            self.ensure_card_part(widget, "background")
+        if getattr(widget, "asb_background_box", None) is not None:
+            shown = {kind: (count, words) for kind, count, words in background}
+            for kind in ("command", "agent"):
+                item = getattr(widget.asb_background_box, "asb_" + kind)
+                if kind in shown:
+                    item.asb_count.set_label(str(shown[kind][0]))
+                    item.set_tooltip_text(shown[kind][1])
+                item.set_visible(kind in shown)
+                self.where_icon_mapped(item.asb_icon)
+            widget.asb_background_box.set_visible(bool(background))
         tone = view_only_tone(row)
         (widget.add_css_class if tone else widget.remove_css_class)("asb-view-only-quiet")
         (widget.add_css_class if tone == "rest" else widget.remove_css_class)("asb-view-only-rest")
@@ -11373,10 +11436,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             icon.asb_center_tick = icon.add_tick_callback(self.center_where_icon)
 
     def center_where_icon(self, icon, _clock):
-        """Move a view-only glyph (terminal or machine) in whole px so that its ink center is on the center of the cap band
-        (the ink of H) of the caption beside it, with at most three layout frames."""
+        """Move a footer glyph (terminal, machine, command, or agent) in whole px so that its ink center is on the center of the
+        cap band (the ink of H) of the caption beside it, with at most three layout frames."""
         card = icon.get_ancestor(Gtk.ListBoxRow)
-        where = getattr(card, "asb_where_label", None)
+        # A background glyph centers on its own count; a where glyph on the where caption.
+        where = getattr(icon, "asb_caption", None) or getattr(card, "asb_where_label", None)
         gicon = icon.get_gicon()
         file = gicon.get_file() if isinstance(gicon, Gio.FileIcon) else None
         rows = WHERE_GLYPH_INK.get(Path(file.get_path()).stem) if file is not None and file.get_path() else None
@@ -11973,6 +12037,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.asb_title.set_max_width_chars(1)
         panel.asb_title.set_hexpand(True)
         root.append(panel.asb_title)
+        panel.asb_background = label("", "asb-panel-caption")
+        panel.asb_background.add_css_class("asb-panel-background")
+        panel.asb_background.set_visible(False)
+        root.append(panel.asb_background)
         # The Mute time list fits its rows; its pointing point keeps the header in place above the anchor.
         panel.asb_pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT, transition_duration=200, vhomogeneous=False)
         root.append(panel.asb_pages)
@@ -12264,7 +12332,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             open_caption = f"Open it on {row.get('machineName') or 'another machine'}." if row.get("remote") else \
                 "ASB does not open CLI sessions." if row.get("surface") == "cli" else \
                 "ASB cannot open OpenCode sessions." if row.get("provider") == "opencode" else "ASB cannot open this session."
-        signature = (self.mute_for, self.copy_kind, mute_caption, read_note, unread_caption, drawer_caption, open_caption, model["title"], model["path"], model["app"], bool(row.get("canOpen")), tuple(controls.items()),
+        signature = (self.mute_for, self.copy_kind, mute_caption, read_note, unread_caption, drawer_caption, open_caption, model["title"], model["path"], model["app"], model["background"], bool(row.get("canOpen")), tuple(controls.items()),
                      bool(row.get("actionRequired")), bool(row.get("questionPending")), pending, row["id"] in self.opening, self.open_errors.get(row["id"], ""), values,
                      panel.asb_copied, panel.asb_copy_error, row_where(row), moves)
         if signature == panel.asb_signature:
@@ -12281,6 +12349,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         panel.update_property([Gtk.AccessibleProperty.LABEL], [model["title"]])
         panel.asb_title.set_label(" ".join(model["title"].split()))
         panel.asb_title.set_tooltip_text(model["path"] + ("\n" + values[0] if values[0] else ""))
+        panel.asb_background.set_label(model["background"])
+        panel.asb_background.set_visible(bool(model["background"]))
         error = self.open_errors.get(row["id"], "") or panel.asb_copy_error
         panel.asb_error.set_label(error)
         panel.asb_error.set_visible(bool(error))

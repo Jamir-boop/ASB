@@ -39,16 +39,17 @@ The GNOME top bar and the Android app show the same counts, and Read on the phon
 
 ## Support by app
 
-| App | Cards | Status | Questions | Approvals | Open | Messages | Rename | Archive | Windows |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Codex app | ✓ | ✓ | ✓ | ✗ Codex saves no approval wait | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Codex CLI | ✓ | ✓ | ✓ | ✗ Codex saves no approval wait | ✗ Codex saves no process ID | ✓ daemon tasks only | ✗ ASB work | ✗ ASB work | ✓ |
-| Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
-| Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✗ ASB work: terminal tab | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
-| OpenCode 2 | ✓ | ✓ | ✗ OpenCode: memory only | ✗ OpenCode: memory only | ✗ OpenCode: no session link | ✓ no reference sends to it | ✗ ASB work | ✗ ASB work | ✓ |
-| Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✓ | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
+| App | Cards | Status | Questions | Approvals | Open | Messages | Background | Rename | Archive | Windows |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Codex app | ✓ | ✓ | ✓ | ✗ Codex saves no approval wait | ✓ | ✓ | ✗ Codex saves no end of a background command | ✗ ASB work | ✗ ASB work | ✓ |
+| Codex CLI | ✓ | ✓ | ✓ | ✗ Codex saves no approval wait | ✗ Codex saves no process ID | ✓ daemon tasks only | ✗ Codex saves no end of a background command | ✗ ASB work | ✗ ASB work | ✓ |
+| Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
+| Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✗ ASB work: terminal tab | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
+| OpenCode 2 | ✓ | ✓ | ✗ OpenCode: memory only | ✗ OpenCode: memory only | ✗ OpenCode: no session link | ✓ no reference sends to it | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
+| Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.
+Background counts the commands and subagents that a session runs in the background now.
 All apps also have Read and Unread, pins, the drawer, Mute, Discard, sounds, and the phone. Cards of other machines do not open and have no Discard.
 
 ## Install on Linux

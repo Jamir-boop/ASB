@@ -1,8 +1,8 @@
 // Claude Code CLI sessions: running sessions from the live registry, plus CLI transcripts with activity in the last 7 days.
 // They are view-only cards. Titles come from the registry name or the title records, never from prompt text.
 import path from 'node:path';
-import { applyLiveClaudeStatus, baseClaudeThread, claudeFileStat, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
-  indexClaudeProjectFiles, markEndedClaudeProcess, rememberClaudeLoad, reuseClaudeLoad, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
+import { applyClaudeBackground, applyLiveClaudeStatus, baseClaudeThread, claudeFileStat, claudeTitle, currentClaudeRoot, DEFAULT_CLAUDE_PROJECTS_DIR, DEFAULT_MAX_JSONL_BYTES,
+  indexClaudeProjectFiles, liveClaudeRecord, markEndedClaudeProcess, rememberClaudeLoad, reuseClaudeLoad, mapWithConcurrency, projectNameFromCwd, readClaudeRootSignals, SIGNAL_CONCURRENCY } from './claude-data.mjs';
 import { readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -80,7 +80,7 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
         cliNoTranscript: !signals,
       },
     });
-    return markEndedClaudeProcess(applyLiveClaudeStatus(thread, live, nowMs), registry, nowMs);
+    return markEndedClaudeProcess(applyLiveClaudeStatus(applyClaudeBackground(thread, liveClaudeRecord(thread, live)), live, nowMs), registry, nowMs);
   });
   return rememberClaudeLoad(key, { threads }, options);
 }

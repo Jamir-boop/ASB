@@ -1672,3 +1672,91 @@ test('on Windows an app approval counts only with a live registry record, and th
   assert.equal(registryWait.awaitingPermission, true);
   assert.equal(registryWait.liveWaitingFor, 'permission prompt');
 });
+
+// Background work: a Bash in the background, a Ctrl+B or message move to the background, a Monitor, a background agent, and a workflow.
+const toolCall = (offset, id, name, input = {}) => resumeEvent('assistant', offset, { message: { stop_reason: 'tool_use',
+  content: [{ type: 'tool_use', id, name, input }] } });
+const toolDone = (offset, id, toolUseResult) => resumeEvent('user', offset, { message: { content: [{ type: 'tool_result', tool_use_id: id }] }, toolUseResult });
+const shellStart = (offset, id, extra = {}) => [toolCall(offset, `call-${id}`, 'Bash', { command: 'SYNTHETIC_COMMAND', run_in_background: true }),
+  toolDone(offset + 100, `call-${id}`, { stdout: '', stderr: '', interrupted: false, isImage: false, noOutputExpected: false, backgroundTaskId: id, ...extra })];
+const monitorStart = (offset, id) => [toolCall(offset, `call-${id}`, 'Monitor', { command: 'SYNTHETIC_COMMAND' }),
+  toolDone(offset + 100, `call-${id}`, { taskId: id, timeoutMs: 300_000, persistent: false })];
+const taskStop = (offset, id, task_type = 'local_bash') => [toolCall(offset, `stop-${id}`, 'TaskStop', { task_id: id }),
+  toolDone(offset + 100, `stop-${id}`, { message: `Successfully stopped task: ${id} (SYNTHETIC_COMMAND)`, task_id: id, task_type, command: 'SYNTHETIC_COMMAND' })];
+const backgroundStart = () => [
+  resumePrompt(-50_000),
+  ...shellStart(-49_000, 'bash0001'),
+  ...shellStart(-48_000, 'bash0002', { backgroundedByUser: true }),
+  ...shellStart(-47_500, 'bash0003', { backgroundedToDeliverMessage: true }),
+  ...monitorStart(-47_000, 'mon00001'),
+  toolCall(-46_000, 'kid', 'Agent', { prompt: 'SYNTHETIC_PROMPT', run_in_background: true }),
+  toolDone(-45_900, 'kid', { isAsync: true, status: 'async_launched', agentId: 'kid' }),
+  toolCall(-45_000, 'flow', 'Workflow', { script: 'x' }),
+  toolDone(-44_900, 'flow', workflowResult()),
+  resumeEnd(-44_000),
+];
+
+// A live registry record of the session; `startedAt` is the start of its process.
+async function liveRegistry(t, projectsDir, startedAt) {
+  const sessions = path.join(path.dirname(projectsDir), 'sessions');
+  await mkdir(sessions, { recursive: true });
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: {}, stdio: 'ignore' });
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); } });
+  await once(child, 'spawn');
+  const procStart = (await readFile(`/proc/${child.pid}/stat`, 'utf8')).split(') ').pop().split(' ')[19];
+  const file = path.join(sessions, `${child.pid}.json`);
+  const write = (fields = {}) => writeFile(file, JSON.stringify({ pid: child.pid, procStart, sessionId: 'cli_root', hostSessionId: 'local_root',
+    name: 'synthetic', status: 'idle', statusUpdatedAt: resumeNowMs - 40_000, startedAt, ...fields }));
+  await write();
+  return { write, remove: () => rm(file, { force: true }) };
+}
+
+const backgroundCounts = (thread) => {
+  const row = buildSwitchboardDashboard([thread], [], resumeNowMs).threads[0];
+  return [row.backgroundCommands, row.backgroundAgents, 'backgroundOpen' in thread];
+};
+
+test('a Claude row counts its background shells, Monitors, agents, and workflows while its process runs', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  for (const maxBytes of [8 * 1024 * 1024, 256]) {
+    const fixture = await signalFixture(t, backgroundStart(), maxBytes);
+    await workflowLogs(fixture.projectsDir, 'project/cli_root', -20_000);
+    // With no live process of the session, nothing counts.
+    assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], `no process ${maxBytes}`);
+    const registry = await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+    invalidateClaudeData();
+    assert.deepEqual(backgroundCounts(await fixture.load()), [4, 2, false], `start ${maxBytes}`);
+    // A Monitor event with no status, a notification of another ID, and a stop of another task end nothing.
+    await appendFile(fixture.file, jsonl([queuedNotice(-40_000, 'mon00001', ''), resumeNotice(-39_500, 'bash9999'), ...taskStop(-39_000, 'bash9998')]));
+    assert.deepEqual(backgroundCounts(await fixture.load()), [4, 2, false], `no end ${maxBytes}`);
+    // Each end form ends one task, in reads of the appended records: a delivered notification, a queued one, and a TaskStop result.
+    await appendFile(fixture.file, jsonl([resumeNotice(-38_000, 'bash0001', 'completed'), queuedNotice(-37_000, 'bash0002', 'failed')]));
+    assert.deepEqual(backgroundCounts(await fixture.load()), [2, 2, false], `two ends ${maxBytes}`);
+    await appendFile(fixture.file, jsonl([...taskStop(-36_000, 'mon00001'), resumeNotice(-35_000, 'kid', 'completed'), resumeEnd(-34_000)]));
+    assert.deepEqual(backgroundCounts(await fixture.load()), [1, 1, false], `stop and agent ${maxBytes}`);
+    // The process ended: no counts. A new process does not count the work of the old one.
+    await registry.remove();
+    invalidateClaudeData();
+    assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], `ended ${maxBytes}`);
+    await registry.write({ startedAt: resumeNowMs - 30_000 });
+    invalidateClaudeData();
+    assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], `new process ${maxBytes}`);
+    await registry.write();
+    invalidateClaudeData();
+    assert.deepEqual(backgroundCounts(await fixture.load()), [1, 1, false], `same process ${maxBytes}`);
+    await appendFile(fixture.file, jsonl([resumeNotice(-33_000, 'bash0003', 'stopped'), queuedNotice(-32_000, 'wtask0001', 'killed')]));
+    assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], `all ended ${maxBytes}`);
+  }
+});
+
+test('each end status of a background shell ends it, delivered or queued', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  for (const status of ['completed', 'failed', 'stopped', 'killed']) {
+    for (const queued of [false, true]) {
+      const fixture = await signalFixture(t, [resumePrompt(-50_000), ...shellStart(-49_000, 'bash0001'), resumeEnd(-48_000)]);
+      await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+      invalidateClaudeData();
+      assert.deepEqual(backgroundCounts(await fixture.load()), [1, undefined, false], `${status} ${queued}`);
+      await appendFile(fixture.file, jsonl([queued ? queuedNotice(-40_000, 'bash0001', status) : resumeNotice(-40_000, 'bash0001', status)]));
+      assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], `${status} ${queued}`);
+    }
+  }
+});

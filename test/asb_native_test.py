@@ -11284,6 +11284,128 @@ class WidgetCheck(unittest.TestCase):
         settings.set_property("gtk-xft-dpi", 98304); self.drain(.5); self.settle(window)
         self.assertEqual(footer(card), ("studio ·", False, "1h ago"))
 
+    def test_background_counts_on_the_card_footer_tooltip_panel_and_compact(self):
+        remote = dict(remote=True, machineName="studio-workstation", machineId="m-studio", canOpen=False)
+        rows = [self.card_row("both", title="Investigate why the Usage window overflows at Large Text", state="working",
+                              workingSinceMs=NOW - 3 * 60_000, backgroundCommands=3, backgroundAgents=2, **remote),
+                self.card_row("command", title="Draft the release notes", backgroundCommands=1),
+                self.card_row("agent", title="Fix the flaky light test", backgroundAgents=1, surface="cli", canOpen=False),
+                self.card_row("none", title="Sort the photo archive")]
+        window = self.card_board(rows)
+        def items(card):
+            box = getattr(card, "asb_background_box", None)
+            if box is None or not box.get_visible():
+                return []
+            return [(kind, item.asb_count.get_text(), item.get_tooltip_text(),
+                     Path(item.asb_icon.get_gicon().get_file().get_path()).name) for kind in ("command", "agent")
+                    for item in [getattr(box, "asb_" + kind)] if item.get_visible()]
+        expected = {"both": [("command", "3", "3 commands", "asb-command-symbolic.svg"), ("agent", "2", "2 agents", "asb-agent-symbolic.svg")],
+                    "command": [("command", "1", "1 command", "asb-command-symbolic.svg")],
+                    "agent": [("agent", "1", "1 agent", "asb-agent-symbolic.svg")], "none": []}
+        sentences = {"both": "3 commands, 2 agents in the background.", "command": "1 command in the background.",
+                     "agent": "1 agent in the background.", "none": ""}
+        def no_overlap(card, width):
+            # State, glyph items, where caption, and age keep their own x ranges; the state is never cut.
+            state = card.asb_state_label
+            self.assertFalse(state.get_layout().is_ellipsized())
+            self.assertGreaterEqual(state.get_width(), state.measure(asb.Gtk.Orientation.HORIZONTAL, -1)[1])
+            parts = [state] + [getattr(card.asb_background_box, "asb_" + kind) for kind in ("command", "agent")
+                               if card.asb_background_box.get_visible() and getattr(card.asb_background_box, "asb_" + kind).get_visible()]
+            parts += [part for part in (card.asb_where_label, getattr(card, "asb_age_label", None)) if part is not None and part.get_visible()]
+            boxes = [part.compute_bounds(card)[1] for part in parts]
+            for left, right in zip(boxes, boxes[1:]):
+                self.assertLessEqual(left.origin.x + left.size.width, right.origin.x + .5, (width, [b.origin.x for b in boxes]))
+            self.assertLessEqual(boxes[-1].origin.x + boxes[-1].size.width, card.get_width())
+        for width in (240, 300):
+            window.set_default_size(8 + 2 * width + 12, 620); window.width_control.set_value(width); self.settle(window); self.drain(.3)
+            for identity, row_items in expected.items():
+                with self.subTest(view="comfortable", width=width, row=identity):
+                    card = window.focus_widgets[identity]
+                    self.assertEqual(items(card), row_items)
+                    if row_items:
+                        # Right after the state, commands first.
+                        self.assertIs(card.asb_state_label.get_next_sibling(), card.asb_background_box)
+                        for kind, _count, _tip, _icon in row_items:
+                            item = getattr(card.asb_background_box, "asb_" + kind)
+                            self.assertEqual(item.asb_icon.get_pixel_size(), 12)
+                            self.assertTrue(item.asb_count.has_css_class("dim-label"))
+                        no_overlap(card, width)
+                    self.assertEqual(sentences[identity] in card.asb_tooltip.split("\n"), bool(sentences[identity]))
+                    self.assertEqual("in the background" in card.asb_tooltip, bool(sentences[identity]))
+                    self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
+        # The glyph ink is on the cap band of its count.
+        card = window.focus_widgets["both"]
+        ink = {"asb-command-symbolic": (2.6, 9.9), "asb-agent-symbolic": (1, 10.5)}
+        for kind in ("command", "agent"):
+            item = getattr(card.asb_background_box, "asb_" + kind)
+            icon, count = item.asb_icon, item.asb_count
+            top, bottom = ink[Path(icon.get_gicon().get_file().get_path()).stem]
+            found, box = icon.compute_bounds(card)
+            self.assertTrue(found)
+            icon_center = box.origin.y + (box.size.height - 12) / 2 + (top + bottom) / 2 / 12 * 12
+            found, point = count.compute_point(card, asb.Graphene.Point().init(0, 0))
+            _x, y = count.get_layout_offsets()
+            cap = count.create_pango_layout("H")
+            cap_ink, _logical = cap.get_extents()
+            shift = (count.get_layout().get_baseline() - cap.get_baseline()) / asb.Pango.SCALE
+            cap_center = point.y + y + shift + (cap_ink.y + cap_ink.height / 2) / asb.Pango.SCALE
+            self.assertLessEqual(abs(icon_center - cap_center), .5, (kind, icon_center, cap_center))
+        # The tooltip footer has the sentence in the muted tone; a row with nothing has no such line.
+        def tooltip_texts(identity):
+            tooltip = SimpleNamespace(set_custom=lambda content: setattr(tooltip, "content", content))
+            self.assertTrue(window.query_row_tooltip(window.focus_widgets[identity], 0, 0, False, tooltip))
+            texts, stack = [], [tooltip.content]
+            while stack:
+                widget = stack.pop()
+                if isinstance(widget, asb.Gtk.Label):
+                    texts.append((widget.get_text(), widget.has_css_class("asb-tooltip-muted"), widget.get_ancestor(asb.Gtk.FlowBox) is not None))
+                child = widget.get_first_child()
+                while child is not None:
+                    stack.append(child)
+                    child = child.get_next_sibling()
+            return texts
+        self.assertIn(("3 commands, 2 agents in the background.", True, True), tooltip_texts("both"))
+        self.assertFalse(any("background" in text for text, _muted, _footer in tooltip_texts("none")))
+        # The row panel has a muted 11 px line under its title, only with a count.
+        for identity in ("both", "none"):
+            window.show_context(window.focus_widgets[identity]); self.drain(.3)
+            panel = window.context_menu
+            line = panel.asb_background
+            self.assertEqual((line.get_visible(), line.get_text()), (bool(sentences[identity]), sentences[identity]))
+            if sentences[identity]:
+                self.assertIs(panel.asb_title.get_next_sibling(), line)
+                self.assertTrue(line.has_css_class("asb-panel-caption"))
+                self.assertGreaterEqual(line.compute_bounds(panel.asb_title.get_parent())[1].origin.y,
+                                        panel.asb_title.compute_bounds(panel.asb_title.get_parent())[1].origin.y + panel.asb_title.get_height() - 1)
+            panel.popdown(); self.drain(.2)
+        # A count that goes to 0 hides its item; a new count shows it again.
+        card = window.focus_widgets["both"]
+        window.update_session_row(card, {**card.asb_thread, "backgroundCommands": 0, "backgroundAgents": 4}); self.drain(.1)
+        self.assertEqual(items(card), [("agent", "4", "4 agents", "asb-agent-symbolic.svg")])
+        window.update_session_row(card, {**card.asb_thread, "backgroundAgents": 0}); self.drain(.1)
+        self.assertEqual(items(card), [])
+        window.update_session_row(card, {**card.asb_thread, "backgroundCommands": 3, "backgroundAgents": 2}); self.drain(.1)
+        # Compact: the same items after the state, before the where caption.
+        window.view_filter.set_selected(0); self.settle(window)
+        for width in (240, 300):
+            window.set_default_size(8 + 2 * width + 12, 620); window.width_control.set_value(width); self.settle(window); self.drain(.3)
+            for identity, row_items in expected.items():
+                with self.subTest(view="compact", width=width, row=identity):
+                    card = window.focus_widgets[identity]
+                    self.assertEqual(window.view, "compact")
+                    self.assertEqual(items(card), row_items)
+                    if row_items:
+                        self.assertIs(card.asb_state_box.get_next_sibling(), card.asb_background_box)
+                        self.assertIs(card.asb_background_box.get_next_sibling(), card.asb_where_label)
+                        state = card.asb_state_box.compute_bounds(card)[1]
+                        box = card.asb_background_box.compute_bounds(card)[1]
+                        self.assertLessEqual(state.origin.x + state.size.width, box.origin.x + .5)
+                        if card.asb_where_label.get_visible():
+                            where = card.asb_where_label.compute_bounds(card)[1]
+                            self.assertLessEqual(box.origin.x + box.size.width, where.origin.x + .5)
+                        self.assertFalse(card.asb_state_label.get_layout().is_ellipsized())
+        self.assertEqual(GTK_WARNINGS, [])
+
     def test_cut_remote_caption_of_a_limited_card_ends_at_the_footer_line_end(self):
         # A limited remote card hides the age: its caption `studio` ends at the end of the footer line, with no gap after it.
         window = self.card_board([self.card_row("limited", title="Sort the photo archive", remote=True, machineName="studio",
@@ -23274,9 +23396,11 @@ class BoardWindowsCheck(ActivityFixture, unittest.TestCase):
             with self.subTest(identity=identity):
                 window.show_context(window.focus_widgets[identity]); self.drain(.3)
                 panel = window.context_menu
-                # The header, then the main page of the page stack: Open in, Show messages, and a separator.
+                # The header and its background line (hidden with no background work), then the main page of the page stack:
+                # Open in, Show messages, and a separator.
                 root = panel.get_child().get_child()
-                self.assertEqual(board_children(root), [panel.asb_title, panel.asb_pages])
+                self.assertEqual(board_children(root), [panel.asb_title, panel.asb_background, panel.asb_pages])
+                self.assertFalse(panel.asb_background.get_visible())
                 order = board_children(panel.asb_pages.get_child_by_name("main"))[:3]
                 self.assertEqual(order[:2], [panel.asb_open, panel.asb_messages])
                 self.assertIsInstance(order[2], asb.Gtk.Separator)

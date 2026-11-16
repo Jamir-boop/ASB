@@ -33,12 +33,14 @@ const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const STRING = (value) => typeof value === 'string' && value.length <= 4096;
 const NUMBER = (value) => typeof value === 'number' && Number.isFinite(value);
 const BOOLEAN = (value) => typeof value === 'boolean';
+const POSITIVE_COUNT = (value) => Number.isSafeInteger(value) && value > 0;
 export const EXPORT_FIELDS = {
   id: STRING, externalId: STRING, provider: STRING, providerLabel: STRING, surface: (value) => ['app', 'cli'].includes(value),
   title: STRING, cwd: STRING, projectName: STRING, archived: BOOLEAN, updatedAtMs: NUMBER, subagentCount: NUMBER,
   state: (value) => ['working', 'waiting', 'idle', 'unknown'].includes(value), reason: STRING, workingSinceMs: NUMBER,
   nativeUnread: (value) => value === null || BOOLEAN(value), readStatus: STRING, questionPending: BOOLEAN, questionAtMs: NUMBER, actionRequired: BOOLEAN, actionAtMs: NUMBER,
   lastOutcome: STRING, processEnded: BOOLEAN, failedAtMs: NUMBER, completionAtMs: NUMBER, limitResetsAtMs: NUMBER,
+  backgroundCommands: POSITIVE_COUNT, backgroundAgents: POSITIVE_COUNT,
   sourceId: STRING, sourceLabel: STRING, sourceColor: (value) => value === null || STRING(value), sourceShowMarker: BOOLEAN, sourceCount: NUMBER,
   referenceScope: validScopeTag, referenceUnavailable: STRING,
 };

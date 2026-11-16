@@ -5,6 +5,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 ## Unreleased
 
 - Add Name as a third board copy kind, with the whole session title, a matching icon, and a Copy name panel row. Remote cards cycle Absolute and Name.
+- Cards show how many commands and subagents a session runs in the background now (Claude Desktop Code, Claude Code CLI, and OpenCode 2): a command glyph and an agent glyph with their counts after the state, in both views, with the sentence in the tooltip, the accessible description, and the row panel. Group members and the phone get the two counts (`backgroundCommands`, `backgroundAgents`). Counts only, never a command text.
 - Fixed a Claude chat that stayed Unknown, and so sorted after all Idle cards, after it stopped a background workflow or agent with TaskStop: a stopped workflow sends no task notification, and ASB kept it as open work. A successful TaskStop result now ends that task.
 
 ## ASB 1.15.0 - 2026-11-10
