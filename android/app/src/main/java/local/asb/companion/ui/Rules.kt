@@ -336,8 +336,34 @@ const val COMFORTABLE_TITLE_LINES = 2
 const val PROVIDER_MARK_SIZE = 14
 const val LIMIT_CLOCK_SIZE = 12
 
-/** The font scale of the session cards: the phone font scale, times the Card text size setting. */
-fun cardFontScale(phoneFontScale: Float, cardTextScale: Float): Float = phoneFontScale * cardTextScale
+/** The font scale of the session cards: the phone font scale, times the Card text size setting, times the zoom percent. */
+fun cardFontScale(phoneFontScale: Float, cardTextScale: Float, zoom: Int = 100): Float =
+    phoneFontScale * cardTextScale * zoom / 100f
+
+// The card zoom levels in percent, as the board ZOOM_LEVELS.
+val ZOOM_LEVELS = listOf(80, 90, 100, 110, 125, 150, 175, 200)
+const val PINCH_STEP = 1.15f
+
+/** A saved zoom percent, or 100 when it is not a level. */
+fun zoomLevel(zoom: Int): Int = if (zoom in ZOOM_LEVELS) zoom else 100
+
+/** The zoom level [steps] levels above (positive) or below [zoom], within ZOOM_LEVELS, as the board zoom_step. */
+fun zoomStep(zoom: Int, steps: Int): Int =
+    ZOOM_LEVELS[(ZOOM_LEVELS.indexOf(zoomLevel(zoom)) + steps).coerceIn(0, ZOOM_LEVELS.lastIndex)]
+
+/** (steps, factor): the pinch factor since the last step, times [change]; one level for each PINCH_STEP. */
+fun pinchStep(factor: Float, change: Float): Pair<Int, Float> {
+    // Two fingers on one point give a zero or infinite change; it would never leave the loops below.
+    if (!(change > 0f) || change.isInfinite()) return 0 to factor
+    var rest = factor * change
+    var steps = 0
+    while (rest >= PINCH_STEP) { rest /= PINCH_STEP; steps++ }
+    while (rest <= 1 / PINCH_STEP) { rest *= PINCH_STEP; steps-- }
+    return steps to rest
+}
+
+fun zoomBadgeText(zoom: Int): String = "$zoom%"
+fun zoomBadgeDescription(zoom: Int): String = "Zoom $zoom%. Reset zoom."
 
 /** The Comfortable card height in dp: workspace line, two title lines, and footer, at this font scale. */
 fun comfortableCardHeight(fontScale: Float): Float =

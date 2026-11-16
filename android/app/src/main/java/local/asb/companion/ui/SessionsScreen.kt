@@ -165,6 +165,12 @@ import local.asb.companion.R
 import local.asb.companion.data.Message
 import local.asb.companion.data.Provider
 import local.asb.companion.data.Store
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import local.asb.companion.data.Thread
 import local.asb.companion.data.endpointLabel
 import kotlin.math.pow
@@ -209,7 +215,10 @@ fun SessionsScreen(
     val context = LocalContext.current
     val phoneDensity = LocalDensity.current
     val density = phoneDensity.density
-    val cardScale = cardFontScale(phoneDensity.fontScale, cardTextScale)
+    val store = remember(context) { Store(context) }
+    // The pinch zoom of the cards, saved in the store; it is a factor on the Card text size.
+    var zoom by remember(store) { mutableIntStateOf(store.cardZoom) }
+    val cardScale = cardFontScale(phoneDensity.fontScale, cardTextScale, zoom)
     // Only the session cards get this density; the rest of the screen keeps the phone font size.
     val cardDensity = remember(density, cardScale) { Density(density, cardScale) }
     val snackbar = remember { SnackbarHostState() }
@@ -227,7 +236,6 @@ fun SessionsScreen(
     var showFilters by rememberSaveable { mutableStateOf(false) }
     // The inspector row ID and the long-press point in window pixels. A rotation closes it.
     var inspector by remember { mutableStateOf<Pair<String, Offset>?>(null) }
-    val store = remember(context) { Store(context) }
     var dismissedWarnings by remember { mutableStateOf(store.dismissedWarnings) }
     fun dismissWarning(provider: Provider) {
         dismissedWarnings = dismissedWarnings + (provider.id to provider.message)
@@ -627,6 +635,36 @@ fun SessionsScreen(
         }
     }
 
+    // The card that was at the top of the one-column list stays at the top; Column Flow starts at the anchor row.
+    fun setZoom(value: Int) {
+        if (value == zoom) return
+        if (!flow && (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0)) {
+            listState.requestScrollToItem(listState.firstVisibleItemIndex)
+        }
+        zoom = value
+        store.cardZoom = value
+    }
+    val currentSetZoom by rememberUpdatedState(::setZoom)
+
+    // Shown only off 100%, as the board zoom badge; a tap resets the zoom.
+    @Composable
+    fun zoomBadge() {
+        val palette = LocalPalette.current
+        Box(
+            Modifier.heightIn(min = 48.dp).widthIn(min = 48.dp).clip(CircleShape)
+                .clickable(role = Role.Button, onClickLabel = "Reset zoom") { setZoom(100) }
+                .semantics { contentDescription = zoomBadgeDescription(zoom) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                zoomBadgeText(zoom), fontSize = 12.sp, color = hexColor(palette.text), maxLines = 1,
+                modifier = Modifier.clearAndSetSemantics { }
+                    .border(1.dp, hexColor(controlOutline(palette)), CircleShape)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
+    }
+
     @Composable
     fun topBar() {
         val palette = LocalPalette.current
@@ -663,6 +701,7 @@ fun SessionsScreen(
                 )
                 searchField(Modifier.width(150.dp), 36.dp, "Search")
                 pills(Modifier.weight(1f))
+                if (zoom != 100) zoomBadge()
                 settings()
             } else Row(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 12.dp, end = 4.dp),
@@ -677,6 +716,7 @@ fun SessionsScreen(
                         Icon(Icons.Default.Search, contentDescription = "Search")
                     }
                 }
+                if (zoom != 100) zoomBadge()
                 settings()
             }
             HorizontalDivider(thickness = 1.dp, color = hexColor(palette.divider))
@@ -715,6 +755,24 @@ fun SessionsScreen(
                     modifier = Modifier.fillMaxWidth().weight(1f).onGloballyPositioned {
                         listOrigin = it.positionInRoot()
                         listSize = it.size
+                    }.pointerInput(Unit) {
+                        // A two-finger pinch zooms the cards one level at a time. It takes the gesture in the
+                        // Initial pass until all fingers are up, so the list does not scroll and no card opens.
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            var factor = 1f
+                            var pinching = false
+                            do {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.count { it.pressed } >= 2) pinching = true
+                                if (pinching) {
+                                    val (steps, rest) = pinchStep(factor, event.calculateZoom())
+                                    factor = rest
+                                    if (steps != 0) currentSetZoom(zoomStep(zoom, steps))
+                                    event.changes.forEach { it.consume() }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
                     },
                 ) {
                     key(listState) { if (flow) {

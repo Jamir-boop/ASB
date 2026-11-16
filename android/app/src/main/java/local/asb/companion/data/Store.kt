@@ -6,6 +6,7 @@ import androidx.core.content.edit
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import local.asb.companion.ui.zoomLevel
 
 class Store(private val preferences: SharedPreferences) {
     constructor(context: Context) : this(context.getSharedPreferences("asb", Context.MODE_PRIVATE))
@@ -70,6 +71,10 @@ class Store(private val preferences: SharedPreferences) {
     var textScale: Float
         get() = preferences.getFloat("textScale", 1f)
         set(value) { preferences.edit().putFloat("textScale", value).apply() }
+    /** The pinch zoom of the session cards in percent; a value that is not a zoom level reads as 100. */
+    var cardZoom: Int
+        get() = try { zoomLevel(preferences.getInt("cardZoom", 100)) } catch (_: ClassCastException) { 100 }
+        set(value) { preferences.edit { putInt("cardZoom", zoomLevel(value)) } }
     // The last good PC palette, in the dashboard shape, so the theme stays the same offline and at start.
     var palette: Palette?
         get() = preferences.getString("palette", null)?.let {
@@ -181,6 +186,7 @@ class Store(private val preferences: SharedPreferences) {
             .putBoolean("notificationPermissionAsked", notificationPermissionAsked)
             .putString("view", view)
             .putFloat("textScale", textScale)
+            .putInt("cardZoom", cardZoom)
             .putBoolean("notifyDone", notifyDone)
             .putBoolean("notifyFailed", notifyFailed)
             .putBoolean("notifyInput", notifyInput)

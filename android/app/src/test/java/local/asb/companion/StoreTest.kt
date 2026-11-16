@@ -133,6 +133,20 @@ class StoreTest {
         assertFalse(next.liveNotification)
     }
 
+    @Test fun cardZoomRoundTripsAndABadValueGives100() {
+        val preferences = MemoryPreferences()
+        assertEquals(100, Store(preferences).cardZoom)
+        Store(preferences).cardZoom = 150
+        assertEquals(150, Store(preferences).cardZoom)
+        preferences.values["cardZoom"] = 133
+        assertEquals(100, Store(preferences).cardZoom)
+        preferences.values["cardZoom"] = "big"
+        assertEquals(100, Store(preferences).cardZoom)
+        Store(preferences).cardZoom = 175
+        Store(preferences).clear()
+        assertEquals(175, Store(preferences).cardZoom)
+    }
+
     private val homeLp = Engine("b".repeat(16), "homeLP", 4630, "b".repeat(64), listOf(zerotier))
 
     @Test fun enginesAndTheCurrentEngineAreSavedOnlyForTheCurrentPairing() {
