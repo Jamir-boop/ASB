@@ -5,241 +5,420 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ASB status mapping and app support</title>
 <style>
-  :root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --dim: #666; --line: #d8d8dc; --card: #fff; --accent: #c77700; --changed: #fff4dc; --yes: #1a7f37; --no: #b42318; }
+  :root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --dim: #5c5c63; --line: #d8d8dc; --card: #fff; --accent: #955800; --changed: #fff4dc; --yes: #1a7f37; --no: #b42318; --skip: #6e6e76; --tint: color-mix(in srgb, var(--fg) 6%, transparent); }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #17171a; --fg: #e8e8ea; --dim: #9a9aa2; --line: #34343a; --card: #1f1f23; --accent: #f0a93a; --changed: #33290f; --yes: #3fb950; --no: #ff7b72; }
+    :root { --bg: #17171a; --fg: #e8e8ea; --dim: #a3a3ab; --line: #38383f; --card: #1f1f23; --accent: #f0a93a; --changed: #33290f; --yes: #4ac26b; --no: #ff8a80; --skip: #8e8e96; }
   }
-  body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
-  main { max-width: 1280px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  p, ul { margin: 0 0 16px; color: var(--dim); }
-  ul { padding-left: 20px; }
-  .scroll + p { margin-top: 12px; }
-  /* The header sticks to the window only if no box around it scrolls; separate borders keep its line under it. */
-  .scroll { overflow: clip; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; padding: 32px 20px 64px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
+  ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+  main { max-width: 1240px; margin: 0 auto; }
+  h1 { font-size: 26px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -.01em; text-wrap: balance; }
+  h2 { font-size: 19px; line-height: 1.25; margin: 48px 0 6px; scroll-margin-top: 16px; }
+  h3 { font-size: 15px; margin: 24px 0 8px; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--dim); }
+  .dim, small { color: var(--dim); }
+  small { display: block; font-size: 12.5px; font-weight: 400; line-height: 1.4; }
+  a { color: inherit; text-decoration-color: color-mix(in srgb, var(--fg) 40%, transparent); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: currentColor; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  nav.parts { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 14px 0 0; font-size: 14px; }
+  code { font: 12.5px ui-monospace, "Cascadia Code", monospace; background: var(--tint); padding: 1px 4px; border-radius: 3px; overflow-wrap: break-word; }
+  .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ico { width: 14px; height: 14px; vertical-align: -2px; fill: currentColor; flex: none; }
+  .ico.cli { width: 11px; height: 11px; vertical-align: -1px; }
+  .app { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .scroll { border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
   table { border-collapse: separate; border-spacing: 0; width: 100%; }
   th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-  th { position: sticky; top: 0; background: var(--card); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
-  tr:last-child td, #rows tr:nth-last-child(2) td { border-bottom: 0; }
-  td:first-child { font-weight: 600; min-width: 150px; border-left: 3px solid transparent; }
-  td.yes, td.no { font-size: 16px; font-weight: 700; }
-  td.yes { color: var(--yes); }
-  td.no { color: var(--no); }
-  td.yes small, td.no small { font-size: 12px; }
-  .app { white-space: nowrap; }
-  .app-icon { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; fill: currentColor; }
-  .cli-icon { width: 11px; height: 11px; vertical-align: -1px; }
-  .label { display: none; }
+  thead th { position: sticky; top: 0; z-index: 1; background: var(--card); font-size: 12px; font-weight: 600; color: var(--dim); }
+  tbody th { font-weight: 600; }
+  tbody tr:last-child > *, .status tbody:last-child tr:nth-last-child(2) > * { border-bottom: 0; }
+  .na { color: var(--dim); }
+  .label .ico { margin-right: 3px; }
+  .label { display: none; font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--dim); }
+  /* Card marks, as the board draws them. */
   .mark { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
   .mark.question, .mark.alert { width: auto; height: auto; border-radius: 0; background: none; color: var(--accent); font-size: 11px; font-weight: 800; line-height: 1; }
   .mark.stop { border-radius: 1px; background: color-mix(in srgb, var(--fg) 55%, transparent); }
-  .mark.hollow { box-sizing: border-box; width: 9px; height: 9px; border: 1.5px solid var(--fg); background: none; }
+  .mark.hollow { width: 9px; height: 9px; border: 1.5px solid var(--fg); background: none; }
   .slot { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; vertical-align: middle; margin-right: 6px; }
-  .slot.read { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+  .slot.read { background: var(--tint); }
   .state.working { color: var(--yes); }
   .state.quiet { color: var(--dim); }
+  td.card { white-space: nowrap; }
+  /* Propose changes. */
+  body:not(.edit) .edit-only { display: none; }
+  tr.editor { display: none; }
+  body.edit tr.editor.open { display: table-row; }
+  tr.editor td { font-weight: 400; }
+  body.edit tr.keep > :first-child { box-shadow: inset 3px 0 var(--yes); }
+  body.edit tr.change > *, body.edit tr.editor.open td { background: var(--changed); }
+  body.edit tr.change > * { border-bottom-color: transparent; }
+  body.edit tr.change > :first-child, body.edit tr.editor.open td { box-shadow: inset 3px 0 var(--accent); }
+  td.propose { white-space: nowrap; }
+  .pick { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 28px; padding: 0; }
+  .pick + .pick { margin-left: 6px; }
+  .pick .ico { width: 16px; height: 16px; }
+  .pick.yes { color: var(--yes); }
+  .pick.no { color: var(--no); }
+  .pick.yes[aria-pressed="true"] { background: var(--yes); border-color: var(--yes); color: var(--card); }
+  .pick.no[aria-pressed="true"] { background: var(--no); border-color: var(--no); color: var(--card); }
+  .fields { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .fields label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--dim); }
+  .fields .note { flex: 1 1 220px; }
+  .fields .note input { flex: 1; min-width: 0; }
   .fields .icons { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex-basis: 100%; }
-  .icons .name { font-size: 12px; color: var(--dim); margin-right: 2px; }
+  .icons .name { font-size: 12.5px; color: var(--dim); margin-right: 2px; }
   .fields .icons label { display: block; position: relative; color: var(--fg); }
   .icons label > span { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); font-size: 13px; }
   .fields .icons input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); }
   .icons input:checked + span { border-color: var(--fg); background: color-mix(in srgb, var(--fg) 10%, var(--bg)); font-weight: 600; }
   .icons.diff input:checked + span { border-color: var(--accent); }
   .icons input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .na { color: var(--dim); }
-  @media (min-width: 1200px) { td.card { white-space: nowrap; } }
-  /* Column lines show which apps a merged signal cell covers. */
-  @media (min-width: 1100px) { .status th + th, .status td + td { border-left: 1px solid var(--line); } }
-  /* Ten support columns fit down to 900px only with less side padding. */
-  @media (max-width: 1099px) { .support th, .support td { padding-left: 6px; padding-right: 6px; } }
-  code { font: 12px ui-monospace, monospace; background: color-mix(in srgb, var(--fg) 9%, transparent); padding: 1px 4px; border-radius: 3px; overflow-wrap: break-word; }
-  small { display: block; color: var(--dim); font-weight: 400; }
-  body:not(.edit) .edit-only { display: none; }
-  tr.editor { display: none; }
-  body.edit tr.editor.open { display: table-row; }
-  tr.editor td { font-weight: 400; }
-  body.edit tr.keep td:first-child { border-left-color: var(--yes); }
-  body.edit tr.change td, body.edit tr.editor.open td { background: var(--changed); }
-  body.edit tr.change td { border-bottom-color: transparent; }
-  body.edit tr.change td:first-child, body.edit tr.editor.open td { border-left-color: var(--accent); }
-  td.propose { white-space: nowrap; }
-  .fields { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
-  .fields label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
-  .fields .note { flex: 1 1 220px; }
-  .fields .note input { flex: 1; min-width: 0; }
   select, input, textarea, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
-  .fields select, .fields input { width: auto; font-size: 14px; color: var(--fg); }
+  .fields select, .fields input { font-size: 14px; color: var(--fg); }
   select.diff { border-color: var(--accent); font-weight: 600; }
-  .pick { padding: 2px 10px; font-size: 15px; font-weight: 700; line-height: 1.2; }
-  .pick + .pick { margin-left: 6px; }
-  .pick.yes { color: var(--yes); }
-  .pick.no { color: var(--no); }
-  .pick.yes[aria-pressed="true"] { background: var(--yes); border-color: var(--yes); color: var(--card); }
-  .pick.no[aria-pressed="true"] { background: var(--no); border-color: var(--no); color: var(--card); }
-  h2 { font-size: 15px; margin: 24px 0 8px; }
-  textarea { width: 100%; box-sizing: border-box; min-height: 160px; font: 12px/1.5 ui-monospace, monospace; }
-  .bar { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
   button { cursor: pointer; padding: 5px 12px; }
+  button:hover { border-color: color-mix(in srgb, var(--fg) 40%, var(--line)); }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+  .toggle input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+  textarea { width: 100%; min-height: 160px; font: 12.5px/1.5 ui-monospace, monospace; }
+  .bar { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
   #copied { color: var(--dim); }
-  /* Narrow windows and high zoom: each table row becomes a card, with the column name before each value. */
-  td[data-label]::before, .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+  /* Status table: a card per row in narrow windows, with the column name before each value. */
   @media (max-width: 1099px) {
     .status thead { display: none; }
-    .status, .status tbody, .status tr, .status td { display: block; }
+    .status, .status tbody, .status tr, .status td, .status tbody th { display: block; }
     .status tr.editor { display: none; }
     body.edit .status tr.editor.open { display: block; }
-    .status tr { padding: 10px 12px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; }
-    .status tr:last-child, .status tr:nth-last-child(2) { border-bottom: 0; }
-    .status td, .status td:first-child { padding: 2px 0; border: 0; min-width: 0; }
-    .status td:first-child { font-size: 15px; margin-bottom: 4px; }
+    .status tr { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .status td, .status tbody th { padding: 2px 0; border: 0; min-width: 0; }
+    .status tbody th { font-size: 15px; margin-bottom: 4px; }
     .status .label { display: block; }
-    body.edit .status tr.keep { border-left-color: var(--yes); }
-    body.edit .status tr.change, body.edit .status tr.editor.open { border-left-color: var(--accent); background: var(--changed); }
+    body.edit .status tr.keep { box-shadow: inset 3px 0 var(--yes); }
+    body.edit .status tr.change, body.edit .status tr.editor.open { box-shadow: inset 3px 0 var(--accent); background: var(--changed); }
+    body.edit .status tr.change > * { box-shadow: none; background: none; }
     body.edit .status tr.change { border-bottom: 0; }
   }
-  /* The label column fits the longest label, "Claude Desktop Code and CLI"; narrower cards put the label above the value. */
   @media (min-width: 600px) and (max-width: 1099px) {
     .status td[data-label] { position: relative; padding-left: 220px; }
     .status .label { position: absolute; left: 0; top: 2px; line-height: 20px; }
   }
-  @media (max-width: 899px) {
-    .support thead { display: none; }
-    .support, .support tbody, .support td { display: block; }
-    .support tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-    .support tr:last-child { border-bottom: 0; }
-    .support td, .support td:first-child { padding: 2px 0; border: 0; min-width: 0; }
-    .support td:first-child { grid-column: 1 / -1; font-size: 15px; margin-bottom: 4px; }
-    .support td[data-label]::before { content: attr(data-label); margin-right: 6px; }
-    .support td:first-child::before { content: none; }
+  @media (max-width: 599px) { body { padding: 20px 12px 48px; } h1 { font-size: 22px; } }
+  @media print {
+    :root { --bg: #fff; --card: #fff; --fg: #000; --dim: #444; --line: #bbb; }
+    body { padding: 0; font-size: 11pt; }
+    thead th { position: static; }
+    nav.parts, .toggle, .no-print, body:not(.edit) .edit-only { display: none !important; }
+    h2 { break-after: avoid; }
+    tr { break-inside: avoid; }
+  }
+
+  /* One matrix: features are rows and apps are columns, so the page fits a phone; each reason is one click away. */
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; align-items: center; margin: 12px 0 14px; font-size: 14px; }
+  .legend .item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .n { font-weight: 700; }
+  .mx { table-layout: fixed; }
+  .mx col.feat { width: 200px; }
+  .mx thead th { text-align: center; vertical-align: bottom; padding: 10px 4px 8px; }
+  .mx thead th:first-child { text-align: left; padding-left: 12px; }
+  .mx thead .app { flex-direction: column; gap: 3px; white-space: normal; line-height: 1.25; font-size: 12px; }
+  .mx thead .app .icons { display: inline-flex; align-items: center; gap: 2px; color: var(--fg); }
+  .mx thead .app .ico { width: 16px; height: 16px; }
+  .mx thead .app .ico.cli { width: 12px; height: 12px; }
+  .mx tbody th { padding: 0; }
+  .mx tbody th button, .mx td button { width: 100%; height: 100%; min-height: 40px; border: 0; border-radius: 0; background: none; font: inherit; color: inherit; text-align: inherit; }
+  .mx tbody th button { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-weight: 600; }
+  .mx tbody th button .chev { margin-left: auto; color: var(--dim); transition: transform .15s ease-out; }
+  .mx tr[aria-expanded] { cursor: pointer; }
+  .mx tbody tr.feature:hover > *, .mx tbody tr.feature.open > * { background: var(--tint); }
+  .mx tbody tr.feature.open th button .chev { transform: rotate(90deg); }
+  .mx td { padding: 0; text-align: center; vertical-align: middle; }
+  .mx td button { display: flex; align-items: center; justify-content: center; padding: 6px 2px; position: relative; }
+  .mx button:focus-visible { outline-offset: -3px; }
+  .cell-ok { color: var(--yes); }
+  .cell-ok .ico { width: 18px; height: 18px; }
+  .cell-ok.noted::after { content: ""; position: absolute; top: 9px; right: calc(50% - 16px); width: 5px; height: 5px; border-radius: 50%; background: var(--dim); }
+  .owner { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: var(--no); background: color-mix(in srgb, var(--no) 13%, transparent); }
+  .owner .ico { width: 14px; height: 14px; vertical-align: 0; }
+  .owner.asb-work { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+  .owner.not-planned { color: var(--skip); background: none; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--skip) 60%, transparent); }
+  .legend .owner, .why .owner { width: 20px; height: 20px; }
+  .legend .owner .ico, .why .owner .ico { width: 12px; height: 12px; }
+  tr.works th, tr.works td { background: color-mix(in srgb, var(--yes) 7%, var(--card)); border-bottom: 2px solid var(--line); }
+  tr.works th { padding: 8px 12px; font-weight: 600; }
+  tr.works td { padding: 8px 2px 6px; font-weight: 700; font-size: 15px; }
+  tr.works .of { font-weight: 400; color: var(--dim); font-size: 12px; }
+  .vbar { display: block; width: 28px; height: 5px; margin: 4px auto 0; border-radius: 3px; background: var(--tint); overflow: hidden; }
+  .vbar i { display: block; height: 100%; background: var(--yes); }
+  tr.why[hidden] { display: none; }
+  tr.why td { padding: 4px 12px 12px; text-align: left; background: var(--tint); }
+  .why p { margin: 6px 0 8px; font-size: 13.5px; color: var(--dim); }
+  .why ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 20px; font-size: 14px; }
+  .why li { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; }
+  .why li .ok-s { color: var(--yes); }
+  .why li.hit { font-weight: 600; }
+  .why li .what { color: var(--dim); }
+  .tools { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; margin: 0 0 10px; }
+  .also { margin-top: 12px; font-size: 14px; color: var(--dim); }
+  .rn { table-layout: auto; }
+  .rn tbody th { white-space: nowrap; }
+  .rn td.who { white-space: nowrap; }
+  .rn td.who .owner { width: 20px; height: 20px; vertical-align: middle; margin-right: 6px; }
+  .rn td.who .owner .ico { width: 12px; height: 12px; }
+  /* Status signals: a mark per signal kind; the names show with "Show signal names" and in narrow windows. */
+  .sig-mark { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: middle; }
+  .sig-mark.read { background: var(--yes); }
+  .sig-mark.gap { box-shadow: inset 0 0 0 2px var(--no); }
+  .sig-mark.na { width: 12px; height: 2px; border-radius: 1px; background: var(--skip); }
+  .sig-mark.asb { border-radius: 2px; background: var(--accent); }
+  .status.compact .sig-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .status:not(.compact) .sig-mark { display: none; }
+  .status thead .reads { display: block; margin-top: 3px; font-weight: 400; white-space: nowrap; }
+  .legend .noted-key { position: relative; display: inline-block; width: 22px; height: 16px; }
+  .legend .noted-key::after { content: ""; position: absolute; top: 1px; right: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--dim); }
+  @media (prefers-reduced-motion: reduce) { .mx tbody th button .chev { transition: none; } }
+  .marks { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 4px 0 10px; font-size: 13.5px; color: var(--dim); }
+  .marks span { display: inline-flex; align-items: center; gap: 6px; }
+  .tally { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 6px 0 12px; font-size: 14px; }
+  .tally b { font-weight: 600; }
+  @media (min-width: 1100px) { .status th + th, .status td + td, .status th + td { border-left: 1px solid var(--line); } .status.compact td.sig { min-width: 64px; text-align: center; } .status.compact .sig-mark { margin-top: 5px; } }
+  @media (max-width: 1099px) {
+    .status.compact .sig-text { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
+    .status .sig-mark, .marks, .names-toggle { display: none !important; }
+  }
+  @media (max-width: 699px) {
+    .mx col.feat { width: 118px; }
+    .mx thead .app .name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .mx tbody th button { padding: 8px 4px 8px 8px; font-size: 13.5px; gap: 2px; }
+    tr.works th { padding: 8px 6px 8px 10px; font-size: 13.5px; }
+    tr.works td { font-size: 13.5px; }
+    .owner { width: 22px; height: 22px; }
+    .rn thead { display: none; }
+    .rn, .rn tbody, .rn tr, .rn td, .rn tbody th { display: block; }
+    .rn tr { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+    .rn tbody tr:last-child { border-bottom: 0; }
+    .rn td, .rn tbody th { padding: 2px 0; border: 0; }
   }
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-<symbol id="i-openai" viewBox="0 0 24 24"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></symbol>
-<symbol id="i-claude" viewBox="0 0 24 24"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></symbol>
-<symbol id="i-opencode" viewBox="128 96 256 320"><path fill-rule="evenodd" d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z"/><path d="M320 224V352H192V224H320Z" opacity=".5"/></symbol>
-<symbol id="i-terminal" viewBox="0 0 12 12"><path fill-rule="evenodd" d="M2 1h8a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 10 11H2A1.5 1.5 0 0 1 .5 9.5v-7A1.5 1.5 0 0 1 2 1zm0 1.5v7h8v-7z"/><path d="M3.67 3.83 5.85 6 3.67 8.17 2.83 7.33 4.15 6 2.83 4.67z"/><path d="M6 7.4h2.6v1.1H6z"/></symbol>
-</svg>
 <main>
   <h1>ASB status mapping and app support</h1>
-  <p>What ASB supports per app, what each gap waits on, and how app signals map to card states.</p>
-  <p>Parts: <a href="#support">Support by app</a> · <a href="#rename">Rename</a> · <a href="#status">Status by app and CLI</a></p>
+  <p class="lead">What ASB supports per app, what each gap waits on, and how app signals map to card states.</p>
+  <nav class="parts" aria-label="Parts"><a href="#support">Support by app</a><a href="#rename">Rename</a><a href="#status">Status by app and CLI</a></nav>
 
   <h2 id="support">Support by app</h2>
-  <div class="scroll">
-    <table class="support">
-      <thead><tr><th>App</th><th>Cards</th><th>Status</th><th>Questions</th><th>Approvals</th><th>Open</th><th>Messages</th><th>Background</th><th>Rename</th><th>Archive</th><th>Windows</th></tr></thead>
-      <tbody id="support-rows"></tbody>
-    </table>
-  </div>
-  <p>✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.</p>
-  <p>Background counts the commands and subagents that a session runs in the background now.</p>
-  <p>All apps also have Read and Unread, pins, the drawer, Mute, Discard, sounds, and the phone. Cards of other machines do not open and have no Discard.</p>
+  <p class="lead" id="support-sum"></p>
+  <div class="legend" id="legend"></div>
+  <div class="tools no-print"><label class="toggle"><input type="checkbox" id="all-reasons" autocomplete="off"> Show all reasons</label><span class="dim">Select a feature or a mark to read why.</span></div>
+  <div class="scroll"><table class="mx" id="mx"><caption class="sr">Support of each feature, per app. Select a feature to read the reasons.</caption>
+    <colgroup><col class="feat"><col span="6"></colgroup>
+    <thead id="mx-head"></thead><tbody id="mx-body"></tbody></table></div>
+  <p class="also" id="also"></p>
 
   <h2 id="rename">Rename from the board (not built)</h2>
-  <p>Checked on 2026-10-26: Codex 0.164.0, OpenCode 2.1.4, Claude Code 2.1.310.</p>
-  <ul>
-    <li><b>Codex app and CLI:</b> <code>thread/name/set</code>. An open Codex app may need a reload to show it (not tested).</li>
-    <li><b>OpenCode 2:</b> <code>session.update</code> with <code>title</code>, through <code>opencode api</code> or the ASB Bridge plugin. <code>opencode api</code> starts a stopped OpenCode service.</li>
-    <li><b>Claude Code CLI:</b> <code>claude -r &lt;id&gt; -p "/rename &lt;name&gt;"</code>, with no model call. Only while the session does not run; its hooks run, and its history gets the command.</li>
-    <li><b>Claude Desktop Code:</b> no entry point. A write while the app is closed works (tested); the running app writes the old title back.</li>
-    <li><b>Claude Code on the web:</b> needs a claude.ai login. Not planned.</li>
-    <li><b>All:</b> ASB would then change app data, so the README and the privacy page must change. Cards of other machines and the phone need the engine of that machine. The bridge send name follows the title.</li>
-  </ul>
+  <p class="dim" id="rename-checked"></p>
+  <div class="scroll"><table class="rn"><caption class="sr">Rename from the board, per app</caption>
+    <thead><tr><th scope="col">App</th><th scope="col">Waits on</th><th scope="col">How it could work</th></tr></thead>
+    <tbody id="rename-list"></tbody></table></div>
 
   <h2 id="status">Status by app and CLI</h2>
-  <p>Each row is one situation: the signal of each app and CLI, and the card that ASB shows.</p>
-  <p><label><input type="checkbox" id="edit" autocomplete="off"> Propose changes</label></p>
-  <div class="scroll">
-    <table id="status-table" class="status">
-      <thead><tr><th>Situation</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-openai"/></svg>Codex</span> app</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-openai"/></svg><svg class="app-icon cli-icon" aria-hidden="true"><use href="#i-terminal"/></svg>Codex</span> CLI</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude</span> Desktop Code</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-claude"/></svg><svg class="app-icon cli-icon" aria-hidden="true"><use href="#i-terminal"/></svg>Claude</span> Code CLI</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-opencode"/></svg>OpenCode</span> 2</th><th><span class="app"><svg class="app-icon" aria-hidden="true"><use href="#i-claude"/></svg>Claude</span> Code on the web</th><th>Card</th><th class="edit-only">Propose</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
-  <h2 class="edit-only">Result</h2>
-  <textarea id="out" class="edit-only" readonly></textarea>
-  <div class="bar edit-only"><button id="copy">Copy result</button><button id="reset">Reset all</button><span id="copied"></span></div>
+  <p class="lead">Each row is one situation: the signal of each app and CLI, and the card that ASB shows.</p>
+  <div class="tally" id="tally"></div>
+  <div class="tools"><label class="toggle no-print names-toggle"><input type="checkbox" id="names" autocomplete="off"> Show signal names</label><label class="toggle"><input type="checkbox" id="edit" autocomplete="off"> Propose changes</label></div>
+  <div class="marks" id="marks"></div>
+  <div class="scroll"><table id="status-table" class="status compact"><caption class="sr">Status by app and CLI</caption>
+    <thead><tr id="status-head"></tr></thead><tbody id="rows"></tbody></table></div>
+  <div id="propose-tail"></div>
 </main>
 <script>
-const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Open', 'Messages', 'Background', 'Rename', 'Archive', 'Windows'];
-// A cell is the mark, then an optional note after one space.
+// One copy of the facts: the summaries and the details are built from these lists. README.md has the same Support table (test/asb-docs.test.mjs).
+const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Open', 'Messages', 'Background', 'Usage', 'Rename', 'Archive', 'Windows'];
+// A cell is the mark, then an optional note after one space. A ✗ note starts with what the gap waits on.
 const SUPPORT = [
-  ['Codex app', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✓', '✓', '✗ Codex saves no end of a background command', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Codex CLI', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✗ Codex saves no process ID', '✓ daemon tasks only', '✗ Codex saves no end of a background command', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
-  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: terminal tab', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
-  ['OpenCode 2', '✓', '✓', '✗ OpenCode: memory only', '✗ OpenCode: memory only', '✗ OpenCode: no session link', '✓ no reference sends to it', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
+  ['Codex app', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✓', '✓', '✗ Codex saves no end of a background command', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Codex CLI', '✓', '✓', '✓', '✗ Codex saves no approval wait', '✗ Codex saves no process ID', '✓ daemon tasks only', '✗ Codex saves no end of a background command', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
+  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
+  ['OpenCode 2', '✓', '✓', '✗ OpenCode: memory only', '✗ OpenCode: memory only', '✗ OpenCode: no session link', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
 ];
+const APP_ICONS = { 'Codex app': ['openai'], 'Codex CLI': ['openai', 'terminal'], 'Claude Desktop Code': ['claude'], 'Claude Code CLI': ['claude', 'terminal'], 'OpenCode 2': ['opencode'], 'Claude Code on the web': ['claude', 'globe'] };
+// What a gap waits on, in the order of the summaries.
+const OWNERS = [
+  ['ASB work', 'ASB work', 'Only ASB code is missing.'],
+  ['Anthropic', 'Anthropic', 'Claude apps save or offer nothing that ASB can use.'],
+  ['Codex', 'Codex', 'Codex saves nothing that ASB can use.'],
+  ['OpenCode', 'OpenCode', 'OpenCode saves nothing that ASB can use.'],
+  ['Not planned', 'Not planned', 'ASB will not do it.'],
+];
+const FEATURE_NOTES = {
+  Background: 'Counts the commands and subagents that a session runs in the background now. An option in Preferences > Appearance and in Android Settings, off by default.',
+  Usage: 'The tokens and the API price of the session in the Usage window.',
+  Rename: 'From the board.',
+  Archive: 'From the board.',
+  Windows: 'ASB on Windows reads this app.',
+};
+const ALSO = 'All apps also have Read and Unread, pins, the drawer, Mute for a time (30 min to Always), Discard, Copy (relative reference, absolute reference, or name), sounds, the GNOME top bar, and the phone.';
+const REMOTE = 'Cards of other machines do not open, have no Discard, and copy only the absolute reference or the name.';
+
+const RENAME_CHECKED = 'Checked on 2026-10-26: Codex 0.164.0, OpenCode 2.1.4, Claude Code 2.1.310. On 2026-11-16, Codex 0.169.0 still has thread/name/set; the other notes are not checked again.';
+// [support app names, what the note says]
+const RENAME = [
+  [['Codex app', 'Codex CLI'], 'Codex app and CLI', '`thread/name/set`. An open Codex app may need a reload to show it (not tested).'],
+  [['OpenCode 2'], 'OpenCode 2', '`session.update` with `title`, through `opencode api` or the ASB Bridge plugin. `opencode api` starts a stopped OpenCode service.'],
+  [['Claude Code CLI'], 'Claude Code CLI', '`claude -r <id> -p "/rename <name>"`, with no model call. Only while the session does not run; its hooks run, and its history gets the command.'],
+  [['Claude Desktop Code'], 'Claude Desktop Code', 'No entry point. A write while the app is closed works (tested); the running app writes the old title back.'],
+  [['Claude Code on the web'], 'Claude Code on the web', 'Needs a claude.ai login. Not planned.'],
+  [[], 'All', 'ASB would then change app data, so the README and the privacy page must change. Cards of other machines and the phone need the engine of that machine. The bridge send name follows the title.'],
+];
+
 const STATES = ['Working', 'Waiting', 'Idle', 'Unknown', 'Error (new)', 'Failed', 'Stopped', 'Hidden', 'No change'];
 const ICONS = ['None', 'Dot', 'Hollow dot', '?', '!', 'Stop square', 'Lock', '×', 'Check'];
 const PENDING = ['No', 'Yes, until Read', 'Yes, until resolved'];
+const SIGNAL_APPS = ['Codex app', 'Codex CLI', 'Claude Desktop Code', 'Claude Code CLI', 'OpenCode 2', 'Claude Code on the web'];
 // [id, situation, hint, codexApp, codexCli, claudeDesktop, claudeCli, opencode, web, state, icon, pending]; '=' is the cell to its left.
 const ROWS = [
   ['run', 'Task runs', '', '`task_started`, no end yet', '=', 'Open turn in the transcript', '=', 'Execution claim (`time_suspended`)', 'Worker `running`', 'Working', 'None', 'No'],
-  ['seen', 'Task ended, you saw it', '', '`task_complete`, no unread flag', '=', 'Turn end (`end_turn`)', '=', '`succeeded`, viewed after the end', 'Worker `idle`, or session `paused`', 'Idle', 'None', 'No'],
+  ['seen', 'Task ended, you saw it', '', '`task_complete`, no unread flag', '=', 'Turn end (`end_turn`), or the wrap-up tool', 'Turn end (`end_turn`)', '`succeeded`, viewed after the end', 'Worker `idle`, or session `paused`', 'Idle', 'None', 'No'],
   ['unseen', 'Task ended, you did not see it', '', 'Unread flag', '=', 'ASB saw Working, then Idle', '=', '`time_idle` after `time_viewed`', 'Cached unread mark', 'Idle', 'Dot', 'Yes, until Read'],
   ['failed', 'Task failed', 'Codex and Claude: also a subagent failure that ends last.', '`task_complete` with an error', '=', '`is_error`, or a failed task notification', '=', '`idle_outcome` `failed`', 'Session `failed`', 'Failed', '!', 'Yes, until Read'],
   ['stopped', 'You stopped the task', '', '`turn_aborted` or cancelled', '=', 'Interrupted or cancelled', '=', '`idle_outcome` `interrupted`', 'Not applicable', 'Stopped', 'Stop square', 'No'],
-  ['ask-sync', 'Question, the task waits', '', '`request_user_input`', '=', '`AskUserQuestion`', '=', 'Not saved', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
+  ['ask-sync', 'Question, the task waits', '', '`request_user_input`', '=', '`AskUserQuestion`, or a wrap-up with an ask', '`AskUserQuestion`', 'Not saved', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
   ['ask-async', 'Question, the task goes on', '', '`request_user_input_async`', '=', '`AskUserQuestion` while a subagent works', '=', 'Not saved', 'Not applicable', 'Working', '?', 'Yes, until Read'],
   ['approval', 'Approval or plan wait', 'Permission waits show after 10 s. Read only moves the card down.', 'Not saved', '=', 'Live session `waiting`, app log, or `ExitPlanMode`', 'Live session `waiting`, or `ExitPlanMode`', 'Not saved', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
   ['child-run', 'Subagent works after the root ends', '', 'Subagent running', '=', 'Open subagent log', '=', 'Execution claim', 'Not applicable', 'Working', 'None', 'No'],
   ['cli-new', 'CLI session, no prompt yet', '', 'Not applicable', 'Not saved', 'Not applicable', 'Live record, no transcript', 'Not applicable', 'Not applicable', 'Idle', 'None', 'No'],
   ['cli-ended', 'Claude Code process ended during a task', 'Linux and Windows. Reason: "The Claude Code process ended during a task."', 'Not applicable', 'Not saved', 'Open task, no live record', '=', 'Not applicable', 'Not applicable', 'Unknown', 'None', 'No'],
   ['stale', 'No signal for 6 hours', '', 'Old open task', '=', 'Old open turn', '=', 'Old execution claim', 'Old or unknown cache state', 'Unknown', 'None', 'No'],
+  ['offline', 'The machine of the card does not answer', 'Machine group only. Reason: "<machine> is not reachable." ASB keeps the marks of the card.', 'No answer from the machine', '=', '=', '=', '=', '=', 'Unknown', 'None', 'No'],
   ['limit', 'Usage limit stopped the task', 'Grey card with "Resets in 4h32m". After the reset: Stopped with the stop square.', '`usage_limit_exceeded`', '=', '`rate_limit` with a reset time', '=', 'Not read', 'Not read', 'Stopped', '!', 'Yes, until Read'],
   ['archived', 'Archived', '', 'Archive flag', '=', '`isArchived`', 'Not applicable', '`time_archived`', 'Session `archived`', 'Hidden', 'None', 'No'],
-  ['discard', 'Discard result is on', 'A successful end then adds no dot.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'Working', 'Hollow dot', 'No'],
+  ['discard', 'Discard result is on', 'A successful end then adds no dot. On an Idle card it waits for the next task.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'Working', 'Hollow dot', 'No'],
   ['manual', 'You marked it Unread in ASB', 'Hidden while Working.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'No change', 'Dot', 'Yes, until Read'],
   ['drawer', 'Unread or Waiting card in the drawer', 'A new result or failure, a new question or permission request, or Working takes it out. A Waiting card stays while it waits for the same answer.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'No change', 'None', 'No'],
   ['mute', 'Mute is on', 'No dot, !, question ?, sound, or phone notice until the mute ends. The card waits with the Idle cards. A question or permission request asked after the mute gets through.', 'ASB mark', '=', 'ASB mark', '=', 'ASB mark', 'ASB mark', 'No change', 'None', 'No'],
 ];
-const KEY = 'asb-status-mapping';
-let saved = {};
-try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch { /* storage is optional */ }
 
-const supportCell = (text, label) => {
-  const [mark, ...note] = text.split(' ');
-  return `<td class="${mark === '✓' ? 'yes' : 'no'}" data-label="${label}">${mark}${note.length ? `<small>${note.join(' ')}</small>` : ''}</td>`;
-};
-document.getElementById('support-rows').innerHTML = SUPPORT.map(([app, ...cells]) =>
-  `<tr><td data-label="App">${app}</td>${cells.map((cell, i) => supportCell(cell, FEATURES[i])).join('')}</tr>`).join('');
-
+// Helpers: parse the lists above, compute the summaries, render the status rows, and run the Propose changes worksheet.
+const esc = (text) => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 // Long names break only after an underscore.
-const code = (text) => text.replace(/`([^`]+)`/g, (_, name) => `<code>${name.replaceAll('_', '_<wbr>')}</code>`);
-const signal = (text) => (text === 'Not applicable' ? '<span class="na">n/a</span>' : code(text));
-const appIcon = (name) => `<svg class="app-icon${name === 'terminal' ? ' cli-icon' : ''}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
-const label = (text) => {
-  const app = text.startsWith('Codex') ? 'openai' : text.startsWith('Claude') ? 'claude' : text === 'OpenCode 2' ? 'opencode' : '';
-  return `<span class="label">${app ? appIcon(app) : ''}${text === 'Codex CLI' || text === 'Claude Code CLI' ? appIcon('terminal') : ''}${text}</span>`;
-};
-const cell = (text, labelText, span = 1) => `<td${span > 1 ? ` colspan="${span}"` : ''} data-label="${labelText}">${label(labelText)}${signal(text)}</td>`;
-const pair = (left, right, both, leftLabel, rightLabel) => (left === right ? cell(left, both, 2) : cell(left, leftLabel) + cell(right, rightLabel));
-const signals = (apps) => {
+const code = (text) => esc(text).replace(/`([^`]+)`/g, (_, name) => `<code>${name.replaceAll('_', '_<wbr>')}</code>`);
+const plain = (text) => String(text).replaceAll('`', '');
+
+const SPRITE = `<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-openai" viewBox="0 0 24 24"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></symbol>
+<symbol id="i-claude" viewBox="0 0 24 24"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></symbol>
+<symbol id="i-opencode" viewBox="128 96 256 320"><path fill-rule="evenodd" d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z"/><path d="M320 224V352H192V224H320Z" opacity=".5"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 12 12"><path fill-rule="evenodd" d="M2 1h8a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 10 11H2A1.5 1.5 0 0 1 .5 9.5v-7A1.5 1.5 0 0 1 2 1zm0 1.5v7h8v-7z"/><path d="M3.67 3.83 5.85 6 3.67 8.17 2.83 7.33 4.15 6 2.83 4.67z"/><path d="M6 7.4h2.6v1.1H6z"/></symbol>
+<symbol id="i-globe" viewBox="0 0 12 12"><g fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="6" cy="6" r="5"/><ellipse cx="6" cy="6" rx="2.1" ry="5"/><path d="M1 6h10"/></g></symbol>
+<symbol id="i-x" viewBox="0 0 16 16"><path d="M4.1 3 8 6.9 11.9 3 13 4.1 9.1 8l3.9 3.9-1.1 1.1L8 9.1 4.1 13 3 11.9 6.9 8 3 4.1z"/></symbol>
+<symbol id="i-check" viewBox="0 0 16 16"><path d="M6.2 11.6 2.6 8l1.2-1.2 2.4 2.4 6-6L13.4 4.4z"/></symbol>
+<symbol id="i-asb" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M3 2h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm.5 1.5v9h9v-9z"/><path d="M5.3 4.6 8 7.3l2.7-2.7.7.7L8.7 8l2.7 2.7-.7.7L8 8.7l-2.7 2.7-.7-.7L7.3 8 4.6 5.3z"/></symbol>
+<symbol id="i-none" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zm0 1.5a5 5 0 0 0-3.9 8.1l7-7A5 5 0 0 0 8 3zm3.9 1.9-7 7A5 5 0 0 0 11.9 4.9z"/></symbol>
+</svg>`;
+const use = (id, cls = 'ico') => `<svg class="${cls}" aria-hidden="true"><use href="#i-${id}"/></svg>`;
+const appIcons = (app) => (APP_ICONS[app] || []).map((id) => use(id, ['terminal', 'globe'].includes(id) ? 'ico cli' : 'ico')).join('');
+const appName = (app) => `<span class="app">${appIcons(app)}${esc(app)}</span>`;
+// The mark of each owner is a shape, not only a color: the app icon of the party that must act, a crossed box for ASB.
+const OWNER_ICON = { 'ASB work': 'asb', Anthropic: 'claude', Codex: 'openai', OpenCode: 'opencode', 'Not planned': 'none' };
+const ownerKey = (owner) => owner.toLowerCase().replace(/\s+/g, '-');
+
+function parseCell(text) {
+  const [mark, ...rest] = text.split(' ');
+  const note = rest.join(' ');
+  const owner = mark === '✓' ? '' : OWNERS.map(([key]) => key).find((key) => note.startsWith(key)) || 'ASB work';
+  // The reason without its owner prefix: "Anthropic: no entry point" gives "no entry point".
+  const reason = owner && note.startsWith(owner) ? note.slice(owner.length).replace(/^:?\s*/, '') : note;
+  return { ok: mark === '✓', note, owner, reason };
+}
+const supportApps = () => SUPPORT.map(([app, ...cells]) => ({ app, cells: cells.map(parseCell) }));
+const coverage = (row) => ({ works: row.cells.filter((cell) => cell.ok).length, total: row.cells.length });
+const everywhere = () => FEATURES.filter((_, i) => supportApps().every((row) => row.cells[i].ok));
+function gapsByOwner() {
+  const groups = new Map(OWNERS.map(([key]) => [key, []]));
+  for (const row of supportApps()) row.cells.forEach((cell, i) => { if (!cell.ok) groups.get(cell.owner).push({ app: row.app, feature: FEATURES[i], ...cell }); });
+  return groups;
+}
+// One feature: the apps where it works, and its gaps grouped by owner.
+const featureColumn = (i) => supportApps().map((row) => ({ app: row.app, ...row.cells[i] }));
+
+
+// Status rows: '=' copies the cell to its left.
+function signalValues(apps) {
   const values = [];
   for (const value of apps) values.push(value === '=' ? values.at(-1) : value);
+  return values;
+}
+const signalKind = (text) => (text === 'Not applicable' ? 'na' : text === 'ASB mark' ? 'asb' : ['Not saved', 'Not read'].includes(text) ? 'gap' : 'read');
+const isAsbRow = (row) => signalValues(row.slice(3, 9)).every((value) => value === 'ASB mark');
+// Per app: the app situations whose signal ASB reads, of those that apply to the app.
+function signalCoverage() {
+  const appRows = ROWS.filter((row) => !isAsbRow(row) && row[0] !== 'offline');
+  return SIGNAL_APPS.map((app, i) => {
+    const kinds = appRows.map((row) => signalKind(signalValues(row.slice(3, 9))[i]));
+    return { app, read: kinds.filter((k) => k === 'read').length, applies: kinds.filter((k) => k !== 'na').length };
+  });
+}
+const STATE_ORDER = ['Working', 'Waiting', 'Idle', 'Unknown', 'Failed', 'Stopped', 'Hidden', 'No change'];
+const stateCounts = () => STATE_ORDER.map((state) => [state, ROWS.filter((row) => row[9] === state).length]).filter(([, n]) => n);
+
+const signalText = (text) => (text === 'Not applicable' ? '<span class="na">n/a</span>' : code(text));
+const cellLabel = (text) => {
+  const icons = text === 'Codex app and CLI' ? appIcons('Codex app') : text === 'Claude Desktop Code and CLI' ? appIcons('Claude Desktop Code') : APP_ICONS[text] ? appIcons(text) : '';
+  return `<span class="label">${icons}${esc(text)}</span>`;
+};
+// compact: the cell shows a mark for the signal kind and keeps the signal text for screen readers and the "Show signals" view.
+function signalCell(text, labelText, span, compact) {
+  const kind = signalKind(text);
+  const markText = { read: 'ASB reads it', gap: 'Not saved by the app', na: 'Not applicable', asb: 'ASB mark' }[kind];
+  const body = compact ? `<span class="sig-mark ${kind}" aria-hidden="true" title="${esc(markText)}"></span><span class="sig-text">${signalText(text)}</span>` : signalText(text);
+  return `<td${span > 1 ? ` colspan="${span}"` : ''} class="sig ${kind}" data-label="${esc(labelText)}">${cellLabel(labelText)}${body}</td>`;
+}
+function signals(apps, compact) {
+  const values = signalValues(apps);
   const [codexApp, codexCli, claudeDesktop, claudeCli, opencode, web] = values;
-  if (values.every((value) => value === codexApp)) return cell(codexApp, 'All apps', 6);
+  if (values.every((value) => value === codexApp)) return signalCell(codexApp, 'All apps', 6, compact);
+  const pair = (left, right, both, leftLabel, rightLabel) => (left === right ? signalCell(left, both, 2, compact) : signalCell(left, leftLabel, 1, compact) + signalCell(right, rightLabel, 1, compact));
   return pair(codexApp, codexCli, 'Codex app and CLI', 'Codex app', 'Codex CLI')
     + pair(claudeDesktop, claudeCli, 'Claude Desktop Code and CLI', 'Claude Desktop Code', 'Claude Code CLI')
-    + cell(opencode, 'OpenCode 2') + cell(web, 'Claude Code on the web');
-};
+    + signalCell(opencode, 'OpenCode 2', 1, compact) + signalCell(web, 'Claude Code on the web', 1, compact);
+}
 const mark = (icon, accessible = false) => {
   const shape = { Dot: 'dot', '?': 'question', '!': 'alert', 'Stop square': 'stop', 'Hollow dot': 'hollow' }[icon];
   return shape ? `<span class="mark ${shape}"${accessible ? ` role="img" aria-label="${{ '?': 'Question mark', '!': 'Exclamation mark' }[icon] ?? icon}"` : ''}>${icon === '?' || icon === '!' ? icon : ''}</span>` : '';
 };
-const card = (state, icon, pending) => {
+const cardHtml = (state, icon, pending) => {
   const slot = icon === 'None' ? '' : `<span class="slot${pending === 'Yes, until Read' ? ' read' : ''}">${mark(icon, true)}</span>`;
   const color = state === 'Working' ? ' working' : state === 'Hidden' || state === 'No change' || pending === 'No' ? ' quiet' : '';
   return `${slot}<span class="state${color}">${state}</span>${pending === 'No' ? '' : `<small>Pending until ${pending === 'Yes, until Read' ? 'Read' : 'resolved'}</small>`}`;
 };
+
+const KEY = 'asb-status-mapping';
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch { /* storage is optional */ }
 const chosen = (id, field, options, now) => (options.includes(saved[id]?.[field]) ? saved[id][field] : now);
-const icons = (id, now) => `<div class="icons" role="radiogroup" aria-label="Icon" data-field="Icon" data-now="${now}"><span class="name">Icon</span>`
-  + ICONS.map((value) => `<label><input type="radio" name="icon-${id}" value="${value}"${value === chosen(id, 'Icon', ICONS, now) ? ' checked' : ''}><span>${mark(value)}${{ '?': 'Question', '!': 'Alert' }[value] ?? (['Lock', '×', 'Check'].includes(value) ? value + ' (new)' : value)}</span></label>`).join('') + '</div>';
-const select = (id, field, options, now) => `<label>${field} <select data-field="${field}" data-now="${now}">`
-  + options.map((value) => `<option${value === chosen(id, field, options, now) ? ' selected' : ''}>${value}</option>`).join('') + '</select></label>';
+const iconPicker = (id, now) => `<div class="icons" role="radiogroup" aria-label="Icon" data-field="Icon" data-now="${esc(now)}"><span class="name">Icon</span>`
+  + ICONS.map((value) => `<label><input type="radio" name="icon-${id}" value="${esc(value)}"${value === chosen(id, 'Icon', ICONS, now) ? ' checked' : ''}><span>${mark(value)}${{ '?': 'Question', '!': 'Alert' }[value] ?? (['Lock', '×', 'Check'].includes(value) ? value + ' (new)' : value)}</span></label>`).join('') + '</div>';
+const select = (id, field, options, now) => `<label>${field} <select data-field="${field}" data-now="${esc(now)}">`
+  + options.map((value) => `<option${value === chosen(id, field, options, now) ? ' selected' : ''}>${esc(value)}</option>`).join('') + '</select></label>';
+
+// One situation: its row and its editor row. columns is the cell count of the row, for the editor colspan.
+function statusRow(row, { compact = false, columns = 9 } = {}) {
+  const [id, name, hint, ...rest] = row;
+  const [state, icon, pending] = rest.slice(6);
+  return `<tr data-id="${id}" data-name="${esc(name)}"><th scope="row">${esc(name)}${hint ? `<small>${esc(hint)}</small>` : ''}</th>${signals(rest.slice(0, 6), compact)}
+   <td class="card" data-label="Card">${cellLabel('Card')}${cardHtml(state, icon, pending)}</td>
+   <td class="propose edit-only" data-label="Propose">${cellLabel('Propose')}<button type="button" class="pick yes" data-pick="keep" aria-pressed="false" aria-label="Keep ${esc(name)} as is" title="Keep as is">${use('check', 'ico pick-ico')}</button><button type="button" class="pick no" data-pick="change" aria-pressed="false" aria-label="Change ${esc(name)}" title="Change">${use('x', 'ico pick-ico')}</button></td></tr>
+   <tr class="editor" data-for="${id}"><td colspan="${columns}"><div class="fields">${select(id, 'State', STATES, state)}${iconPicker(id, icon)}${select(id, 'Pending', PENDING, pending)}
+   <label class="note">Note <input data-field="Note" placeholder="What should change?"></label></div></td></tr>`;
+}
+const STATUS_HEAD = `<th scope="col">Situation</th>${SIGNAL_APPS.map((app) => `<th scope="col">${appName(app)}</th>`).join('')}<th scope="col">Card</th><th scope="col" class="edit-only">Propose</th>`;
+
 // An older save has no pick: a changed value or a note means a proposed change.
 const savedPick = (id, now) => {
   const row = saved[id];
@@ -247,85 +426,145 @@ const savedPick = (id, now) => {
   if ('pick' in row) return row.pick || '';
   return Object.entries(now).some(([field, value]) => row[field] !== undefined && row[field] !== value) || row.Note?.trim() ? 'change' : '';
 };
+function setupPropose() {
+  const table = document.getElementById('status-table');
+  const pickOf = (row) => row.querySelector('[data-pick][aria-pressed="true"]')?.dataset.pick || '';
+  const editorOf = (row) => table.querySelector(`tr.editor[data-for="${row.dataset.id}"]`);
+  function setPick(row, pick) {
+    for (const button of row.querySelectorAll('[data-pick]')) button.setAttribute('aria-pressed', String(button.dataset.pick === pick));
+    row.classList.toggle('keep', pick === 'keep');
+    row.classList.toggle('change', pick === 'change');
+    editorOf(row).classList.toggle('open', pick === 'change');
+  }
+  for (const [id, , , , , , , , , state, icon, pending] of ROWS) {
+    const row = table.querySelector(`tr[data-id="${id}"]`);
+    editorOf(row).querySelector('input[data-field]').value = saved[id]?.Note || '';
+    setPick(row, savedPick(id, { State: state, Icon: icon, Pending: pending }));
+  }
+  function update() {
+    const lines = [];
+    const keep = [];
+    saved = {};
+    for (const row of table.querySelectorAll('tr[data-id]')) {
+      const cells = [];
+      const pick = pickOf(row);
+      const values = saved[row.dataset.id] = { pick };
+      for (const control of editorOf(row).querySelectorAll('[data-field]')) {
+        const value = control.dataset.field === 'Icon' ? control.querySelector('input:checked').value : control.value;
+        values[control.dataset.field] = value;
+        if (control.dataset.field === 'Note') {
+          cells.push(control.value.trim().replaceAll('|', '/'));
+          continue;
+        }
+        const diff = value !== control.dataset.now;
+        control.classList.toggle('diff', diff);
+        cells.push(diff ? `${control.dataset.now} -> ${value}` : value);
+      }
+      if (pick === 'change') lines.push(`| ${row.dataset.name} | ${cells.join(' | ')} |`);
+      if (pick === 'keep') keep.push(row.dataset.name);
+    }
+    const parts = [];
+    if (lines.length) parts.push(['| Situation | State | Icon | Pending | Note |', '| --- | --- | --- | --- | --- |', ...lines].join('\n'));
+    if (keep.length) parts.push(`Keep as is: ${keep.join(', ')}`);
+    document.getElementById('out').value = parts.length ? parts.join('\n\n') : 'No changes.';
+    try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* storage is optional */ }
+  }
+  const edit = document.getElementById('edit');
+  const setEdit = () => document.body.classList.toggle('edit', edit.checked);
+  edit.addEventListener('change', setEdit);
+  setEdit();
+  table.addEventListener('input', update);
+  table.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-pick]');
+    if (!button) return;
+    const row = button.closest('tr');
+    setPick(row, pickOf(row) === button.dataset.pick ? '' : button.dataset.pick);
+    update();
+  });
+  document.getElementById('copy').addEventListener('click', async () => {
+    const out = document.getElementById('out');
+    try { await navigator.clipboard.writeText(out.value); } catch { out.select(); document.execCommand('copy'); }
+    document.getElementById('copied').textContent = 'Copied.';
+    setTimeout(() => { document.getElementById('copied').textContent = ''; }, 1500);
+  });
+  document.getElementById('reset').addEventListener('click', () => {
+    for (const control of table.querySelectorAll('[data-field]')) {
+      if (control.dataset.field === 'Icon') {
+        for (const radio of control.querySelectorAll('input')) radio.checked = radio.value === control.dataset.now;
+      } else control.value = control.dataset.now || '';
+    }
+    for (const row of table.querySelectorAll('tr[data-id]')) setPick(row, '');
+    update();
+  });
+  update();
+}
+const PROPOSE_TAIL = `<h3 class="edit-only">Result</h3>
+  <textarea id="out" class="edit-only" readonly aria-label="Proposed changes as a Markdown table"></textarea>
+  <div class="bar edit-only"><button type="button" id="copy">Copy result</button><button type="button" id="reset">Reset all</button><span id="copied" role="status"></span></div>`;
+document.body.insertAdjacentHTML('afterbegin', SPRITE);
 
-document.getElementById('rows').innerHTML = ROWS.map(([id, name, hint, ...rest]) => {
-  const [state, icon, pending] = rest.slice(6);
-  return `<tr data-id="${id}" data-name="${name}"><td>${name}${hint ? `<small>${hint}</small>` : ''}</td>${signals(rest.slice(0, 6))}
-   <td class="card" data-label="Card">${label('Card')}${card(state, icon, pending)}</td>
-   <td class="propose edit-only" data-label="Propose">${label('Propose')}<button type="button" class="pick yes" data-pick="keep" aria-pressed="false" aria-label="Keep as is" title="Keep as is">✓</button><button type="button" class="pick no" data-pick="change" aria-pressed="false" aria-label="Change" title="Change">✗</button></td></tr>
-   <tr class="editor" data-for="${id}"><td colspan="9"><div class="fields">${select(id, 'State', STATES, state)}${icons(id, icon)}${select(id, 'Pending', PENDING, pending)}
-   <label class="note">Note <input data-field="Note" placeholder="What should change?"></label></div></td></tr>`;
+const apps = supportApps();
+const ownerIcon = (owner) => `<span class="owner ${ownerKey(owner)}">${use(OWNER_ICON[owner])}</span>`;
+const all = everywhere();
+document.getElementById('support-sum').textContent = `${all.join(' and ')} work for all ${apps.length} apps. Each app has ${FEATURES.length} features; the first row counts what works.`;
+document.getElementById('legend').innerHTML = `<span class="item"><span class="cell-ok">${use('check', 'ico')}</span> Works</span><span class="item"><span class="cell-ok noted-key">${use('check', 'ico')}</span> Works, with a note</span>`
+  + [...gapsByOwner()].map(([owner, list]) => `<span class="item">${ownerIcon(owner)}${owner === 'Not planned' ? owner : 'Waits on ' + owner} <span class="n">${list.length}</span></span>`).join('');
+
+const shortName = { 'Codex app': 'Codex app', 'Codex CLI': 'Codex CLI', 'Claude Desktop Code': 'Claude Desktop', 'Claude Code CLI': 'Claude CLI', 'OpenCode 2': 'OpenCode 2', 'Claude Code on the web': 'Claude web' };
+document.getElementById('mx-head').innerHTML = `<tr><th scope="col">Feature</th>${apps.map(({ app }) => `<th scope="col" title="${esc(app)}"><span class="app"><span class="icons">${appIcons(app)}</span><span class="name">${shortName[app]}<span class="sr"> (${esc(app)})</span></span></span></th>`).join('')}</tr>`;
+const works = `<tr class="works"><th scope="row">Works</th>${apps.map((row) => { const { works: n, total } = coverage(row); return `<td>${n}<span class="of">/${total}</span><span class="vbar" aria-hidden="true"><i style="width:${Math.round(n / total * 100)}%"></i></span></td>`; }).join('')}</tr>`;
+document.getElementById('mx-body').innerHTML = works + FEATURES.map((feature, i) => {
+  const column = featureColumn(i);
+  const cells = column.map((cell) => {
+    const said = `${cell.app}, ${feature}: ${cell.ok ? 'works' : 'not yet, waits on ' + cell.owner}${cell.note ? '. ' + cell.note : ''}`;
+    return `<td><button type="button" data-feature="${i}" data-app="${esc(cell.app)}" aria-label="${esc(said)}" title="${esc(said)}" aria-controls="why-${i}">${cell.ok
+      ? `<span class="cell-ok${cell.note ? ' noted' : ''}">${use('check')}</span>` : ownerIcon(cell.owner)}</button></td>`;
+  }).join('');
+  const why = `<tr class="why" id="why-${i}" hidden><td colspan="7">${FEATURE_NOTES[feature] ? `<p>${esc(FEATURE_NOTES[feature])}</p>` : ''}<ul>${column.map((cell) => `<li data-app="${esc(cell.app)}">${cell.ok
+    ? `<span class="ok-s">${use('check')}</span>` : ownerIcon(cell.owner)}<span>${esc(cell.app)}<span class="what">: ${cell.note ? esc(cell.note) : 'works'}</span></span></li>`).join('')}</ul></td></tr>`;
+  return `<tr class="feature" data-feature="${i}"><th scope="row"><button type="button" aria-expanded="false" aria-controls="why-${i}" data-feature="${i}">${feature}<svg class="ico chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5 4.9 11.4 8.3 8 4.9 4.6z"/></svg></button></th>${cells}</tr>${why}`;
+}).join('');
+const mx = document.getElementById('mx');
+function openWhy(i, open, app) {
+  const row = mx.querySelector(`tr.feature[data-feature="${i}"]`);
+  row.classList.toggle('open', open);
+  row.querySelector('th button').setAttribute('aria-expanded', String(open));
+  const why = document.getElementById('why-' + i);
+  why.hidden = !open;
+  for (const li of why.querySelectorAll('li')) li.classList.toggle('hit', li.dataset.app === app);
+}
+mx.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-feature]');
+  if (!button) return;
+  const i = button.dataset.feature;
+  const why = document.getElementById('why-' + i);
+  const app = button.dataset.app || '';
+  const already = !why.hidden && (!app || why.querySelector('li.hit')?.dataset.app === app);
+  openWhy(i, !already, app);
+});
+const allReasons = document.getElementById('all-reasons');
+allReasons.addEventListener('change', () => FEATURES.forEach((_, i) => openWhy(i, allReasons.checked, '')));
+addEventListener('beforeprint', () => FEATURES.forEach((_, i) => openWhy(i, true, '')));
+document.getElementById('also').innerHTML = `${esc(ALSO)} ${esc(REMOTE)}`;
+
+const renameCol = FEATURES.indexOf('Rename');
+document.getElementById('rename-checked').innerHTML = esc(RENAME_CHECKED);
+document.getElementById('rename-list').innerHTML = RENAME.map(([support, name, note]) => {
+  const owner = support.length ? parseCell(SUPPORT.find(([app]) => app === support[0])[renameCol + 1]).owner : '';
+  return `<tr><th scope="row">${support.length ? appName(support[0]).replace(esc(support[0]), esc(name)) : esc(name)}</th><td class="who">${owner ? ownerIcon(owner) + owner : '<span class="dim">All apps</span>'}</td><td>${code(note)}</td></tr>`;
 }).join('');
 
-const pickOf = (row) => row.querySelector('[data-pick][aria-pressed="true"]')?.dataset.pick || '';
-function setPick(row, pick) {
-  for (const button of row.querySelectorAll('[data-pick]')) button.setAttribute('aria-pressed', String(button.dataset.pick === pick));
-  row.classList.toggle('keep', pick === 'keep');
-  row.classList.toggle('change', pick === 'change');
-  row.nextElementSibling.classList.toggle('open', pick === 'change');
-}
-for (const [id, , , , , , , , , state, icon, pending] of ROWS) {
-  const row = document.querySelector(`#rows tr[data-id="${id}"]`);
-  row.nextElementSibling.querySelector('input[data-field]').value = saved[id]?.Note || '';
-  setPick(row, savedPick(id, { State: state, Icon: icon, Pending: pending }));
-}
-
-function update() {
-  const lines = [];
-  const keep = [];
-  saved = {};
-  for (const row of document.querySelectorAll('#rows tr[data-id]')) {
-    const cells = [];
-    const pick = pickOf(row);
-    const values = saved[row.dataset.id] = { pick };
-    for (const control of row.nextElementSibling.querySelectorAll('[data-field]')) {
-      const value = control.dataset.field === 'Icon' ? control.querySelector('input:checked').value : control.value;
-      values[control.dataset.field] = value;
-      if (control.dataset.field === 'Note') {
-        cells.push(control.value.trim().replaceAll('|', '/'));
-        continue;
-      }
-      const diff = value !== control.dataset.now;
-      control.classList.toggle('diff', diff);
-      cells.push(diff ? `${control.dataset.now} -> ${value}` : value);
-    }
-    if (pick === 'change') lines.push(`| ${row.dataset.name} | ${cells.join(' | ')} |`);
-    if (pick === 'keep') keep.push(row.dataset.name);
-  }
-  const parts = [];
-  if (lines.length) parts.push(['| Situation | State | Icon | Pending | Note |', '| --- | --- | --- | --- | --- |', ...lines].join('\n'));
-  if (keep.length) parts.push(`Keep as is: ${keep.join(', ')}`);
-  document.getElementById('out').value = parts.length ? parts.join('\n\n') : 'No changes.';
-  try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* storage is optional */ }
-}
-const edit = document.getElementById('edit');
-const setEdit = () => document.body.classList.toggle('edit', edit.checked);
-edit.addEventListener('change', setEdit);
-setEdit();
-document.getElementById('rows').addEventListener('input', update);
-document.getElementById('rows').addEventListener('click', (event) => {
-  const button = event.target.closest('[data-pick]');
-  if (!button) return;
-  const row = button.closest('tr');
-  setPick(row, pickOf(row) === button.dataset.pick ? '' : button.dataset.pick);
-  update();
-});
-document.getElementById('copy').addEventListener('click', async () => {
-  const out = document.getElementById('out');
-  try { await navigator.clipboard.writeText(out.value); } catch { out.select(); document.execCommand('copy'); }
-  document.getElementById('copied').textContent = 'Copied.';
-  setTimeout(() => { document.getElementById('copied').textContent = ''; }, 1500);
-});
-document.getElementById('reset').addEventListener('click', () => {
-  for (const control of document.querySelectorAll('#rows [data-field]')) {
-    if (control.dataset.field === 'Icon') {
-      for (const radio of control.querySelectorAll('input')) radio.checked = radio.value === control.dataset.now;
-    } else control.value = control.dataset.now || '';
-  }
-  for (const row of document.querySelectorAll('#rows tr[data-id]')) setPick(row, '');
-  update();
-});
-update();
+document.getElementById('tally').innerHTML = `<span>${ROWS.length} situations. Cards:</span>` + stateCounts().map(([state, n]) => `<span><b>${state}</b> ${n}</span>`).join('');
+document.getElementById('marks').innerHTML = [['read', 'ASB reads the app signal'], ['gap', 'The app does not save it'], ['na', 'Not applicable'], ['asb', 'An ASB mark, the same for all apps']]
+  .map(([kind, text]) => `<span><span class="sig-mark ${kind}" aria-hidden="true"></span>${text}</span>`).join('');
+const reads = Object.fromEntries(signalCoverage().map(({ app, read, applies }) => [app, `${read} of ${applies}`]));
+document.getElementById('status-head').innerHTML = `<th scope="col">Situation</th>${SIGNAL_APPS.map((app) => `<th scope="col">${appName(app)}<span class="reads">reads ${reads[app]}</span></th>`).join('')}<th scope="col">Card</th><th scope="col" class="edit-only">Propose</th>`;
+document.getElementById('rows').innerHTML = ROWS.map((row) => statusRow(row, { compact: true })).join('');
+const names = document.getElementById('names');
+names.addEventListener('change', () => document.getElementById('status-table').classList.toggle('compact', !names.checked));
+addEventListener('beforeprint', () => document.getElementById('status-table').classList.remove('compact'));
+document.getElementById('propose-tail').innerHTML = PROPOSE_TAIL;
+setupPropose();
 </script>
 </body>
 </html>
