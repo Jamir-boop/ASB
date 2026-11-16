@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Android: the Sessions list shows the first 100 chats, with a Show more button after them, so a long history loads fast. The chats that need you sort first, so they are always in view.
 - ASB Bridge is now `0.9.0`: it writes the counts and times of open Codex approvals and OpenCode questions and approvals for the engine.
 - Fixed Codex cards that all showed Unknown after Codex 0.169 compressed old session logs to `.jsonl.zst`: ASB now reads the compressed log when the plain log is gone (Node 22.15 or later), once per change of the file, a line at a time.
 - Codex cards now show the Background agents count: the subagent threads of a chat that run a turn now (app and CLI).

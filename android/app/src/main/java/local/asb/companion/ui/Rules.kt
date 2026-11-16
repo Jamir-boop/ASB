@@ -129,6 +129,11 @@ fun providerIcon(provider: String): Int = when (provider) {
     else -> R.drawable.ic_provider_claude
 }
 
+// The one-column list shows this many rows at first and this many more for each Show more; the rows that need you sort first.
+const val ROW_PAGE = 100
+
+fun pageRows(rows: List<Thread>, shown: Int): List<Thread> = rows.take(shown)
+
 // Port of filtered_rows
 fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
     val (query, app) = providerQuery(f.query, f.app)

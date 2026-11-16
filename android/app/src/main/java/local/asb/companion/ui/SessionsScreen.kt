@@ -110,6 +110,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -255,7 +256,12 @@ fun SessionsScreen(
     var frameNanos by remember { mutableLongStateOf(System.nanoTime()) }
     var motionGeneration by remember { mutableLongStateOf(0L) }
     val threads = state.dashboard?.threads.orEmpty()
-    val rows = remember(threads, state.filter) { filteredRows(threads, state.filter) }
+    val allRows = remember(threads, state.filter) { filteredRows(threads, state.filter) }
+    // A new search or filter starts again at the first page.
+    var shown by remember(state.filter) { mutableIntStateOf(ROW_PAGE) }
+    // The column flow does not scroll down, so only the one-column list pages its rows.
+    val rows = remember(allRows, shown, flow) { if (flow) allRows else pageRows(allRows, shown) }
+    val hiddenRows = allRows.size - rows.size
     val rowsById = remember(rows) { rows.associateBy { it.id } }
     val rowIndexes = remember(rows) { rows.mapIndexed { index, row -> row.id to index }.toMap() }
     val currentRowIndexes by rememberUpdatedState(rowIndexes)
@@ -278,11 +284,12 @@ fun SessionsScreen(
         LazyListState(startIndex(rows.indexOfFirst { it.id == viewModel.anchorId }, flow, packing.capacity, lead))
     }
     // The keys of the one-column list, in the same order as its items.
-    val listKeys = remember(warnings, rows) {
+    val listKeys = remember(warnings, rows, hiddenRows) {
         buildList<Any> {
             warnings.forEach { add("warning:${it.id}") }
             if (rows.isEmpty()) add("empty")
             rows.forEach { add(it.id) }
+            if (hiddenRows > 0) add("show-more")
             add("bottom-space")
         }
     }
@@ -813,6 +820,11 @@ fun SessionsScreen(
                                     HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                                 }
                                 card(row, Modifier.padding(horizontal = 8.dp))
+                            }
+                        }
+                        if (hiddenRows > 0) item(key = "show-more") {
+                            Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                TextButton(onClick = { shown += ROW_PAGE }) { Text("Show more ($hiddenRows)") }
                             }
                         }
                         item(key = "bottom-space") { Spacer(Modifier.height(16.dp)) }

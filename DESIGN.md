@@ -220,6 +220,8 @@ Ctrl+0 (also keypad 0) has no card: it resets the board zoom to 100% and hides t
 
 The Android app zooms its Sessions cards with a two-finger pinch on the list, in Comfortable and Compact, through the same levels (80% to 200%, default 100%). The pinch moves one level for each 1.15 of pinch factor (out: 1 / 1.15) while the fingers move, stops at 80% and 200%, and renders only levels. A pinch does not scroll the list or open a card; one-finger scroll, taps, long presses, and swipes do not change. After a step, the card that was at the top of the list stays at the top. The zoom multiplies the phone font scale and the Card text size, so card text, glyphs, and heights follow it; Messages, Usage, and Settings do not zoom. The app keeps the zoom for the next start. Off 100%, a neutral outlined badge in the Sessions top bar shows the level (for example **125%**), with a 48 dp touch target, role Button, and the description **Zoom 125%. Reset zoom.**; a tap resets the zoom to 100%.
 
+The Android one-column Sessions list shows the first 100 cards. A neutral **Show more (N)** text button, centered after the last card, adds 100 more; N is the number of hidden cards. A new search or filter starts again at 100.
+
 Pinned rows have native `Gtk.DragSource`/`Gtk.DropTarget` reorder. Accept only an active drag from an ASB pin onto another known ASB pin. Dropping above/below the row midpoint places it before/after. Keep the full global order when some rows are filtered out. **Move pin earlier/later** is the keyboard fallback. It moves the pin before or after the adjacent visible pinned row, with search and filters applied. It sends nothing at the first or last visible pin. Add no separate pin bar or project headers.
 
 ### Tooltip

@@ -25,6 +25,8 @@ import local.asb.companion.ui.compactMarkStyle
 import local.asb.companion.ui.cornerControls
 import local.asb.companion.ui.clockInterval
 import local.asb.companion.ui.filteredRows
+import local.asb.companion.ui.pageRows
+import local.asb.companion.ui.ROW_PAGE
 import local.asb.companion.ui.indicatorMeaning
 import local.asb.companion.ui.keepIndexOnChange
 import local.asb.companion.ui.keptPosition
@@ -629,5 +631,14 @@ class RulesTest {
         }
         // The list order and the drawer offer use attentionIndicator, which keeps its rule.
         assertEquals("", attentionIndicator(permission))
+    }
+
+    @Test fun pageRowsShowsTheFirstPageAndMoreOnEachStep() {
+        val rows = (1..250).map { Thread(id = "row$it", provider = "codex", providerLabel = "Codex") }
+        assertEquals(100, ROW_PAGE)
+        assertEquals((1..100).map { "row$it" }, pageRows(rows, ROW_PAGE).map { it.id })
+        assertEquals(200, pageRows(rows, ROW_PAGE * 2).size)
+        assertEquals(250, pageRows(rows, ROW_PAGE * 3).size)
+        assertEquals(3, pageRows(rows.take(3), ROW_PAGE).size)
     }
 }
