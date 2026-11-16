@@ -10769,10 +10769,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         app_label.set_xalign(1)
         app.append(app_label)
         footer.append(app)
-        if model["background"]:
-            background = text(model["background"], "asb-tooltip-muted")
-            footer.append(background)
         root.append(footer)
+        if model["background"]:
+            # Its own line under the footer, at the indent of the notes, so the FlowBox never puts it beside the app.
+            root.append(text(model["background"], "asb-tooltip-muted", indent))
         if model["limit"] or model["note"] or model["flags"] or model["error"]:
             notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=indent)
             notes.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL, margin_top=4, margin_bottom=4))

@@ -127,14 +127,16 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
   }
 });
 
-test('OpenCode rows count open background shells and busy subagents', async (t) => {
+test('OpenCode rows count open background shells and busy background subagents', async (t) => {
   const { dataDir, databasePath } = await fixture(t);
   const database = createDatabase(databasePath);
   const part = (shellID, background = true, extra = {}) => ({ type: 'tool', id: `call_${shellID}`, name: 'shell',
     state: { status: 'completed', input: { command: PROMPT, ...(background ? { background: true } : {}) }, metadata: { shellID, status: 'running' } }, ...extra });
   let seq = 0;
   const message = (sessionId, type, data, atMs = now - minute) => database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
-    .run(`msg_${seq += 1}`, sessionId, type, seq, atMs, atMs, JSON.stringify(data));
+    .run(`msg_${seq += 1}`, sessionId, type, seq, atMs, atMs, typeof data === 'string' ? data : JSON.stringify(data));
+  const subagent = (sessionID, background) => ({ type: 'tool', id: `call_${sessionID}`, name: 'subagent',
+    state: { status: 'running', input: { prompt: PROMPT, background }, metadata: { sessionID } } });
   const end = (sessionId, shellID) => message(sessionId, 'synthetic', { text: PROMPT, description: PROMPT,
     metadata: { source: 'shell', shellID, jobID: 'job_1', state: 'completed', exit: 0, truncated: false } });
   for (const id of ['ses_main', 'ses_quiet', 'ses_old']) addSession(database, { ...base, id, title: id, time_idle: now - hour });
@@ -143,11 +145,19 @@ test('OpenCode rows count open background shells and busy subagents', async (t) 
   end('ses_main', 'sh_ended');
   addSession(database, { ...base, id: 'ses_busy', parent_id: 'ses_main', time_suspended: now - minute });
   addSession(database, { ...base, id: 'ses_idle', parent_id: 'ses_main', time_idle: now - minute });
+  // A foreground subagent call also suspends its child, so only a background call counts.
+  addSession(database, { ...base, id: 'ses_fore', parent_id: 'ses_main', time_suspended: now - minute });
+  message('ses_main', 'assistant', { content: [subagent('ses_busy', true), subagent('ses_idle', true), subagent('ses_fore', false)] });
   message('ses_busy', 'assistant', { content: [part('sh_open2')] });
-  // An end in another session does not end a shell; a shell older than the window does not count.
+  // An end in another session does not end a shell; a shell or subagent call older than the 24-hour window does not count.
   message('ses_quiet', 'assistant', { content: [part('sh_other')] });
   end('ses_main', 'sh_other');
-  message('ses_old', 'assistant', { content: [part('sh_old')] }, now - 8 * 24 * hour);
+  message('ses_old', 'assistant', { content: [part('sh_old')] }, now - 25 * hour);
+  addSession(database, { ...base, id: 'ses_old_child', parent_id: 'ses_old', time_suspended: now - minute });
+  message('ses_old', 'assistant', { content: [subagent('ses_old_child', true)] }, now - 25 * hour);
+  // A message that is not valid JSON does not fail the load.
+  message('ses_quiet', 'assistant', '{"content": [{"type": "tool", "name": "shell", "state": {"metadata": {"shellID": "sh_bad"');
+  message('ses_quiet', 'synthetic', '{"metadata": {"source": "shell", "shellID": "sh_other"');
   database.close();
   const { threads } = await loadOpenCodeDashboard({ dataDir, nowMs: now });
   const counts = Object.fromEntries(buildSwitchboardDashboard(threads, [], now).threads

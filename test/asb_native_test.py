@@ -11364,7 +11364,24 @@ class WidgetCheck(unittest.TestCase):
                     stack.append(child)
                     child = child.get_next_sibling()
             return texts
-        self.assertIn(("3 commands, 2 agents in the background.", True, True), tooltip_texts("both"))
+        self.assertIn(("3 commands, 2 agents in the background.", True, False), tooltip_texts("both"))
+        # The sentence is its own line of the tooltip after the footer, at the indent of the footer and the notes.
+        tooltip = SimpleNamespace(set_custom=lambda content: setattr(tooltip, "content", content))
+        self.assertTrue(window.query_row_tooltip(window.focus_widgets["both"], 0, 0, False, tooltip))
+        stack, line = [tooltip.content], None
+        while stack and line is None:
+            widget = stack.pop()
+            if isinstance(widget, asb.Gtk.Label) and widget.get_text() == "3 commands, 2 agents in the background.":
+                line = widget
+            child = widget.get_first_child()
+            while child is not None:
+                stack.append(child)
+                child = child.get_next_sibling()
+        footer = line.get_prev_sibling()
+        self.assertTrue(line.get_parent().has_css_class("asb-tooltip"))
+        self.assertIsInstance(footer, asb.Gtk.FlowBox)
+        self.assertGreater(footer.get_margin_start(), 0)
+        self.assertEqual(line.get_margin_start(), footer.get_margin_start())
         self.assertFalse(any("background" in text for text, _muted, _footer in tooltip_texts("none")))
         # The row panel has a muted 11 px line under its title, only with a count.
         for identity in ("both", "none"):

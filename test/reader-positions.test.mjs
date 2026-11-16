@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -988,6 +989,32 @@ test('a saved Claude record that does not agree with its transcript gives a full
   assert.equal(resumed.claudeStats.taken, 1);
   assert.ok(full.claudeBytes - resumed.claudeBytes > (await fs.stat(control)).size - 32 * 1024,
     `resumed ${resumed.claudeBytes}, full ${full.claudeBytes}`);
+});
+
+test('a saved record with an open background shell resumes, and the appended end removes the count', { skip: process.platform !== 'linux' }, async (t) => {
+  const home = await temporaryDirectory(t);
+  const claude = await claudeSource(home, { bg: [claudePrompt(NOW_MS - 600_000), claudeTool(NOW_MS - 590_000, 'call-bash', 'Bash',
+    { command: 'MARKERPROMPT', run_in_background: true }), claudeResult(NOW_MS - 589_900, 'call-bash', { toolUseResult: { backgroundTaskId: 'bash0001' } }),
+  claudeReply(NOW_MS - 580_000), ...claudeFiller(NOW_MS - 500_000, 100 * 1024)] }, 4096);
+  // A live registry record of the session, from a process that started before the shell, so the count shows.
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: {}, stdio: 'ignore' });
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); } });
+  await once(child, 'spawn');
+  const procStart = (await fs.readFile(`/proc/${child.pid}/stat`, 'utf8')).split(') ').pop().split(' ')[19];
+  await fs.mkdir(path.join(home, 'sessions'));
+  await fs.writeFile(path.join(home, 'sessions', `${child.pid}.json`), JSON.stringify({ pid: child.pid, procStart, sessionId: 'cli-bg',
+    hostSessionId: 'local_bg', name: 'synthetic', status: 'idle', statusUpdatedAt: NOW_MS - 60_000, startedAt: NOW_MS - 700_000 }));
+  const file = path.join(home, 'readers', 'positions.json');
+  const count = (run) => claudeRow(run.claudeThreads, 'bg').backgroundCommands;
+  const a = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  assert.equal(count(a), 1);
+  assert.deepEqual((await readSaved(file)).claude.records[0].lifecycle.shells.map(([id]) => id), ['bash0001']);
+  await fs.appendFile(claude.paths.bg, jsonl([claudeNotice(NOW_MS - 1000, 'bash0001', 'completed')]));
+  const b = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  assert.deepEqual(b.claudeStats, { loaded: 1, taken: 1 });
+  assert.ok(b.claudeBytes < 32 * 1024, `B ${b.claudeBytes}`);
+  assert.equal(count(b), undefined);
+  assert.deepEqual(byId(b.claudeThreads), byId((await engine({ claudeOnly: claude.options, nowMs: NOW_MS })).claudeThreads));
 });
 
 test('a phase 1 file loads its Codex records; a bad Claude section or record drops only its own records', async (t) => {

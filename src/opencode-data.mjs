@@ -9,8 +9,10 @@ const SCHEMA_WARNING = 'ASB reads OpenCode 2 sessions only. Update OpenCode.';
 const SESSION_COLUMNS = ['id', 'parent_id', 'title', 'slug', 'directory', 'time_created', 'time_updated',
   'time_suspended', 'time_idle', 'idle_outcome', 'time_viewed', 'time_archived'];
 const MESSAGE_COLUMNS = ['session_id', 'type', 'time_created', 'data'];
-// shortcut: only shells started in the last 7 days count, so the query reads few rows; widen it if longer background shells matter.
-const BACKGROUND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// shortcut: only background shells and subagents started in the last 24 hours count, so the query reads few rows and a shell of an
+// OpenCode that quit stops counting after a day; widen it if longer background work matters.
+const BACKGROUND_WINDOW_MS = 24 * 60 * 60 * 1000;
+const validJson = (column) => `case when json_valid(${column}) then ${column} end`;
 const LIFECYCLE_KINDS = { succeeded: 'task_complete', failed: 'failed', interrupted: 'turn_aborted' };
 const cache = new Map();
 
@@ -97,6 +99,7 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
       result = { generatedAtMs: nowMs, provider: { installed: true, status: 'warning', message: SCHEMA_WARNING }, threads: [] };
     } else {
       const limit = Math.min(Math.max(Number.parseInt(maxCount, 10) || MAX_THREADS, 1), MAX_THREADS);
+      const since = Math.floor(nowMs - BACKGROUND_WINDOW_MS);
       const [roots, subagentRows, activityRows, backgroundRows] = await Promise.all([
         query(databasePath, `select id, title, slug, directory, time_created, time_updated,
           time_suspended, time_idle, idle_outcome, time_viewed, time_archived
@@ -107,21 +110,28 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
           from session_message m join session_v2 s on s.id = m.session_id group by root;`),
         // json_each has its own `root` column, so the group uses the expression, not the alias.
         // Background shells (a shell tool part with input background and a shell ID, with no synthetic shell end of that ID) and
-        // busy subagents (child sessions with time_suspended, the busy column of the roots), as counts per root, never text.
+        // busy background subagents (a child session with time_suspended, the busy column of the roots, that a subagent tool
+        // part of its parent started with input background), as counts per parent session, never text. A message that is not
+        // valid JSON gives null to the JSON functions, so it cannot fail the load.
         // shortcut: ASB does not know whether OpenCode runs, so a shell of an OpenCode that quit with no end record counts until
-        // the 7-day window passes; gate the counts by a live OpenCode signal when ASB gets one.
+        // the 24-hour window passes; gate the counts by a live OpenCode signal when ASB gets one.
         query(databasePath, `select coalesce(s.parent_id, s.id) as root, 'commands' as kind, count(*) as n
-          from session_message m join session_v2 s on s.id = m.session_id, json_each(m.data, '$.content') t
-          where m.time_created >= ${Math.floor(nowMs - BACKGROUND_WINDOW_MS)} and m.type = 'assistant' and instr(m.data, '"shellID"') > 0
+          from session_message m join session_v2 s on s.id = m.session_id, json_each(${validJson('m.data')}, '$.content') t
+          where m.time_created >= ${since} and m.type = 'assistant' and instr(m.data, '"shellID"') > 0
             and json_extract(t.value, '$.type') = 'tool' and json_extract(t.value, '$.name') = 'shell'
             and json_extract(t.value, '$.state.input.background') = 1 and json_extract(t.value, '$.state.metadata.shellID') is not null
             and not exists (select 1 from session_message e where e.session_id = m.session_id and e.type = 'synthetic'
-              and instr(e.data, '"shellID"') > 0 and json_extract(e.data, '$.metadata.source') = 'shell'
-              and json_extract(e.data, '$.metadata.shellID') = json_extract(t.value, '$.state.metadata.shellID'))
+              and instr(e.data, '"shellID"') > 0 and json_extract(${validJson('e.data')}, '$.metadata.source') = 'shell'
+              and json_extract(${validJson('e.data')}, '$.metadata.shellID') = json_extract(t.value, '$.state.metadata.shellID'))
           group by coalesce(s.parent_id, s.id)
           union all
-          select parent_id as root, 'agents' as kind, count(*) as n from session_v2
-          where parent_id is not null and time_suspended is not null group by parent_id;`),
+          select c.parent_id as root, 'agents' as kind, count(*) as n from session_v2 c
+          where c.parent_id is not null and c.time_suspended is not null
+            and exists (select 1 from session_message p, json_each(${validJson('p.data')}, '$.content') u
+              where p.session_id = c.parent_id and p.time_created >= ${since} and p.type = 'assistant' and instr(p.data, c.id) > 0
+                and json_extract(u.value, '$.type') = 'tool' and json_extract(u.value, '$.name') = 'subagent'
+                and json_extract(u.value, '$.state.input.background') = 1 and json_extract(u.value, '$.state.metadata.sessionID') = c.id)
+          group by c.parent_id;`),
       ]);
       const subagents = new Map(subagentRows.map((row) => [row.parent_id, row.n]));
       const activity = new Map(activityRows.map((row) => [row.root, Number(row.at || 0)]));
