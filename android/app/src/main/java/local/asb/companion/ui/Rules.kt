@@ -208,14 +208,18 @@ fun rowWhere(row: Thread): Pair<Int?, String> = when {
     else -> null to ""
 }
 
-/** The card glyphs and counts of running background work, commands first; empty when there is none. */
-fun backgroundCounts(row: Thread): List<Pair<Int, Int>> = listOfNotNull(
+/** The card glyphs and counts of running background work, commands first; empty when there is none or the option is off. */
+fun backgroundCounts(row: Thread, shown: Boolean = true): List<Pair<Int, Int>> = if (!shown) emptyList() else listOfNotNull(
     (R.drawable.ic_bg_command to row.backgroundCommands).takeIf { it.second > 0 },
     (R.drawable.ic_bg_agent to row.backgroundAgents).takeIf { it.second > 0 },
 )
 
-/** As the board: "1 command, 2 agents in the background", only the kinds above 0; empty when there is none. */
-fun backgroundSentence(row: Thread): String {
+/** As the board, in dp: the gap after the state, between the kinds, and from glyph to count (Compact 10, 8, 3). */
+fun backgroundGaps(comfortable: Boolean): Triple<Int, Int, Int> = if (comfortable) Triple(12, 10, 4) else Triple(10, 8, 3)
+
+/** As the board: "1 command, 2 agents in the background", only the kinds above 0; empty when there is none or the option is off. */
+fun backgroundSentence(row: Thread, shown: Boolean = true): String {
+    if (!shown) return ""
     fun count(value: Int, noun: String) = if (value > 0) "$value $noun${if (value == 1) "" else "s"}" else ""
     val parts = listOf(count(row.backgroundCommands, "command"), count(row.backgroundAgents, "agent")).filter { it.isNotEmpty() }
     return if (parts.isEmpty()) "" else parts.joinToString(", ") + " in the background"

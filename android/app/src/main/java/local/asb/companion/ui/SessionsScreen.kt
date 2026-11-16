@@ -205,6 +205,7 @@ fun SessionsScreen(
     viewModel: SessionsViewModel,
     serverName: String,
     cardTextScale: Float,
+    backgroundCounts: Boolean,
     onSettings: () -> Unit,
     onMessages: (String?) -> Unit,
     onUsage: () -> Unit,
@@ -462,6 +463,7 @@ fun SessionsScreen(
         SessionCard(
             row = row,
             comfortable = comfortable,
+            showBackground = backgroundCounts,
             drawerView = state.filter.drawerOnly,
             busy = row.id in state.busyIds,
             opening = row.id in state.openingIds,
@@ -957,7 +959,7 @@ internal fun indicatorMeaning(row: Thread, indicator: String): String = when (in
 
 @Composable
 private fun SessionCard(
-    row: Thread, comfortable: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
+    row: Thread, comfortable: Boolean, showBackground: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
     nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: (Offset) -> Unit,
     onCorner: (String) -> Unit, onCardFloor: (Float) -> Unit, petTint: () -> Float, modifier: Modifier = Modifier,
 ) {
@@ -980,7 +982,7 @@ private fun SessionCard(
     val viewOnly = isViewOnly(row)
     val (whereGlyph, where) = rowWhere(row)
     val description = listOf(
-        row.title, row.projectName, state, backgroundSentence(row),
+        row.title, row.projectName, state, backgroundSentence(row, showBackground),
         if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
         indicatorMeaning(row, indicator),
         if (row.pinned) "Pinned" else "",
@@ -1042,7 +1044,7 @@ private fun SessionCard(
         },
             fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.state), maxLines = 1,
             modifier = Modifier.clearAndSetSemantics { })
-        BackgroundCounts(row, tones.caption)
+        BackgroundCounts(row, tones.caption, comfortable = false, shown = showBackground)
         if (viewOnly) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = with(density) { 66.sp.toDp() }).clearAndSetSemantics { })
     } else Box(card.semantics { contentDescription = description }) {
@@ -1065,7 +1067,7 @@ private fun SessionCard(
                 if (limited) LimitClock(tones.state)
                 Text(if (limited) "Resets in $countdown" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.state), maxLines = 1)
-                BackgroundCounts(row, tones.caption)
+                BackgroundCounts(row, tones.caption, comfortable = true, shown = showBackground)
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically) {
                     if (whereGlyph != null) Icon(painterResource(whereGlyph), contentDescription = null, tint = hexColor(tones.caption),
@@ -1121,12 +1123,19 @@ internal fun ProviderMark(
 }
 
 // Each kind of running background work: its 11 dp glyph and count in the caption tone, as the where glyph.
+// The line already gives 6 dp after the state; the padding makes up the rest of the state gap.
 @Composable
-private fun BackgroundCounts(row: Thread, color: String) {
-    for ((glyph, count) in backgroundCounts(row)) Row(horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clearAndSetSemantics { }) {
-        Icon(painterResource(glyph), contentDescription = null, tint = hexColor(color), modifier = Modifier.size(11.dp))
-        Text("$count", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(color), maxLines = 1)
+private fun BackgroundCounts(row: Thread, color: String, comfortable: Boolean, shown: Boolean) {
+    val counts = backgroundCounts(row, shown)
+    if (counts.isEmpty()) return
+    val (state, kinds, glyph) = backgroundGaps(comfortable)
+    Row(Modifier.padding(start = (state - 6).dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(kinds.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        for ((icon, count) in counts) Row(horizontalArrangement = Arrangement.spacedBy(glyph.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(icon), contentDescription = null, tint = hexColor(color), modifier = Modifier.size(11.dp))
+            Text("$count", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(color), maxLines = 1)
+        }
     }
 }
 

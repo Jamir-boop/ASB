@@ -5,6 +5,7 @@ import local.asb.companion.data.Palette
 import local.asb.companion.data.Thread
 import local.asb.companion.ui.CardTones
 import local.asb.companion.ui.backgroundCounts
+import local.asb.companion.ui.backgroundGaps
 import local.asb.companion.ui.backgroundSentence
 import local.asb.companion.ui.CornerControl
 import local.asb.companion.ui.cardFontScale
@@ -38,6 +39,16 @@ class CardRulesTest {
         assertEquals(listOf(R.drawable.ic_bg_command to 1, R.drawable.ic_bg_agent to 2), backgroundCounts(background))
         assertEquals(listOf(R.drawable.ic_bg_agent to 2), backgroundCounts(background.copy(backgroundCommands = 0)))
         assertEquals(emptyList<Pair<Int, Int>>(), backgroundCounts(idle))
+    }
+
+    @Test fun backgroundOptionOffShowsNoGlyphsAndNoSentence() {
+        assertEquals(emptyList<Pair<Int, Int>>(), backgroundCounts(background, shown = false))
+        assertEquals("", backgroundSentence(background, shown = false))
+    }
+
+    @Test fun backgroundGapsMatchTheBoard() {
+        assertEquals(Triple(12, 10, 4), backgroundGaps(comfortable = true))
+        assertEquals(Triple(10, 8, 3), backgroundGaps(comfortable = false))
     }
 
     @Test fun backgroundSentenceIsExact() {

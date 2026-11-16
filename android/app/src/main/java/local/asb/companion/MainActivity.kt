@@ -248,13 +248,15 @@ private fun PairedApp(
                 onViewChanged = sessionsModel::setView,
                 onPetChanged = sessionsModel::setPet,
                 onTextScaleChanged = app::useTextScale,
+                backgroundCounts = app.backgroundCounts,
+                onBackgroundCountsChanged = app::useBackgroundCounts,
                 useCameraArea = app.useCameraArea,
                 onUseCameraAreaChanged = app::chooseCameraArea,
                 liveNotification = app.liveNotification,
                 onLiveNotificationChanged = app::useLiveNotification,
             )
         } else {
-            SessionsScreen(sessionsModel, serverName, cardTextScale = app.textScale,
+            SessionsScreen(sessionsModel, serverName, cardTextScale = app.textScale, backgroundCounts = app.backgroundCounts,
                 onSettings = { screen = Screen.CONNECTION },
                 onMessages = { messagesSeat = it; screen = Screen.MESSAGES },
                 onUsage = { screen = Screen.USAGE },

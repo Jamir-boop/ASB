@@ -71,6 +71,10 @@ class Store(private val preferences: SharedPreferences) {
     var textScale: Float
         get() = preferences.getFloat("textScale", 1f)
         set(value) { preferences.edit().putFloat("textScale", value).apply() }
+    /** The Background counts option of the cards; off by default, as on the board. */
+    var backgroundCounts: Boolean
+        get() = preferences.getBoolean("backgroundCounts", false)
+        set(value) { preferences.edit { putBoolean("backgroundCounts", value) } }
     /** The pinch zoom of the session cards in percent; a value that is not a zoom level reads as 100. */
     var cardZoom: Int
         get() = try { zoomLevel(preferences.getInt("cardZoom", 100)) } catch (_: ClassCastException) { 100 }
@@ -186,6 +190,7 @@ class Store(private val preferences: SharedPreferences) {
             .putBoolean("notificationPermissionAsked", notificationPermissionAsked)
             .putString("view", view)
             .putFloat("textScale", textScale)
+            .putBoolean("backgroundCounts", backgroundCounts)
             .putInt("cardZoom", cardZoom)
             .putBoolean("notifyDone", notifyDone)
             .putBoolean("notifyFailed", notifyFailed)

@@ -38,6 +38,8 @@ class AsbApp : Application() {
         private set
     var liveNotification by mutableStateOf(true)
         private set
+    var backgroundCounts by mutableStateOf(false)
+        private set
     var useCameraArea by mutableStateOf(true)
         private set
 
@@ -45,6 +47,7 @@ class AsbApp : Application() {
         super.onCreate()
         palette = store.palette ?: Palette()
         textScale = store.textScale
+        backgroundCounts = store.backgroundCounts
         liveNotification = store.liveNotification
         useCameraArea = store.useCameraArea
         notifier.createChannels()
@@ -80,6 +83,12 @@ class AsbApp : Application() {
     fun useTextScale(value: Float) {
         textScale = value
         store.textScale = value
+    }
+
+    /** Shows and saves the Background counts option of the cards. */
+    fun useBackgroundCounts(value: Boolean) {
+        backgroundCounts = value
+        store.backgroundCounts = value
     }
 
     /** Shows and saves the live notification switch; the Stop action in the notification also sets it. */

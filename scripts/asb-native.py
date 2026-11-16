@@ -1560,10 +1560,10 @@ def validate_card_limit(value):
 def read_layout(path):
     if not path or not Path(path).exists():
         return {"columnWidth": DEFAULT_COLUMN_WIDTH, "view": "compact", "cardLimit": DEFAULT_CARD_LIMIT, "copyKind": "relative", "pet": "off", "muteFor": "30m",
-                "zoom": 100}
+                "zoom": 100, "backgroundCounts": False}
     value = json.loads(Path(path).read_text())
     if not isinstance(value, dict) or not {"version", "columnWidth"}.issubset(value) \
-            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind", "pet", "muteFor", "zoom"} or value["version"] != 1:
+            or set(value) - {"version", "columnWidth", "view", "showAppPills", "cardLimit", "copyKind", "pet", "muteFor", "zoom", "backgroundCounts"} or value["version"] != 1:
         raise ValueError("The saved layout is not valid. Reset the width.")
     view = value.get("view", "compact")
     if view not in ("compact", "comfortable"):
@@ -1571,12 +1571,17 @@ def read_layout(path):
     return {"columnWidth": validate_column_width(value["columnWidth"]), "view": view,
             "cardLimit": validate_card_limit(value.get("cardLimit", DEFAULT_CARD_LIMIT)),
             "copyKind": validate_copy_kind(value.get("copyKind", "relative")), "pet": validate_pet(value.get("pet", "off")),
-            "muteFor": validate_mute_for(value.get("muteFor", "30m")), "zoom": validate_zoom(value.get("zoom", 100))}
+            "muteFor": validate_mute_for(value.get("muteFor", "30m")), "zoom": validate_zoom(value.get("zoom", 100)),
+            # Off unless saved as true; an invalid value reads as off.
+            "backgroundCounts": value.get("backgroundCounts") is True}
 
 
-def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, pet=None, mute_for=None, zoom=None):
-    if view is None or card_limit is None or copy_kind is None or pet is None or mute_for is None or zoom is None:
+def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, pet=None, mute_for=None, zoom=None,
+                 background_counts=None):
+    if view is None or card_limit is None or copy_kind is None or pet is None or mute_for is None or zoom is None \
+            or background_counts is None:
         saved = read_layout(path)
+        background_counts = saved["backgroundCounts"] if background_counts is None else background_counts
         zoom = saved["zoom"] if zoom is None else zoom
         view = saved["view"] if view is None else view
         card_limit = saved["cardLimit"] if card_limit is None else card_limit
@@ -1590,8 +1595,10 @@ def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, p
     validate_pet(pet)
     validate_mute_for(mute_for)
     validate_zoom(zoom)
+    if type(background_counts) is not bool:
+        raise ValueError("Background counts must be on or off.")
     if width is None and view == "compact" and card_limit == DEFAULT_CARD_LIMIT and copy_kind == "relative" and pet == "off" \
-            and mute_for == "30m" and zoom == 100:
+            and mute_for == "30m" and zoom == 100 and not background_counts:
         write_config(path, None)
         return
     value = {"version": 1, "columnWidth": validate_column_width(DEFAULT_COLUMN_WIDTH if width is None else width)}
@@ -1607,6 +1614,8 @@ def write_layout(path, width=None, view=None, card_limit=None, copy_kind=None, p
         value["muteFor"] = mute_for
     if zoom != 100:
         value["zoom"] = zoom
+    if background_counts:
+        value["backgroundCounts"] = True
     write_config(path, value)
 
 
@@ -1784,9 +1793,11 @@ def row_where(row):
 
 
 # The ink rows of the 12-unit footer glyphs in assets/icons: the terminal from 1 to 11, the machine from 1 to 11.5,
-# the command from 2.6 to 9.9, and the agent from 1 to 10.5.
-WHERE_GLYPH_INK = {"asb-terminal-symbolic": (1, 11), "asb-machine-symbolic": (1, 11.5), "asb-command-symbolic": (2.6, 9.9),
-                   "asb-agent-symbolic": (1, 10.5)}
+# the filled command window from 2 to 10, and the filled robot from the antenna top 1 to the head bottom 11.
+WHERE_GLYPH_INK = {"asb-terminal-symbolic": (1, 11), "asb-machine-symbolic": (1, 11.5), "asb-command-symbolic": (2, 10),
+                   "asb-agent-symbolic": (1, 11)}
+# The background counter gaps in px at zoom 100 per view: after the state, between the kinds, and from glyph to count.
+BACKGROUND_GAPS = {"comfortable": (12, 10, 4), "compact": (10, 8, 3)}
 
 
 def background_counts(row):
@@ -1871,7 +1882,7 @@ def failed_unread_note(row):
     return "The Claude Code process ended during a task. Not read yet." if row.get("processEnded") else "Failed. Not read yet."
 
 
-def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
+def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, background=True):
     full_path = row.get("cwd") or row.get("projectName") or "No project folder"
     path = short_home_path(full_path, home_dir)
     state = row.get("state", "unknown")
@@ -1948,7 +1959,8 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False):
     return {"path": path, "full_path": full_path, "title": row.get("title") or "Untitled session",
             "state": state, "state_text": state_text, "app": app, "app_color": app_color,
             "indicator": shape, "note": note, "flags": flags, "error": error,
-            "reason": row.get("reason", ""), "source": source, "limit": limit, "background": background_sentence(row)}
+            "reason": row.get("reason", ""), "source": source, "limit": limit,
+            "background": background_sentence(row) if background else ""}
 
 
 def tooltip_description(model):
@@ -7195,6 +7207,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     drawer_view, drawer_peek, drawer_count, column_pixel_width = False, False, 0, DEFAULT_COLUMN_WIDTH
     wide_controls, tiny_controls, search_expanded = False, False, False
     card_limit, show_all_cards = DEFAULT_CARD_LIMIT, False
+    background_counts = False
     text_scale, card_heights, text_scale_signal = 1.0, (ROW_HEIGHT, COMFORTABLE_ROW_HEIGHT), None
     pocket_bottom, board_zoom, zoom_frame = POCKET_BOTTOM, 100, None
     zoom_badge_timer = no_open_toast = None
@@ -7249,9 +7262,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.mute_for = layout["muteFor"]
             self.pet = layout["pet"]
             self.board_zoom = layout["zoom"]
+            self.background_counts = layout["backgroundCounts"]
         except (OSError, ValueError) as error:
             self.column_width, self.view, self.copy_kind, layout_error = DEFAULT_COLUMN_WIDTH, "compact", "relative", str(error)
             self.pet = "off"
+            self.background_counts = False
         self.zoom_total = 0.0
         self.pending, self.archived = False, False
         self.states, self.profiles = set(), set()
@@ -7456,6 +7471,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         view_row.append(view_name)
         view_row.append(self.view_filter)
         appearance.append(view_row)
+        card_options = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        card_options.add_css_class("boxed-list")
+        self.background_counts_setting = Adw.SwitchRow(
+            title="Background counts", subtitle="Show the commands and subagents that a session runs in the background.",
+            active=self.background_counts)
+        self.background_counts_setting.set_subtitle_lines(0)
+        self.background_counts_setting.connect("notify::active", self.change_background_counts)
+        card_options.append(self.background_counts_setting)
+        appearance.append(card_options)
         appearance.append(label("Pets"))
         pet_strip = PetTiles(self)
         self.pet_tiles = pet_strip.tiles
@@ -8710,7 +8734,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if selected == self.card_limit:
             return
         try:
-            write_layout(self.layout_path, self.column_width, self.view, card_limit=selected, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
+            write_layout(self.layout_path, self.column_width, self.view, card_limit=selected, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100), background_counts=self.background_counts)
         except (OSError, ValueError) as error:
             self.card_limit_setting.set_selected(limits.index(self.card_limit))
             self.card_limit_error.set_label(str(error))
@@ -8724,7 +8748,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if pet == self.pet:
             return True
         try:
-            write_layout(self.layout_path, self.column_width, self.view, self.card_limit, self.copy_kind, pet=pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
+            write_layout(self.layout_path, self.column_width, self.view, self.card_limit, self.copy_kind, pet=pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100), background_counts=self.background_counts)
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
             return False
@@ -8750,7 +8774,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         try:
             write_layout(self.layout_path, self.column_width, self.view,
-                         self.card_limit, copy_kind=kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
+                         self.card_limit, copy_kind=kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100), background_counts=self.background_counts)
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
             self.set_notice(str(error), temporary=True)
@@ -8767,7 +8791,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             return
         try:
             write_layout(self.layout_path, self.column_width, self.view, self.card_limit,
-                         copy_kind=self.copy_kind, pet=self.pet, mute_for=choice, zoom=getattr(self, "board_zoom", 100))
+                         copy_kind=self.copy_kind, pet=self.pet, mute_for=choice, zoom=getattr(self, "board_zoom", 100), background_counts=self.background_counts)
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
             self.set_notice(str(error), temporary=True)
@@ -8875,7 +8899,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     def save_width(self):
         try:
             write_layout(self.layout_path, self.column_width, self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet,
-                         mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
+                         mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100), background_counts=self.background_counts)
             self.layout_error.set_label("")
         except (OSError, ValueError) as error:
             self.layout_error.set_label(str(error))
@@ -8885,7 +8909,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.width_control.set_value(DEFAULT_COLUMN_WIDTH)
         self.dragging = False
         try:
-            write_layout(self.layout_path, view=self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100))
+            write_layout(self.layout_path, view=self.view, card_limit=self.card_limit, copy_kind=self.copy_kind, pet=self.pet, mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100), background_counts=self.background_counts)
             self.layout_error.set_label("")
         except (OSError, ValueError):
             self.layout_error.set_label("Cannot reset the width. Check the ASB config folder.")
@@ -10356,7 +10380,51 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             # The title and the footer start under the folder: the zoomed provider mark and its 7 px spacing.
             for part in (widget.asb_title_label, widget.asb_footer_stack):
                 part.set_margin_start(zoomed(14, zoom) + 7)
+        self.zoom_background_gap(widget)
         self.zoom_widget_icons(widget)
+
+    def update_background_items(self, widget, row):
+        """The background counter items of a card; none while the Background counts option is off."""
+        background = background_counts(row) if self.background_counts else []
+        if background:
+            self.ensure_card_part(widget, "background")
+        if getattr(widget, "asb_background_box", None) is not None:
+            shown = {kind: (count, words) for kind, count, words in background}
+            for kind in ("command", "agent"):
+                item = getattr(widget.asb_background_box, "asb_" + kind)
+                if kind in shown:
+                    item.asb_count.set_label(str(shown[kind][0]))
+                    item.set_tooltip_text(shown[kind][1])
+                item.set_visible(kind in shown)
+                self.where_icon_mapped(item.asb_icon)
+            widget.asb_background_box.set_visible(bool(background))
+
+    def change_background_counts(self, row, _pspec):
+        """Save the Background counts option; the cards on screen and an open row panel follow at once."""
+        shown = row.get_active()
+        if shown == self.background_counts:
+            return
+        try:
+            write_layout(self.layout_path, self.column_width, self.view, self.card_limit, self.copy_kind, pet=self.pet,
+                         mute_for=self.mute_for, zoom=getattr(self, "board_zoom", 100), background_counts=shown)
+        except (OSError, ValueError) as error:
+            self.layout_error.set_label(str(error))
+            row.set_active(self.background_counts)
+            return
+        self.background_counts = shown
+        self.layout_error.set_label("")
+        for widget in list(getattr(self, "focus_widgets", {}).values()):
+            if widget.asb_thread.get("id") != MORE_ID:
+                self.update_background_items(widget, widget.asb_thread)
+                self.update_open_state(widget)
+                widget.trigger_tooltip_query()
+        self.sync_row_panel()
+
+    def zoom_background_gap(self, widget):
+        """The zoomed gap from the state to the background counters: the margin adds to the spacing of the parent line."""
+        box = getattr(widget, "asb_background_box", None)
+        if box is not None and box.get_parent() is not None:
+            box.set_margin_start(max(0, zoomed(BACKGROUND_GAPS[widget.asb_view][0], self.board_zoom) - box.get_parent().get_spacing()))
 
     def zoom_icon(self, image, px):
         """An image or drawn mark of a card, the row panel, or the card tooltip: px at zoom 100, in whole px at the board zoom."""
@@ -10720,7 +10788,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             tooltip.set_text(f"{row['asbMore']} more sessions after the first {row['asbLimit']}. Click to show all cards.")
             return True
         model = tooltip_model(widget.asb_thread, time.time() * 1000, Path.home(), self.open_errors.get(widget.asb_thread["id"], ""),
-                              self.drawer_view)
+                              self.drawer_view, self.background_counts)
         key = (model, bool(self.hover_colors), widget.asb_thread.get("provider"), bool(widget.asb_thread.get("pending")))
         if key != widget.asb_tooltip_key:
             widget.asb_tooltip_content = self.tooltip_content(widget.asb_thread, model)
@@ -10979,9 +11047,10 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_where_icon, widget.asb_where_label = where_icon, where
         elif name == "background" and getattr(widget, "asb_background_box", None) is None:
             # After the state, commands first: a 12 px glyph and the count in the quiet caption color; a kind at 0 hides.
-            box = Gtk.Box(spacing=6, valign=Gtk.Align.BASELINE_CENTER)
+            _state_gap, kinds_gap, glyph_gap = BACKGROUND_GAPS[widget.asb_view]
+            box = self.zoom_spacing(Gtk.Box(valign=Gtk.Align.BASELINE_CENTER), kinds_gap)
             for kind in ("command", "agent"):
-                item = Gtk.Box(spacing=3, visible=False, valign=Gtk.Align.BASELINE_CENTER)
+                item = self.zoom_spacing(Gtk.Box(visible=False, valign=Gtk.Align.BASELINE_CENTER), glyph_gap)
                 icon = self.zoom_icon(Gtk.Image(valign=Gtk.Align.CENTER), 12)
                 set_icon(icon, f"asb-{kind}-symbolic")
                 count = label("", "asb-background-count")
@@ -11004,6 +11073,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             anchor = widget.asb_state_label if widget.asb_view == "comfortable" else widget.asb_state_box
             anchor.get_parent().insert_child_after(box, anchor)
             widget.asb_background_box = box
+            self.zoom_background_gap(widget)
         elif name == "feedback" and widget.asb_feedback is None:
             feedback = Gtk.Box(spacing=6)
             feedback.add_css_class("asb-copy-feedback")
@@ -11255,19 +11325,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             widget.asb_where_label.set_visible(bool(where))
             if comfortable:
                 widget.asb_where_label.show_age(widget.asb_where_label.age_short)
-        background = background_counts(row)
-        if background:
-            self.ensure_card_part(widget, "background")
-        if getattr(widget, "asb_background_box", None) is not None:
-            shown = {kind: (count, words) for kind, count, words in background}
-            for kind in ("command", "agent"):
-                item = getattr(widget.asb_background_box, "asb_" + kind)
-                if kind in shown:
-                    item.asb_count.set_label(str(shown[kind][0]))
-                    item.set_tooltip_text(shown[kind][1])
-                item.set_visible(kind in shown)
-                self.where_icon_mapped(item.asb_icon)
-            widget.asb_background_box.set_visible(bool(background))
+        self.update_background_items(widget, row)
         tone = view_only_tone(row)
         (widget.add_css_class if tone else widget.remove_css_class)("asb-view-only-quiet")
         (widget.add_css_class if tone == "rest" else widget.remove_css_class)("asb-view-only-rest")
@@ -12315,7 +12373,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         moves = pin_moves(self.visible_rows(), row["id"]) if "pin-up" in controls else None
         if moves is None:
             controls = {slot: value for slot, value in controls.items() if slot not in ("pin-up", "pin-down")}
-        model = tooltip_model(row, now_ms, Path.home(), "", self.drawer_view)
+        model = tooltip_model(row, now_ms, Path.home(), "", self.drawer_view, self.background_counts)
         values = (*panel_copy_values(row), *card_copy(row, "name")[:2])
         mute_caption = ""
         if controls.get("mute", (None,))[0] == "unmute" and mute_active(row, now_ms):
@@ -12877,7 +12935,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if duration:
             seconds = ((time.time() * 1000 if now_ms is None else now_ms) - row["workingSinceMs"]) / 1000
             name += " Working time " + spoken_duration(seconds) + "."
-        model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error)
+        model = tooltip_model(row, time.time() * 1000 if now_ms is None else now_ms, Path.home(), error,
+                              background=self.background_counts)
         widget.asb_tooltip = tooltip_description(model)
         description = getattr(widget, "asb_mute_done", None) or widget.asb_tooltip
         widget.update_property([Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION], [name, description])

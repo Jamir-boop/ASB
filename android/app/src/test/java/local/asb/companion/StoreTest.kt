@@ -102,6 +102,15 @@ class StoreTest {
         assertEquals("off", Store(preferences).pet)
     }
 
+    @Test fun backgroundCountsAreOffByDefaultAndSaved() {
+        val preferences = MemoryPreferences()
+        assertFalse(Store(preferences).backgroundCounts)
+        Store(preferences).backgroundCounts = true
+        assertTrue(Store(preferences).backgroundCounts)
+        Store(preferences).backgroundCounts = false
+        assertFalse(Store(preferences).backgroundCounts)
+    }
+
     @Test fun dismissedWarningsSurviveANewStore() {
         val preferences = MemoryPreferences()
         assertEquals(emptyMap<String, String>(), Store(preferences).dismissedWarnings)
@@ -113,6 +122,7 @@ class StoreTest {
         val preferences = MemoryPreferences(mutableMapOf("token" to token, "deviceId" to "012345abcdef"))
         val store = Store(preferences)
         store.textScale = 1.3f
+        store.backgroundCounts = true
         store.view = "compact"
         store.notifyDone = false
         store.notifyFailed = false
@@ -125,6 +135,7 @@ class StoreTest {
         assertFalse(next.paired)
         assertFalse(preferences.contains("deviceId"))
         assertEquals(1.3f, next.textScale)
+        assertTrue(next.backgroundCounts)
         assertEquals("compact", next.view)
         assertFalse(next.useCameraArea)
         assertFalse(next.notifyDone)

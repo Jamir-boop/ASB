@@ -3976,7 +3976,7 @@ class WidgetCheck(unittest.TestCase):
             self.drain()
             self.assertEqual(window.columns, 4)
             self.assertEqual(window.column_width, 240)
-            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
+            self.assertEqual(asb.read_layout(window.layout_path), {"columnWidth": 240, "view": "compact", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100, "backgroundCounts": False})
 
             row = window.focus_widgets["sample-15"]
             window.refresh_button.grab_focus()
@@ -4411,7 +4411,7 @@ class WidgetCheck(unittest.TestCase):
                         window.search.grab_focus(); self.drain(.2); adjustment.set_value(0); self.drain(.2)
                         self.capture(window, Path(output) / "view-comfortable-360-width160.png")
                     window.reset_width(); self.drain()
-                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100})
+                    self.assertEqual(asb.read_layout(layout_path), {"columnWidth": 240, "view": "comfortable", "cardLimit": 0, "copyKind": "relative", "pet": "off", "muteFor": "30m", "zoom": 100, "backgroundCounts": False})
                 window.search.set_text("cl:"); window.render()
                 self.assertTrue(all(row["provider"] == "claude-desktop-code" for row in window.visible_rows()))
                 window.states = {"working", "idle"}
@@ -11304,6 +11304,23 @@ class WidgetCheck(unittest.TestCase):
                     "agent": [("agent", "1", "1 agent", "asb-agent-symbolic.svg")], "none": []}
         sentences = {"both": "3 commands, 2 agents in the background.", "command": "1 command in the background.",
                      "agent": "1 agent in the background.", "none": ""}
+        # The Background counts option is off by default: no items, no tooltip or description sentence, no panel line.
+        self.assertFalse(window.background_counts_setting.get_active())
+        for identity in expected:
+            card = window.focus_widgets[identity]
+            self.assertEqual(items(card), [])
+            self.assertNotIn("in the background", card.asb_tooltip)
+        window.show_context(window.focus_widgets["both"]); self.drain(.3)
+        self.assertFalse(window.context_menu.asb_background.get_visible())
+        # The Preferences switch saves the option and shows the counts at once, also in the open row panel.
+        temporary = tempfile.TemporaryDirectory(prefix="asb-background-option-")
+        self.addCleanup(temporary.cleanup)
+        window.layout_path = Path(temporary.name) / "layout.json"
+        window.background_counts_setting.set_active(True); self.drain(.1)
+        self.assertEqual(json.loads(window.layout_path.read_text()).get("backgroundCounts"), True)
+        self.assertEqual(window.context_menu.asb_background.get_text(), sentences["both"])
+        self.assertTrue(window.context_menu.asb_background.get_visible())
+        window.context_menu.popdown(); self.drain(.2)
         def no_overlap(card, width):
             # State, glyph items, where caption, and age keep their own x ranges; the state is never cut.
             state = card.asb_state_label
@@ -11316,8 +11333,22 @@ class WidgetCheck(unittest.TestCase):
             for left, right in zip(boxes, boxes[1:]):
                 self.assertLessEqual(left.origin.x + left.size.width, right.origin.x + .5, (width, [b.origin.x for b in boxes]))
             self.assertLessEqual(boxes[-1].origin.x + boxes[-1].size.width, card.get_width())
+        def gaps(card, state):
+            # The gap from the state to the first item, between the kinds, and from each glyph to its count, in px.
+            box = card.asb_background_box
+            items = [box.asb_command, box.asb_agent]
+            left = lambda widget: widget.compute_bounds(card)[1].origin.x
+            right = lambda widget: left(widget) + widget.compute_bounds(card)[1].size.width
+            return (round(left(items[0]) - right(state)), round(left(items[1]) - right(items[0])),
+                    {round(left(item.asb_count) - right(item.asb_icon.get_parent())) for item in items})
         for width in (240, 300):
             window.set_default_size(8 + 2 * width + 12, 620); window.width_control.set_value(width); self.settle(window); self.drain(.3)
+            if width == 300:
+                # Comfortable: 12 px after the state, 10 px between the kinds, 4 px from glyph to count; they follow the zoom.
+                self.assertEqual(gaps(window.focus_widgets["both"], window.focus_widgets["both"].asb_state_label), (12, 10, {4}))
+                window.set_board_zoom(150); self.settle(window); self.drain(.3)
+                self.assertEqual(gaps(window.focus_widgets["both"], window.focus_widgets["both"].asb_state_label), (18, 15, {6}))
+                window.set_board_zoom(100); self.settle(window); self.drain(.3)
             for identity, row_items in expected.items():
                 with self.subTest(view="comfortable", width=width, row=identity):
                     card = window.focus_widgets[identity]
@@ -11335,7 +11366,8 @@ class WidgetCheck(unittest.TestCase):
                     self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
         # The glyph ink is on the cap band of its count.
         card = window.focus_widgets["both"]
-        ink = {"asb-command-symbolic": (2.6, 9.9), "asb-agent-symbolic": (1, 10.5)}
+        ink = {"asb-command-symbolic": (2, 10), "asb-agent-symbolic": (1, 11)}
+        self.assertEqual({name: asb.WHERE_GLYPH_INK[name] for name in ink}, ink)
         for kind in ("command", "agent"):
             item = getattr(card.asb_background_box, "asb_" + kind)
             icon, count = item.asb_icon, item.asb_count
@@ -11421,6 +11453,27 @@ class WidgetCheck(unittest.TestCase):
                             where = card.asb_where_label.compute_bounds(card)[1]
                             self.assertLessEqual(box.origin.x + box.size.width, where.origin.x + .5)
                         self.assertFalse(card.asb_state_label.get_layout().is_ellipsized())
+        # Compact: 10 px after the state, 8 px between the kinds, 3 px from glyph to count; they follow the zoom.
+        card = window.focus_widgets["both"]
+        self.assertEqual(gaps(card, card.asb_state_box), (10, 8, {3}))
+        window.set_board_zoom(150); self.settle(window); self.drain(.3)
+        card = window.focus_widgets["both"]
+        self.assertEqual(gaps(card, card.asb_state_box), (15, 12, {4}))
+        window.set_board_zoom(100); self.settle(window)
+        # Off again: the items, the sentences, and the open row panel line go at once, and the layout drops the key.
+        window.show_context(window.focus_widgets["both"]); self.drain(.3)
+        window.background_counts_setting.set_active(False); self.drain(.1)
+        self.assertFalse(window.context_menu.asb_background.get_visible())
+        window.context_menu.popdown(); self.drain(.2)
+        for view in (0, 1):
+            window.view_filter.set_selected(view); self.settle(window)
+            for identity in expected:
+                card = window.focus_widgets[identity]
+                self.assertEqual(items(card), [])
+                self.assertNotIn("in the background", card.asb_tooltip)
+                self.assert_accessible_label(card, card.asb_tooltip, asb.Gtk.AccessibleProperty.DESCRIPTION)
+                self.assertFalse(any("in the background" in text for text, _muted, _footer in tooltip_texts(identity)))
+        self.assertFalse(window.layout_path.exists() and "backgroundCounts" in json.loads(window.layout_path.read_text()))
         self.assertEqual(GTK_WARNINGS, [])
 
     def test_cut_remote_caption_of_a_limited_card_ends_at_the_footer_line_end(self):

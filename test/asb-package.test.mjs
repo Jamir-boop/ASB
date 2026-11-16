@@ -48,9 +48,23 @@ test('release runtime includes the card copy kind glyphs', () => {
   assert.ok(RUNTIME_FILES.includes('assets/icons/asb-name-symbolic.svg'));
 });
 
-test('release runtime includes the background command and agent glyphs', () => {
-  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-command-symbolic.svg'));
-  assert.ok(RUNTIME_FILES.includes('assets/icons/asb-agent-symbolic.svg'));
+test('release runtime includes the confirmed filled background glyphs with matching Android cut-outs', async () => {
+  const expected = {
+    command: '88a37fdf3abefe034bc30c0831acaca4f1022a1b7e42adc496ceab91ad4798e4',
+    agent: '8bf79f4821db73627666b3de954d76358cb59ddc401e1b398aadbd4ce2119472',
+  };
+  for (const [kind, digest] of Object.entries(expected)) {
+    const filename = `assets/icons/asb-${kind}-symbolic.svg`;
+    assert.ok(RUNTIME_FILES.includes(filename));
+    const svg = (await readFile(new URL(`../${filename}`, import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
+    assert.equal(createHash('sha256').update(svg).digest('hex'), digest);
+    const android = await readFile(new URL(`../android/app/src/main/res/drawable/ic_bg_${kind}.xml`, import.meta.url), 'utf8');
+    assert.equal(android.match(/android:pathData="([^"]+)"/)[1], svg.match(/ d="([^"]+)"/)[1]);
+    assert.match(svg, /fill-rule="evenodd"/);
+    assert.match(android, /android:fillType="evenOdd"/);
+    assert.match(android, /android:viewportWidth="12"/);
+    assert.match(android, /android:viewportHeight="12"/);
+  }
 });
 
 test('release runtime includes the board pets', () => {

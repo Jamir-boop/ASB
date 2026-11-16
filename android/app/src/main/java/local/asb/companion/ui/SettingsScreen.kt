@@ -100,6 +100,8 @@ fun SettingsScreen(
     onViewChanged: (String) -> Unit = {},
     onPetChanged: (String) -> Unit = {},
     onTextScaleChanged: (Float) -> Unit = {},
+    backgroundCounts: Boolean = false,
+    onBackgroundCountsChanged: (Boolean) -> Unit = {},
     useCameraArea: Boolean = true,
     onUseCameraAreaChanged: (Boolean) -> Unit = {},
     liveNotification: Boolean,
@@ -323,6 +325,9 @@ fun SettingsScreen(
                             }
                         }
                         Text("Changes the text on the session cards. Other text follows the phone font size.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        SettingsSwitch("Background counts", backgroundCounts, onChecked = onBackgroundCountsChanged)
+                        Text("Show the commands and subagents that a session runs in the background.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         PetSettings(pet) { value -> pet = value; store.pet = value; onPetChanged(value) }
                         SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)

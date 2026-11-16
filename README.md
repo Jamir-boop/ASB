@@ -49,7 +49,7 @@ The GNOME top bar and the Android app show the same counts, and Read on the phon
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.
-Background counts the commands and subagents that a session runs in the background now.
+Background counts the commands and subagents that a session runs in the background now. It is an option in Preferences > Appearance and in Android Settings, off by default.
 All apps also have Read and Unread, pins, the drawer, Mute, Discard, sounds, and the phone. Cards of other machines do not open and have no Discard.
 
 ## Install on Linux
