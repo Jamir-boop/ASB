@@ -6,6 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { invalidateClaudeData, loadClaudeDesktopCodeThreads } from '../src/claude-data.mjs';
 import { loadCodexDashboard, readBridgeMessages } from '../src/codex-data.mjs';
+import { processStart } from '../src/claude-registry.mjs';
 import { buildSwitchboardDashboard, loadSwitchboardDashboard, resolveSessionMessages } from '../src/switchboard.mjs';
 
 const nowMs = Date.parse('2026-10-15T10:00:00.000Z');
@@ -166,7 +167,7 @@ test('the bridge reader keeps delivered incoming messages and never reads the me
   await writeFile(path.join(codexDir, 'plugin-state', 'asb-bridge', `${uuid(4)}.sqlite`), 'not a database');
   await writeFile(path.join(codexDir, 'plugin-state', 'asb-bridge', 'notes.sqlite'), 'not a thread');
 
-  const messages = await readBridgeMessages(codexDir, now - 120_000);
+  const { messages } = await readBridgeMessages(codexDir, now - 120_000);
   assert.deepEqual(byTime(messages), [
     { to: uuid(1), from: uuid(12), atMs: (seconds - 30) * 1000 },
     { to: uuid(1), from: uuid(11), atMs: (seconds - 20) * 1000 },
@@ -174,8 +175,8 @@ test('the bridge reader keeps delivered incoming messages and never reads the me
     { to: uuid(2), from: uuid(20), atMs: (seconds - 1) * 1000 },
   ]);
   // A later window start filters the cached rows.
-  assert.deepEqual(byTime(await readBridgeMessages(codexDir, (seconds - 15) * 1000)).map((message) => message.from), [uuid(10), uuid(20)]);
-  assert.deepEqual(await readBridgeMessages(path.join(codexDir, 'missing'), now - 120_000), []);
+  assert.deepEqual(byTime((await readBridgeMessages(codexDir, (seconds - 15) * 1000)).messages).map((message) => message.from), [uuid(10), uuid(20)]);
+  assert.deepEqual(await readBridgeMessages(path.join(codexDir, 'missing'), now - 120_000), { messages: [], waits: new Map() });
 });
 
 test('the bridge reader sees a row that an open WAL writer adds', async (t) => {
@@ -184,9 +185,9 @@ test('the bridge reader sees a row that an open WAL writer adds', async (t) => {
   const writer = bridgeDatabase(codexDir, uuid(1), { wal: true });
   t.after(() => writer.database.close());
   writer.add([uuid(10), 'in', 'accepted', seconds - 2, 'message']);
-  assert.deepEqual(await readBridgeMessages(codexDir, now - 120_000), [{ to: uuid(1), from: uuid(10), atMs: (seconds - 2) * 1000 }]);
+  assert.deepEqual((await readBridgeMessages(codexDir, now - 120_000)).messages, [{ to: uuid(1), from: uuid(10), atMs: (seconds - 2) * 1000 }]);
   writer.add([uuid(11), 'in', 'accepted', seconds - 1, 'message']);
-  assert.deepEqual(byTime(await readBridgeMessages(codexDir, now - 120_000)).map((message) => message.from), [uuid(10), uuid(11)]);
+  assert.deepEqual(byTime((await readBridgeMessages(codexDir, now - 120_000)).messages).map((message) => message.from), [uuid(10), uuid(11)]);
 });
 
 test('the Codex dashboard attaches incoming bridge messages to the receiving thread', async (t) => {
@@ -309,4 +310,59 @@ test('session messages use the scoped row IDs of a non-builtin source', async (t
     { from: `claude-desktop-code:${local(1)}`, to: `work:${uuid(301)}`, atMs: nowMs - 2000 },
     { from: `work:${uuid(301)}`, to: `claude-desktop-code:${local(1)}`, atMs: nowMs - 1000 },
   ]);
+});
+
+// The Bridge runtime and receiver rows of a synthetic state database: wait counts and times, never request text.
+function bridgeWaits(codexDir, threadId, { approvals = 0, questions = 0, approvalAt = null, questionAt = null, pid = process.pid, procStart } = {}) {
+  const database = new DatabaseSync(path.join(codexDir, 'plugin-state', 'asb-bridge', `${threadId}.sqlite`));
+  database.exec(`create table if not exists receiver(singleton integer primary key, pid integer not null, proc_start text not null);
+    create table if not exists runtime(singleton integer primary key, status text not null, mode text not null, updated_at integer, hop_token text,
+      approvals integer not null default 0, questions integer not null default 0, approval_at integer, question_at integer);`);
+  database.prepare('insert or replace into receiver values (1, ?, ?)').run(pid, procStart);
+  database.prepare(`insert or replace into runtime(singleton, status, mode, approvals, questions, approval_at, question_at)
+    values (1, 'busy', 'prompting', ?, ?, ?, ?)`).run(approvals, questions, approvalAt, questionAt);
+  database.close();
+}
+
+test('the Codex dashboard shows a Bridge approval wait only for a live receiver', async (t) => {
+  const codexDir = await bridgeDirectory(t);
+  const now = Date.now();
+  const databasePath = path.join(codexDir, 'state_5.sqlite');
+  const state = new DatabaseSync(databasePath);
+  state.exec(`create table threads(id text primary key, rollout_path text default '', created_at integer, updated_at integer,
+    source text default 'vscode', model_provider text, cwd text, title text, tokens_used integer, archived integer, git_sha text,
+    git_branch text, git_origin_url text, agent_nickname text, agent_role text, model text, reasoning_effort text,
+    created_at_ms integer, updated_at_ms integer);
+    insert into threads(id, title, created_at_ms, updated_at_ms) values ('${uuid(1)}', 'Live', ${now}, ${now}),
+      ('${uuid(2)}', 'Dead', ${now}, ${now}), ('${uuid(3)}', 'Old Bridge', ${now}, ${now});`);
+  state.close();
+  const procStart = await processStart(process.pid);
+  assert.ok(procStart);
+  const approvalAt = now - 10 * 60_000;
+  bridgeWaits(codexDir, uuid(1), { approvals: 1, approvalAt, procStart });
+  // A wait is older than the message window: the old file time must not hide it.
+  const livePath = path.join(codexDir, 'plugin-state', 'asb-bridge', `${uuid(1)}.sqlite`);
+  await utimes(livePath, approvalAt / 1000, approvalAt / 1000);
+  bridgeWaits(codexDir, uuid(2), { approvals: 1, approvalAt, procStart: `${procStart}0` });
+  // An older Bridge file: no wait columns.
+  const old = bridgeDatabase(codexDir, uuid(3));
+  old.database.exec("create table runtime(singleton integer primary key, status text, mode text); insert into runtime values (1, 'busy', 'prompting');");
+  old.database.close();
+  const dashboard = await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(codexDir, 'session_index.jsonl'),
+    globalStatePath: path.join(codexDir, 'global.json'), nowMs: now });
+  const byId = (id) => dashboard.threads.find((thread) => thread.id === id);
+  assert.equal(byId(uuid(1)).awaitingPermission, true);
+  assert.equal(byId(uuid(1)).pendingToolAtMs, approvalAt);
+  assert.equal(byId(uuid(1)).awaitingUserInput, undefined);
+  for (const id of [uuid(2), uuid(3)]) {
+    assert.equal(Object.hasOwn(byId(id), 'awaitingPermission'), false);
+    assert.equal(Object.hasOwn(byId(id), 'pendingToolAtMs'), false);
+  }
+  const board = buildSwitchboardDashboard(dashboard.threads, [], now);
+  const row = (id) => board.threads.find((item) => item.id === id);
+  assert.equal(row(uuid(1)).state, 'waiting');
+  assert.equal(row(uuid(1)).actionRequired, true);
+  assert.equal(row(uuid(1)).questionPending, false);
+  assert.notEqual(row(uuid(2)).state, 'waiting');
+  assert.notEqual(row(uuid(3)).state, 'waiting');
 });

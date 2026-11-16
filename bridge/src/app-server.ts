@@ -5,12 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { uuid } from './claude';
 import { checkSocketFile, isWindows } from './platform';
-import { permissionMode, type Runtime } from './desktop';
+import { permissionMode, waitingOnApproval, type Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
 import { version } from './version';
 import { DeliveryRefused, headerInputId } from './delivery';
 
-const statusSchema = z.object({ type: z.string() });
+// Codex 0.169 ThreadStatus: { type: 'active', activeFlags: ('waitingOnApproval' | 'waitingOnUserInput')[] } or another type.
+const statusSchema = z.object({ type: z.string(), activeFlags: z.array(z.string()).optional() });
 const threadSchema = z.object({ id: uuid, status: statusSchema, canAcceptDirectInput: z.boolean().nullable().optional() });
 const permissionsSchema = z.object({ approvalPolicy: z.union([z.string(), z.record(z.string(), z.unknown())]),
   sandboxPolicy: z.object({ type: z.string() }) });
@@ -135,7 +136,7 @@ export class AppServer {
       const queue = z.object({ data: z.array(z.unknown()) }).parse(await this.request('thread/queue/list', { threadId: this.threadId, limit: 1 }));
       if (queue.data.length) status = 'busy';
     }
-    return { status, mode: this.mode };
+    return { status, mode: this.mode, approval: waitingOnApproval(thread.status) };
   }
 
   async cwd() {

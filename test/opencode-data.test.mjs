@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { querySqliteJson } from '../src/codex-data.mjs';
+import { processStart } from '../src/claude-registry.mjs';
 import { defaultOpenCodeStateDir, invalidateOpenCodeData, loadOpenCodeDashboard, opencodeBridgeId } from '../src/opencode-data.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
@@ -305,5 +306,41 @@ test('OpenCode without stateDir ignores a plugin database under the temporary ho
     f.add(1, 'in', 'started', -20);
     const result = await loadOpenCodeDashboard({ dataDir: f.dataDir, nowMs: now });
     assert.ok(result.threads.every((thread) => !Object.hasOwn(thread, 'incomingMessages')));
+  } finally { f.writer.close(); }
+});
+
+test('OpenCode shows Bridge questions and approvals only for a live receiver', async (t) => {
+  const f = await messageFixture(t);
+  try {
+    const procStart = await processStart(process.pid);
+    assert.ok(procStart);
+    f.writer.exec(`create table receiver(singleton integer primary key, pid integer not null, proc_start text not null);
+      create table runtime(singleton integer primary key, status text not null, mode text not null,
+        approvals integer not null default 0, questions integer not null default 0, approval_at integer, question_at integer);`);
+    f.writer.prepare('insert into receiver values (1, ?, ?)').run(process.pid, procStart);
+    f.writer.prepare("insert into runtime values (1, 'busy', 'prompting', 2, 1, ?, ?)").run(now - 2 * minute, now - minute);
+    const load = () => loadOpenCodeDashboard({ dataDir: f.dataDir, stateDir: f.stateDir, nowMs: now });
+    let thread = (await load()).threads.find((item) => item.id === sessionIds[0]);
+    assert.equal(thread.awaitingPermission, true);
+    assert.equal(thread.pendingToolAtMs, now - 2 * minute);
+    assert.equal(thread.awaitingUserInput, true);
+    assert.equal(thread.userQuestionBlocking, true);
+    assert.equal(thread.latestBlockingQuestionAtMs, now - minute);
+    assert.equal(thread.latestUserQuestionAtMs, now - minute);
+    const other = (await load()).threads.find((item) => item.id === sessionIds[1]);
+    assert.equal(Object.hasOwn(other, 'awaitingPermission'), false);
+    const board = buildSwitchboardDashboard((await load()).threads, [], now);
+    const row = board.threads.find((item) => item.id === sessionIds[0]);
+    assert.equal(row.state, 'waiting');
+    assert.equal(row.questionPending, true);
+    // An approval alone asks for an action.
+    f.writer.exec('update runtime set questions = 0, question_at = null');
+    thread = (await load()).threads.find((item) => item.id === sessionIds[0]);
+    assert.equal(thread.awaitingUserInput, undefined);
+    assert.equal(buildSwitchboardDashboard([thread], [], now).threads[0].actionRequired, true);
+    // A receiver process that ended, or a PID with another start time, gives no wait.
+    f.writer.prepare('update receiver set proc_start = ?').run(`${procStart}0`);
+    thread = (await load()).threads.find((item) => item.id === sessionIds[0]);
+    assert.equal(Object.hasOwn(thread, 'awaitingPermission'), false);
   } finally { f.writer.close(); }
 });

@@ -17,13 +17,18 @@ const packetSchema = z.object({
   version: z.number().optional(), params: z.unknown().optional(),
 });
 type Packet = z.infer<typeof packetSchema>;
+// The app-server ThreadStatus shape; this internal IPC was not checked for activeFlags, so they are optional.
+const statusSchema = z.object({ type: z.string(), activeFlags: z.array(z.string()).optional() });
 const maxDesktopFrameBytes = 256 * 1024 * 1024;
-const snapshotSchema = z.object({ cwd: z.string().min(1), threadRuntimeStatus: z.object({ type: z.string() }),
+const snapshotSchema = z.object({ cwd: z.string().min(1), threadRuntimeStatus: statusSchema,
   turns: z.unknown().optional(), turnHistory: z.unknown().optional(),
   currentPermissions: z.object({ approvalPolicy: z.union([z.string(), z.record(z.string(), z.unknown())]),
     sandboxPolicy: z.object({ type: z.string() }).optional() }).optional() });
 type Snapshot = z.infer<typeof snapshotSchema>;
-export type Runtime = { status: 'idle' | 'busy' | 'unknown'; mode: 'prompting' | 'bypass' | 'unknown' };
+// approval: Codex only, true while the active turn waits on an approval (activeFlags waitingOnApproval).
+export type Runtime = { status: 'idle' | 'busy' | 'unknown'; mode: 'prompting' | 'bypass' | 'unknown'; approval?: boolean };
+export const waitingOnApproval = (status: z.infer<typeof statusSchema>) =>
+  status.type === 'active' && (status.activeFlags ?? []).includes('waitingOnApproval');
 const acceptedSchema = z.object({ result: z.union([
   z.object({ turn: z.object({ id: uuid }) }), z.object({ turnId: uuid }),
 ]) });
@@ -130,7 +135,7 @@ class DesktopConnection {
     const state = await this.snapshot();
     return { status: state.threadRuntimeStatus.type === 'idle' ? 'idle'
       : state.threadRuntimeStatus.type === 'active' ? 'busy' : 'unknown',
-      mode: permissionMode(state.currentPermissions) };
+      mode: permissionMode(state.currentPermissions), approval: waitingOnApproval(state.threadRuntimeStatus) };
   }
 
   async inputs() { return desktopInputs(await this.snapshot()); }
@@ -150,7 +155,7 @@ class DesktopConnection {
   }
 
   private report(state: Runtime) {
-    if (state.status === this.observed?.status && state.mode === this.observed.mode) return;
+    if (state.status === this.observed?.status && state.mode === this.observed.mode && state.approval === this.observed.approval) return;
     this.observed = state;
     this.onState?.(state);
   }
@@ -237,8 +242,9 @@ class DesktopConnection {
               for (const patch of params.change.patches ?? []) {
                 if (!patch.path.length) { state.status = 'unknown'; state.mode = 'unknown'; }
                 else if (patch.path[0] === 'threadRuntimeStatus' && patch.path.length === 1) {
-                  const value = snapshotSchema.shape.threadRuntimeStatus.safeParse(patch.value).data?.type;
-                  state.status = value === 'idle' ? 'idle' : value === 'active' ? 'busy' : 'unknown';
+                  const value = snapshotSchema.shape.threadRuntimeStatus.safeParse(patch.value).data;
+                  state.status = value?.type === 'idle' ? 'idle' : value?.type === 'active' ? 'busy' : 'unknown';
+                  state.approval = value ? waitingOnApproval(value) : false;
                 } else if (patch.path[0] === 'threadRuntimeStatus') state.status = 'unknown';
                 else if (patch.path[0] === 'currentPermissions' && patch.path.length === 1) {
                   const value = snapshotSchema.shape.currentPermissions.safeParse(patch.value).data;

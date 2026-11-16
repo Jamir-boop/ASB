@@ -20,6 +20,7 @@ type Subscription = { id: string; peer_id: string; peer_address: string; peer_st
 export const policySchema = z.enum(['default', 'accept', 'hold', 'refuse']);
 type Policy = z.infer<typeof policySchema>;
 const subscriptionLifetime = 12 * 60 * 60 * 1000;
+const clearWaits = 'approvals=0,questions=0,approval_at=NULL,question_at=NULL';
 // `unknown` comes only from the local engine. An older engine sends target-unavailable also when the message can have
 // gone out, so it is unknown too.
 const relayReply = z.union([z.strictObject({ ok: z.literal(true), outcome: z.literal('socket-written') }),
@@ -134,8 +135,16 @@ export class Bridge {
     if (!this.db.query<{ name: string }, []>('PRAGMA table_info(lifecycle)').all().some(column => column.name === 'ended_at')) {
       this.db.exec('ALTER TABLE lifecycle ADD COLUMN ended_at INTEGER');
     }
-    if (!this.db.query<{ name: string }, []>('PRAGMA table_info(runtime)').all().some(column => column.name === 'hop_token')) {
-      this.db.exec('ALTER TABLE runtime ADD COLUMN hop_token TEXT');
+    const runtimeColumns = this.db.query<{ name: string }, []>('PRAGMA table_info(runtime)').all();
+    for (const [name, sql] of Object.entries({
+      hop_token: 'ALTER TABLE runtime ADD COLUMN hop_token TEXT',
+      // Counts and times of the open approval and question requests; the engine reads them. Never the request text.
+      approvals: 'ALTER TABLE runtime ADD COLUMN approvals INTEGER NOT NULL DEFAULT 0',
+      questions: 'ALTER TABLE runtime ADD COLUMN questions INTEGER NOT NULL DEFAULT 0',
+      approval_at: 'ALTER TABLE runtime ADD COLUMN approval_at INTEGER',
+      question_at: 'ALTER TABLE runtime ADD COLUMN question_at INTEGER',
+    })) {
+      if (!runtimeColumns.some(column => column.name === name)) this.db.exec(sql);
     }
     this.guard = new PeerGuard(this.db);
     this.host = host ?? this.codexHost();
@@ -177,7 +186,7 @@ export class Bridge {
       this.db.run("UPDATE idle_requests SET status='expired' WHERE status IN ('waiting','submitting','unknown')");
       // An unknown input of an earlier session must not block the idle notices of this one; its status stays unknown.
       this.db.run("UPDATE messages SET awaiting_input=0 WHERE direction='in' AND status='unknown' AND awaiting_input=1");
-      this.db.run("UPDATE runtime SET status='unknown',mode='unknown' WHERE singleton=1");
+      this.db.run(`UPDATE runtime SET status='unknown',mode='unknown',${clearWaits} WHERE singleton=1`);
       this.db.run('DELETE FROM peer_guard');
       return generation;
     }).immediate();
@@ -272,13 +281,29 @@ export class Bridge {
 
   updateRuntime(state: Runtime, renamed = false) {
     if (this.closing) return;
-    this.db.run('UPDATE runtime SET updated_at=CASE WHEN status<>? THEN ? ELSE updated_at END,status=?,mode=? WHERE singleton=1',
-      [state.status, Date.now(), state.status, state.mode]);
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.run('UPDATE runtime SET updated_at=CASE WHEN status<>? THEN ? ELSE updated_at END,status=?,mode=? WHERE singleton=1',
+        [state.status, now, state.status, state.mode]);
+      if (state.status === 'unknown') this.db.run(`UPDATE runtime SET ${clearWaits} WHERE singleton=1`);
+      // Codex only: the approval time is when this wait was first seen.
+      else if (state.approval !== undefined) {
+        const waiting = state.status === 'busy' && state.approval ? 1 : 0;
+        this.db.run('UPDATE runtime SET approvals=?,approval_at=CASE WHEN ?=1 THEN coalesce(approval_at,?) END WHERE singleton=1', [waiting, waiting, now]);
+      }
+    })();
     this.registration?.update(state.status, renamed);
     if (this.listener) void this.exclusive(async () => {
       if (state.status === 'idle') await this.syncInputs();
       await this.flushIdle();
     }).catch(() => console.error('Inbound state update failed.'));
+  }
+
+  // The open approval and question requests of the OpenCode host: counts and the newest time of each kind.
+  setWaits(waits: { approvals: number; questions: number; approvalAt: number | null; questionAt: number | null }) {
+    if (this.closing) return;
+    this.db.run('UPDATE runtime SET approvals=?,questions=?,approval_at=?,question_at=? WHERE singleton=1',
+      [waits.approvals, waits.questions, waits.approvals ? waits.approvalAt : null, waits.questions ? waits.questionAt : null]);
   }
 
   private runtime() {
@@ -781,6 +806,7 @@ export class Bridge {
   async close() {
     if (this.closing) return;
     this.closing = true;
+    this.db.run(`UPDATE runtime SET ${clearWaits} WHERE singleton=1`);
     clearTimeout(this.expiryTimer);
     if (this.ownsReceiver && this.listener) await this.finishSession(this.listener.address);
     const withdraw = async () => {

@@ -16,6 +16,8 @@ export async function receiver(state: 'active' | 'idle' | 'notLoaded', dropAckno
   const submissions: { method: string; params: unknown }[] = [];
   const requests: z.infer<typeof requestSchema>[] = [];
   let stalledMethod: string | undefined;
+  let activeFlags: string[] | undefined;
+  const status = () => activeFlags ? { type: state, activeFlags } : { type: state };
   let permissions: unknown = { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } };
   let history: Record<string, unknown> = { turns: [], turnHistory: { kind: 'legacy' } };
   let submissionReply: Record<string, unknown> | undefined;
@@ -35,7 +37,7 @@ export async function receiver(state: 'active' | 'idle' | 'notLoaded', dropAckno
     };
     announce.add(() => write({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: 11,
       params: { conversationId: threadId, change: { type: 'patches', patches: [
-        { op: 'replace', path: ['threadRuntimeStatus'], value: { type: state } },
+        { op: 'replace', path: ['threadRuntimeStatus'], value: status() },
         { op: 'replace', path: ['currentPermissions'], value: permissions },
       ] } } }));
     socket.on('data', chunk => {
@@ -54,7 +56,7 @@ export async function receiver(state: 'active' | 'idle' | 'notLoaded', dropAckno
           if (!z.object({ following: z.boolean() }).parse(request.params).following) continue;
           write({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: 11,
             params: { conversationId: threadId, change: { type: 'snapshot',
-              conversationState: { cwd: root, threadRuntimeStatus: { type: state }, currentPermissions: permissions, ...history } } } });
+              conversationState: { cwd: root, threadRuntimeStatus: status(), currentPermissions: permissions, ...history } } } });
         } else {
           if (request.method === 'thread-follower-steer-turn' && endBeforeSteer) {
             state = 'idle';
@@ -79,7 +81,7 @@ export async function receiver(state: 'active' | 'idle' | 'notLoaded', dropAckno
     setHistory(value: Record<string, unknown>) { history = { turns: [], turnHistory: { kind: 'legacy' }, ...value }; },
     setSubmissionReply(value: Record<string, unknown>) { submissionReply = value; },
     setPermissions(value: unknown) { permissions = value; for (const send of announce) send(); },
-    setState(value: 'idle' | 'active' | 'notLoaded') { state = value; for (const send of announce) send(); }, close: async (removeRoot = true) => {
+    setState(value: 'idle' | 'active' | 'notLoaded', flags?: string[]) { state = value; activeFlags = flags; for (const send of announce) send(); }, close: async (removeRoot = true) => {
     for (const socket of clients) socket.destroy();
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (removeRoot) rmSync(root, { recursive: true });

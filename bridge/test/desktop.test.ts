@@ -91,11 +91,14 @@ posix('the Desktop observer follows real status changes without submitting turns
   const states: Runtime[] = [];
   const close = await watchDesktop(desktop.path, desktop.threadId, state => states.push(state), () => {});
   try {
-    expect(states).toEqual([{ status: 'idle', mode: 'prompting' }]);
+    expect(states).toEqual([{ status: 'idle', mode: 'prompting', approval: false }]);
     desktop.setState('active');
     const deadline = Date.now() + 1000;
     while (states.at(-1)?.status !== 'busy' && Date.now() < deadline) await Bun.sleep(5);
-    expect(states.at(-1)).toEqual({ status: 'busy', mode: 'prompting' });
+    expect(states.at(-1)).toEqual({ status: 'busy', mode: 'prompting', approval: false });
+    desktop.setState('active', ['waitingOnApproval']);
+    while (!states.at(-1)?.approval && Date.now() < deadline) await Bun.sleep(5);
+    expect(states.at(-1)).toEqual({ status: 'busy', mode: 'prompting', approval: true });
     desktop.setState('idle');
     while (states.at(-1)?.status !== 'idle' && Date.now() < deadline) await Bun.sleep(5);
     expect(states.at(-1)?.status).toBe('idle');
