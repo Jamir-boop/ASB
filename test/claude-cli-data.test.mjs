@@ -396,3 +396,33 @@ test('one scan checks each Claude project folder once for the desktop and the CL
   assert.deepEqual(await scan(), folders);
   assert.deepEqual(await scan(), folders);
 });
+
+test('a Claude CLI row counts the background shells of its subagents while its process runs', { skip: process.platform !== 'linux' }, async (t) => {
+  const nowMs = Date.now();
+  const { home, projectsDir } = await configHome(t);
+  const sessionId = 'dddddddd-eeee-4fff-8000-111111111111';
+  const at = (offset) => new Date(nowMs + offset).toISOString();
+  await writeFile(path.join(projectsDir, 'project', `${sessionId}.jsonl`), jsonl([
+    { type: 'user', timestamp: at(-60_000), sessionId, cwd: '/work/cli', entrypoint: 'cli', message: { role: 'user', content: 'Synthetic task' } },
+    { type: 'assistant', timestamp: at(-59_000), sessionId, message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'call-kid', name: 'Agent', input: { prompt: 'SYNTHETIC_PROMPT', run_in_background: true } }] } },
+    { type: 'user', timestamp: at(-58_900), sessionId, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-kid' }] },
+      toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'kid' } },
+    { type: 'assistant', timestamp: at(-58_000), sessionId, message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } },
+    { type: 'user', timestamp: at(-40_000), sessionId, message: { role: 'user',
+      content: '<task-notification><task-id>kid</task-id><status>completed</status></task-notification>' } },
+    { type: 'assistant', timestamp: at(-39_000), sessionId, message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } },
+  ]));
+  const child = path.join(projectsDir, 'project', sessionId, 'subagents', 'agent-kid.jsonl');
+  await mkdir(path.dirname(child), { recursive: true });
+  await writeFile(child, jsonl([
+    { type: 'user', timestamp: at(-58_800), isMeta: true, isSidechain: true, message: { role: 'user', content: 'Synthetic task' } },
+    { type: 'user', timestamp: at(-50_000), isSidechain: true, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-bash',
+      content: 'Command running in background with ID: kbash001. Output is being written to: /tmp/synthetic/kbash001.output' }] } },
+    { type: 'assistant', timestamp: at(-41_000), isSidechain: true, message: { role: 'assistant', stop_reason: 'end_turn', content: 'Done.' } },
+  ]));
+  const row = async () => (await loadClaudeCliThreads({ projectsDir, nowMs })).threads.find((thread) => thread.externalId === sessionId);
+  assert.equal((await row()).backgroundCommands, undefined);
+  await record(home, process.pid, { sessionId, startedAt: nowMs - 120_000 });
+  assert.equal((await row()).backgroundCommands, 1);
+});

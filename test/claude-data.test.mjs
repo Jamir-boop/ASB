@@ -16,6 +16,7 @@ import {
   normalizeClaudeDesktopCodeSession,
   openClaudeThread,
   parseClaudeJsonlSignals,
+  validClaudeRecord,
 } from '../src/claude-data.mjs';
 import { processStart } from '../src/claude-registry.mjs';
 import { buildSwitchboardDashboard, PendingTracker } from '../src/switchboard.mjs';
@@ -1759,4 +1760,247 @@ test('each end status of a background shell ends it, delivered or queued', { ski
       assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], `${status} ${queued}`);
     }
   }
+});
+
+// Background shells of subagents. A subagent log has no toolUseResult: the start, the TaskStop, and the end are only text.
+// The shapes copy the real records with synthetic IDs and text.
+const childResult = (offset, id, content, extra = {}) => resumeEvent('user', offset, { isSidechain: true,
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `call-${id}`, content }] }, ...extra });
+const childBash = (offset, id) => childResult(offset, id,
+  `Command running in background with ID: ${id}. Output is being written to: /tmp/synthetic/${id}.output`);
+const childMonitor = (offset, id, expires = 'expires in 5m') => childResult(offset, id,
+  `Monitor started (task ${id}, ${expires} unless the source ends first; you get one notice at expiry). Synthetic text.`);
+const childStop = (offset, id, task_type = 'local_bash') => childResult(offset, `stop-${id}`,
+  JSON.stringify({ message: `Successfully stopped task: ${id} (SYNTHETIC_COMMAND)`, task_id: id, task_type, command: 'SYNTHETIC_COMMAND' }));
+const noticeBody = (id, status, event = '') => `<task-notification>\n<task-id>${id}</task-id>\n${status ? `<status>${status}</status>\n` : ''}`
+  + `<summary>Synthetic summary</summary>\n${event ? `<event>${event}</event>\n` : ''}</task-notification>`;
+const childNotice = (offset, id, status = 'completed', kind = 'task-notification', event = '') => resumeEvent('user', offset, { isMeta: true,
+  isSidechain: true, origin: { kind }, message: { role: 'user', content: `[SYSTEM NOTIFICATION - NOT USER INPUT] Synthetic prefix.\n\n${noticeBody(id, status, event)}` } });
+const childExpiry = (offset, id) => childNotice(offset, id, '', 'task-notification', '[Monitor expired after 5m]');
+const childEnd = (offset) => resumeEvent('assistant', offset, { isSidechain: true, message: { stop_reason: 'end_turn', content: 'Done.' } });
+const agentLaunch = (offset, id) => [toolCall(offset, `call-${id}`, 'Agent', { prompt: 'SYNTHETIC_PROMPT', run_in_background: true }),
+  toolDone(offset + 100, `call-${id}`, { isAsync: true, status: 'async_launched', agentId: id })];
+
+// Each transcript read through the signal cache is one hit or one miss.
+const signalReads = () => { const { hits, misses } = getClaudeCacheStats().jsonlSignals; return hits + misses; };
+
+async function childFile(projectsDir, id, records, folder = 'project/cli_root') {
+  const file = path.join(projectsDir, folder, 'subagents', `agent-${id}.jsonl`);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, jsonl(records));
+  return file;
+}
+
+test('the start and end texts of subagent shells keep their format: Bash, Monitor deadlines, TaskStop, and notifications', () => {
+  const at = (offset) => resumeNowMs + offset;
+  const life = parseClaudeJsonlSignals(jsonl([
+    childBash(-9000, 'kbash001'), childMonitor(-8000, 'kmon0001'), childMonitor(-7000, 'kmon0002', 'expires in 2m 30s'),
+    childMonitor(-6000, 'kmon0003', 'expires in 45s'), childMonitor(-5000, 'kmon0004', 'expires soon'),
+  ])).lifecycle;
+  assert.deepEqual([...life.shells], [['kbash001', { startedAtMs: at(-9000), deadlineMs: 0 }],
+    ['kmon0001', { startedAtMs: at(-8000), deadlineMs: at(-8000) + 300_000 }], ['kmon0002', { startedAtMs: at(-7000), deadlineMs: at(-7000) + 150_000 }],
+    ['kmon0003', { startedAtMs: at(-6000), deadlineMs: at(-6000) + 45_000 }], ['kmon0004', { startedAtMs: at(-5000), deadlineMs: at(-5000) + 3_600_000 }]]);
+  // Each end form ends one shell: a prefixed notification, a Monitor expiry with no status, and a TaskStop text result.
+  const ended = parseClaudeJsonlSignals(jsonl([childBash(-9000, 'kbash001'), childMonitor(-8000, 'kmon0001'), childBash(-7000, 'kbash002'),
+    childNotice(-4000, 'kbash001', 'completed'), childExpiry(-3000, 'kmon0001'), childStop(-2000, 'kbash002')])).lifecycle;
+  assert.deepEqual([...ended.shells.keys()], []);
+  // A mid-text pattern, a pattern in a text item, a quoted notification (origin peer), a running Monitor event, a TaskStop of
+  // an agent, and copies in api-request-blob and queue-operation records start and end nothing.
+  const quiet = parseClaudeJsonlSignals(jsonl([childBash(-9000, 'kbash001'), childMonitor(-8000, 'kmon0001'),
+    childResult(-7000, 'mid', 'Synthetic output. Command running in background with ID: kmid0001. More text.'),
+    resumeEvent('user', -6900, { message: { content: [{ type: 'text', text: 'Command running in background with ID: ktext001. Synthetic.' }] } }),
+    childNotice(-6000, 'kbash001', 'completed', 'peer'), childNotice(-5900, 'kmon0001', '', 'task-notification', 'Synthetic event line'),
+    childStop(-5800, 'kbash001', 'local_agent'),
+    resumeEvent('api-request-blob', -5000, { message: { content: [{ type: 'tool_result', tool_use_id: 'x',
+      content: 'Command running in background with ID: kblob001. Synthetic.' }] }, content: noticeBody('kbash001', 'completed') }),
+    resumeEvent('api-request-blob', -4900, { message: { role: 'user', content: noticeBody('kmon0001', '', '[Monitor expired after 5m]') } }),
+    resumeEvent('queue-operation', -4800, { operation: 'enqueue', content: noticeBody('kbash001', 'killed') }),
+  ])).lifecycle;
+  assert.deepEqual([...quiet.shells.keys()], ['kbash001', 'kmon0001']);
+});
+
+test('a prefixed notification in a subagent log ends its shell and moves no status signal', () => {
+  // The same record with another origin is read as before this change: only the shells may differ.
+  const records = (kind) => [resumeMessage(-9000), resumeWork(-8500), childBash(-8000, 'kbash001'), childEnd(-7000),
+    childNotice(-6000, 'kbash001', 'completed', kind), resumeWork(-5000), childEnd(-4000)];
+  const { lifecycle: { shells: a, ...lifeA }, ...restA } = parseClaudeJsonlSignals(jsonl(records('peer')));
+  const { lifecycle: { shells: b, ...lifeB }, ...restB } = parseClaudeJsonlSignals(jsonl(records('task-notification')));
+  assert.deepEqual([[...a.keys()], [...b.keys()]], [['kbash001'], []]);
+  assert.deepEqual(lifeB, lifeA);
+  assert.deepEqual(restB, restA);
+});
+
+test('a Claude row counts the shells of its subagents, also after the agent ended, and copies change nothing', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), ...shellStart(-49_000, 'bash0001'), ...agentLaunch(-48_000, 'kid'),
+    resumeEnd(-47_000), resumeNotice(-30_000, 'kid', 'completed'), resumeEnd(-29_000)]);
+  const child = await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), resumeWork(-47_500), childBash(-47_000, 'kbash001'),
+    childMonitor(-46_000, 'kmon0001', 'expires in 60m'), childBash(-45_000, 'kbash002'), childEnd(-31_000)]);
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], 'no process');
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [4, undefined, false], 'ended agent');
+  await appendFile(child, jsonl([
+    resumeEvent('api-request-blob', -20_000, { message: { content: [{ type: 'tool_result', tool_use_id: 'x',
+      content: 'Command running in background with ID: kblob001. Synthetic.' }] }, content: noticeBody('kbash001', 'completed') }),
+    resumeEvent('queue-operation', -19_000, { operation: 'enqueue', content: noticeBody('kbash002', 'completed') }),
+    childNotice(-18_000, 'kbash001', 'completed', 'peer')]));
+  assert.deepEqual(backgroundCounts(await fixture.load()), [4, undefined, false], 'copies');
+  await appendFile(child, jsonl([childNotice(-10_000, 'kbash001', 'completed'), childExpiry(-9000, 'kmon0001'), childStop(-8000, 'kbash002')]));
+  await appendFile(fixture.file, jsonl([resumeNotice(-7000, 'bash0001', 'completed')]));
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], 'all ended');
+});
+
+test('subagent shells: Monitor deadlines, live process bounds, candidates, resumes, and two agents', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  // A Monitor with no end stops counting at its deadline, and the row asks for a check then.
+  let fixture = await signalFixture(t, [resumePrompt(-50_000), ...agentLaunch(-48_000, 'kid')]);
+  await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), resumeWork(-47_500), childMonitor(-30_000, 'kmon0001', 'expires in 1m')]);
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  const open = await fixture.load();
+  assert.deepEqual(backgroundCounts(open), [1, 1, false]);
+  assert.equal(open.backgroundCheckAtMs, resumeNowMs + 30_000);
+  assert.ok(buildSwitchboardDashboard([open], [], resumeNowMs).nextStatusCheckAtMs <= resumeNowMs + 30_001);
+  assert.equal((await fixture.load(resumeNowMs + 30_000)).backgroundCommands, undefined);
+
+  // An ended link with no log in its own folder is read through the candidates of the project folder.
+  fixture = await signalFixture(t, [resumePrompt(-50_000), ...agentLaunch(-48_000, 'kid'), resumeEnd(-47_000), resumeNotice(-30_000, 'kid')]);
+  await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), childBash(-47_000, 'kbash001'), childEnd(-31_000)], 'project/old_session');
+  const registry = await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [1, undefined, false], 'candidate');
+  // A live process that started after the shells gives 0.
+  await registry.write({ startedAt: resumeNowMs - 40_000 });
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], 'later process');
+
+  // A link that ended before the start of the live process is not read (synthetic: its log has a shell after that start).
+  fixture = await signalFixture(t, [resumePrompt(-50_000), ...agentLaunch(-48_000, 'kid'), resumeEnd(-47_000), resumeNotice(-40_000, 'kid')]);
+  await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), childBash(-20_000, 'kbash001')]);
+  const late = await liveRegistry(t, fixture.projectsDir, resumeNowMs - 30_000);
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], 'ended before the process');
+  await late.write({ startedAt: resumeNowMs - 45_000 });
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [1, undefined, false], 'ended in the process');
+  // With no live record, no ended child log is read: only the root bytes are read.
+  await late.remove();
+  invalidateClaudeData();
+  const reads = signalReads();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], 'no record');
+  assert.equal(signalReads() - reads, 1, 'only the root log is read');
+
+  // A resumed agent writes to the same log: each shell counts once. Two agents add up.
+  fixture = await signalFixture(t, [resumePrompt(-50_000), ...agentLaunch(-48_000, 'kid'), ...agentLaunch(-47_900, 'kid2'), resumeEnd(-47_000),
+    resumeNotice(-40_000, 'kid'), ...sendMessage(-35_000, resumeResult('kid'))]);
+  await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), childBash(-47_000, 'kbash001'), childEnd(-41_000),
+    resumeMessage(-34_800), childBash(-34_000, 'kbash002'), resumeWork(-33_000)]);
+  await childFile(fixture.projectsDir, 'kid2', [resumeMessage(-47_700), childBash(-46_000, 'kbash003'), resumeWork(-45_000)]);
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [3, 2, false], 'resume and two agents');
+
+  // A Monitor expiry in a root log ends the shell (no real root sample).
+  fixture = await signalFixture(t, [resumePrompt(-50_000), ...monitorStart(-49_000, 'mon00001'), resumeEnd(-48_000)]);
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [1, undefined, false], 'root Monitor');
+  await appendFile(fixture.file, jsonl([resumeEvent('user', -40_000, { message: { content: noticeBody('mon00001', '', '[Monitor expired after 5m]') } })]));
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], 'root expiry');
+});
+
+test('a TaskStop of an agent ends the shells of its log, also after the agent completed; a root shell stop ends a child shell', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  const setup = async (records, childRecords) => {
+    const fixture = await signalFixture(t, [resumePrompt(-50_000), ...agentLaunch(-48_000, 'kid'), ...records]);
+    const child = await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), childBash(-47_000, 'kbash001'), ...childRecords]);
+    await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+    invalidateClaudeData();
+    return { ...fixture, child };
+  };
+  // (1) The agent completes: its shell runs on. Then a TaskStop of the agent: 0. (4) The link kind stays task_complete.
+  let fixture = await setup([resumeEnd(-46_000), resumeNotice(-40_000, 'kid', 'completed'), resumeEnd(-39_000)], [childEnd(-41_000)]);
+  assert.deepEqual(backgroundCounts(await fixture.load()), [1, undefined, false], 'completed');
+  await appendFile(fixture.file, jsonl([...taskStop(-30_000, 'kid', 'local_agent'), resumeEnd(-29_000)]));
+  const stopped = await fixture.load();
+  assert.deepEqual(backgroundCounts(stopped), [undefined, undefined, false], 'stopped after completion');
+  assert.deepEqual([stopped.groupTaskEndKind || stopped.latestLifecycleKind, stopped.latestAgentFinalAtMs > 0], ['task_complete', true]);
+  // (3) A resume after the stop and a new shell: only the new shell counts.
+  await appendFile(fixture.file, jsonl(sendMessage(-20_000, resumeResult('kid'))));
+  await appendFile(fixture.child, jsonl([resumeMessage(-19_800), childBash(-19_000, 'kbash002'), resumeWork(-18_000)]));
+  assert.deepEqual(backgroundCounts(await fixture.load()), [1, 1, false], 'resumed');
+  // (2) A TaskStop of a running agent: 0.
+  fixture = await setup([resumeEnd(-46_000), ...taskStop(-30_000, 'kid', 'local_agent'), resumeEnd(-29_000)], [resumeWork(-46_500)]);
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, undefined, false], 'stopped while running');
+  // (5) A root TaskStop of the child shell ID: 0.
+  fixture = await setup([resumeEnd(-46_000), ...taskStop(-30_000, 'kbash001'), resumeEnd(-29_000)], [resumeWork(-46_500)]);
+  assert.deepEqual(backgroundCounts(await fixture.load()), [undefined, 1, false], 'root stop of a child shell');
+});
+
+test('a Claude registry read failure reads no ended child for shells and gives no counts', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), ...shellStart(-49_000, 'bash0001'), ...agentLaunch(-48_000, 'kid'),
+    resumeEnd(-47_000), resumeNotice(-30_000, 'kid')]);
+  await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), childBash(-47_000, 'kbash001'), childEnd(-31_000)]);
+  const sessions = path.join(path.dirname(fixture.projectsDir), 'sessions');
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  assert.deepEqual(backgroundCounts(await fixture.load()), [2, undefined, false]);
+  await chmod(sessions, 0o000);
+  try {
+    invalidateClaudeData();
+    const reads = signalReads();
+    const row = await fixture.load();
+    assert.deepEqual(backgroundCounts(row), [undefined, undefined, false]);
+    assert.notEqual(row.cliProcessEnded, true);
+    assert.equal(signalReads() - reads, 1, 'only the root log is read');
+  } finally { await chmod(sessions, 0o700); }
+});
+
+test('a saved Claude position of the old version, with no shell deadlines or stop times, is dropped', () => {
+  const life = { running: false, startedAtMs: 1, promptStartedAtMs: 1, activityAtMs: 1, eventAtMs: 1, kind: 'task_complete', finalAtMs: 1,
+    endedAtMs: 1, endKind: 'task_complete', limitResetsAtMs: 0, agentTools: [], wrapUps: [], messages: [] };
+  const record = (lifecycle) => ({ atMs: 1, ctimeMs: 1, dev: 1, guard: 'x', guardBytes: 64, ino: 1, k: 'x', lifecycle, mtimeMs: 1, offset: 64, size: 64 });
+  assert.equal(validClaudeRecord(record({ ...life, agents: [['kid', 1, 1, 1, 2, 'task_complete', null, 3]],
+    shells: [['kbash001', 1, 0]], shellEnds: [['kbash002', 2]] })), true);
+  assert.equal(validClaudeRecord(record({ ...life, agents: [['kid', 1, 1, 1, 2, 'task_complete', null]], shells: [['kbash001', 1]] })), false);
+});
+
+// The real queue record shape: type, operation, timestamp, sessionId, and string content.
+const queueOp = (offset, operation, content) => ({ type: 'queue-operation', operation,
+  timestamp: new Date(resumeNowMs + offset).toISOString(), sessionId: 'cli_root', content });
+
+test('a root queue enqueue of an end ends a child shell; remove, dequeue, mid-text, early, Monitor events, and child queues do not', { skip: process.platform !== 'linux' || process.getuid?.() === 0 }, async (t) => {
+  const setup = async (rootRecords, childRecords = []) => {
+    const fixture = await signalFixture(t, [resumePrompt(-50_000), ...agentLaunch(-48_000, 'kid'), resumeEnd(-47_000), resumeNotice(-40_000, 'kid'),
+      resumeEnd(-39_000), ...rootRecords]);
+    await childFile(fixture.projectsDir, 'kid', [resumeMessage(-47_800), childBash(-47_000, 'kbash001'), childMonitor(-46_500, 'kmon0001', 'expires in 60m'),
+      childEnd(-41_000), ...childRecords]);
+    await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+    invalidateClaudeData();
+    return backgroundCounts(await fixture.load())[0];
+  };
+  assert.equal(await setup([]), 2, 'open');
+  assert.equal(await setup([queueOp(-30_000, 'enqueue', noticeBody('kbash001', 'completed'))]), 1, 'enqueue end');
+  assert.equal(await setup([queueOp(-30_000, 'enqueue', noticeBody('kmon0001', '', '[Monitor expired after 60m]'))]), 1, 'enqueue expiry');
+  assert.equal(await setup([queueOp(-30_000, 'enqueue', noticeBody('kmon0001', '', 'Synthetic event line'))]), 2, 'Monitor event');
+  assert.equal(await setup([queueOp(-30_000, 'remove', noticeBody('kbash001', 'completed')),
+    queueOp(-29_000, 'dequeue', noticeBody('kbash001', 'completed'))]), 2, 'remove and dequeue');
+  assert.equal(await setup([queueOp(-30_000, 'enqueue', `Synthetic typed text ${noticeBody('kbash001', 'completed')}`)]), 2, 'mid-text');
+  assert.equal(await setup([resumeEvent('api-request-blob', -30_000, { content: noticeBody('kbash001', 'completed') })]), 2, 'blob copy');
+  assert.equal(await setup([queueOp(-47_500, 'enqueue', noticeBody('kbash001', 'completed'))]), 2, 'before the start');
+  assert.equal(await setup([], [queueOp(-30_000, 'enqueue', noticeBody('kbash001', 'completed'))]), 2, 'child queue');
+  // The end stays after many later enqueues of other IDs (the map keeps the newest 5000 IDs).
+  assert.equal(await setup([queueOp(-30_000, 'enqueue', noticeBody('kbash001', 'completed')),
+    ...Array.from({ length: 200 }, (_, index) => queueOp(-29_000 + index, 'enqueue', noticeBody(`kother${index}`, 'completed')))]), 1, 'many later');
+});
+
+test('a root queue enqueue changes no agent, status, or other signal', () => {
+  const records = [resumePrompt(-50_000), ...agentLaunch(-48_000, 'kid'), ...shellStart(-47_500, 'bash0001'), resumeEnd(-47_000)];
+  const plain = parseClaudeJsonlSignals(jsonl(records));
+  // The records of a real root log already hold the session ID, so it is left out here.
+  const queued = parseClaudeJsonlSignals(jsonl([...records, queueOp(-40_000, 'enqueue', noticeBody('kid', 'completed')),
+    queueOp(-39_000, 'enqueue', noticeBody('bash0001', 'killed'))].map(({ sessionId, ...record }) => record)));
+  const { lifecycle: { shellEnds: a, ...lifeA }, ...restA } = plain, { lifecycle: { shellEnds: b, ...lifeB }, ...restB } = queued;
+  assert.deepEqual(lifeB, lifeA);
+  assert.deepEqual(restB, restA);
+  // An agent ID is not kept: agent ends are not shell ends.
+  assert.deepEqual([...b.keys()], ['bash0001']);
 });
