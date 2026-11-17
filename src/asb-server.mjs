@@ -803,6 +803,8 @@ export function createAsbServer({
         const text = snapshot.listText(dashboard);
         if (savedList?.text !== text || savedList.palette !== palette) savedList = listEntry(text, palette, text);
         const questions = url.searchParams.get('text') === '1' ? questionTexts(dashboard) : '';
+        // No question is pending now: an answered question does not stay in the saved list and its gzip.
+        if (url.searchParams.get('text') === '1' && !questions) savedTextList = null;
         if (questions && (savedTextList?.text !== text || savedTextList.palette !== palette || savedTextList.questions !== questions)) {
           savedTextList = { ...listEntry(text, palette, questionListText(dashboard, text), 'text=1\0'), questions };
         }

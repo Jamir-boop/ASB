@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { claudePositionRecords, loadClaudeDesktopCodeThreads, parseClaudeJsonlSignals, useClaudePositions, useClaudeQuestionText } from '../src/claude-data.mjs';
@@ -118,6 +118,31 @@ test('the dashboard sends questionText only with text=1, only for a pending ques
   const after = await get('/api/dashboard?text=1');
   assert.equal(after.text.includes('questionText'), false);
   assert.equal(after.text.includes(QUESTION), false);
+});
+
+test('an answered question leaves the text=1 reply with the plain list while the switch stays on', async (t) => {
+  t.after(() => useClaudeQuestionText(false));
+  useClaudeQuestionText(true);
+  const nowMs = Date.now();
+  const { homeDir, transcript } = await claudeHome(t, nowMs, [ask(nowMs, -30_000, 'ask-1', { questions: [{ question: QUESTION }] })]);
+  const registry = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux', discoverPersonal: false });
+  const server = createSwitchboardServer({ pendingStatePath: false, palettePath: '', dashboardWatchPaths: [], sourceRegistry: registry,
+    loadDashboard: (options) => loadSwitchboardDashboard({ ...options, loadCodex: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) }) });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const get = async (route) => {
+    const response = await fetch(base + route, { headers: { 'accept-encoding': 'gzip' } });
+    return { etag: response.headers.get('etag'), text: await response.text() };
+  };
+  assert.equal((await get('/api/dashboard?text=1')).text.includes(QUESTION), true);
+  await appendFile(transcript, `${JSON.stringify(answer(nowMs, -10_000, 'ask-1'))}\n`);
+  await utimes(transcript, nowMs / 1000 + 1, nowMs / 1000 + 1);
+  server.invalidateDashboard('synthetic-answer');
+  const answered = await get('/api/dashboard?text=1');
+  assert.equal(answered.text.includes(QUESTION), false);
+  // With no pending question, text=1 gets the plain list and tag.
+  assert.equal(answered.etag, (await get('/api/dashboard')).etag);
 });
 
 test('a saved reader record never holds question text, and with the switch off no text is kept', async (t) => {
