@@ -87,11 +87,26 @@ fun limitLeft(row: Thread, nowMs: Long = System.currentTimeMillis()): Long {
     return seconds + if (Math.floorMod(reset, 1000L) > Math.floorMod(nowMs, 1000L)) 1 else 0
 }
 
-// Port of clock_interval
-// shortcut: times show whole minutes, but the clock still ticks every 2 s for a Working row or a countdown under one hour, and a
-// longer countdown can lag up to 60 s; port clock_wait (wake at the next whole minute) if battery or lag matters.
-fun clockInterval(rows: List<Thread>, nowMs: Long = System.currentTimeMillis()): Long =
-    if (rows.any { it.state == "working" && !it.archived || limitLeft(it, nowMs) in 1L..3600L }) 2 else 60
+// Port of clock_interval: a Working time updates each 30 s (the Working sign pulses between the updates).
+// shortcut: times show whole minutes, but the clock still ticks every 2 s for a countdown under one hour, and a longer countdown
+// can lag up to 60 s; port clock_wait (wake at the next whole minute) if battery or lag matters.
+fun clockInterval(rows: List<Thread>, nowMs: Long = System.currentTimeMillis()): Long = when {
+    rows.any { limitLeft(it, nowMs) in 1L..3600L } -> 2
+    rows.any { it.state == "working" && !it.archived } -> WORKING_CLOCK_S
+    else -> 60
+}
+
+const val WORKING_CLOCK_S = 30L
+// The Working sign: a dot before the word Working, alpha 0.4 to 1.0 and back in 1.6 s.
+const val WORKING_PULSE_MS = 1600
+
+/** The Working sign alpha at [phase] (0 to 1 of one pulse); still at full alpha with Android animations off. */
+fun workingSignAlpha(animationsOff: Boolean, phase: Float): Float =
+    if (animationsOff) 1f else (.7 + .3 * kotlin.math.cos(2 * Math.PI * phase)).toFloat()
+
+/** As the board card_title: the title with its spaces made one, or Untitled session. */
+fun cardTitle(row: Thread): String =
+    row.title.split(pythonSpace).filter { it.isNotEmpty() }.joinToString(" ").ifEmpty { "Untitled session" }
 
 // Port of attention_indicator
 fun attentionIndicator(row: Thread, drawer: Boolean = false, nowMs: Long = System.currentTimeMillis()): String = when {
@@ -405,7 +420,9 @@ const val COMFORTABLE_PADDING = 2
 const val COMFORTABLE_SPACING = 2
 const val CAPTION_LINE_HEIGHT = 14
 const val TITLE_LINE_HEIGHT = 16
+// The Comfortable title takes 1 or 2 lines and the state line follows it; the card height keeps room for 2.
 const val COMFORTABLE_TITLE_LINES = 2
+const val COMFORTABLE_TITLE_MIN_LINES = 1
 const val PROVIDER_MARK_SIZE = 14
 const val LIMIT_CLOCK_SIZE = 12
 
@@ -556,6 +573,67 @@ fun cornerControls(
         indicator == "stop" -> add(CornerControl("stop", null, "Task stopped"))
     }
     if (row.pinned) add(CornerControl("pin", "unpin", "Unpin in ASB"))
+}
+
+/** True when an alert ("!" mark) is a usage limit stop, as indicatorMeaning reads it; else a failure or a process end. */
+fun alertIsLimit(row: Thread): Boolean = !row.processEnded && row.lastOutcome != "failed"
+
+/** The meaning of a Pending corner mark for TalkBack, not its glyph; "" for the other corner controls. */
+fun cornerMeaning(row: Thread, control: CornerControl): String = when (control.kind) {
+    "question" -> if (showsAction(row) || control.action == null) "Waiting for approval" else "Needs your answer"
+    "alert" -> if (alertIsLimit(row)) "Usage limit" else if (row.processEnded) "Process ended" else "Failed"
+    "dot" -> when {
+        row.failedAttention -> if (row.processEnded) "Process ended" else "Failed"
+        row.completionAttention -> "Done, unread"
+        else -> "Unread"
+    }
+    else -> ""
+}
+
+/** The words of a corner control: its meaning, its action, and the session title. */
+fun cornerDescription(row: Thread, control: CornerControl): String =
+    cornerMeaning(row, control).let { if (it.isEmpty()) "" else "$it. " } + "${control.label}: ${cardTitle(row)}"
+
+// Each corner control has a 48 dp touch target of its own; the controls never overlap.
+const val CORNER_TARGET = 48
+
+/**
+ * The corner slots from left to right, so the read and pin slots keep their places as on the desktop: the pin is at the end,
+ * the read mark left of it, the drawer left of that. A slot at the end with no control is null; no control gives no slot.
+ */
+fun cornerSlots(controls: List<CornerControl>): List<CornerControl?> {
+    val pin = controls.firstOrNull { it.kind == "pin" }
+    val read = controls.firstOrNull { it.kind !in setOf("drawer", "pin") }
+    val drawer = controls.firstOrNull { it.kind == "drawer" }
+    val slots = listOf(pin, read, drawer)
+    val used = slots.indexOfLast { it != null } + 1
+    return slots.take(used).reversed()
+}
+
+/** The width in dp that the title and folder lines leave free for the corner controls. */
+fun cornerReserve(slots: List<CornerControl?>): Int = slots.size * CORNER_TARGET
+
+/** The machine that opens a row: its own machine name, else the paired PC. */
+fun openMachine(row: Thread, serverName: String): String =
+    row.machineName.ifEmpty { serverName.ifEmpty { "the PC" } }
+
+/** The first line of the inspector Open button; the app is the second line. */
+fun openLabel(row: Thread, serverName: String): String = "Open on ${openMachine(row, serverName)}"
+
+/** Why the inspector Open button is dimmed, else "" (the same words as the tap on the card). */
+fun openReason(row: Thread): String = when {
+    row.canOpen -> ""
+    row.remote -> "Open it on ${row.machineName.ifEmpty { "another machine" }}."
+    row.surface == "cli" -> "ASB does not open CLI sessions."
+    else -> "This session has no direct link."
+}
+
+/** Why a row panel switch is dimmed, else "". Only the drawer switch can have no action. */
+fun panelReason(row: Thread, key: String, controls: Map<String, PanelControl>): String = when {
+    controls[key]?.action != null -> ""
+    key == "drawer" && row.state == "working" -> "A Working session cannot go in the drawer."
+    key == "drawer" -> "Only an unread or waiting session can go in the drawer."
+    else -> ""
 }
 
 /** The Compact question or alert glyph: disc diameter in dp, type size in sp, and glyph color. */

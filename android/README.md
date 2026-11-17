@@ -206,21 +206,36 @@ camera band clear.
 The session cards use the desktop Compact and Comfortable views. Select the
 view in Settings; the default is Comfortable. Compact rows are at least 48 dp
 high for touch, and Comfortable rows are at least 68 dp. In Comfortable, the
-card corner shows the Read target, the pin of a pinned row, the drawer glyph of
-a drawer row, and the armed **Mark read when done** ring. Tap a corner control
-to use it. Pin, Put in drawer, and **Mark read when done** are in the session
+title takes 1 or 2 lines and the state line follows it, and a row with no title
+shows `Untitled session`, as on the PC. The card corner shows the Read target,
+the pin of a pinned row, the drawer glyph of a drawer row, and the armed **Mark
+read when done** ring. Each corner control has its own 48 dp touch target, and
+the folder and title lines end before the controls. The pin slot is at the end
+and the Read slot left of it, so they keep their places. The marks are `?` for a
+question or an approval, `!` for a failure, and a clock in the same disc for a
+usage limit stop; TalkBack reads their meaning (`Needs your answer`, `Waiting for
+approval`, `Failed`, `Usage limit`, `Done, unread`). Tap a corner control to use
+it. Pin, Put in drawer, and **Mark read when done** are in the session
 inspector.
 
+A Working row has a small dot before `Working` that pulses (1.6 s) in the
+Working color, and its working time updates each 30 s. The pulse runs only
+while the list shows and the app is in view; with Android animations off, the
+dot is still. TalkBack reads no change.
+
 Settings > Appearance > **Pets** is Off by default. Select a pixel crab,
-pigeon, or cat to carry each message from card to card, as on the PC. The stage
+pigeon, or cat to carry each message from card to card, as on the PC. Pets and
+message lights draw under the card text, so they never cover it. The stage
 below the choices shows this motion. With animations off, the 2 marks light
 instead.
 
 Touch and hold a card to open the session inspector at that point. It shows
-the provider, folder, title, and state, and an **Open in <app>** button. Below
-it are the **Unread**, **Pinned**, and **In the drawer** switches, **Pin order**
-(**Earlier** and **Later**) for a pinned row, and **Mark read when done** for a
-Working row. A control that the row does not allow is dimmed. The inspector
+the provider, folder, title, and state, and an **Open on <machine>** button with
+the app on a second line. Below it are the **Unread**, **Pinned**, and **In the
+drawer** switches, **Pin order** (**Earlier** and **Later**) for a pinned row,
+and **Mark read when done** for a Working row. A control that the row does not
+allow is dimmed, TalkBack says that it is disabled, and a line under it says
+why (for example `ASB does not open CLI sessions.`). The inspector
 stays open after a change and shows the new row data. It covers the message
 bar, so it shows the current message (for example an error) as a caption below
 the switches. Back, a tap outside, Open, or the row leaving the list closes it.
