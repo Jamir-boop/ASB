@@ -76,7 +76,7 @@ class AndroidCouncilRoundOneCardsTest {
     @Test fun theOpenButtonNamesTheMachineAndADimmedControlSaysWhy() {
         val local = idle.copy(canOpen = true, providerLabel = "Claude Desktop Code")
         assertEquals("Open on studio-pc", openLabel(local, "studio-pc"))
-        assertEquals("Open on homeLP", openLabel(local.copy(machineName = "homeLP"), "studio-pc"))
+        assertEquals("Open on travel-laptop", openLabel(local.copy(machineName = "travel-laptop"), "studio-pc"))
         assertEquals("Open on the PC", openLabel(local, ""))
         assertEquals("", openReason(local))
         assertEquals("Open it on travel-laptop.", openReason(idle.copy(remote = true, machineName = "travel-laptop")))

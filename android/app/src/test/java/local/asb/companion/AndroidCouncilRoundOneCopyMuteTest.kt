@@ -35,10 +35,10 @@ class AndroidCouncilRoundOneCopyMuteTest {
 
     @Test fun copyGivesTheAbsoluteReferenceOrTheReason() {
         assertEquals(reference to "", copyReference(row.copy(reference = reference)))
-        assertEquals(null to "homeLP has an older ASB. Update ASB on that machine.",
-            copyReference(row.copy(referenceUnavailable = "old-peer", machineName = "homeLP", remote = true)))
-        assertEquals(null to "homeLP did not send the profile of this session.",
-            copyReference(row.copy(referenceUnavailable = "unknown-source", machineName = "homeLP", remote = true)))
+        assertEquals(null to "travel-laptop has an older ASB. Update ASB on that machine.",
+            copyReference(row.copy(referenceUnavailable = "old-peer", machineName = "travel-laptop", remote = true)))
+        assertEquals(null to "travel-laptop did not send the profile of this session.",
+            copyReference(row.copy(referenceUnavailable = "unknown-source", machineName = "travel-laptop", remote = true)))
         assertEquals(null to "ASB does not know the profile of this session.", copyReference(row.copy(referenceUnavailable = "unknown-source")))
         assertEquals(null to "The ASB engine on the PC is older. Update ASB on the PC.", copyReference(row))
         assertEquals(null to "ASB cannot make a full reference for this session.", copyReference(row.copy(referenceUnavailable = "new-code")))
