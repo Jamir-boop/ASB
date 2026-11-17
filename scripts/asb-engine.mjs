@@ -218,7 +218,11 @@ export async function runEngine({ env = process.env, platform = process.platform
       console.error(`ASB engine is still running 5 s after ${reason}. Pending cleanup step: ${step}. Open resources: ${process.getActiveResourcesInfo().join(', ') || 'none'}.`);
       process.exit(1);
     }, 5000).unref();
-    stop().catch((error) => { console.error(`Cannot stop ASB service: ${error.message}`); process.exitCode = 1; });
+    // An open request (a machine-group peer that is offline) must not keep the event loop after the cleanup. logToFile writes with writeSync.
+    // shortcut: the exit does not wait for a save of Pending state, the palette, the app sources, or the usage message and rate caches that is
+    // still open (a change made just before the stop can be lost, a .tmp file can stay); await those writes here if a lost change is reported.
+    stop().then(() => process.exit(process.exitCode ?? 0),
+      (error) => { console.error(`Cannot stop ASB service: ${error.message}`); process.exit(1); });
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);

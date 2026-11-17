@@ -16,6 +16,8 @@ import { createSwitchboardServer } from '../src/switchboard.mjs';
 import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
 import { main as usage } from '../scripts/asb-usage.mjs';
 import { ENGINE_NODE_FLAGS, MALLOC_ENV } from '../src/memory-trim.mjs';
+import { groupPath } from '../src/machine-group.mjs';
+import { privateIPv4 } from '../src/phone-gateway.mjs';
 
 const serviceScript = fileURLToPath(new URL('../scripts/asb-service.mjs', import.meta.url));
 const desktopScript = fileURLToPath(new URL('../scripts/asb-desktop.mjs', import.meta.url));
@@ -635,6 +637,45 @@ test('the engine stop route needs the token, a local POST, and an empty body, th
   assert.deepEqual(await stopped.json(), { stopping: true });
   assert.equal((await child.closed)[0], 0, child.errors);
   await assert.rejects(stat(f.runtime), { code: 'ENOENT' });
+});
+
+// The group accepts only private member addresses, so the fake member listens on two private addresses of this machine.
+const privateAddresses = Object.values(os.networkInterfaces()).flat()
+  .filter((item) => item.family === 'IPv4' && !item.internal && privateIPv4(item.address)).map((item) => item.address);
+test('the engine exits 0 at once after the stop request while a peer request to an offline member is open', {
+  timeout: 20_000, skip: privateAddresses.length < 2 && 'This machine has fewer than two private IPv4 addresses.' }, async (t) => {
+  const f = await fixture(t);
+  const addresses = privateAddresses.slice(0, 2);
+  // Each fake member address accepts the connection and never answers, as an offline host on Windows that does not fail fast.
+  const sockets = new Set();
+  let connected;
+  const seen = new Promise((resolve) => { connected = resolve; });
+  const servers = addresses.map(() => net.createServer((socket) => { sockets.add(socket); connected(); }));
+  const port = await freePort();
+  await Promise.all(servers.map((server, index) => new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, addresses[index], resolve);
+  })));
+  t.after(() => { for (const socket of sockets) socket.destroy(); for (const server of servers) server.close(); });
+  const member = (hex, name) => ({ machineId: hex.repeat(16), name, certFingerprint: hex.repeat(64),
+    addresses: addresses.map((address) => ({ kind: 'lan', address })), port, addedBy: 'a'.repeat(16), addedAtMs: 1 });
+  const file = groupPath(f.env);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify({ schema: 1, groupId: '0123456789abcdef', self: { machineId: 'a'.repeat(16), name: 'self-host' },
+    members: [member('a', 'self-host'), member('b', 'offline-peer')], removed: [], phones: [], removedPhones: [] }), { mode: 0o600 });
+  const child = f.launch([engineScript, 'run']);
+  await ready(child);
+  await seen;
+  const runtime = await readServiceRuntime(f.env);
+  const base = `http://127.0.0.1:${runtime.port}`;
+  const reply = await fetch(`${base}/api/engine/stop`, { method: 'POST', body: '{}',
+    headers: { origin: base, 'content-type': 'application/json', 'X-ASB-Source-Token': runtime.sourceToken } });
+  assert.equal(reply.status, 200);
+  const stoppedAt = Date.now();
+  assert.equal((await child.closed)[0], 0, child.errors);
+  const elapsed = Date.now() - stoppedAt;
+  assert.ok(elapsed < 2000, `The engine exited ${elapsed} ms after the stop reply.`);
+  assert.doesNotMatch(child.errors, /still running/);
 });
 
 test('engine status and stop work through the shell launcher with a detached engine', { timeout: 20_000 }, async (t) => {
