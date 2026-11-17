@@ -388,7 +388,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           if (size <= maxBytes) { chunks.push(chunk); return; }
           chunks.length = 0;
           upstream.destroy();
-          if (!response.destroyed) sendJson(response, 502, { error: 'The ASB reply is too large.' });
+          if (response.destroyed) return;
+          response.removeHeader('etag');
+          sendJson(response, 502, { error: 'The ASB reply is too large.' });
         });
         reply.on('end', () => { if (size <= maxBytes && !response.destroyed) response.end(Buffer.concat(chunks)); });
         return;

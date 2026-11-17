@@ -469,7 +469,7 @@ gatewayTest('mute and unmute go to the PC route only with the allowed bodies', a
 gatewayTest('the thread route exists only while the PC switch for message text is on', async (t) => {
   let big = false;
   const { gateway, request, pair, records, port, settingsPath } = await fixture(t, { reply: (request, response) => {
-    response.writeHead(200, { 'content-type': 'application/json' });
+    response.writeHead(200, { 'content-type': 'application/json', ...(big ? { etag: '"big"' } : {}) });
     response.end(big ? JSON.stringify({ total: 1, messages: [{ id: 'm-1', text: 'x'.repeat(2 * 1024 * 1024) }] })
       : '{"total":1,"messages":[{"id":"m-1","text":"Synthetic text."}]}');
   } });
@@ -508,7 +508,8 @@ gatewayTest('the thread route exists only while the PC switch for message text i
   assert.deepEqual(records, []);
   // A reply above 2 MiB is refused.
   big = true;
-  assert.deepEqual([(await request(thread, { token })).status, (await request(thread, { token })).json], [502, { error: 'The ASB reply is too large.' }]);
+  const refused = await request(thread, { token });
+  assert.deepEqual([refused.status, refused.json, refused.headers.etag], [502, { error: 'The ASB reply is too large.' }, undefined]);
   big = false;
   records.length = 0;
   // Off again: the next thread request is 404 and does not reach the PC, and the file has no key.
