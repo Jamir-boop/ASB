@@ -6,6 +6,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/pr
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import tls from 'node:tls';
 import os from 'node:os';
 import path from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
@@ -464,6 +465,22 @@ gatewayTest('mute and unmute go to the PC route only with the allowed bodies', a
   }
   assert.equal((await request('/phone/v1/threads/x/mute', { method: 'GET', token })).status, 405);
   assert.deepEqual(records, []);
+});
+
+gatewayTest('a sendText change restarts the listener: an open connection drops once and the token still works', async (t) => {
+  const { gateway, request, pair, port } = await fixture(t);
+  const token = (await pair()).json.token;
+  const socket = tls.connect({ host: '127.0.0.1', port, rejectUnauthorized: false });
+  await new Promise((resolve, reject) => { socket.once('secureConnect', resolve); socket.once('error', reject); });
+  let closes = 0;
+  const closed = new Promise((resolve) => socket.on('close', () => { closes += 1; resolve(); }));
+  socket.on('error', () => {});
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: true })).running, true);
+  await closed;
+  assert.equal(closes, 1);
+  const hello = await request('/phone/v1/hello', { token });
+  assert.deepEqual([hello.status, hello.json.sendText], [200, true]);
+  assert.equal((await gateway.devices()).length, 1);
 });
 
 gatewayTest('the thread route exists only while the PC switch for message text is on', async (t) => {
