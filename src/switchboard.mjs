@@ -217,14 +217,15 @@ function hiddenFields(row) {
 }
 
 // The times at which the rules of one row can change with no input change: the six-hour windows, the child end grace,
-// the approval check, and the limit reset. `nextStatusCheckAtMs` is the earliest of all rows.
+// the approval check, the next Monitor deadline, and the limit reset. `nextStatusCheckAtMs` is the earliest of all rows.
 function rowStatusTimes(thread, row) {
   return [thread.latestBlockingQuestionAtMs, thread.groupStatusActivityAtMs, thread.pendingToolAtMs,
     thread.source === 'claude-remote-cache' ? thread.remoteObservedAtMs : 0,
     thread.lifecycleRunning === true ? thread.agentActivityAtMs ?? thread.latestLifecycleAtMs : 0,
     thread.provider === 'claude-desktop-code' && thread.lifecycleRunning == null ? thread.transcriptActivityAtMs : 0]
     .map((value) => Number(value || 0) + ACTIVITY_WINDOW_MS + 1)
-    .concat(Number(thread.childEndGraceAtMs || 0) + 1, Number(thread.approvalCheckAtMs || 0) + 1, Number(thread.cliProcessCheckAtMs || 0) + 1, row.limitResetsAtMs);
+    .concat(Number(thread.childEndGraceAtMs || 0) + 1, Number(thread.approvalCheckAtMs || 0) + 1, Number(thread.cliProcessCheckAtMs || 0) + 1,
+      Number(thread.backgroundCheckAtMs || 0) + 1, row.limitResetsAtMs);
 }
 
 // `workingStarts` is the engine's map of row ID -> the row time of the first scan in which the row was Working.

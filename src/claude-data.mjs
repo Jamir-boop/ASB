@@ -195,7 +195,7 @@ function initialSignals() {
 function initialClaudeLifecycle() {
   return { running: null, startedAtMs: 0, promptStartedAtMs: 0, activityAtMs: 0, eventAtMs: 0, kind: '', finalAtMs: 0,
     endedAtMs: 0, endKind: '', limitResetsAtMs: 0,
-    agents: new Map(), agentTools: new Map(), wrapUps: new Map(), shells: new Map(), messages: [] };
+    agents: new Map(), agentTools: new Map(), wrapUps: new Map(), shells: new Map(), shellEnds: new Map(), messages: [] };
 }
 
 // The Desktop app can end a turn with this tool. Its result ends the turn; the app can write more records after it.
@@ -232,6 +232,50 @@ function crossSessionSender(text, maxIndex) {
   return parseCrossSessionEnvelope(text, maxIndex)?.sender || '';
 }
 
+// shortcut: these patterns copy the Claude Code wording of the tool results in a subagent log, which has no toolUseResult;
+// a wording change makes the format tests fail, update them together.
+const BASH_START_TEXT = /^Command running in background with ID: ([A-Za-z0-9_-]{1,128})\./;
+const MONITOR_START_TEXT = /^Monitor started \(task ([A-Za-z0-9_-]{1,128})(?:, expires in (?:(\d+)m)?(?: ?(\d+)s)?)?/;
+const MONITOR_EXPIRED_TEXT = /<event>\[Monitor expired/;
+// The Monitor tool maximum, for a start text whose expiry time does not parse.
+// shortcut: a start text with no `expires in` (a persistent Monitor) gets 60 min, so it stops counting then while it can still run;
+// read the persistent flag if subagent logs ever show it.
+const MONITOR_MAX_MS = 60 * 60 * 1000;
+// A regex capture can be a slice that keeps its whole record text (a notification with the agent result) in memory, so a kept ID is a flat copy.
+const flatId = (id) => Buffer.from(id).toString();
+const SHELL_END_STATUSES = ['completed', 'failed', 'cancelled', 'aborted', 'stopped', 'killed'];
+
+// The text of a tool result, when the result is text: a string, or a first text item.
+function toolResultText(item) {
+  if (typeof item.content === 'string') return item.content;
+  return Array.isArray(item.content) && item.content[0]?.type === 'text' && typeof item.content[0].text === 'string' ? item.content[0].text : '';
+}
+
+// The background shell start or TaskStop result of a user record with no toolUseResult (a subagent log): only the ID and the
+// Monitor deadline, never the command.
+function textShellSignal(event, timestampMs) {
+  const content = event.message?.content;
+  if (event.type !== 'user' || event.toolUseResult !== undefined || !Array.isArray(content)) return null;
+  for (const item of content) {
+    if (item?.type !== 'tool_result') continue;
+    const text = toolResultText(item);
+    const bash = text.match(BASH_START_TEXT);
+    if (bash) return { startId: flatId(bash[1]), deadlineMs: 0 };
+    const monitor = text.match(MONITOR_START_TEXT);
+    if (monitor) {
+      const ms = monitor[2] || monitor[3] ? (Number(monitor[2] || 0) * 60 + Number(monitor[3] || 0)) * 1000 : MONITOR_MAX_MS;
+      return { startId: flatId(monitor[1]), deadlineMs: timestampMs + ms };
+    }
+    if (text.startsWith('{') && text.includes('Successfully stopped task')) {
+      let stop = null;
+      try { stop = JSON.parse(text); } catch {}
+      if (stop?.task_type === 'local_bash' && typeof stop.task_id === 'string' && typeof stop.message === 'string'
+        && stop.message.startsWith('Successfully stopped task')) return { stopId: flatId(stop.task_id) };
+    }
+  }
+  return null;
+}
+
 function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   if (!timestampMs) return;
   const content = event.message?.content;
@@ -239,10 +283,13 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   const result = event.toolUseResult;
   // A background shell: a Bash result with a background task ID (also a command that the user or a message moved to the
   // background), or a Monitor result. Only its ID and start time are kept, never the command.
+  const textShell = textShellSignal(event, timestampMs);
   const shellId = event.type === 'user' && result && typeof result === 'object' ? typeof result.backgroundTaskId === 'string'
     ? result.backgroundTaskId : typeof result.taskId === 'string' && typeof result.persistent === 'boolean'
-      && Number.isFinite(result.timeoutMs) ? result.taskId : '' : '';
-  if (/^[A-Za-z0-9_-]{1,128}$/.test(shellId)) rememberBounded(lifecycle.shells, shellId, timestampMs, MAX_ASB_SESSION_COUNT);
+      && Number.isFinite(result.timeoutMs) ? result.taskId : '' : textShell?.startId || '';
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(shellId)) {
+    rememberBounded(lifecycle.shells, shellId, { startedAtMs: timestampMs, deadlineMs: textShell?.deadlineMs || 0 }, MAX_ASB_SESSION_COUNT);
+  }
   const launched = event.type === 'user' && result?.isAsync === true && result.status === 'async_launched'
     && /^[A-Za-z0-9_-]+$/.test(String(result.agentId || ''));
   // A message to an ended subagent starts it again in the background, with the same ID and transcript.
@@ -254,9 +301,12 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
   if (launched || resumed || workflow) {
     const toolId = Array.isArray(content) ? content.find((item) => item?.type === 'tool_result')?.tool_use_id : '';
     const tool = lifecycle.agentTools.get(toolId);
-    if (workflow ? tool?.workflow : tool || resumed) rememberBounded(lifecycle.agents, workflow ? result.taskId : resumed ? result.resumedAgentId : result.agentId, {
+    const agentId = workflow ? result.taskId : resumed ? result.resumedAgentId : result.agentId;
+    // A resume keeps the stop time of the agent: the shells of the stopped run stay ended.
+    if (workflow ? tool?.workflow : tool || resumed) rememberBounded(lifecycle.agents, agentId, {
       launchedAtMs: timestampMs, startedAtMs: tool?.startedAtMs || timestampMs,
       requestStartedAtMs: tool ? tool.requestStartedAtMs : lifecycle.startedAtMs, endedAtMs: 0, kind: '',
+      stoppedAtMs: lifecycle.agents.get(agentId)?.stoppedAtMs || 0,
       ...(workflow ? { runId: result.runId } : {}),
     }, MAX_ASB_SESSION_COUNT);
   }
@@ -268,24 +318,51 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
       agent.endedAtMs = timestampMs;
       agent.kind = 'cancelled';
     }
+    // A TaskStop of an agent also kills its background shells, with no end record, also when the agent already ended.
+    if (agent && result.task_type === 'local_agent' && timestampMs >= agent.launchedAtMs) agent.stoppedAtMs = timestampMs;
   }
-  if (event.type === 'user' && result?.task_type === 'local_bash' && typeof result.task_id === 'string'
-    && typeof result.message === 'string' && result.message.startsWith('Successfully stopped task')
-    && timestampMs >= lifecycle.shells.get(result.task_id)) lifecycle.shells.delete(result.task_id);
+  const stoppedShellId = event.type === 'user' && result?.task_type === 'local_bash' && typeof result.task_id === 'string'
+    && typeof result.message === 'string' && result.message.startsWith('Successfully stopped task') ? result.task_id : textShell?.stopId;
+  if (stoppedShellId && /^[A-Za-z0-9_-]{1,128}$/.test(stoppedShellId)) {
+    if (timestampMs >= lifecycle.shells.get(stoppedShellId)?.startedAtMs) lifecycle.shells.delete(stoppedShellId);
+    // The root can stop a shell that a subagent started: readClaudeRootSignals ends it in the child too.
+    rememberBounded(lifecycle.shellEnds, stoppedShellId, timestampMs, MAX_ASB_SESSION_COUNT);
+  }
+  // A shell of an ended subagent can end with only this queue record in the root log. It is never a prompt, so only its ID
+  // and time are kept, for readClaudeRootSignals; the text is read only when it starts with the tag (it can be a typed message).
+  const queued = event.type === 'queue-operation' && event.operation === 'enqueue' && typeof event.content === 'string'
+    ? event.content.trim() : '';
+  if (queued.startsWith('<task-notification>')) {
+    const shellId = queued.match(/<task-id>([A-Za-z0-9_-]{1,128})<\/task-id>/)?.[1];
+    const status = queued.match(/<status>([^<]+)<\/status>/)?.[1];
+    // An agent end is not a shell end; it would only fill the bound.
+    // shortcut: the map keeps the newest 5000 ended IDs of a chat; after 5000 newer ends, an evicted end lets a child shell count
+    // again until a restart. Keep the ends per child if a chat ever ends that many tasks.
+    if (shellId && !lifecycle.agents.has(shellId) && (SHELL_END_STATUSES.includes(status) || MONITOR_EXPIRED_TEXT.test(queued))) {
+      rememberBounded(lifecycle.shellEnds, flatId(shellId), timestampMs, MAX_ASB_SESSION_COUNT);
+    }
+  }
   // A busy chat gets the notification as a queued attachment. Its timestamp is the end of the task, not the delivery.
   const notice = event.type === 'user' ? text : event.type === 'attachment' && event.attachment?.type === 'queued_command'
     && typeof event.attachment.prompt === 'string' ? event.attachment.prompt.trim() : '';
+  // A subagent log gets a notification with a prefix before the tag. Only the origin marks it as one: a quoted notification,
+  // for example in a message from another session, ends nothing. Only shells read this form, so status and sounds do not change.
+  const tagAt = event.type === 'user' && event.origin?.kind === 'task-notification' ? notice.indexOf('<task-notification>') : -1;
+  const shellNotice = notice.startsWith('<task-notification>') ? notice : tagAt > 0 ? notice.slice(tagAt) : '';
+  if (shellNotice) {
+    const shellId = shellNotice.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
+    const status = shellNotice.match(/<status>([^<]+)<\/status>/)?.[1];
+    // A Monitor also sends notifications with no status while it runs; only an end status or its expiry ends a shell.
+    if (timestampMs >= lifecycle.shells.get(shellId)?.startedAtMs
+      && (SHELL_END_STATUSES.includes(status) || MONITOR_EXPIRED_TEXT.test(shellNotice))) lifecycle.shells.delete(shellId);
+  }
   if (notice.startsWith('<task-notification>')) {
     const agentId = notice.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
     const status = notice.match(/<status>([^<]+)<\/status>/)?.[1];
     const agent = lifecycle.agents.get(agentId);
-    if (agent && timestampMs >= agent.launchedAtMs && ['completed', 'failed', 'cancelled', 'aborted', 'stopped', 'killed'].includes(status)) {
+    if (agent && timestampMs >= agent.launchedAtMs && SHELL_END_STATUSES.includes(status)) {
       agent.endedAtMs = timestampMs;
       agent.kind = status === 'completed' ? 'task_complete' : status === 'failed' ? 'failed' : 'cancelled';
-    }
-    // A Monitor also sends notifications with no status while it runs; only an end status ends a shell.
-    if (timestampMs >= lifecycle.shells.get(agentId) && ['completed', 'failed', 'cancelled', 'aborted', 'stopped', 'killed'].includes(status)) {
-      lifecycle.shells.delete(agentId);
     }
     // A delivered notification is a prompt: the app runs the model on it. A stopped or killed task usually gets no reply,
     // and a queued attachment or a transcript-only copy arrives while the chat runs.
@@ -854,7 +931,11 @@ export function applyClaudeBackground(thread, record) {
   const count = (times) => times.filter((atMs) => atMs >= Number(record.startedAt || 0)).length;
   const commands = count(backgroundOpen.commands);
   const agents = count(backgroundOpen.agents);
-  return { ...row, ...(commands ? { backgroundCommands: commands } : {}), ...(agents ? { backgroundAgents: agents } : {}) };
+  // The next Monitor deadline of the counted shells: the loaders and the board check the row again then.
+  const checkAtMs = Math.min(...(backgroundOpen.deadlines || []).filter(([atMs]) => atMs >= Number(record.startedAt || 0))
+    .map(([, deadlineMs]) => deadlineMs));
+  return { ...row, ...(commands ? { backgroundCommands: commands } : {}), ...(agents ? { backgroundAgents: agents } : {}),
+    ...(Number.isFinite(checkAtMs) ? { backgroundCheckAtMs: checkAtMs } : {}) };
 }
 
 const CLAUDE_APPROVAL_GRACE_MS = 10_000;
@@ -1010,13 +1091,14 @@ export function validClaudeRecord(record) {
   return Boolean(life) && typeof life === 'object' && Object.keys(life).sort().join() === CLAUDE_LIFECYCLE_KEYS
     && [true, false, null].includes(life.running) && CLAUDE_LIFECYCLE_TIMES.every((name) => finiteNumber(life[name]))
     && CLAUDE_POSITION_KINDS.has(life.kind) && CLAUDE_POSITION_KINDS.has(life.endKind)
-    && rows(life.agents, 7, ([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId]) => positionId(id)
-      && [launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs].every(finiteNumber) && CLAUDE_AGENT_KINDS.has(kind)
+    && rows(life.agents, 8, ([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId, stoppedAtMs]) => positionId(id)
+      && [launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, stoppedAtMs].every(finiteNumber) && CLAUDE_AGENT_KINDS.has(kind)
       && (runId === null || positionId(runId)))
     && rows(life.agentTools, 4, ([id, startedAtMs, requestStartedAtMs, workflow]) => positionId(id)
       && finiteNumber(startedAtMs) && finiteNumber(requestStartedAtMs) && [0, 1].includes(workflow))
     && rows(life.wrapUps, 2, ([id, ask]) => positionId(id) && [0, 1].includes(ask))
-    && rows(life.shells, 2, ([id, startedAtMs]) => positionId(id) && finiteNumber(startedAtMs))
+    && rows(life.shells, 3, ([id, startedAtMs, deadlineMs]) => positionId(id) && finiteNumber(startedAtMs) && finiteNumber(deadlineMs))
+    && rows(life.shellEnds, 2, ([id, atMs]) => positionId(id) && finiteNumber(atMs))
     && Array.isArray(life.messages) && life.messages.length <= MAX_INCOMING_MESSAGES
     && life.messages.every((message) => Array.isArray(message) && message.length === 2 && positionId(message[0]) && finiteNumber(message[1]));
 }
@@ -1039,10 +1121,11 @@ export function claudePositionRecords() {
         activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
         endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
         agents: [...life.agents].map(([id, agent]) => [id, agent.launchedAtMs, agent.startedAtMs, agent.requestStartedAtMs,
-          agent.endedAtMs, agent.kind, agent.runId ?? null]),
+          agent.endedAtMs, agent.kind, agent.runId ?? null, agent.stoppedAtMs]),
         agentTools: [...life.agentTools].map(([id, tool]) => [id, tool.startedAtMs, tool.requestStartedAtMs, tool.workflow ? 1 : 0]),
         wrapUps: [...life.wrapUps].map(([id, ask]) => [id, ask ? 1 : 0]),
-        shells: [...life.shells],
+        shells: [...life.shells].map(([id, shell]) => [id, shell.startedAtMs, shell.deadlineMs]),
+        shellEnds: [...life.shellEnds],
         messages: life.messages.map((message) => [message.from, message.atMs]) } });
   }
   return [...byPath];
@@ -1069,12 +1152,13 @@ async function savedClaudePosition(filePath, stat) {
     lifecycle: { running: life.running, startedAtMs: life.startedAtMs, promptStartedAtMs: life.promptStartedAtMs,
       activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
       endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
-      agents: new Map(life.agents.map(([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId]) => [id,
-        { launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, ...(runId === null ? {} : { runId }) }])),
+      agents: new Map(life.agents.map(([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId, stoppedAtMs]) => [id,
+        { launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, stoppedAtMs, ...(runId === null ? {} : { runId }) }])),
       agentTools: new Map(life.agentTools.map(([id, startedAtMs, requestStartedAtMs, workflow]) => [id,
         { startedAtMs, requestStartedAtMs, workflow: workflow === 1 }])),
       wrapUps: new Map(life.wrapUps.map(([id, ask]) => [id, ask === 1])),
-      shells: new Map(life.shells),
+      shells: new Map(life.shells.map(([id, startedAtMs, deadlineMs]) => [id, { startedAtMs, deadlineMs }])),
+      shellEnds: new Map(life.shellEnds),
       messages: life.messages.map(([from, atMs]) => ({ from, atMs })) } };
 }
 
@@ -1187,11 +1271,40 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
   let childWaitAtMs = 0;
   // Only the turn records of a linked child give a time: the file time of a child log also moves with no turn (a copy, an open).
   let updatedAtMs = 0;
+  // The open background shells of the root and its linked agents, each ID once (a resumed agent writes to the same log).
+  // A root TaskStop or queued end of a shell ID ends it in the root and in a child log.
+  const endedInRoot = (id, shell) => root.shellEnds.get(id) >= shell.startedAtMs;
+  const shells = new Map([...root.shells].filter(([id, shell]) => !endedInRoot(id, shell)));
+  const addChildShells = (lifecycle, link) => {
+    for (const [id, shell] of lifecycle?.shells || []) {
+      // A TaskStop of the agent kills its shells with no end record.
+      if (shell.startedAtMs <= (link.stoppedAtMs || 0) || endedInRoot(id, shell)) continue;
+      shells.set(id, shell);
+    }
+  };
+  const childLog = async (agentId) => {
+    const child = childrenById.get(`agent-${agentId}`);
+    if (child) return child;
+    // The app can give a chat a new session ID. The logs of its subagents stay in the folder of the old ID.
+    // The cached file index does not refresh stats, so each candidate gets a current one.
+    const candidates = agentLogs.get(`${path.dirname(entry.filePath)}\n${agentId}`) || [];
+    if (candidates.length === 1) return candidates[0];
+    const logs = await Promise.all(candidates.map(async (log) => (
+      { filePath: log.filePath, mtimeMs: (await claudeFileStat(log.filePath, options).catch(() => null))?.mtimeMs ?? -1 })));
+    return logs.sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+  };
+  // `liveStartedAtMs` is the start of the live process of the chat, or null with no live record.
+  const liveStartedAtMs = Number.isFinite(options.liveStartedAtMs) ? options.liveStartedAtMs : null;
   for (const [agentId, link] of root.agents) {
     if (link.endedAtMs) {
       work.push({ running: false, eventAtMs: link.endedAtMs, kind: link.kind,
         endedAtMs: link.endedAtMs, endKind: link.kind,
         finalAtMs: link.kind === 'task_complete' ? link.endedAtMs : 0 });
+      // An ended agent can leave shells that run on. Only the shells of the live process count, so only links that ended in it are read.
+      if (!link.runId && liveStartedAtMs !== null && link.endedAtMs >= liveStartedAtMs) {
+        const child = await childLog(agentId);
+        if (child) addChildShells((await readSignalsForFile(child.filePath, options)).lifecycle, link);
+      }
       continue;
     }
     if (link.runId) {
@@ -1209,20 +1322,10 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       }
       continue;
     }
-    let child = childrenById.get(`agent-${agentId}`);
-    if (!child) {
-      // The app can give a chat a new session ID. The logs of its subagents stay in the folder of the old ID.
-      // The cached file index does not refresh stats, so each candidate gets a current one.
-      const candidates = agentLogs.get(`${path.dirname(entry.filePath)}\n${agentId}`) || [];
-      if (candidates.length === 1) child = candidates[0];
-      else {
-        const logs = await Promise.all(candidates.map(async (log) => (
-          { filePath: log.filePath, mtimeMs: (await claudeFileStat(log.filePath, options).catch(() => null))?.mtimeMs ?? -1 })));
-        child = logs.sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
-      }
-    }
+    const child = await childLog(agentId);
     const childSignals = child ? await readSignalsForFile(child.filePath, options) : null;
     const lifecycle = childSignals?.lifecycle;
+    addChildShells(lifecycle, link);
     updatedAtMs = Math.max(updatedAtMs, coerceNumber(childSignals?.latestEventAtMs));
     if (!lifecycle || lifecycle.running === null || lifecycle.eventAtMs < link.startedAtMs) {
       unknown = true;
@@ -1250,6 +1353,8 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
   const lastEnded = work.filter((item) => item.endedAtMs).sort((a, b) => b.endedAtMs - a.endedAtMs)[0];
   const groupEnded = !unknown && lastEnded && active.every((item) => (item.taskStartedAtMs ?? item.startedAtMs) > lastEnded.endedAtMs);
   const running = active.length ? true : unknown ? undefined : root.running;
+  // A Monitor with no end record stops at its deadline.
+  const openShells = [...shells.values()].filter((shell) => !shell.deadlineMs || shell.deadlineMs > nowMs);
   return {
     signals: { ...signals,
       // Only AskUserQuestion is pending and a linked child has recent open work: the question does not stop the group.
@@ -1260,7 +1365,8 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       childEndGraceAtMs,
       childWaitAtMs,
       // The start times of the open background shells and agents; applyClaudeBackground counts them for a live process.
-      backgroundOpen: { commands: [...root.shells.values()],
+      backgroundOpen: { commands: openShells.map((shell) => shell.startedAtMs),
+        deadlines: openShells.filter((shell) => shell.deadlineMs).map((shell) => [shell.startedAtMs, shell.deadlineMs]),
         agents: [...root.agents.values()].filter((agent) => !agent.endedAtMs).map((agent) => agent.launchedAtMs) },
       latestTaskStartedAtMs: root.promptStartedAtMs,
       latestTaskEndedAtMs: root.endedAtMs,
@@ -1383,7 +1489,7 @@ export function reuseClaudeLoad(key, roots, { fileScan, registryReads, nowMs }, 
 
 export function rememberClaudeLoad(key, result, { fileScan, registryReads, nowMs }) {
   if (!fileScan?.loaderCache) return result;
-  const times = result.threads.flatMap((thread) => [thread.approvalCheckAtMs, thread.childEndGraceAtMs, thread.cliProcessCheckAtMs,
+  const times = result.threads.flatMap((thread) => [thread.approvalCheckAtMs, thread.childEndGraceAtMs, thread.cliProcessCheckAtMs, thread.backgroundCheckAtMs,
     ...[thread.agentActivityAtMs, thread.latestLifecycleAtMs, thread.pendingToolAtMs, thread.latestBlockingQuestionAtMs]
       .map((time) => Number(time || 0) + 6 * 60 * 60 * 1000),
     thread.source === 'claude-cli' ? Number(thread.transcriptActivityAtMs || thread.updatedAtMs || 0) + 7 * 24 * 60 * 60 * 1000 : 0,
@@ -1421,12 +1527,20 @@ export async function loadClaudeDesktopCodeThreads({
   const projectIndex = await indexClaudeProjectFiles(projectsDir, { fileScan, cacheScope, scanReads: registryReads })
     .catch(() => ({ files: new Map(), subagentsBySession: new Map(), agentLogs: new Map() }));
   const { subagentsBySession, agentLogs } = projectIndex;
+  const windows = platform === 'win32';
+  // The registry is best effort: a read failure (null) keeps the transcript state. It is read once, before the transcripts,
+  // because the start of a live process bounds which ended subagent logs are read for background shells.
+  const registry = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads, fileScan }).catch(() => null);
+  const live = registry || [];
   const parsed = await mapWithConcurrency(files, SIGNAL_CONCURRENCY, async (entry) => {
     try {
       const session = await readClaudeSessionFile(entry.filePath, entry.stat, cacheScope);
       const projectFile = await currentClaudeRoot(projectIndex, String(session.cliSessionId || ''), { fileScan, cacheScope });
+      const record = liveClaudeRecord({ externalId: String(session.sessionId || session.id || ''), cliSessionId: String(session.cliSessionId || ''),
+        priorCliSessionIds: Array.isArray(session.priorCliSessionIds) ? session.priorCliSessionIds : [] }, live);
       const rootSignals = projectFile
-        ? await readClaudeRootSignals(projectFile, subagentsBySession.get(projectFile.filePath), { maxBytes, nowMs, cacheScope, fileScan }, agentLogs)
+        ? await readClaudeRootSignals(projectFile, subagentsBySession.get(projectFile.filePath),
+          { maxBytes, nowMs, cacheScope, fileScan, liveStartedAtMs: record ? Number(record.startedAt || 0) : null }, agentLogs)
         : { signals: parseClaudeJsonlSignals('') };
       return { session, ...rootSignals, stat: entry.stat };
     } catch {
@@ -1434,10 +1548,6 @@ export async function loadClaudeDesktopCodeThreads({
       return null;
     }
   });
-  const windows = platform === 'win32';
-  // The registry is best effort: a read failure (null) keeps the transcript state.
-  const registry = await readLiveClaudeRegistryFolder(path.join(path.dirname(projectsDir), 'sessions'), { windows, registryReads, fileScan }).catch(() => null);
-  const live = registry || [];
   const approvals = await readClaudeAppApprovals(appDir, { windows, fileScan }).catch(() => new Map());
   const threads = dedupeClaudeDesktopCodeThreads(parsed
     .filter(Boolean)

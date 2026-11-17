@@ -36,8 +36,12 @@ export async function loadClaudeCliThreads({ projectsDir = DEFAULT_CLAUDE_PROJEC
   })))
     .filter((root) => root.mtimeMs >= 0 && (nowMs - root.mtimeMs <= RECENT_MS || liveById.has(root.sessionId)))
     .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, maxCount);
-  const read = await mapWithConcurrency(candidates, SIGNAL_CONCURRENCY, async (root) => ({ ...root,
-    ...await readClaudeRootSignals(root.entry, subagentsBySession.get(root.entry.filePath), { maxBytes, nowMs, cacheScope, fileScan }, agentLogs) }));
+  const read = await mapWithConcurrency(candidates, SIGNAL_CONCURRENCY, async (root) => {
+    // The start of the live process bounds which ended subagent logs are read for background shells.
+    const record = liveClaudeRecord({ externalId: root.sessionId, cliSessionId: root.sessionId }, live);
+    return { ...root, ...await readClaudeRootSignals(root.entry, subagentsBySession.get(root.entry.filePath),
+      { maxBytes, nowMs, cacheScope, fileScan, liveStartedAtMs: record ? Number(record.startedAt || 0) : null }, agentLogs) };
+  });
   // A resume or copy can refresh the file time without a turn in the last 7 days.
   const rows = read.filter((root) => root.signals.entrypoint === 'cli'
     && (liveById.has(root.sessionId) || nowMs - (root.signals.latestEventAtMs || root.mtimeMs) <= RECENT_MS));
