@@ -213,18 +213,47 @@ target columns, filled down and then across, with horizontal scrolling. After
 a rotation, the first visible session stays in view. Filters, search, the view,
 and open sheets stay the same.
 
-The top bar is one row with a 1 dp line under it. In one list, the row is at
-least 56 dp high: the ASB disc, the Pending, Working, Drawer, and Filters pills,
-Search, and Settings. A filled dot on the disc shows Live (success color); a
-hollow ring shows Offline (muted color). Tap or hold the disc to open a menu with the connection text and
-Refresh. Pull the list down to refresh. Search replaces the disc and the pills
-with a search field. Close search or Back clears the query and closes the
-field. The field stays open while it has a query. In Column Flow, the row is at
-least 48 dp high: the disc, the connection text, a search field, the pills, and
-Settings. With large text, both rows, the pills, and the search field get
-taller. Pull to refresh does not work in Column Flow, so use Refresh in the
-disc menu. The pills scroll sideways and fade at the end when more pills are
-there.
+The top bar has a 1 dp line under it. In one list, it has two rows. The first
+row is at least 48 dp high: the ASB disc, the connection text, Search, and
+Settings. The second row has the Pending, Working, Drawer, and Filters pills,
+so all four show in full on a 384 dp wide phone with two-digit counts. A pill
+shows its count when it is 1 or more (`Pending 4`, spoken `Pending, 4
+sessions`): the rows that the pill shows when it is on, without the search. A
+filled dot on the disc shows Live (success color); a hollow ring shows Offline
+(muted color). Tap or hold the disc to open a menu with the connection text,
+`Last update 12m ago`, and Refresh. Pull the list down to refresh. Search
+replaces the first row with a search field. The field stays open while it has
+a query. In Column Flow, the top bar is one row, at least 48 dp high: the disc,
+the connection text, a search field, the pills, and Settings. With large text,
+the rows, the pills, and the search field get taller. Pull to refresh does not
+work in Column Flow, so use Refresh in the disc menu. The pills scroll sideways
+and fade at the end when more pills are there.
+
+When a filter is on, a chip row under the top bar shows one chip for each
+filter, as the board filter chips: Pending, each chosen state, Drawer, the app,
+and Include archived. A chip is a button: a tap on `Remove filter: Pending` removes that
+filter; the last chip, `Clear filters`, removes all of them and keeps the
+search. As Esc and × on the board, Close search clears the search and all
+filters. Back with an open search or a filter on clears them first; the next
+Back leaves the screen.
+
+While the app is Offline, a band under the top bar says `Offline · last update
+12m ago` (only `Offline` before the first good read) and `No alerts until the
+PC answers.`, with a Retry button that does what Refresh does. The age moves
+each minute. TalkBack reads `Offline. No alerts until the PC answers.` once
+when the band shows, and does not read the age again when it changes. A session on a group
+machine that is not reachable shows Unknown, and its card description and
+inspector say why (`travel-laptop is not reachable.`), as the board tooltip
+and row panel.
+
+Over the Pending rows of the list (Comfortable and Compact), a small header
+says `Pending · 4`. While a search is set, a row that matches only by its
+folder path shows that path (with `~` for a usual home folder, cut in the
+middle when it is long) in place of the project name. An empty list says `No
+sessions on studio-pc.` with a Refresh button; no result says `No sessions
+match the search and filters.` with a `Clear search and filters` button. When
+the PC removed the phone, the screen says `studio-pc removed this phone.`, how
+to make a new pairing link on the PC, and `Pair again`.
 
 Cards move to new places with a critically damped spring of about 350 ms. New
 cards fade in, and removed cards go at once. A press shows the palette

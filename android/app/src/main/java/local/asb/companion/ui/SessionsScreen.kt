@@ -12,6 +12,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -98,8 +99,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.ripple
+import androidx.compose.foundation.indication
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -151,6 +152,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -314,6 +316,8 @@ fun SessionsScreen(
     val clockIntervalMs = if (clockRows.isEmpty()) 0L else clockInterval(clockRows, nowMs) * 1000
     val hasDrawerRows = threads.any { it.drawer && (state.filter.archived || !it.archived) }
     val workingOnly = state.filter.states == setOf("working")
+    val counts = remember(threads, state.filter) { pillCounts(threads, state.filter) }
+    val pendingCount = remember(allRows) { allRows.count { it.pending && !it.pinned } }
     fun endpoint(id: String) = if (flow) flowEndpoint(
         id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentPacking.capacity,
         rowHeight * currentDensity, currentPacking.gap * currentDensity, currentDensity,
@@ -347,6 +351,14 @@ fun SessionsScreen(
                     val resetDelay = clockRows.map { it.limitResetsAtMs }.filter { it > nowMs }.minOrNull()?.minus(nowMs)
                     delay(minOf(clockIntervalMs, resetDelay ?: clockIntervalMs))
                 }
+            }
+        }
+    }
+    LaunchedEffect(lifecycleOwner, state.offline) {
+        if (state.offline) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isActive) {
+                nowMs = System.currentTimeMillis()
+                delay(60_000)
             }
         }
     }
@@ -441,9 +453,10 @@ fun SessionsScreen(
     fun closeSearch() {
         keyboard?.hide()
         searchOpened = false
-        viewModel.setFilter(state.filter.copy(query = ""))
+        // As the board Esc and ×: the search and all filters clear.
+        viewModel.setFilter(Filter())
     }
-    BackHandler(enabled = !state.revoked && if (flow) state.filter.query.isNotEmpty() else searching) { closeSearch() }
+    BackHandler(enabled = !state.revoked && backClears(searching, state.filter)) { closeSearch() }
     LaunchedEffect(inspector, inspectorRow) {
         if (inspector != null && inspectorRow == null) inspector = null
     }
@@ -488,6 +501,7 @@ fun SessionsScreen(
             onOpen = { viewModel.action(row.id, "open") },
             onActions = { point -> keyboard?.hide(); inspector = row.id to point },
             onCorner = { action -> viewModel.action(row.id, action) },
+            folder = pathMatch(row, state.filter.query),
             modifier = modifier,
         )
     }
@@ -502,15 +516,25 @@ fun SessionsScreen(
                 Spacer(Modifier.height(16.dp))
                 Text("Loading sessions…")
             }
-        } else Text(
-            when {
-                state.dashboard == null -> initialError ?: state.lastError
-                    ?: "Could not load sessions. Check the PC and Wi-Fi, then refresh."
-                threads.isEmpty() -> "No sessions found on the PC."
-                else -> "No sessions match the search and filters."
-            },
-            style = MaterialTheme.typography.bodyLarge,
-        )
+        } else Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                when {
+                    state.dashboard == null -> initialError ?: state.lastError
+                        ?: "Could not load sessions. Check the PC and Wi-Fi, then refresh."
+                    threads.isEmpty() -> "No sessions on ${serverName.ifBlank { "the PC" }}."
+                    else -> "No sessions match the search and filters."
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+            )
+            if (state.dashboard != null && threads.isEmpty()) {
+                Text("Chats from Claude, Codex, and OpenCode on the PC show here.", fontSize = 11.sp,
+                    color = hexColor(LocalPalette.current.muted), textAlign = TextAlign.Center)
+                TextButton(onClick = viewModel::refresh, enabled = !state.refreshing) { Text("Refresh") }
+            } else if (state.dashboard != null) {
+                TextButton(onClick = { closeSearch() }) { Text("Clear search and filters") }
+            }
+        }
     }
 
     @Composable
@@ -546,7 +570,7 @@ fun SessionsScreen(
                 if (!flow || state.filter.query.isNotEmpty()) Box(
                     Modifier.size(height - 4.dp).wrapContentSize(unbounded = true).size(48.dp).clip(CircleShape)
                         .clickable(role = Role.Button) {
-                            if (flow) viewModel.setFilter(state.filter.copy(query = "")) else closeSearch()
+                            closeSearch()
                         }.semantics { contentDescription = if (flow) "Clear search" else "Close search" },
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(20.dp)) }
@@ -570,24 +594,26 @@ fun SessionsScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SessionChip("Pending", state.filter.pendingOnly, onClick = {
+            SessionChip(pillLabel("Pending", counts.pending), state.filter.pendingOnly,
+                description = pillDescription("Pending", counts.pending), onClick = {
                 val selected = !state.filter.pendingOnly
                 viewModel.setFilter(state.filter.copy(
                     pendingOnly = selected,
                     drawerOnly = if (selected) false else state.filter.drawerOnly,
                 ))
             })
-            SessionChip("Working", workingOnly, onClick = {
+            SessionChip(pillLabel("Working", counts.working), workingOnly,
+                description = pillDescription("Working", counts.working), onClick = {
                 viewModel.setFilter(state.filter.copy(
                     states = if (workingOnly) STATES.toSet() else setOf("working"),
                 ))
             })
             SessionChip(
-                "Drawer", state.filter.drawerOnly,
-                modifier = Modifier.semantics {
-                    contentDescription = if (hasDrawerRows) "Drawer, contains sessions" else "Drawer, empty"
-                },
-                dot = hasDrawerRows,
+                pillLabel("Drawer", counts.drawer), state.filter.drawerOnly,
+                description = if (counts.drawer > 0) pillDescription("Drawer", counts.drawer)
+                    else if (hasDrawerRows) "Drawer, contains sessions" else "Drawer, empty",
+                // The count says it; the dot shows only drawer rows that the other filters hide.
+                dot = hasDrawerRows && counts.drawer == 0,
                 onClick = {
                     val selected = !state.filter.drawerOnly
                     viewModel.setFilter(state.filter.copy(
@@ -599,6 +625,7 @@ fun SessionsScreen(
             SessionChip(
                 "Filters", state.filter.app != "all" || state.filter.archived ||
                     state.filter.states != STATES.toSet(),
+                description = "Filters",
                 icon = FiltersIcon,
                 onClick = { keyboard?.hide(); showFilters = true },
             )
@@ -635,6 +662,10 @@ fun SessionsScreen(
         DropdownMenu(expanded = discMenu, onDismissRequest = { discMenu = false }) {
             Text(connection, style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 280.dp))
+            lastUpdateText(state.lastUpdateMs, nowMs).takeIf { it.isNotEmpty() }?.let {
+                Text(it, fontSize = 11.sp, color = hexColor(palette.muted),
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp).widthIn(max = 280.dp))
+            }
             DropdownMenuItem(
                 text = { Text("Refresh") },
                 leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
@@ -692,12 +723,9 @@ fun SessionsScreen(
         }
         Column(Modifier.fillMaxWidth().background(hexColor(palette.background))
             .windowInsetsPadding(SafeTopBarInsets)) {
-            if (flow) Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                disc(connection)
+            // The connection words beside the disc; the disc says them to TalkBack.
+            @Composable
+            fun connectionLabel(modifier: Modifier) {
                 val word = if (state.offline) "Offline" else "Live"
                 val start = connection.indexOf(word, serverName.length)
                 Text(
@@ -706,29 +734,57 @@ fun SessionsScreen(
                         if (start >= 0) addStyle(SpanStyle(color = hexColor(palette.text)), start, start + word.length)
                     },
                     color = hexColor(palette.muted), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 160.dp).clearAndSetSemantics { },
+                    modifier = modifier.clearAndSetSemantics { },
                 )
+            }
+            if (flow) Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                disc(connection)
+                connectionLabel(Modifier.widthIn(max = 160.dp))
                 searchField(Modifier.width(150.dp), 36.dp, "Search")
                 pills(Modifier.weight(1f))
                 if (zoom != 100) zoomBadge()
                 settings()
-            } else Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 12.dp, end = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (searching) searchField(Modifier.weight(1f), 40.dp, "Search, or cl: / cx:")
+                    else {
+                        disc(connection)
+                        Spacer(Modifier.width(6.dp))
+                        connectionLabel(Modifier.weight(1f))
+                        IconButton(onClick = { searchOpened = true; focusSearch = true }) {
+                            Icon(Icons.Default.Search, contentDescription = "Search")
+                        }
+                    }
+                    if (zoom != 100) zoomBadge()
+                    settings()
+                }
+                // The pills have a row of their own, so all four show in full on a narrow phone with two-digit counts.
+                pills(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp))
+            }
+            val chips = activeFilterChips(state.filter)
+            if (filtersOn(state.filter)) Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (searching) searchField(Modifier.weight(1f), 40.dp, "Search, or cl: / cx:")
-                else {
-                    disc(connection)
-                    pills(Modifier.weight(1f))
-                    IconButton(onClick = { searchOpened = true; focusSearch = true }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search")
-                    }
+                chips.forEach { (key, name) ->
+                    SessionChip(name, selected = true, icon = Icons.Default.Close, iconAfter = true, button = true,
+                        description = "Remove filter: $name",
+                        onClick = { viewModel.setFilter(removeFilter(state.filter, key)) })
                 }
-                if (zoom != 100) zoomBadge()
-                settings()
+                SessionChip("Clear filters", selected = false, description = "Clear filters", button = true,
+                    onClick = { viewModel.setFilter(Filter(query = state.filter.query)) })
             }
             HorizontalDivider(thickness = 1.dp, color = hexColor(palette.divider))
+            if (state.offline) OfflineBand(offlineBandAge(state.lastUpdateMs, nowMs), !state.refreshing, viewModel::refresh)
         }
     }
 
@@ -747,10 +803,13 @@ fun SessionsScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        "This phone was removed from ASB. Pair again.",
-                        style = MaterialTheme.typography.titleLarge,
+                        if (serverName.isBlank()) "This phone was removed from ASB. Pair again." else "$serverName removed this phone.",
+                        style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Text("On the PC, open ASB Preferences > Phone to make a new pairing link.", fontSize = 11.sp,
+                        color = hexColor(LocalPalette.current.muted), textAlign = TextAlign.Center)
                     Spacer(Modifier.height(24.dp))
                     Button(onClick = onPairAgain) { Text("Pair again") }
                 }
@@ -816,7 +875,12 @@ fun SessionsScreen(
                         if (rows.isEmpty()) item(key = "empty") { emptyState(Modifier.fillParentMaxSize()) }
                         itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
                             Column(Modifier.animateItem(CardFade, CardPlacement, null)) {
-                                if (index > 0 && rows[index - 1].pinned && !row.pinned) {
+                                // The Pending rows sort first after the pins; a small header with their count leads them.
+                                if (pendingHeader(rows, index)) Text("Pending · $pendingCount", fontSize = 11.sp,
+                                    lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(LocalPalette.current.muted),
+                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = if (index > 0) 12.dp else 4.dp,
+                                        bottom = 4.dp).semantics { heading() })
+                                else if (index > 0 && rows[index - 1].pinned && !row.pinned) {
                                     HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                                 }
                                 card(row, Modifier.padding(horizontal = 8.dp))
@@ -912,24 +976,65 @@ private fun SessionChip(
     modifier: Modifier = Modifier,
     dot: Boolean = false,
     icon: ImageVector? = null,
+    /** The icon follows the label (a Remove filter chip); else an icon pill shows only its icon. */
+    iconAfter: Boolean = false,
+    description: String = label,
+    /** A chip of the filter chip row acts and speaks as a button; a top bar pill is a toggle. */
+    button: Boolean = false,
 ) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        // Desktop pill: small and round, accent background when selected. The chip keeps its 48 dp touch area.
-        // An icon pill shows only its icon; the label is its content description.
-        modifier = modifier.heightIn(min = 28.dp).then(if (icon != null) Modifier.semantics { contentDescription = label } else Modifier),
-        shape = CircleShape,
-        border = FilterChipDefaults.filterChipBorder(true, selected, borderColor = hexColor(controlOutline(LocalPalette.current))),
-        label = {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (icon != null) Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp))
-                else Text(label, fontSize = 12.sp)
-                if (dot) Box(Modifier.size(5.dp).background(
-                    if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary, CircleShape))
+    val palette = LocalPalette.current
+    val content = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    val interaction = remember { MutableInteractionSource() }
+    // Desktop pill: small and round, accent background when selected, 10 dp at each side so the four pills fit a
+    // 384 dp phone with two-digit counts. The touch area is 48 dp high.
+    Box(
+        modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .then(if (button) Modifier.clickable(interactionSource = interaction, indication = null, role = Role.Button,
+                onClick = onClick)
+            else Modifier.toggleable(value = selected, interactionSource = interaction, indication = null, role = Role.Checkbox,
+                onValueChange = { onClick() }))
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier.heightIn(min = 30.dp).clip(CircleShape)
+                .then(if (selected) Modifier.background(MaterialTheme.colorScheme.secondaryContainer)
+                    else Modifier.border(1.dp, hexColor(controlOutline(palette)), CircleShape))
+                .indication(interaction, ripple()).padding(horizontal = 10.dp).clearAndSetSemantics { },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (icon != null && !iconAfter) Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
+            else Text(label, fontSize = 12.sp, color = content, maxLines = 1)
+            if (icon != null && iconAfter) Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
+            if (dot) Box(Modifier.size(5.dp).background(
+                if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary, CircleShape))
+        }
+    }
+}
+
+/** The Offline band under the top bar: the age of the saved list, that alerts wait, and Retry (the disc Refresh). */
+@Composable
+private fun OfflineBand(age: String, canRetry: Boolean, onRetry: () -> Unit) {
+    val palette = LocalPalette.current
+    Row(
+        Modifier.fillMaxWidth().background(hexColor(mixColor(palette.background, palette.text, .06)))
+            .padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row {
+                // Only words that do not change with time are in the live region, so it speaks once when the band shows.
+                Text("Offline", style = MaterialTheme.typography.bodyMedium, color = hexColor(palette.text),
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite; contentDescription = OFFLINE_BAND_LIVE })
+                // The age is a plain node: TalkBack reads it on focus, not each minute.
+                if (age.isNotEmpty()) Text(" · $age", style = MaterialTheme.typography.bodyMedium, color = hexColor(palette.text))
             }
-        },
-    )
+            Text("No alerts until the PC answers.", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                color = hexColor(palette.muted), modifier = Modifier.clearAndSetSemantics { })
+        }
+        TextButton(onClick = onRetry, enabled = canRetry) { Text("Retry") }
+    }
 }
 
 @Composable
@@ -974,6 +1079,8 @@ private fun SessionCard(
     row: Thread, comfortable: Boolean, showBackground: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
     nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: (Offset) -> Unit,
     onCorner: (String) -> Unit, onCardFloor: (Float) -> Unit, petTint: () -> Float, modifier: Modifier = Modifier,
+    /** The folder path that the search matched, shown instead of the project name (see [pathMatch]). */
+    folder: String = "",
 ) {
     val palette = LocalPalette.current
     val interaction = remember { MutableInteractionSource() }
@@ -994,7 +1101,10 @@ private fun SessionCard(
     val viewOnly = isViewOnly(row)
     val (whereGlyph, where) = rowWhere(row)
     val description = listOf(
-        row.title, row.projectName, state, backgroundSentence(row, showBackground),
+        row.title, folder.ifEmpty { row.projectName }, state,
+        // As the board tooltip: an Unknown row says why, for example that its machine is not reachable.
+        if (row.state == "unknown") row.reason else "",
+        backgroundSentence(row, showBackground),
         if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
         indicatorMeaning(row, indicator),
         if (row.pinned) "Pinned" else "",
@@ -1068,8 +1178,9 @@ private fun SessionCard(
             Row(Modifier.padding(end = 54.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 mark()
-                Text(row.projectName.ifEmpty { "No project" }, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
-                    color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(folder.ifEmpty { row.projectName.ifEmpty { "No project" } }, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                    color = hexColor(tones.caption), maxLines = 1,
+                    overflow = if (folder.isEmpty()) TextOverflow.Ellipsis else TextOverflow.MiddleEllipsis)
             }
             Text(title, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = hexColor(tones.title),
                 maxLines = COMFORTABLE_TITLE_LINES, minLines = COMFORTABLE_TITLE_LINES, overflow = TextOverflow.Ellipsis,
@@ -1439,6 +1550,9 @@ private fun SessionInspector(
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(cardStateLabel(row) + if (time.isNotEmpty()) " · $time" else "", fontSize = 11.sp,
                             lineHeight = CAPTION_LINE_HEIGHT.sp, color = stateColor)
+                        // As the board row panel: an Unknown row says why.
+                        if (row.state == "unknown" && row.reason.isNotBlank()) Text(row.reason, fontSize = 11.sp,
+                            lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
                     }
                     val canOpen = row.canOpen && !busy
                     Box(

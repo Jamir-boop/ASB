@@ -99,6 +99,16 @@ fun cardStateLabel(row: Thread): String = when {
 fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): String =
     listOfNotNull(serverName, if (offline) "Offline" else "Live", pathLabel?.takeUnless { offline }).joinToString(" · ")
 
+/** The age of the last good dashboard read, as the row ages: Last update 12m ago, or "" before the first read. */
+fun lastUpdateText(lastUpdateMs: Long, nowMs: Long): String =
+    if (lastUpdateMs <= 0) "" else "Last update " + idleAge(lastUpdateMs, nowMs).replace("Just now", "just now")
+
+/** The words of the Offline band that TalkBack reads once when it shows; they hold no age, so the band is quiet each minute. */
+const val OFFLINE_BAND_LIVE = "Offline. No alerts until the PC answers."
+
+/** The age part of the Offline band (Offline · last update 12m ago), "" with no saved list; it is not in the live region. */
+fun offlineBandAge(lastUpdateMs: Long, nowMs: Long): String = lastUpdateText(lastUpdateMs, nowMs).replaceFirstChar(Char::lowercase)
+
 // Search mode stays open while a query is set, for example after a rotation or a return to the screen.
 fun searchOpen(opened: Boolean, query: String): Boolean = opened || query.isNotEmpty()
 
@@ -341,11 +351,13 @@ fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine)
 
 /**
  * Port of facts_lines: the lines of [line] (facts joined by ` · `) in at most [width]. A line breaks only between two facts and
- * drops the ` · ` there; the words of a fact keep no-break spaces, so only a fact wider than [width] breaks inside.
+ * drops the ` · ` there; the words of a fact keep no-break spaces, so only a fact wider than [width] breaks inside, between words.
  */
 fun factLines(line: String, width: Float, measure: (String) -> Float): List<String> {
     val lines = mutableListOf<String>()
-    for (fact in line.split(" · ").map { it.replace(' ', '\u00a0') }) {
+    for (words in line.split(" · ")) {
+        // A fact wider than [width] keeps its spaces, so it breaks between words and never inside a time (15:49).
+        val fact = words.replace(' ', '\u00a0').takeIf { measure(it) <= width } ?: words
         if (lines.isNotEmpty() && measure("${lines.last()} · $fact") <= width) lines[lines.size - 1] += " · $fact" else lines += fact
     }
     return lines

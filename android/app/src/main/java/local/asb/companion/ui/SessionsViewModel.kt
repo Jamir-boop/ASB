@@ -47,6 +47,8 @@ data class UiState(
     val path: String? = null,
     /** The engine of the dashboard on screen ("" is the paired PC); actions on its rows go to it. */
     val engine: String = "",
+    /** The time of the last good dashboard read (0 before the first); the Offline band shows its age. */
+    val lastUpdateMs: Long = 0,
 )
 
 class SessionsViewModel(
@@ -216,6 +218,7 @@ class SessionsViewModel(
                     // A row that leaves the board or changes state loses its action error, as on the desktop.
                     val kept = old.actionErrors.filterKeys { id -> id in now && now[id] == before[id] }
                     old.copy(dashboard = dashboard, offline = false, path = api.endpoint?.kind, engine = engine,
+                        lastUpdateMs = if (dashboard != null) System.currentTimeMillis() else old.lastUpdateMs,
                         // A poll that ends an offline state (a dashboard failure, or an action that could not reach
                         // ASB) clears its stale message; another action error stays for its snackbar until its row error goes.
                         lastError = if (old.offline || old.lastError in (old.actionErrors - kept.keys).values) null else old.lastError,

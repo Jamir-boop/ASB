@@ -171,6 +171,70 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
     )
 }
 
+/** The rows each top bar pill would show when it is on, without the search: Pending, Working, and Drawer. */
+data class PillCounts(val pending: Int, val working: Int, val drawer: Int)
+
+fun pillCounts(threads: List<Thread>, f: Filter): PillCounts {
+    val base = f.copy(query = "")
+    return PillCounts(
+        filteredRows(threads, base.copy(pendingOnly = true, drawerOnly = false)).size,
+        filteredRows(threads, base.copy(states = setOf("working"))).size,
+        filteredRows(threads, base.copy(drawerOnly = true, pendingOnly = false)).size,
+    )
+}
+
+fun pillLabel(label: String, count: Int): String = if (count > 0) "$label $count" else label
+
+fun pillDescription(label: String, count: Int): String =
+    if (count > 0) "$label, $count session${if (count == 1) "" else "s"}" else label
+
+/** True when a filter other than the search is on. */
+fun filtersOn(f: Filter): Boolean = f.copy(query = "") != Filter()
+
+/** As the board filter_chips: one (key, name) per active filter, in top bar order. */
+fun activeFilterChips(f: Filter): List<Pair<String, String>> = buildList {
+    if (f.pendingOnly) add("pending" to "Pending")
+    if (f.states != STATES.toSet()) STATES.filter { it in f.states }.forEach { add("state:$it" to stateLabel(it)) }
+    if (f.drawerOnly) add("drawer" to "Drawer")
+    if (f.app != "all") add("app" to (APP_FILTERS.firstOrNull { it.first == f.app }?.second ?: f.app))
+    if (f.archived) add("archive" to "Include archived")
+}
+
+/** As the board clear_filter_chip: the filter without the chip [key]; a state filter with no state left shows all states. */
+fun removeFilter(f: Filter, key: String): Filter = when {
+    key == "pending" -> f.copy(pendingOnly = false)
+    key.startsWith("state:") -> (f.states - key.removePrefix("state:")).let { f.copy(states = it.ifEmpty { STATES.toSet() }) }
+    key == "drawer" -> f.copy(drawerOnly = false)
+    key == "app" -> f.copy(app = "all")
+    key == "archive" -> f.copy(archived = false)
+    else -> f
+}
+
+/** True at the first Pending row after the pins, where the list shows its Pending header. */
+fun pendingHeader(rows: List<Thread>, index: Int): Boolean {
+    fun pendingRow(row: Thread) = row.pending && !row.pinned
+    return pendingRow(rows[index]) && (index == 0 || !pendingRow(rows[index - 1]))
+}
+
+/** As the board Esc: Back clears an open search and the filters before it leaves the screen. */
+fun backClears(searching: Boolean, f: Filter): Boolean = searching || f != Filter()
+
+private val homePrefix = Regex("""^(/home/[^/]+|/Users/[^/]+|[A-Za-z]:\\Users\\[^\\]+)(?=$|[/\\])""")
+
+/** A PC folder with `~` for a usual home folder; the API sends no PC home, so this reads the path form. */
+fun homePath(path: String): String = homePrefix.replaceFirst(path, "~")
+
+/**
+ * The folder path to show on a row that matches the search only by its folder path (as the board tooltip path), else "".
+ * The other searched fields show on the card already.
+ */
+fun pathMatch(row: Thread, query: String): String {
+    val (text, _) = providerQuery(query)
+    if (text.isEmpty() || row.cwd.isEmpty() || text !in casefold(row.cwd)) return ""
+    val shown = casefold(listOf(row.title, row.projectName, row.providerLabel, row.sourceLabel).joinToString("\n"))
+    return if (text in shown) "" else homePath(row.cwd)
+}
+
 // A required action keeps its "?" mark after Read; an older engine sends no read mark, so the action stays unread.
 fun actionNeedsAttention(row: Thread): Boolean = row.actionAttention ?: row.actionRequired
 
