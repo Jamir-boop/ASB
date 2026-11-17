@@ -28,9 +28,13 @@ by kind (`1 needs input · 1 failed · 1 done`); the summary posts also while th
 app is open, because a group with no summary is one that Android auto-groups.
 While the PC switch for message text is on, the PC sends the pending question
 (`questionText`), and the Needs input notification shows it as expanded text.
-Only the private version has the question: the lock screen version keeps
-`ASB` and `A session needs attention`. The question text stays in memory, never
-in the saved preferences or a log line.
+Only the private version has the question; the public version keeps `ASB` and
+`A session needs attention`. On a locked phone, Android shows the version
+without the question when the phone setting hides sensitive notification
+content; otherwise the lock screen shows the question too. The app keeps the
+question text in memory, never in the saved preferences or a log line, but
+Android keeps a posted notification and can give it to notification history, to
+apps with notification access, and to a paired watch.
 **Check now** also shows these notifications while the app is open. An automatic
 check while the app is open does not save the baseline. Unpair removes the
 saved pairing and the app's notifications. Phone acceptance for Phase 7 is pending.
