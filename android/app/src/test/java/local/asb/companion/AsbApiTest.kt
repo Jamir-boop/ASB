@@ -17,6 +17,14 @@ import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Engine
 import local.asb.companion.data.Message
 import local.asb.companion.data.PairingInfo
+import local.asb.companion.data.Store
+import local.asb.companion.data.THREAD_LIMIT
+import local.asb.companion.data.THREAD_MAX
+import local.asb.companion.data.threadQuery
+import local.asb.companion.net.Engines
+import local.asb.companion.net.Paths
+import local.asb.companion.ui.ThreadState
+import local.asb.companion.ui.loadThread
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
@@ -616,5 +624,96 @@ class AsbApiTest {
         // Other routes keep the server text for a 404.
         server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"Not found."}"""))
         assertEquals("Not found.", failure { api().action("one", "open") }.message)
+    }
+
+    // ---------- Brief D: message text in threads (synthetic data) ----------
+
+    private val threadBody = """{"total":3,"messages":[{"id":"00000000-0000-4000-8000-000000000001","from":"a","to":"b",""" +
+        """"atMs":1793000000000,"status":"accepted","text":"synthetic thread text"},""" +
+        """{"id":"00000000-0000-4000-8000-000000000002","from":"b","to":"a","atMs":1793000060000,"status":"accepted","text":null}]}"""
+
+    @Test fun helloSendTextSaysIfThePcSendsMessageText() = runBlocking {
+        server.enqueue(MockResponse().setBody(hello.dropLast(1) + ""","sendText":true}"""))
+        assertEquals(true, api().messageText(""))
+        assertEquals("/phone/v1/hello", server.takeRequest().path)
+        server.enqueue(MockResponse().setBody(hello.dropLast(1) + ""","sendText":false}"""))
+        assertEquals(false, api().messageText(""))
+        // An older PC has no switch; a string is not a switch.
+        server.enqueue(MockResponse().setBody(hello))
+        assertNull(api().messageText(""))
+        server.enqueue(MockResponse().setBody(hello.dropLast(1) + ""","sendText":"true"}"""))
+        assertNull(api().messageText(""))
+    }
+
+    @Test fun threadAsksForTheSelectionWithItsPeriodAndLimit() = runBlocking {
+        server.enqueue(MockResponse().setBody(threadBody))
+        val thread = api().activityThread(threadQuery("7d", null, "a" to "b", THREAD_LIMIT)!!, "")
+        assertEquals(3, thread.total)
+        assertEquals(listOf("synthetic thread text", null), thread.messages.map { it.text })
+        val request = server.takeRequest()
+        assertEquals("/phone/v1/activity/thread?period=7d&a=a&b=b&limit=100", request.path)
+        assertEquals("Bearer $token", request.getHeader("Authorization"))
+        server.enqueue(MockResponse().setBody(threadBody))
+        api().activityThread(threadQuery("24h", "unknown:abc", null, THREAD_MAX)!!, "")
+        assertEquals("/phone/v1/activity/thread?period=24h&seat=unknown%3Aabc&limit=200", server.takeRequest().path)
+    }
+
+    @Test fun aThreadErrorReplyIsAnErrorNeverAnEmptyThread() = runBlocking {
+        val query = threadQuery("7d", "a", null, THREAD_LIMIT)!!
+        val on = suspend { true }
+        // The gateway refuses a reply over its limit with 502.
+        server.enqueue(MockResponse().setResponseCode(502).setBody("""{"error":"The ASB reply is too large."}"""))
+        assertEquals(ThreadState.Failed("The ASB reply is too large."), loadThread(on) { api().activityThread(query, "") })
+        // Another 2xx than 200 is no thread either.
+        server.enqueue(MockResponse().setResponseCode(203).setBody(threadBody))
+        assertTrue(loadThread(on) { api().activityThread(query, "") } is ThreadState.Failed)
+        // A 404 (an older PC, or the switch went off) shows the older-PC message.
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"Route is not available."}"""))
+        assertEquals(ThreadState.Failed(OLDER_ENGINE), loadThread(on) { api().activityThread(query, "") })
+        server.enqueue(MockResponse().setBody(threadBody))
+        assertEquals(2, (loadThread(on) { api().activityThread(query, "") } as ThreadState.Shown).thread.messages.size)
+    }
+
+    @Test fun onlyA200DashboardReplyKeepsItsEtag() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(203).setHeader("ETag", "\"partial\"").setBody("{}"))
+        assertNull((api().dashboard() as DashboardResult.Fetched).etag)
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("ETag", "\"full\"").setBody("{}"))
+        assertEquals("\"full\"", (api().dashboard() as DashboardResult.Fetched).etag)
+        // An error reply with an ETag is an error, so no ETag is kept.
+        server.enqueue(MockResponse().setResponseCode(500).setHeader("ETag", "\"error\"").setBody("""{"error":"Busy."}"""))
+        assertEquals("Busy.", failure { api().dashboard() }.message)
+    }
+
+    @Test fun threadTextIsNeverSaved() = runBlocking {
+        // The API as the app builds it, on a Store in memory: after a hello and a thread, no saved value holds the text.
+        val preferences = MemoryPreferences(mutableMapOf("token" to token, "port" to server.port, "fingerprint" to fingerprint,
+            "endpoints" to AsbJson.encodeToString(listOf(Endpoint("lan", "127.0.0.1")))))
+        val store = Store(preferences)
+        val paths = object : Paths {
+            override var endpoints: List<Endpoint>
+                get() = store.endpoints
+                set(value) = store.saveEndpointsIfPaired(token, value)
+            override var current: Endpoint?
+                get() = store.currentEndpoint
+                set(value) = store.saveCurrentEndpointIfPaired(token, value)
+        }
+        val engines = object : Engines {
+            override var list: List<Engine>
+                get() = store.engines
+                set(value) = store.saveEnginesIfPaired(token, value)
+            override var current: String
+                get() = store.currentEngine
+                set(value) = store.saveCurrentEngineIfPaired(token, value, null)
+            override var endpoint: Endpoint?
+                get() = store.currentEngineEndpoint
+                set(value) = store.saveCurrentEngineIfPaired(token, store.currentEngine, value)
+        }
+        val api = AsbApi(paths, server.port, fingerprint, token, engines)
+        server.enqueue(MockResponse().setBody(hello.dropLast(1) + ""","sendText":true}"""))
+        server.enqueue(MockResponse().setBody(threadBody))
+        val state = loadThread({ api.messageText("") }) { api.activityThread(threadQuery("7d", "a", null, THREAD_LIMIT)!!, "") }
+        assertEquals("synthetic thread text", (state as ThreadState.Shown).thread.messages.first().text)
+        assertTrue(preferences.values.isNotEmpty())
+        assertTrue(preferences.values.values.none { "synthetic thread text" in it.toString() })
     }
 }

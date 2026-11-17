@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -60,6 +61,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
@@ -76,6 +78,8 @@ import java.math.BigDecimal
 import java.math.MathContext
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -102,7 +106,8 @@ import local.asb.companion.data.machineRows
 import local.asb.companion.data.modelRows
 import local.asb.companion.data.SessionsView
 import local.asb.companion.data.USAGE_SESSION_ROWS
-import local.asb.companion.data.usageAxis
+import local.asb.companion.data.usageChartAxis
+import local.asb.companion.data.chartLabelShown
 import local.asb.companion.data.usageCostBasis
 import local.asb.companion.data.usageSessions
 import local.asb.companion.data.usageRingNote
@@ -453,36 +458,40 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     ChoiceRow(listOf("app" to "By app", "machine" to "By machine"), if (byMachine) "machine" else "app") { onSplit(it == "machine") }
     Spacer(Modifier.height(12.dp))
     val sums = bars.map { it.sum() }
-    val (step, lines) = usageAxis(sums.maxOrNull() ?: 0.0)
+    // 8 % headroom over the tallest bar, on the round steps of the PC axis.
+    val (step, lines) = usageChartAxis(sums.maxOrNull() ?: 0.0)
     // The top of the plot is the top line.
     val yMax = step * lines
+    val n = bars.size
+    val dp = density.density
+    val axis = TextStyle(color = colors.muted, fontSize = 11.sp)
+    // The y labels set the left room and the top inset, and the x labels the room under the plot, so no label is cut at any text size.
+    val yLabels = (1..lines).map { measurer.measure(axisLabel(step * it, metric), axis, maxLines = 1) }
+    val left = maxOf(48 * dp, (yLabels.maxOfOrNull { it.size.width } ?: 0) + 12 * dp)
+    val plotT = maxOf(8 * dp, (yLabels.maxOfOrNull { it.size.height } ?: 0) / 2f + 1 * dp)
+    val plotB = plotT + 212 * dp
+    val xHeight = measurer.measure("00:00", axis, maxLines = 1).size.height
+    val chartHeight = plotB + 6 * dp + xHeight + 2 * dp
+    val gap = (if (n >= 90) 1 else 2) * dp
+    val tipTitle = { i: Int -> tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1, first.takeIf { i == 0 }, reply.nowMs) }
     var width by remember { mutableIntStateOf(0) }
-    Box(Modifier.fillMaxWidth().height(242.dp).onSizeChanged { width = it.width }) {
-        val n = bars.size
-        Canvas(Modifier.fillMaxSize().semantics { contentDescription = "Usage over time" }.pointerInput(n) {
-            detectTapGestures { point ->
-                val dp = density.density
-                val left = 48 * dp
-                val gap = (if (n >= 90) 1 else 2) * dp
-                val bw = (size.width - left - gap * (n - 1)) / n
-                val i = ((point.x - left) / (bw + gap)).toInt()
-                tapped = if (point.x >= left && i in 0 until n && i != tapped) i else null
-            }
-        }) {
+    Box(Modifier.fillMaxWidth().height(with(density) { chartHeight.toDp() }).onSizeChanged { width = it.width }) {
+        Canvas(Modifier.fillMaxSize().semantics { contentDescription = chartSummary(reply.period, unit, starts, sums, metric) }
+            .pointerInput(n, left) {
+                detectTapGestures { point ->
+                    val bw = (size.width - left - gap * (n - 1)) / n
+                    val i = ((point.x - left) / (bw + gap)).toInt()
+                    tapped = if (point.x >= left && i in 0 until n && i != tapped) i else null
+                }
+            }) {
             if (n == 0) return@Canvas
-            val dp = this.density
-            val plotB = 220 * dp
-            val plotT = 8 * dp
-            val left = 48 * dp
             val y = { v: Double -> plotB - (plotB - plotT) * (v / yMax).toFloat() }
-            val axis = TextStyle(color = colors.muted, fontSize = 11.sp)
             for (k in 1..lines) {
                 val gy = y(step * k)
                 drawLine(colors.rule, Offset(left, gy), Offset(size.width, gy), 1 * dp, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3 * dp, 3 * dp)))
-                val layout = measurer.measure(axisLabel(step * k, metric), axis, maxLines = 1)
+                val layout = yLabels[k - 1]
                 drawText(layout, topLeft = Offset(left - 8 * dp - layout.size.width, gy - layout.size.height / 2f))
             }
-            val gap = (if (n >= 90) 1 else 2) * dp
             val bw = (size.width - left - gap * (n - 1)) / n
             bars.forEachIndexed { i, values ->
                 val x = left + i * (bw + gap)
@@ -504,40 +513,104 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                 }
             }
             val centers = List(n) { left + it * (bw + gap) + bw / 2 }
-            for (label in axisLabels(starts, unit, centers, size.width, 4 * dp, { measurer.measure(it, axis, maxLines = 1).size.width.toFloat() }, first,
-                    endGap = 16 * dp)) {
+            val measure = { text: String -> measurer.measure(text, axis, maxLines = 1).size.width.toFloat() }
+            val even = unit == "hour" || unit == "day"
+            val labels = if (even) evenAxisLabels(starts, unit, centers, size.width, 4 * dp, measure)
+                else axisLabels(starts, unit, centers, size.width, 4 * dp, measure, first, endGap = 16 * dp)
+            for (label in labels) {
                 val layout = measurer.measure(label.text, axis, maxLines = 1)
                 val w = layout.size.width.toFloat()
-                // The last label ends at the right edge of the chart.
-                val cx = if (label.index == n - 1) size.width - w / 2 else centers[label.index].coerceIn(w / 2, size.width - w / 2)
-                drawText(layout, topLeft = Offset(cx - layout.size.width / 2f, plotB + 15 * dp - layout.size.height / 2f))
+                // On a week or month chart the last label ends at the right edge of the chart.
+                val cx = if (label.index == n - 1 && !even) size.width - w / 2 else centers[label.index].coerceIn(w / 2, size.width - w / 2)
+                drawText(layout, topLeft = Offset(cx - w / 2, plotB + 6 * dp))
+            }
+        }
+        // TalkBack reaches each bar with its time and values, as the PC tooltip reads; a double tap shows its tooltip.
+        if (n > 0) Row(Modifier.padding(start = with(density) { left.toDp() }).fillMaxWidth().height(with(density) { plotB.toDp() })) {
+            for (i in 0 until n) {
+                val rows = tipOrder(bars[i]).map { seriesLabel(series[it]) to formatValue(bars[i][it], metric) }
+                Box(Modifier.weight(1f).fillMaxHeight().semantics {
+                    contentDescription = barDescription(tipTitle(i), formatValue(sums[i], metric), rows)
+                    onClick { tapped = if (tapped == i) null else i; true }
+                })
             }
         }
         tapped?.let { i ->
             var tipSize by remember { mutableStateOf(IntSize.Zero) }
-            val dp = density.density
-            val left = 48 * dp
-            val gap = (if (n >= 90) 1 else 2) * dp
             val bw = (width - left - gap * (n - 1)) / n
             val x = left + i * (bw + gap)
-            // Right of the bar when it is not one of the last two and has more room on its right, else left; inside the chart.
-            val right = i < n - 2 && width - (x + bw) > x - left
-            val tipLeft = (if (right) x + bw + 8 * dp else x - tipSize.width - 8 * dp)
-                .coerceIn(0f, (width - tipSize.width).toFloat().coerceAtLeast(0f))
-            // Centered on the bar top, inside the 242 dp chart.
-            val barTop = 220 * dp - (212 * dp) * (sums[i] / yMax).toFloat()
-            val tipTop = (barTop - tipSize.height / 2f).coerceIn(0f, (242 * dp - tipSize.height).coerceAtLeast(0f))
-            Column(Modifier.offset { IntOffset(tipLeft.roundToInt(), tipTop.roundToInt()) }.onSizeChanged { tipSize = it }
+            val barTop = plotB - (plotB - plotT) * (sums[i] / yMax).toFloat()
+            val place = tipPlace(x, x + bw, barTop, width.toFloat(), chartHeight, tipSize.width.toFloat(), tipSize.height.toFloat(), 8 * dp)
+            Column(Modifier.offset { IntOffset(place.x.roundToInt(), place.y.roundToInt()) }.onSizeChanged { tipSize = it }
                 .widthIn(min = 150.dp).background(colors.background, RoundedCornerShape(4.dp)).border(1.dp, colors.edge, RoundedCornerShape(4.dp))
-                .padding(horizontal = 10.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
-                Text(tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1, first.takeIf { i == 0 }, reply.nowMs), fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp).clearAndSetSemantics {}) {
+                Text(tipTitle(i), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
                 TipRow("Total", formatValue(sums[i], metric), colors.accent, colors)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp), thickness = 1.dp, color = colors.rule)
                 // The series high to low by their value in this bucket; a stable sort keeps the series order for ties.
                 for (s in tipOrder(bars[i])) TipRow(seriesLabel(series[s]), formatValue(bars[i][s], metric), seriesColor(series[s]), colors)
             }
         }
+    }
+}
+
+/**
+ * The top left of the bar tooltip ([w] by [h]) in the chart ([width] by [height]); it never covers its bar, from [left] to [right]
+ * with its top at [top]. Above the bar when it fits there; else beside the bar on the side with more room (as the PC tip_box);
+ * else above the chart.
+ */
+internal fun tipPlace(left: Float, right: Float, top: Float, width: Float, height: Float, w: Float, h: Float, gap: Float): Offset {
+    val centered = ((left + right) / 2 - w / 2).coerceIn(0f, maxOf(0f, width - w))
+    if (top - gap - h >= 0) return Offset(centered, top - gap - h)
+    val y = (top - h / 2).coerceIn(0f, maxOf(0f, height - h))
+    val rightRoom = width - right - gap
+    val leftRoom = left - gap
+    return when {
+        rightRoom >= w && (rightRoom >= leftRoom || leftRoom < w) -> Offset(right + gap, y)
+        leftRoom >= w -> Offset(left - gap - w, y)
+        else -> Offset(centered, -gap - h)
+    }
+}
+
+/** The TalkBack text of one bar, as the PC chart reads its tooltip: `Sun 14:00: Total $1.20, Claude Code $1.00, Codex $0.20`. */
+internal fun barDescription(title: String, total: String, rows: List<Pair<String, String>>): String =
+    (listOf("$title: Total $total") + rows.map { "${it.first} ${it.second}" }).joinToString(", ")
+
+/** The TalkBack summary of the chart: `Usage over time, 24 hours. Highest: 14:00, $1.20.` in the current unit. */
+internal fun chartSummary(period: String, unit: String, starts: List<Long>, sums: List<Double>, metric: Metric): String {
+    val head = "Usage over time, ${periodLabel(period)}."
+    val top = sums.indices.maxByOrNull { sums[it] }?.takeIf { sums[it] > 0 } ?: return "$head No usage."
+    val start = starts.getOrElse(top) { 0L }
+    val name = if (unit == "hour") formatTime(start) else bucketLabel(start, unit, last = false, short = false)
+    return "$head Highest: $name, ${formatValue(sums[top], metric)}."
+}
+
+/**
+ * The x labels of an hourly or a daily chart at even steps: an hourly chart names the hours that start a 6-hour block on the phone
+ * clock (00:00, 06:00, 12:00, 18:00; with the weekday of [hourWeekdays]), a daily chart each [chartLabelShown] day. When two
+ * labels centered under their bars (inside [width]) come nearer than [gap], the step doubles.
+ */
+internal fun evenAxisLabels(starts: List<Long>, unit: String, centers: List<Float>, width: Float, gap: Float,
+    measure: (String) -> Float): List<AxisLabel> {
+    val n = centers.size
+    val zone = ZoneId.systemDefault()
+    val hourOf = { i: Int -> Instant.ofEpochMilli(starts.getOrElse(i) { 0L }).atZone(zone).let { if (it.minute == 0) it.hour else -1 } }
+    var step = if (unit == "hour") 6 else (1 until n).firstOrNull { chartLabelShown(n, unit, n - 1 - it) } ?: 1
+    while (true) {
+        val ticks = (0 until n).filter { i -> if (unit == "hour") hourOf(i) >= 0 && hourOf(i) % step == 0 else (n - 1 - i) % step == 0 }
+        val named = if (unit == "hour") hourWeekdays(starts, ticks) else emptySet()
+        val labels = ticks.map { i ->
+            val start = starts.getOrElse(i) { 0L }
+            AxisLabel(i, if (unit == "hour") hourText(start, i in named) else bucketLabel(start, unit, last = false, short = true))
+        }
+        val boxes = labels.map { label ->
+            val w = measure(label.text)
+            val x = centers[label.index].coerceIn(w / 2, maxOf(w / 2, width - w / 2)) - w / 2
+            x to x + w
+        }
+        // A 24-hour step leaves at most one label a day; it is the last try.
+        if (boxes.zipWithNext().all { (a, b) -> a.second + gap <= b.first } || step >= (if (unit == "hour") 24 else n)) return labels
+        step *= 2
     }
 }
 

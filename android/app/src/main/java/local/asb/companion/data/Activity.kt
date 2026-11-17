@@ -58,7 +58,13 @@ data class ActivityMessage(
     /** The session names of an unknown end (`unknown:<machine>`), from the message. */
     val fromLabel: String = "",
     val toLabel: String = "",
+    /** The message text: only in a thread reply (null when ASB has no copy); it stays in memory. */
+    val text: String? = null,
 )
+
+/** A thread reply (GET /phone/v1/activity/thread): the newest messages, oldest first, and the count of all of them. */
+@Serializable
+data class ActivityThread(val total: Int = 0, val messages: List<ActivityMessage> = emptyList())
 
 @Serializable
 data class ActivityMessages(
@@ -325,6 +331,28 @@ fun seatTitles(reply: ActivityMessages): Map<String, String> = reply.seats.assoc
         unlistedName(reply.messages.flatMap { m -> listOf(m.from to m.fromLabel, m.to to m.toLabel) }
             .filter { it.first == seat.id && it.second.isNotEmpty() }.map { it.second }.distinct())
     } else seat.title.ifEmpty { UNLISTED }
+}
+
+/** The first thread page and the most that Show earlier asks for (the gateway allows at most 200). */
+const val THREAD_LIMIT = 100
+const val THREAD_MAX = 200
+
+const val MESSAGE_TEXT_OFF = "Message text is off on the PC. Turn it on in ASB Preferences > Phone."
+
+/** Port of message_no_text: the body of a thread message with no text copy. */
+const val MESSAGE_NO_TEXT = "Text not available"
+
+/**
+ * The thread query of a selection, as the PC fetch_thread: `seat=` for a seat, `a=` and `b=` for a chord, with the period and the
+ * [limit]; null with no selection.
+ */
+fun threadQuery(period: String, seat: String?, pair: Pair<String, String>?, limit: Int): Map<String, String>? {
+    val selector = when {
+        pair != null -> mapOf("a" to pair.first, "b" to pair.second)
+        seat != null -> mapOf("seat" to seat)
+        else -> return null
+    }
+    return mapOf("period" to period) + selector + ("limit" to limit.toString())
 }
 
 /** One Busiest pairs row: [a] first on the circle, [n] messages both ways, [bad] not sent, [last] the newest message time. */
@@ -738,6 +766,9 @@ fun niceStep(x: Double): Double {
     for (m in listOf(1.0, 2.0, 2.5, 5.0, 10.0)) if (m * p >= x - 1e-12) return m * p
     return 10 * p
 }
+
+/** The axis of the phone chart: the [usageAxis] steps for 8 % above [maxValue], so the tallest bar never touches the top. */
+fun usageChartAxis(maxValue: Double): Pair<Double, Int> = usageAxis(maxValue * 1.08)
 
 /** Port of usage_axis: the gridline step (the smallest round step whose fourth line reaches [maxValue]) and 3 or 4 lines. */
 fun usageAxis(maxValue: Double): Pair<Double, Int> {

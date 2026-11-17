@@ -94,28 +94,28 @@ class CouncilRoundSevenMessagesTest {
     private val own = ChordLine("s|z", "s", "z", 2f, 1, listOf(Offset(150f, 72f), Offset(250f, 72f)))
     private fun other(length: Float) = ChordLine("x|y", "x", "y", 2f, 1, listOf(Offset(190f, 132f), Offset(190f + length, 132f)))
 
-    @Test fun aPlateOverMoreThanTwelveDpOfAChordOfAnotherPairRanksLate() {
+    // Brief D (issue 13): a label never sits on a chord, of its own pair or another one; with no place off the chords it hides.
+    @Test fun aLabelNeverSitsOnAChord() {
         val seat = SeatLabelInput("s", -90f, listOf(Size(40f, 14f)))
-        fun at(lines: List<ChordLine>) = place(listOf(seat), LabelTable(center, 100f, 0f, false, 400f, 400f, twoPlaces, lines = lines)).getValue("s")!!.place
-        // 13 dp of a 2 dp chord of another pair under the inward plate: the label goes over its pin, on more ink of its own chord.
-        assertEquals(2, at(listOf(other(13f), own)))
-        // 12 dp only: the inward plate has less ink.
-        assertEquals(0, at(listOf(other(12f), own)))
-        // 13 dp of a 2 dp chord of its own pair is not heavy.
-        assertEquals(0, at(listOf(ChordLine("s|y", "s", "y", 2f, 1, listOf(Offset(190f, 132f), Offset(203f, 132f))), own)))
-        // 13 dp of its own chord of 5 dp is heavy.
-        assertEquals(2, at(listOf(ChordLine("s|y", "s", "y", 5f, 1, listOf(Offset(190f, 132f), Offset(203f, 132f))), own)))
+        fun at(lines: List<ChordLine>) = place(listOf(seat), LabelTable(center, 100f, 0f, false, 400f, 400f, twoPlaces, lines = lines)).getValue("s")
+        // A chord of another pair under the inward box: the label goes over its pin.
+        assertEquals(2, at(listOf(other(1f)))!!.place)
+        // Its own chord over the pin: the inward place.
+        assertEquals(0, at(listOf(own))!!.place)
+        // Chords on both places: no label.
+        assertNull(at(listOf(other(13f), own)))
+        // The stroke counts: a 5 dp chord just above the inward box reaches into it with its half width; a thinner one higher does not.
+        val above = { width: Float, y: Float -> ChordLine("x|y", "x", "y", width, 1, listOf(Offset(190f, y), Offset(210f, y))) }
+        assertEquals(2, at(listOf(above(5f, 123f)))!!.place)
+        assertEquals(0, at(listOf(above(2f, 121f)))!!.place)
     }
 
-    @Test fun lessChordInkComesFirstInStepsOfEightSquareDp() {
+    @Test fun aChosenSeatWithNoFreePlaceShowsInwardOnlyOffTheChords() {
         val seat = SeatLabelInput("s", -90f, listOf(Size(40f, 14f)))
-        fun at(lines: List<ChordLine>) = place(listOf(seat), LabelTable(center, 100f, 0f, false, 400f, 400f, twoPlaces, lines = lines)).getValue("s")!!.place
-        // 3 dp of a 2 dp chord is 6 dp², step 0 as the empty plate: the place order keeps the inward place.
-        assertEquals(0, at(listOf(ChordLine("s|y", "s", "y", 2f, 1, listOf(Offset(190f, 132f), Offset(193f, 132f))))))
-        // 4 dp is 8 dp², step 1.
-        assertEquals(2, at(listOf(ChordLine("s|y", "s", "y", 2f, 1, listOf(Offset(190f, 132f), Offset(194f, 132f))))))
-        // An all-not-sent chord counts 3 times.
-        assertEquals(2, at(listOf(ChordLine("s|y", "s", "y", 2f, 3, listOf(Offset(190f, 132f), Offset(192f, 132f))))))
+        val closed = LabelTable(center, 100f, 0f, false, 400f, 400f, listOf(Rect(0f, 0f, 400f, 400f)))
+        assertEquals(0, place(listOf(seat), closed, chosen = listOf("s")).getValue("s")!!.place)
+        val crossed = LabelTable(center, 100f, 0f, false, 400f, 400f, listOf(Rect(0f, 0f, 400f, 400f)), lines = listOf(other(13f)))
+        assertNull(place(listOf(seat), crossed, chosen = listOf("s")).getValue("s"))
     }
 
     @Test fun stackedAndStrayFaults() {
@@ -157,13 +157,10 @@ class CouncilRoundSevenMessagesTest {
         val seat = SeatLabelInput("s", -90f, listOf(Size(40f, 14f)))
         val table = LabelTable(center, 100f, 0f, false, 400f, 400f, emptyList(), lines = listOf(other(13f)))
         val kept = mapOf("s" to SeatLabelSpot(0, 0, Rect(179f, 125f, 221f, 139f)))
-        // At rest the label keeps its inward place.
-        assertEquals(0, place(listOf(seat), table, previous = kept).getValue("s")!!.place)
-        // The chord lights: the label takes its first free candidate, off the chord.
-        assertNotEquals(0, place(listOf(seat), table, previous = kept, lit = setOf("x|y")).getValue("s")!!.place)
+        // Brief D: a kept place on a chord is not kept, at rest, lit, or chosen; the label takes its first free candidate.
+        assertNotEquals(0, place(listOf(seat), table, previous = kept).getValue("s")!!.place)
         assertEquals(2, place(listOf(seat), table, previous = kept, lit = setOf("x|y")).getValue("s")!!.place)
-        // A chosen seat keeps it.
-        assertEquals(0, place(listOf(seat), table, chosen = listOf("s"), previous = kept, lit = setOf("x|y")).getValue("s")!!.place)
+        assertEquals(2, place(listOf(seat), table, chosen = listOf("s"), previous = kept, lit = setOf("x|y")).getValue("s")!!.place)
     }
 
     @Test fun aLateCutShowsOnlyWhenAllPassesFail() {

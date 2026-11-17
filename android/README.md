@@ -150,10 +150,13 @@ The **Messages** and **Usage** screens show the agent messages and the token
 usage of all machines of the group. Open them from the ⋮
 main menu of the sessions screen (**Messages**, **Usage**, **Settings**).
 **Show messages** in the session panel opens Messages with that session
-selected. Messages counts the Claude Code and ASB Bridge messages and gets no
-text. It shows the round table of the 12 most recent sessions
-(TalkBack reaches each seat in circle order), the selected seat or pair, and
-the ledger. Usage shows the cost and the tokens by machine, app, model, provider, and session,
+selected. Messages counts the Claude Code and ASB Bridge messages. It shows the
+round table of the 12 most recent sessions (TalkBack reaches each seat in circle
+order), the selected seat or pair, and the ledger. A seat label never sits on a
+chord: with no free place it hides, and the panel under the table names the
+selected seat with its Outgoing and Incoming counts. The per-day (or per-hour)
+line under the Messages total shows its scale (`max 48/day`). Busiest pairs
+names are cut at their end. Usage shows the cost and the tokens by machine, app, model, provider, and session,
 for periods up to `All time`, with the price line in the top bar and `Reading usage` while the PC reads the transcripts.
 Messages first opens on `24 hours`, and Usage on `All time`. Each screen keeps
 the chosen period over a rotation.
@@ -162,11 +165,29 @@ every 10 seconds while they show (Usage `All time`: every 60 seconds). Usage
 reads every 2 seconds while the scan runs or the prices load. When the PC runs an
 older ASB, `All time` shows
 `This PC runs an older ASB. Update ASB on the PC to see All time.`
-The phone gets counts, statuses, session titles, and token usage, never message
-text in these screens: the gateway asks the PC for the messages with `text=0`.
+The Messages and Usage reports have counts, statuses, session titles, and token
+usage, never message text: the gateway asks the PC for the messages with `text=0`.
 The gateway has the thread route `/phone/v1/activity/thread` (with message text)
 only while the PC owner turns on the PC switch for message text (off by default);
-`hello` reports it as `sendText`. The gateway also forwards the `mute` and
+`hello` reports it as `sendText`. When a seat or a pair is selected, the phone
+asks the hello of that engine first. With `sendText: true`, it loads the thread
+as the PC thread view does (`seat=` or `a=` and `b=`, the period, `limit=100`)
+and shows each message with its from and to names, its time, its status when it
+is not accepted, and its text (`Text not available` without a copy), newest
+last; `Show earlier` loads up to 200. The text stays in screen memory only: never
+in the saved settings, a file, or a log. With the switch off, the thread shows
+`Message text is off on the PC. Turn it on in ASB Preferences > Phone.` and makes
+no thread request. A PC with no switch (older ASB) or a 404 shows the older-PC
+message, and every other error reply (for example the gateway 502
+`The ASB reply is too large.`) shows its error, never an empty thread.
+
+The Usage chart keeps 8 % headroom above the tallest bar on the round axis
+steps. Its x labels are at even steps (24 hours: every 6 hours on the hour; 7
+days: each day), and the axis labels get the room that their text needs. A tap
+on a bar shows its tooltip above the bar, or beside it when there is no room
+above, never over the bar. TalkBack reads a summary
+(`Usage over time, 24 hours. Highest: 14:00, $1.20.`) and reaches each bar
+with its time and values, as the PC tooltip. The gateway also forwards the `mute` and
 `unmute` row actions.
 
 ## Themes, views, and motion

@@ -10,8 +10,11 @@ import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
+import local.asb.companion.data.ActivityThread
 import local.asb.companion.data.Chord
 import local.asb.companion.data.SeatCount
+import local.asb.companion.net.AsbError
+import local.asb.companion.net.OLDER_ENGINE
 
 // Pure parts of the Messages screen (scripts/asb-native.py RoundTable and CountStrip), free of Android classes so unit tests can call them.
 
@@ -259,16 +262,16 @@ internal class LabelFacts(val ink: Float, val heavy: Boolean, val wide: Boolean,
  * Port of place_labels. The [chosen] seats place first (in that order) and show only their whole texts; then the [partners] (the
  * seats lit by the selection), then the other seats; each group by message count, then the newest activity, then circle order
  * ([seats] order). Each seat takes the first free candidate (a text in one of the nine places) in the [labelRank] order. A free
- * candidate stays 2 dp inside the table, off the center disc (when [LabelTable.disc]), off the machine band, off each blocked box
- * and circle, 6 dp from each placed label on its left and right, and at least 4 dp nearer its own pin circle than every other pin
- * circle. With no center disc (the small table), a candidate with a stacked fault is not free for a seat that is not chosen.
+ * candidate stays 2 dp inside the table, off every chord stroke ([LabelTable.lines]), off the center disc (when [LabelTable.disc]),
+ * off the machine band, off each blocked box and circle, 6 dp from each placed label on its left and right, and at least 4 dp
+ * nearer its own pin circle than every other pin circle. With no center disc (the small table), a candidate with a stacked fault is not free for a seat that is not chosen.
  *
  * A seat in [previous] (the last placement, kept over a selection change) first tries its text and place there; a seat that is not
  * chosen does not keep a label whose plate covers more than 12 dp of a chord of another pair in [litChords]. With no free
  * candidate, one placed label that is not chosen and blocks a candidate can move to a free candidate with its text; the seat then
  * takes its first free candidate. Then the seat tries all its texts and places with 2 dp for the own-pin rule, then once more
- * placed from the 16 dp pin itself (no rings, the pin circles at 16 dp). Then a chosen seat shows its one-line text inward, and
- * another seat tries its late cuts in the same three passes before it hides (null).
+ * placed from the 16 dp pin itself (no rings, the pin circles at 16 dp). Then a chosen seat shows its one-line text inward (when no
+ * chord is there), and another seat tries its late cuts in the same three passes before it hides (null).
  */
 internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, messages: Map<String, Int>, activity: Map<String, Long>,
     table: LabelTable, dp: Float, partners: Set<String> = emptySet(), previous: Map<String, SeatLabelSpot?> = emptyMap(),
@@ -304,10 +307,15 @@ internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, 
         val mine = near(b, own.first) - own.second + shrink
         return seats.all { other -> other.id == seat.id || other.pin == null || near(b, other.pin.first) - other.pin.second + shrink >= mine + margin * dp }
     }
+    // A label never sits on a chord: no chord stroke (its center line and half its rest width) reaches into the box.
+    fun onChord(b: Rect): Boolean = table.lines.any { line ->
+        val half = line.width / 2
+        line.inside(Rect(b.left - half, b.top - half, b.right + half, b.bottom + half)) > 0f
+    }
     fun free(seat: SeatLabelInput, b: Rect, labels: Boolean = true, margin: Float = 4f, shrink: Float = 0f): Boolean {
         val inside = b.left >= 2 * dp && b.top >= 2 * dp && b.right <= table.width - 2 * dp && b.bottom <= table.height - 2 * dp
         // A box is free of a circle when the nearest point of the box is farther than the radius from the circle center.
-        return inside && !(table.disc && onDisc(b)) && !onBand(b) && table.blocked.none { hit(it, b) } &&
+        return inside && !onChord(b) && !(table.disc && onDisc(b)) && !onBand(b) && table.blocked.none { hit(it, b) } &&
             table.circles.none { near(b, it.first) <= it.second } && table.pins.none { near(b, it.first) <= it.second - shrink } &&
             nearerOwnPin(seat, b, margin, shrink) &&
             (!labels || (blockers(seat.id, b).isEmpty() && (table.disc || seat.id in chosen || !stacked(seat, b))))
@@ -374,8 +382,9 @@ internal fun placeSeatLabels(seats: List<SeatLabelInput>, chosen: List<String>, 
         // A crowded seat: its own pin may be nearer by 2 dp only; then the last try places from the 16 dp pin itself, as if no pin had
         // rings (a ring can then draw under the label).
         if (found == null) found = firstFree(seat, options, 2f) ?: firstFree(seat, ranked(seat, texts, 0f), 2f, PIN_RING * dp)
-        // No free place: a chosen seat shows its one-line text inward, and the other labels avoid it.
-        if (found == null && isChosen) found = SeatLabelSpot(0, 0, box(seat, 0, 0))
+        // No free place: a chosen seat shows its one-line text inward when no chord is there (the panel under the table names it
+        // anyway), and the other labels avoid it.
+        if (found == null && isChosen) found = SeatLabelSpot(0, 0, box(seat, 0, 0)).takeIf { !onChord(it.box) }
         // A short cut is better than a hidden label: the usual rule, the 2 dp rule, then from the 16 dp pin.
         if (found == null && !late.isEmpty()) {
             val cuts = ranked(seat, late)
@@ -424,8 +433,8 @@ internal fun shareFill(count: Int, total: Int): Float = if (total > 0) count.toF
 
 /**
  * Port of CountStrip.names: which parts of the strip caption fit between the end names, whose inner edges are [left] and [right]:
- * 2 for `per hour · ● not sent` (only when [bad]), 1 for `per hour`, 0 for none. The caption keeps 12 dp from each name; [unit]
- * is the width of `per hour`, [rest] the width of ` · `, the dot, and ` not sent`.
+ * 2 for `max 6/hour · ● not sent` (only when [bad]), 1 for `max 6/hour`, 0 for none. The caption keeps 12 dp from each name; [unit]
+ * is the width of the scale ([stripScale]), [rest] the width of ` · `, the dot, and ` not sent`.
  */
 internal fun stripCaptionParts(left: Float, right: Float, unit: Float, rest: Float, bad: Boolean, dp: Float): Int {
     val room = right - left - 24 * dp
@@ -435,6 +444,9 @@ internal fun stripCaptionParts(left: Float, right: Float, unit: Float, rest: Flo
         else -> 0
     }
 }
+
+/** The scale of the count strip, in its caption: the largest count of one bucket, `max 48/day` or `max 6/hour`. */
+internal fun stripScale(largest: Int, unit: String): String = "max ${formatCount(largest.toLong())}/${if (unit == "hour") "hour" else "day"}"
 
 /** The share words of a Busiest pairs or Between machines row, in the Usage percent format: `29.2% of all messages`. */
 internal fun shareWords(share: Float): String = "${formatShare(share.toDouble())} of all messages"
@@ -623,3 +635,25 @@ internal fun chordText(chord: Chord, title: (String) -> String): String =
     listOfNotNull("${title(chord.a)} → ${title(chord.b)}: ${formatCount(chord.ab.toLong())}",
         "${title(chord.b)} → ${title(chord.a)}: ${formatCount(chord.ba.toLong())}",
         (chord.badAb + chord.badBa).takeIf { it > 0 }?.let { "Not sent: ${formatCount(it.toLong())}" }).joinToString(", ")
+
+/** What the thread under the table shows: loading, the PC switch off, an error, or the messages. */
+internal sealed interface ThreadState {
+    data object Loading : ThreadState
+    data object Off : ThreadState
+    data class Failed(val message: String) : ThreadState
+    data class Shown(val thread: ActivityThread) : ThreadState
+}
+
+/**
+ * The thread load: the hello of the engine says if the PC sends message text; only then [fetch] runs. An older PC (no switch)
+ * gets the older-PC message, and an error reply (a 404, a 502 too large reply) is an error, never an empty thread.
+ */
+internal suspend fun loadThread(textOn: suspend () -> Boolean?, fetch: suspend () -> ActivityThread): ThreadState = try {
+    when (textOn()) {
+        null -> ThreadState.Failed(OLDER_ENGINE)
+        false -> ThreadState.Off
+        true -> ThreadState.Shown(fetch())
+    }
+} catch (cause: AsbError) {
+    ThreadState.Failed(cause.message ?: "Cannot load the messages.")
+}
