@@ -9,6 +9,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import * as zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
+import { validClaudeRecord } from '../src/claude-data.mjs';
 import { useRemotePositions } from '../src/claude-remote-data.mjs';
 import { parseRolloutSignals, readRolloutSignals, useRolloutPositions, useRolloutTailPositions, validRolloutTailRecord } from '../src/codex-data.mjs';
 import { createReaderPositions, MAX_POSITION_FILE_BYTES, MAX_POSITION_RECORD_BYTES, MAX_POSITION_RECORDS,
@@ -1015,6 +1016,45 @@ test('a saved record with an open background shell resumes, and the appended end
   assert.ok(b.claudeBytes < 32 * 1024, `B ${b.claudeBytes}`);
   assert.equal(count(b), undefined);
   assert.deepEqual(byId(b.claudeThreads), byId((await engine({ claudeOnly: claude.options, nowMs: NOW_MS })).claudeThreads));
+});
+
+test('a workflow run log above 8 MB gets a saved record with its shell, and a workflow stop time saves and loads', { skip: process.platform !== 'linux' }, async (t) => {
+  const home = await temporaryDirectory(t);
+  const maxBytes = 8 * 1024 * 1024;
+  const claude = await claudeSource(home, { wf: [claudePrompt(NOW_MS - 600_000), claudeTool(NOW_MS - 590_000, 'flow', 'Workflow', { script: 'MARKERPROMPT' }),
+    claudeResult(NOW_MS - 589_900, 'flow', { toolUseResult: { status: 'async_launched', taskId: 'wtask0001', runId: 'wf_run1', taskType: 'local_workflow' } }),
+    claudeReply(NOW_MS - 580_000), ...claudeFiller(NOW_MS - 500_000, maxBytes + 1024 * 1024)] }, maxBytes);
+  const runLog = path.join(claude.project, 'cli-wf', 'subagents', 'workflows', 'wf_run1', 'agent-a1.jsonl');
+  await fs.mkdir(path.dirname(runLog), { recursive: true });
+  await fs.writeFile(runLog, jsonl([claudeRecord('user', NOW_MS - 570_000, { isSidechain: true, message: { role: 'user', content: [{ type: 'tool_result',
+    tool_use_id: 'call-bash', content: 'Command running in background with ID: kbash001. Output is being written to: /tmp/synthetic/kbash001.output' }] } }),
+  ...claudeFiller(NOW_MS - 500_000, maxBytes + 1024 * 1024)]));
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: {}, stdio: 'ignore' });
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill(); await once(child, 'exit'); } });
+  await once(child, 'spawn');
+  const procStart = (await fs.readFile(`/proc/${child.pid}/stat`, 'utf8')).split(') ').pop().split(' ')[19];
+  await fs.mkdir(path.join(home, 'sessions'));
+  await fs.writeFile(path.join(home, 'sessions', `${child.pid}.json`), JSON.stringify({ pid: child.pid, procStart, sessionId: 'cli-wf',
+    hostSessionId: 'local_wf', name: 'synthetic', status: 'idle', statusUpdatedAt: NOW_MS - 60_000, startedAt: NOW_MS - 700_000 }));
+  const file = path.join(home, 'readers', 'positions.json');
+  const count = (run) => claudeRow(run.claudeThreads, 'wf').backgroundCommands;
+  const a = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  assert.equal(count(a), 1);
+  let records = (await readSaved(file)).claude.records;
+  assert.equal(records.length, 2);
+  assert.ok(records.every(validClaudeRecord));
+  assert.ok(records.some((record) => record.lifecycle.shells.map(([id]) => id).join() === 'kbash001'));
+  // A TaskStop of the workflow: its stop time is saved, and a new engine loads the record and ends the run shell.
+  await fs.appendFile(claude.paths.wf, jsonl([claudeTool(NOW_MS - 2000, 'stop', 'TaskStop', { task_id: 'wtask0001' }),
+    claudeResult(NOW_MS - 1900, 'stop', { toolUseResult: { message: 'Successfully stopped task: wtask0001 (MARKERPROMPT)', task_id: 'wtask0001',
+      task_type: 'local_workflow', command: 'MARKERPROMPT' } })]));
+  const b = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  assert.equal(b.claudeStats.loaded, 2);
+  assert.equal(count(b), undefined);
+  assert.deepEqual(byId(b.claudeThreads), byId((await engine({ claudeOnly: claude.options, nowMs: NOW_MS })).claudeThreads));
+  records = (await readSaved(file)).claude.records;
+  assert.ok(records.every(validClaudeRecord));
+  assert.ok(records.some((record) => record.lifecycle.agents.some((agent) => agent[0] === 'wtask0001' && agent[6] === 'wf_run1' && agent[7] === NOW_MS - 1900)));
 });
 
 test('a phase 1 file loads its Codex records; a bad Claude section or record drops only its own records', async (t) => {

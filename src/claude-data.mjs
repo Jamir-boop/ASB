@@ -318,8 +318,10 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
       agent.endedAtMs = timestampMs;
       agent.kind = 'cancelled';
     }
-    // A TaskStop of an agent also kills its background shells, with no end record, also when the agent already ended.
-    if (agent && result.task_type === 'local_agent' && timestampMs >= agent.launchedAtMs) agent.stoppedAtMs = timestampMs;
+    // A TaskStop of an agent or workflow also kills its background shells, with no end record, also when it already ended.
+    // shortcut: the workflow case rests on one real case (a run Bash open at a workflow stop, no end record after it), no
+    // experiment; read the run logs for end records after a stop if a stopped run shell is seen to run on.
+    if (agent && timestampMs >= agent.launchedAtMs) agent.stoppedAtMs = timestampMs;
   }
   const stoppedShellId = event.type === 'user' && result?.task_type === 'local_bash' && typeof result.task_id === 'string'
     && typeof result.message === 'string' && result.message.startsWith('Successfully stopped task') ? result.task_id : textShell?.stopId;
@@ -1295,6 +1297,18 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
   };
   // `liveStartedAtMs` is the start of the live process of the chat, or null with no live record.
   const liveStartedAtMs = Number.isFinite(options.liveStartedAtMs) ? options.liveStartedAtMs : null;
+  // The logs of a run with their current file times, once per load: its own folder first, else the candidates of the project folder.
+  const runLogReads = new Map();
+  const runLogs = (runId) => {
+    if (!runLogReads.has(runId)) {
+      const logs = agentLogs.get(`${path.dirname(entry.filePath)}\nworkflows/${runId}`) || [];
+      const ownDir = path.join(entry.filePath.slice(0, -'.jsonl'.length), 'subagents', 'workflows', runId);
+      const own = logs.filter((log) => path.dirname(log.filePath) === ownDir);
+      runLogReads.set(runId, Promise.all((own.length ? own : logs).map(async (log) => (
+        { filePath: log.filePath, mtimeMs: (await claudeFileStat(log.filePath, options).catch(() => null))?.mtimeMs ?? -1 }))));
+    }
+    return runLogReads.get(runId);
+  };
   for (const [agentId, link] of root.agents) {
     if (link.endedAtMs) {
       work.push({ running: false, eventAtMs: link.endedAtMs, kind: link.kind,
@@ -1309,11 +1323,7 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
     }
     if (link.runId) {
       // A run has no end record in its logs, so a current file time at or after the launch call is its open work.
-      const logs = agentLogs.get(`${path.dirname(entry.filePath)}\nworkflows/${link.runId}`) || [];
-      const ownDir = path.join(entry.filePath.slice(0, -'.jsonl'.length), 'subagents', 'workflows', link.runId);
-      const own = logs.filter((log) => path.dirname(log.filePath) === ownDir);
-      const atMs = Math.max(-1, ...await Promise.all((own.length ? own : logs).map(async (log) => (
-        (await claudeFileStat(log.filePath, options).catch(() => null))?.mtimeMs ?? -1))));
+      const atMs = Math.max(-1, ...(await runLogs(link.runId)).map((log) => log.mtimeMs));
       if (atMs < link.startedAtMs) unknown = true;
       else {
         work.push({ running: true, kind: 'task_started', startedAtMs: link.requestStartedAtMs || link.startedAtMs,
@@ -1346,6 +1356,23 @@ export async function readClaudeRootSignals(entry, subagents, options, agentLogs
       taskStartedAtMs: lifecycle.endedAtMs && lifecycle.startedAtMs > lifecycle.endedAtMs
         ? lifecycle.startedAtMs : link.requestStartedAtMs || lifecycle.startedAtMs || link.startedAtMs });
   }
+  // The shells of workflow runs, only for the counts of a live process. A relaunch gets a new task ID with the same run ID and
+  // folder, so each run is read once, with the latest stop time of its links: a shell that a stop killed stays ended.
+  // A run is read when a link is open or ended in the live process, and only its logs written since that start.
+  const runStops = new Map();
+  for (const link of root.agents.values()) {
+    if (!link.runId) continue;
+    const read = liveStartedAtMs !== null && (!link.endedAtMs || link.endedAtMs >= liveStartedAtMs);
+    const run = runStops.get(link.runId) || { read: false, stoppedAtMs: 0 };
+    runStops.set(link.runId, { read: run.read || read, stoppedAtMs: Math.max(run.stoppedAtMs, link.stoppedAtMs || 0) });
+  }
+  const runFiles = [];
+  for (const [runId, run] of runStops) {
+    if (!run.read) continue;
+    for (const log of await runLogs(runId)) if (log.mtimeMs >= liveStartedAtMs) runFiles.push({ filePath: log.filePath, link: run });
+  }
+  const runSignals = await mapWithConcurrency(runFiles, SIGNAL_CONCURRENCY, (file) => readSignalsForFile(file.filePath, options));
+  runSignals.forEach((runSignal, index) => addChildShells(runSignal.lifecycle, runFiles[index].link));
   const active = work.filter((item) => item.running === true);
   const recent = active.filter((item) => coerceNumber(item.activityAtMs) > 0
     && nowMs - item.activityAtMs <= CLAUDE_ACTIVITY_WINDOW_MS);
