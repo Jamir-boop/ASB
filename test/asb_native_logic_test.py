@@ -1976,8 +1976,9 @@ class PhoneChecks(unittest.TestCase):
         editor.devices_shown = None
         editor.pairing_uri, editor.expires_at, editor.pair_device_ids, editor.matrix = "", 0, set(), None
         for name in ("settings", "apply", "pair", "retry", "message", "status_label", "fingerprint", "enabled",
-                     "address_list", "address_note", "port", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
+                     "address_list", "address_note", "port", "send_text", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
             setattr(editor, name, Mock())
+        editor.send_text.get_active.return_value = False
         editor.devices.get_first_child.return_value = None
         return editor
 
@@ -2228,12 +2229,17 @@ class PhoneChecks(unittest.TestCase):
 
     def test_phone_form_values_keep_unsaved_edits_and_else_follow_the_server(self):
         status = self.status(port=4631, bindAddresses=["192.168.50.4", "10.147.17.4"])
-        server = (True, 4631, ["192.168.50.4", "10.147.17.4"])
-        self.assertEqual(asb.phone_form_values(None, (False, 4630, []), status), server)
-        self.assertEqual(asb.phone_form_values((True, 4630, ["10.147.17.4", "192.168.50.4"]),
-                                               (True, 4630, ["192.168.50.4", "10.147.17.4"]), status), server)
-        edited = (True, 4632, ["192.168.50.4"])
-        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"]), edited, status), edited)
+        server = (True, 4631, ["192.168.50.4", "10.147.17.4"], False)
+        self.assertEqual(asb.phone_form_values(None, (False, 4630, [], False), status), server)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["10.147.17.4", "192.168.50.4"], False),
+                                               (True, 4630, ["192.168.50.4", "10.147.17.4"], False), status), server)
+        edited = (True, 4632, ["192.168.50.4"], False)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], False), edited, status), edited)
+        # A status without sendText loads off; a changed switch alone is an unsaved edit.
+        self.assertNotIn("sendText", status)
+        texted = (True, 4630, ["192.168.50.4", "10.147.17.4"], True)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], False), texted, status), texted)
+        self.assertEqual(asb.phone_form_values(None, None, self.status(sendText=True))[3], True)
 
     def test_phone_pane_reopen_keeps_edits_shows_new_addresses_unchecked_and_follows_an_unedited_form(self):
         editor = self.editor()
@@ -2374,11 +2380,12 @@ class PhoneChecks(unittest.TestCase):
                                   "100.101.102.103": Mock(get_active=Mock(return_value=True))}
         editor.enabled.get_active.return_value = False
         editor.port.get_value.return_value = 4631
+        editor.send_text.get_active.return_value = True
         editor.request_phone = Mock()
         with patch.dict(SCOPE, {"GLib": SimpleNamespace(source_remove=Mock())}):
             editor.apply_settings()
             editor.request_phone.assert_called_with("/api/phone/settings", "POST",
-                {"enabled": False, "bindAddresses": ["192.168.50.4", "100.101.102.103"], "port": 4631})
+                {"enabled": False, "bindAddresses": ["192.168.50.4", "100.101.102.103"], "port": 4631, "sendText": True})
             editor.revoke_device("a/b")
             editor.request_phone.assert_called_with("/api/phone/devices/a%2Fb/revoke", "POST", {})
             editor.pair_phone()

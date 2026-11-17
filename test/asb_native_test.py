@@ -578,6 +578,30 @@ class WidgetCheck(unittest.TestCase):
             self.assertIsNot(editor.remove_buttons[0], button)
             row, button = editor.devices.get_row_at_index(0), editor.remove_buttons[0]
 
+    def test_phone_send_text_switch_starts_off_and_an_edit_stays_unsaved(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        rows = []
+        row = editor.settings.get_first_child()
+        while row:
+            rows.append(row)
+            row = row.get_next_sibling()
+        self.assertEqual([row.get_title() for row in rows], ["Allow phone access", "Port", "Send message text to phones"])
+        self.assertIs(rows[2], editor.send_text)
+        self.assertIn("also on the other machines of the group", editor.send_text.get_subtitle())
+        status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
+        editor.render_status(status, True)
+        self.assertFalse(editor.send_text.get_active())
+        editor.send_text.set_active(True)
+        editor.render_status(copy.deepcopy(status), True)
+        self.assertTrue(editor.send_text.get_active())
+        editor.form_loaded = None
+        editor.render_status({**status, "sendText": True}, True)
+        self.assertTrue(editor.send_text.get_active())
+
     def test_reconnect_keeps_the_board_and_preferences_and_uses_the_new_engine(self):
         received = [[], []]
         servers = []
