@@ -11,6 +11,7 @@ import { createGzip } from 'node:zlib';
 import { acceptsGzip, sendJson } from './local-http.mjs';
 import { configDir } from './platform-paths.mjs';
 import { scopeInput } from './session-references.mjs';
+import { MUTE_DURATIONS_MS } from './switchboard.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
 
 export const PHONE_API_VERSION = 1;
@@ -98,12 +99,32 @@ export function isAllowedRemote(address, kind = 'lan') {
   return address === '::1' || ipv4 === '127.0.0.1' || privateIPv4(ipv4);
 }
 
+// The query of the PC thread route, rebuilt from checked values only; null for any other query.
+const THREAD_SEAT = /^[^\x00-\x1f\x7f]{1,512}$/;
+function threadQuery(params) {
+  const names = [...params.keys()];
+  if (new Set(names).size !== names.length) return null;
+  const optional = ['period', 'from', 'to', 'limit'];
+  const selector = names.filter((name) => !optional.includes(name)).sort().join(',');
+  if (!['a,b', 'seat', 'status', 'all'].includes(selector)) return null;
+  const seat = (value) => THREAD_SEAT.test(value);
+  const valid = { period: (value) => ACTIVITY_PERIODS.slice(0, 3).includes(value), a: seat, b: seat, seat,
+    status: (value) => ['written', 'held', 'not-sent', 'unknown'].includes(value), all: (value) => value === '1',
+    from: (value) => /^(0|[1-9][0-9]{0,15})$/.test(value), to: (value) => /^(0|[1-9][0-9]{0,15})$/.test(value),
+    limit: (value) => /^[1-9][0-9]{0,2}$/.test(value) && Number(value) <= 200 };
+  if (!names.every((name) => valid[name](params.get(name)))) return null;
+  return new URLSearchParams([...params]).toString();
+}
+
 const validAddresses = (value) => Array.isArray(value) && value.length <= 8
   && value.every((address) => typeof address === 'string') && new Set(value).size === value.length;
 
 function validSettings(value) {
   return (value?.schema === 1 ? fields(value, ['schema', 'enabled', 'bindAddress', 'port', 'devices']) && typeof value.bindAddress === 'string'
-    : fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices']) && value.schema === 2 && validAddresses(value.bindAddresses))
+    // sendText is saved only when it is true, so an older ASB keeps reading a file saved with the switch off.
+    : (fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices'])
+      || fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices', 'sendText']) && typeof value.sendText === 'boolean')
+      && value.schema === 2 && validAddresses(value.bindAddresses))
     && typeof value.enabled === 'boolean' && validPort(value.port)
     && Array.isArray(value.devices) && value.devices.length <= 8 && value.devices.every((device) =>
       fields(device, ['id', 'name', 'tokenSha256', 'createdAtMs', 'lastSeenAtMs'])
@@ -186,7 +207,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     await fs.mkdir(path.dirname(settingsPath), { recursive: true, mode: 0o700 });
     await fs.rm(temporary, { force: true });
     try {
-      await fs.writeFile(temporary, JSON.stringify(next, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      const { sendText, ...rest } = next;
+      await fs.writeFile(temporary, JSON.stringify(sendText === true ? next : rest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
       await fs.rename(temporary, settingsPath);
     } finally { await fs.rm(temporary, { force: true }); }
     settings = next;
@@ -205,7 +227,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
   const listening = () => listeners.filter((item) => item.server.listening).map(({ kind, address }) => ({ kind, address }));
 
   function status() {
-    return { enabled: settings.enabled, bindAddresses: [...settings.bindAddresses], port: settings.port,
+    return { enabled: settings.enabled, bindAddresses: [...settings.bindAddresses], port: settings.port, sendText: settings.sendText === true,
       addresses: listAddresses().map(({ address, interface: name, kind }) => ({ address, interface: name, kind })),
       listening: listening(), running: listening().length > 0, error, warning, fingerprint,
       devices: settings.devices.map(({ id, name, createdAtMs, lastSeenAtMs }) => ({ id, name, createdAtMs, lastSeenAtMs })),
@@ -339,14 +361,16 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     if (record.times.length >= 20) record.blockedUntil = time + 60_000;
   }
 
-  function proxy(request, response, target, body, dashboard) {
+  // maxBytes: the reply is read whole, and a longer reply is refused with 502.
+  function proxy(request, response, target, body, dashboard, maxBytes = 0) {
     const headers = { host: `127.0.0.1:${localPort}` };
     const gzipAccepted = dashboard && acceptsGzip(request.headers['accept-encoding']);
     if (gzipAccepted) headers['accept-encoding'] = 'gzip';
     if (request.method === 'POST') Object.assign(headers, { origin: `http://127.0.0.1:${localPort}`, 'content-type': 'application/json' });
     if (request.headers['if-none-match']) headers['if-none-match'] = request.headers['if-none-match'];
     const unavailable = () => {
-      if (response.destroyed) return;
+      // A refused long reply has ended already; the stopped upstream must not cut it.
+      if (response.destroyed || response.writableEnded) return;
       // A started gzip stream can still flush into the reply, so a gzip reply always ends this way.
       if (response.headersSent || response.hasHeader('content-encoding')) response.destroy();
       else sendJson(response, 502, { error: 'ASB is not answering.' });
@@ -356,6 +380,19 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       response.statusCode = reply.statusCode;
       reply.on('error', unavailable);
       if (dashboard) response.setHeader('vary', 'Accept-Encoding');
+      if (maxBytes) {
+        const chunks = [];
+        let size = 0;
+        reply.on('data', (chunk) => {
+          size += chunk.length;
+          if (size <= maxBytes) { chunks.push(chunk); return; }
+          chunks.length = 0;
+          upstream.destroy();
+          if (!response.destroyed) sendJson(response, 502, { error: 'The ASB reply is too large.' });
+        });
+        reply.on('end', () => { if (size <= maxBytes && !response.destroyed) response.end(Buffer.concat(chunks)); });
+        return;
+      }
       if (gzipAccepted && reply.statusCode === 200) {
         response.setHeader('content-encoding', 'gzip');
         if (reply.headers['content-encoding'] === 'gzip') { reply.pipe(response); return; }
@@ -461,12 +498,13 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       await handlePeer(request, response, group, `v2/${exactRoute}`, reject);
       return;
     }
-    const match = url.pathname.match(/^\/phone\/v1\/threads\/([^/]{1,512})\/(open|mark-read|mark-unread|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out)$/);
+    const match = url.pathname.match(/^\/phone\/v1\/threads\/([^/]{1,512})\/(open|mark-read|mark-unread|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out|mute|unmute)$/);
     const hello = url.pathname === '/phone/v1/hello';
     const dashboard = url.pathname === '/phone/v1/dashboard';
     const unread = url.pathname === '/phone/v1/settings/unread';
-    // Contract 3: the two activity reads, never the thread.
-    const activity = url.pathname.match(/^\/phone\/v1\/activity\/(messages|usage)$/)?.[1];
+    // Contract 3: the two activity reads always, and the thread only when the PC owner turns on message text.
+    const activity = url.pathname.match(settings.sendText === true ? /^\/phone\/v1\/activity\/(messages|usage|thread)$/
+      : /^\/phone\/v1\/activity\/(messages|usage)$/)?.[1];
     if (!pairRoute && !hello && !dashboard && !unread && !match && !activity) { reject(404, 'Route is not available.'); return; }
     const method = hello || dashboard || activity ? 'GET' : 'POST';
     if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
@@ -526,13 +564,26 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         sendJson(response, 200, { api: PHONE_API_VERSION, asbVersion, deviceId: device.id, serverName: hostName,
           addresses: listening(), port: settings.port, machineId,
           engines: (peer?.engines() || []).map((engine) => engine.machineId === machineId
-            ? { ...engine, addresses: listening(), port: settings.port } : engine) });
+            ? { ...engine, addresses: listening(), port: settings.port } : engine), sendText: settings.sendText === true });
+      } else if (activity === 'thread') {
+        // The switch can go off while the phone waits for its token check.
+        if (settings.sendText !== true) { reject(404, 'Route is not available.'); return; }
+        const query = threadQuery(url.searchParams);
+        if (!query) { reject(400, 'Invalid query.'); return; }
+        proxy(request, response, `/api/activity/thread?${query}`, body, false, 2 * 1024 * 1024);
       } else if (activity) {
         // Only a valid period goes on; every other query value stays here.
         const period = url.searchParams.get('period') ?? (activity === 'usage' ? '30d' : '7d');
         if (!(activity === 'usage' ? ACTIVITY_PERIODS : ACTIVITY_PERIODS.slice(0, 3)).includes(period)) { reject(400, 'Invalid period.'); return; }
         proxy(request, response, `/api/activity/${activity}?period=${period}${activity === 'messages' ? '&text=0' : ''}`, body, true);
       } else {
+        if (match?.[2] === 'mute' || match?.[2] === 'unmute') {
+          let value;
+          try { value = JSON.parse(body.toString('utf8')); } catch {}
+          if (!fields(value, []) && !(match[2] === 'mute' && fields(value, ['durationMs']) && MUTE_DURATIONS_MS.includes(value.durationMs))) {
+            reject(400, 'Invalid ASB session action.'); return;
+          }
+        }
         const target = dashboard ? `/api/dashboard${url.searchParams.get('force') === '1' ? '?force=1' : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;
         proxy(request, response, target, body, dashboard);
@@ -584,7 +635,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     }),
     updateSettings: (value) => serialize(async () => {
       await load();
-      if (!fields(value, ['enabled', 'bindAddresses', 'port']) || typeof value.enabled !== 'boolean' || !validAddresses(value.bindAddresses)) {
+      // sendText is optional; without it the saved value stays.
+      const withText = fields(value, ['enabled', 'bindAddresses', 'port', 'sendText']);
+      if (!(fields(value, ['enabled', 'bindAddresses', 'port']) || withText && typeof value.sendText === 'boolean') || typeof value.enabled !== 'boolean' || !validAddresses(value.bindAddresses)) {
         throw invalid('Invalid phone settings.');
       }
       if (!validPort(value.port) || value.port === localPort) throw invalid('The phone port must be from 1024 to 65535 and different from the ASB port.');

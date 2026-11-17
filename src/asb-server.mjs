@@ -547,7 +547,10 @@ export function createAsbServer({
         else {
           const body = await readBody(request);
           const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
-          if (fields !== (url.pathname === '/api/phone/settings' ? 'bindAddresses,enabled,port' : '')) {
+          // sendText (the message text switch) is optional: without it the saved value stays.
+          const settingsFields = url.pathname === '/api/phone/settings' && (fields === 'bindAddresses,enabled,port'
+            || fields === 'bindAddresses,enabled,port,sendText' && typeof body.sendText === 'boolean');
+          if (url.pathname === '/api/phone/settings' ? !settingsFields : fields !== '') {
             sendJson(response, 400, { error: 'Invalid phone action.' });
             return;
           }

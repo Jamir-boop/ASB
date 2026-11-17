@@ -113,7 +113,7 @@ test('phone defaults keep the listener off and paths use HOME when XDG_CONFIG_HO
   assert.equal(phoneSettingsPath({ HOME: store.home, XDG_CONFIG_HOME: '' }), path.join(store.home, '.config/asb/phone.json'));
   assert.equal(phoneTlsDir({ HOME: store.home }), path.join(store.home, '.config/asb/phone-tls'));
   assert.equal(PHONE_API_VERSION, 1);
-  assert.deepEqual(await gateway.start(), { enabled: false, bindAddresses: [], port: 4630, addresses: [], listening: [], running: false,
+  assert.deepEqual(await gateway.start(), { enabled: false, bindAddresses: [], port: 4630, sendText: false, addresses: [], listening: [], running: false,
     error: '', warning: '', fingerprint: '', devices: [], pairing: { expiresAtMs: 0 } });
   await assert.rejects(gateway.createPairing(), { statusCode: 400, message: 'Turn on phone access first.' });
   await assert.rejects(stat(store.settingsPath), { code: 'ENOENT' });
@@ -128,7 +128,7 @@ test('invalid phone settings replace phone.json.bad and set a warning', async (t
     { schema: 1 }, { schema: 3 }, { bindAddress: '' }, { enabled: 1 }, { bindAddresses: '' }, { bindAddresses: [1] },
     { bindAddresses: ['10.0.0.1', '10.0.0.1'] }, { bindAddresses: Array.from({ length: 9 }, (_, i) => `10.0.0.${i}`) },
     { port: 1023 }, { port: 65536 }, { port: 4630.5 },
-    { extra: true }, { devices: {} }, { devices: Array(9).fill(device) }, { devices: [null] },
+    { extra: true }, { sendText: 1 }, { sendText: 'true' }, { sendText: null }, { devices: {} }, { devices: Array(9).fill(device) }, { devices: [null] },
     ...[{ id: 'ABC' }, { name: '' }, { name: 'x'.repeat(65) }, { name: 'line\nbreak' },
       { name: '\u0085' }, { tokenSha256: 'A'.repeat(64) }, { createdAtMs: -1 }, { lastSeenAtMs: 1.5 }, { token: 'secret' }]
       .map((extra) => ({ devices: [{ ...device, ...extra }] })),
@@ -220,7 +220,7 @@ gatewayTest('bearer authentication needs the exact token and hello reports the p
   const machineId = (await gateway.status()).fingerprint.slice(0, 16);
   assert.match(machineId, /^[0-9a-f]{16}$/);
   assert.deepEqual(response.json, { api: 1, asbVersion: '1.8.1', deviceId: paired.deviceId, serverName: 'Test PC & lab',
-    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [] });
+    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [], sendText: false });
 });
 
 gatewayTest('hello lists the group engines with the live values of this engine, also for a phone paired on another member', async (t) => {
@@ -236,7 +236,7 @@ gatewayTest('hello lists the group engines with the live values of this engine, 
   const engines = [{ ...self, addresses: [{ kind: 'lan', address: '127.0.0.1' }], port }, other];
   const paired = (await pair()).json;
   const own = await request('/phone/v1/hello', { token: paired.token });
-  assert.deepEqual(Object.keys(own.json), ['api', 'asbVersion', 'deviceId', 'serverName', 'addresses', 'port', 'machineId', 'engines']);
+  assert.deepEqual(Object.keys(own.json), ['api', 'asbVersion', 'deviceId', 'serverName', 'addresses', 'port', 'machineId', 'engines', 'sendText']);
   assert.deepEqual([own.json.machineId, own.json.engines], [fingerprint.slice(0, 16), engines]);
   const shared = await request('/phone/v1/hello', { token: sharedToken });
   assert.equal(shared.status, 200);
@@ -263,7 +263,7 @@ gatewayTest('twenty failures throttle the remote for one minute and use a slidin
 gatewayTest('the route allowlist blocks other APIs and checks methods before bearer auth', async (t) => {
   const { request, pair, records } = await fixture(t);
   const token = (await pair()).json.token;
-  for (const route of ['/phone/v1/sources', '/api/dashboard', '/api/palette', '/phone/v1/palette', '/phone/v1/threads/x/delete', '/phone/v1/threads/x/mute', '/phone/v1/threads/x/unmute', '/phone/v1/settings/phone',
+  for (const route of ['/phone/v1/sources', '/api/dashboard', '/api/palette', '/phone/v1/palette', '/phone/v1/threads/x/delete', '/phone/v1/threads/x/mutes', '/phone/v1/settings/phone',
     '/phone/v1/threads//open', `/phone/v1/threads/${'x'.repeat(513)}/open`, '/phone/v1/threads/x/y/open']) {
     const response = await request(route, { method: 'POST', token, body: {} });
     assert.equal(response.status, 404, route);
@@ -410,7 +410,7 @@ gatewayTest('the dashboard reply is gzip only when the phone accepts it and has 
   assert.deepEqual(failed.json, { error: 'ASB is not answering.' });
 });
 
-gatewayTest('the activity routes proxy only a valid period, ask for messages with no text, gzip like the dashboard, and the thread is never reachable', async (t) => {
+gatewayTest('the activity routes proxy only a valid period, ask for messages with no text, gzip like the dashboard, and the thread is off by default', async (t) => {
   // The usage reply passes as it is, with its sessions.
   const body = JSON.stringify({ messages: Array.from({ length: 100 }, (_, i) => ({ id: `m-${i}`, status: 'accepted' })),
     sessions: { rows: [{ machineId: 'desk', id: 's-1', app: 'codex', title: 'release-plan', tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 }, cost: 0.5 }],
@@ -443,6 +443,96 @@ gatewayTest('the activity routes proxy only a valid period, ask for messages wit
     assert.equal((await request(route, { token })).status, 404, route);
   }
   assert.deepEqual(records, []);
+});
+
+gatewayTest('mute and unmute go to the PC route only with the allowed bodies', async (t) => {
+  const { request, pair, records } = await fixture(t);
+  const token = (await pair()).json.token;
+  for (const body of [{}, ...[1_800_000, 3_600_000, 28_800_000, 86_400_000].map((durationMs) => ({ durationMs }))]) {
+    assert.equal((await request('/phone/v1/threads/x/mute', { method: 'POST', token, body })).status, 200, JSON.stringify(body));
+  }
+  assert.equal((await request('/phone/v1/threads/x/unmute', { method: 'POST', token, body: {} })).status, 200);
+  assert.deepEqual(records.map((record) => [record.url, record.body]), [['/api/threads/x/mute', '{}'],
+    ...[1_800_000, 3_600_000, 28_800_000, 86_400_000].map((durationMs) => ['/api/threads/x/mute', JSON.stringify({ durationMs })]),
+    ['/api/threads/x/unmute', '{}']]);
+  records.length = 0;
+  for (const [action, body] of [['mute', { durationMs: 60_000 }], ['mute', { durationMs: '1800000' }], ['mute', { durationMs: 1_800_000, extra: 1 }],
+    ['mute', { extra: 1 }], ['mute', []], ['mute', 'null'], ['mute', '1'], ['mute', '{'], ['mute', ''],
+    ['unmute', { durationMs: 1_800_000 }], ['unmute', { extra: 1 }], ['unmute', []], ['unmute', '']]) {
+    const response = await request(`/phone/v1/threads/x/${action}`, { method: 'POST', token, body });
+    assert.deepEqual([response.status, response.json], [400, { error: 'Invalid ASB session action.' }], `${action} ${JSON.stringify(body)}`);
+  }
+  assert.equal((await request('/phone/v1/threads/x/mute', { method: 'GET', token })).status, 405);
+  assert.deepEqual(records, []);
+});
+
+gatewayTest('the thread route exists only while the PC switch for message text is on', async (t) => {
+  let big = false;
+  const { gateway, request, pair, records, port, settingsPath } = await fixture(t, { reply: (request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(big ? JSON.stringify({ total: 1, messages: [{ id: 'm-1', text: 'x'.repeat(2 * 1024 * 1024) }] })
+      : '{"total":1,"messages":[{"id":"m-1","text":"Synthetic text."}]}');
+  } });
+  const token = (await pair()).json.token;
+  const thread = '/phone/v1/activity/thread?period=7d&seat=x';
+  // Off (the default): no thread, and the messages overview asks for no text.
+  assert.equal((await gateway.status()).sendText, false);
+  assert.equal((await request('/phone/v1/hello', { token })).json.sendText, false);
+  assert.deepEqual([(await request(thread, { token })).status, (await request(thread, { token })).json], [404, { error: 'Route is not available.' }]);
+  assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).sendText, undefined);
+  await request('/phone/v1/activity/messages', { token });
+  assert.deepEqual(records.map((record) => record.url), ['/api/activity/messages?period=7d&text=0']);
+  records.length = 0;
+  // On: the switch is saved, hello reports it, and only a checked query goes on.
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: true })).sendText, true);
+  assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).sendText, true);
+  // Without the field the saved value stays.
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port })).sendText, true);
+  assert.equal((await request('/phone/v1/hello', { token })).json.sendText, true);
+  const valid = ['?period=7d&seat=x', '?a=x&b=unknown%3Aaaaa', '?period=24h&status=held&limit=200', '?period=30d&all=1&from=1&to=2&limit=1', '?all=1'];
+  for (const query of valid) {
+    const response = await request(`/phone/v1/activity/thread${query}`, { token });
+    assert.deepEqual([response.status, response.json.messages[0].text], [200, 'Synthetic text.'], query);
+  }
+  await request('/phone/v1/activity/messages?period=24h', { token });
+  assert.deepEqual(records.map((record) => record.url), [...valid.map((query) => `/api/activity/thread${query}`), '/api/activity/messages?period=24h&text=0']);
+  records.length = 0;
+  for (const query of ['', '?period=7d', '?seat=x&extra=1', '?seat=x&text=0', '?seat=x&limit=0', '?seat=x&limit=201', '?seat=x&limit=01',
+    '?seat=x&period=7d&period=24h', '?seat=x&period=90d', '?seat=x&seat=y', '?seat=', '?seat=x%0Ay', `?seat=${'x'.repeat(513)}`, '?a=x',
+    '?seat=x&a=y&b=z', '?all=0', '?all=1&status=held', '?status=bogus', '?all=1&from=-1&to=2', '?all=1&from=1&from=1&to=2']) {
+    const response = await request(`/phone/v1/activity/thread${query}`, { token });
+    assert.deepEqual([response.status, response.json], [400, { error: 'Invalid query.' }], query);
+  }
+  assert.equal((await request(thread)).status, 401);
+  assert.equal((await request(thread, { method: 'POST', token, body: {} })).status, 405);
+  assert.deepEqual(records, []);
+  // A reply above 2 MiB is refused.
+  big = true;
+  assert.deepEqual([(await request(thread, { token })).status, (await request(thread, { token })).json], [502, { error: 'The ASB reply is too large.' }]);
+  big = false;
+  records.length = 0;
+  // Off again: the next thread request is 404 and does not reach the PC, and the file has no key.
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: false })).sendText, false);
+  assert.equal((await request(thread, { token })).status, 404);
+  assert.equal((await request('/phone/v1/hello', { token })).json.sendText, false);
+  assert.deepEqual(records, []);
+  assert.equal('sendText' in JSON.parse(await readFile(settingsPath, 'utf8')), false);
+  await assert.rejects(gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: 1 }), { statusCode: 400 });
+});
+
+test('a phone.json with or without sendText loads, and a save with the switch off writes no key', async (t) => {
+  const store = await storage(t);
+  await mkdir(path.dirname(store.settingsPath), { recursive: true });
+  for (const [saved, expected] of [[settings(), false], [settings({ sendText: true }), true], [settings({ sendText: false }), false]]) {
+    await writeFile(store.settingsPath, JSON.stringify(saved));
+    const gateway = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+    const status = await gateway.start();
+    assert.deepEqual([status.warning, status.sendText], ['', expected], JSON.stringify(saved));
+    await gateway.updateSettings({ enabled: false, bindAddresses: [], port: 4631 });
+    const written = JSON.parse(await readFile(store.settingsPath, 'utf8'));
+    assert.deepEqual(written, expected ? settings({ port: 4631, sendText: true }) : settings({ port: 4631 }));
+    await gateway.stop();
+  }
 });
 
 gatewayTest('an upstream error after the gzip headers ends the phone reply', async (t) => {
