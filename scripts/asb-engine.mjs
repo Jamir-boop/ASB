@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs';
 import { createMachineGroup } from '../src/machine-group.mjs';
 import { createRelaySupervisor } from '../src/machine-relay.mjs';
+import { useClaudeQuestionText } from '../src/claude-data.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { boardCheck } from '../src/linux-system.mjs';
@@ -151,7 +152,9 @@ export async function runEngine({ env = process.env, platform = process.platform
     peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint),
       resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint),
       bridge: () => server.bridgeReport() },
-    onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked });
+    onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked,
+    // The question text lives in the reader only while the text switch is on; a change rebuilds the rows.
+    onSendText: (on) => { if (useClaudeQuestionText(on)) server.invalidateDashboard('phone-text'); } });
   const positions = createReaderPositions({ file: readerPositionsPath(env, platform), key: () => gateway.readerPositionsKey(), platform });
   let machineId = '';
   let referenceScopes = null;

@@ -27,6 +27,8 @@ import { spawn } from 'node:child_process';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const QUESTION_AT = Symbol('ASB question timestamp');
+// The question text of a pending Claude AskUserQuestion (only while the phone text switch is on): only `/api/dashboard?text=1` sends it.
+export const QUESTION_TEXT = Symbol('ASB question text');
 export const ACTION_AT = Symbol('ASB required action timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
 // A CLI row that more than one source lists, with no single source of origin.
@@ -325,6 +327,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       const limit = Number(thread.limitResetsAtMs || 0);
       row.limitResetsAtMs = limit > nowMs && status.state !== 'working' && !(status.state === 'waiting' && row.actionRequired) ? limit : 0;
       Object.defineProperty(row, QUESTION_AT, { value: Number(thread.latestUserQuestionAtMs || 0) });
+      // The first pending question with a kept text in `pendingTools` order (finishClaudeSignals sorts it newest first); a wrap-up question has none.
+      const questionText = row.questionPending && (thread.pendingTools || []).find((tool) => tool.tool === 'AskUserQuestion' && typeof tool.question === 'string' && tool.question)?.question;
+      if (questionText) Object.defineProperty(row, QUESTION_TEXT, { value: questionText });
       Object.defineProperty(row, ACTION_AT, { value: Number(thread.pendingToolAtMs || 0) });
       Object.defineProperty(row, DISCARD_TASK, { value: status.processEnded ? { atMs: row.failedAtMs, kind: 'failed',
         rootStart: Number(thread.latestTaskStartedAtMs || thread.agentStartedAtMs || 0), rootEnd: row.failedAtMs } : {

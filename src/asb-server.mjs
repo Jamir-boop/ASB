@@ -9,7 +9,7 @@ import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic,
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
-import { MUTE_DURATIONS_MS } from './switchboard.mjs';
+import { MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
 
 const gzipAsync = promisify(gzip);
 
@@ -45,6 +45,25 @@ function readPalette(palettePath) {
   }
   console.warn('ASB could not read its saved palette. The phone gets the palette at the next window theme apply.');
   return null;
+}
+
+// A saved reply list: `text` is the list text that it is for, `content` the list that it sends, and the tag hashes `tagPrefix` and the list.
+function listEntry(text, palette, content, tagPrefix = '') {
+  const list = `${content.slice(0, -1)},"palette":${JSON.stringify(palette)}}`;
+  return { text, palette, list, etag: `"${createHash('sha256').update(tagPrefix + list).digest('base64url')}"` };
+}
+
+// A hash of the kept question texts of the rows with their row IDs (a hash, so the entry holds no second copy), or '' when no row has one.
+function questionTexts(dashboard) {
+  const rows = (dashboard.threads || []).filter((row) => row[QUESTION_TEXT]);
+  return rows.length ? createHash('sha256').update(JSON.stringify(rows.map((row) => [row.id, row[QUESTION_TEXT]]))).digest('base64url') : '';
+}
+
+// The list text with `questionText` on each row that has a kept question text.
+function questionListText(dashboard, text) {
+  const { generatedAtMs: _, performance: __, ...rest } = dashboard;
+  return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => row[QUESTION_TEXT] ? { ...row, questionText: row[QUESTION_TEXT] } : row),
+    summary: { ...(rest.summary || {}) } });
 }
 
 export function panelSummary(dashboard, machines) {
@@ -105,6 +124,7 @@ export function createAsbServer({
   let dashboardNotModified = 0;
   let compressedLists = 0;
   let savedList = null;
+  let savedTextList = null;
   const uiClients = new Map();
   const closedUiClients = new Map();
   // Client ID -> its open event streams (`/api/events?ui=<clientId>`): the engine keeps such a client with no repeated report.
@@ -777,12 +797,19 @@ export function createAsbServer({
         // The rows can change in place between scans, and each such change moves the snapshot revision, so the snapshot makes the list
         // text again. The saved list and its tag are for one list text and one palette: a scan with the same content keeps them.
         const { generatedAtMs } = dashboard;
+        // `text=1` (only the phone gateway, while its text switch is on) adds `questionText` to the rows with a kept question text.
+        // It has its own saved list and tag, kept while the list text, the palette, and the question texts stay the same. With no
+        // question text it is the plain list. Without `text=1` the reply is the same as before.
         const text = snapshot.listText(dashboard);
-        if (savedList?.text !== text || savedList.palette !== palette) {
-          const list = `${text.slice(0, -1)},"palette":${JSON.stringify(palette)}}`;
-          savedList = { text, palette, list, etag: `"${createHash('sha256').update(list).digest('base64url')}"` };
+        if (savedList?.text !== text || savedList.palette !== palette) savedList = listEntry(text, palette, text);
+        const questions = url.searchParams.get('text') === '1' ? questionTexts(dashboard) : '';
+        // No question is pending now: an answered question does not stay in the saved list and its gzip.
+        if (url.searchParams.get('text') === '1' && !questions) savedTextList = null;
+        if (questions && (savedTextList?.text !== text || savedTextList.palette !== palette || savedTextList.questions !== questions)) {
+          savedTextList = { ...listEntry(text, palette, questionListText(dashboard, text), 'text=1\0'), questions };
         }
-        const { list, etag } = savedList;
+        const entry = questions ? savedTextList : savedList;
+        const { list, etag } = entry;
         const headers = { etag, 'cache-control': 'no-store' };
         const gzip = acceptsGzip(request.headers['accept-encoding']);
         if (request.headers['if-none-match'] === etag) {
@@ -792,7 +819,7 @@ export function createAsbServer({
           return;
         }
         // The list compresses once; the time and the counters go after it as the short tail of each reply.
-        if (gzip && !savedList.gzip) { compressedLists += 1; savedList.gzip = gzipHead(`${list.slice(0, -1)},`); }
+        if (gzip && !entry.gzip) { compressedLists += 1; entry.gzip = gzipHead(`${list.slice(0, -1)},`); }
         const performance = performanceSnapshot();
         performance.dashboard.notModified = dashboardNotModified;
         performance.dashboard.compressedLists = compressedLists;
@@ -800,7 +827,7 @@ export function createAsbServer({
         response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers,
           ...(gzip ? { 'content-encoding': 'gzip', vary: 'Accept-Encoding' } : {}) });
         if (!gzip) { response.end(`${rest.slice(0, -1)},${list.slice(1)}`); return; }
-        response.end(gzipWithTail(savedList.gzip, rest.slice(1)));
+        response.end(gzipWithTail(entry.gzip, rest.slice(1)));
       } catch (error) {
         sendJson(response, 500, {
           error: 'Failed to load dashboard data',
@@ -843,6 +870,10 @@ export function createAsbServer({
   };
   // The machine group reads the dashboard for its export and refreshes it after a member's new rows.
   server.dashboardForRequest = dashboardForRequest;
-  server.invalidateDashboard = invalidateDashboard;
+  // The phone text switch change (`phone-text`, from the engine) drops the saved question text list, so no question text stays after it.
+  server.invalidateDashboard = (reason, options) => {
+    if (reason === 'phone-text') savedTextList = null;
+    return invalidateDashboard(reason, options);
+  };
   return server;
 }

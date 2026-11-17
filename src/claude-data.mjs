@@ -494,7 +494,43 @@ function handleAssistantEvent(signals, event, timestampMs) {
   }
 }
 
+// Only while the phone text switch is on (useClaudeQuestionText): the first question of a pending AskUserQuestion, in memory only.
+let keepQuestionText = false;
+let questionTextGeneration = 0;
+const MAX_QUESTION_CHARS = 300;
+
+// The first question, trimmed, at most 300 characters (cut at a word, with `...`), as a flat copy: a JSON.parse value can be a slice
+// of its whole record line. Nothing else from the tool input is kept.
+function pendingQuestionText(item) {
+  const input = item?.input;
+  const value = Array.isArray(input?.questions) ? input.questions[0]?.question : input?.question;
+  if (typeof value !== 'string') return '';
+  let text = value.trim();
+  const points = [...text];
+  if (points.length > MAX_QUESTION_CHARS) {
+    text = points.slice(0, MAX_QUESTION_CHARS - 3).join('');
+    // The last whole word: drop a cut word, unless the cut is at a word end.
+    const space = /\s/.test(points[MAX_QUESTION_CHARS - 3]) ? text.length : text.search(/\s\S*$/);
+    text = `${(space > 0 ? text.slice(0, space) : text).trimEnd()}...`;
+  }
+  return text ? flatId(text) : '';
+}
+
+// The phone text switch. A change drops the cached reads of transcripts with a pending AskUserQuestion, so the next read keeps
+// the question text (on) or no text (off). Returns true when the value changed.
+export function useClaudeQuestionText(on) {
+  if (keepQuestionText === (on === true)) return false;
+  keepQuestionText = on === true;
+  questionTextGeneration += 1;
+  const asks = (tools) => [...(tools || [])].some((tool) => tool.tool === 'AskUserQuestion');
+  for (const [key, cached] of [...claudeJsonlSignalCache]) {
+    if (asks(cached.state?.pendingToolsById?.values()) || asks(cached.signals?.pendingTools)) claudeJsonlSignalCache.delete(key);
+  }
+  return true;
+}
+
 function rememberPendingTool(signals, id, item, timestampMs) {
+  const question = keepQuestionText && item.name === 'AskUserQuestion' ? pendingQuestionText(item) : '';
   signals.pendingToolsById.set(id, {
     id,
     tool: String(item.name || 'tool'),
@@ -502,6 +538,7 @@ function rememberPendingTool(signals, id, item, timestampMs) {
     status: 'pending',
     kind: 'permission',
     signalAtMs: timestampMs,
+    ...(question ? { question } : {}),
   });
   // Retain the newest 5000 permission signals, so an append-only stream cannot grow this map without limit.
   if (signals.pendingToolsById.size > MAX_ASB_SESSION_COUNT) {
@@ -1165,6 +1202,7 @@ async function savedClaudePosition(filePath, stat) {
 }
 
 async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', fileScan = null } = {}) {
+  const textGeneration = questionTextGeneration;
   try {
     // The cached file index does not refresh transcript stats, so each read gets a current one.
     const fileStat = await claudeFileStat(filePath, { fileScan, cacheScope });
@@ -1220,7 +1258,8 @@ async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYT
     }
     // The entry does not change after this: an append works on structuredClone(cached.state) above, and a recovery makes new
     // objects, so a save of the positions never sees state that a running scan changes.
-    claudeJsonlSignalCache.remember(
+    // A read that started before a switch change is not kept, so no cached entry has text from the other switch value.
+    if (textGeneration === questionTextGeneration) claudeJsonlSignalCache.remember(
       cacheKey,
       { signature, ...parsed, ...(claudePositions ? { atMs: Date.now() } : {}) },
       cacheScope,

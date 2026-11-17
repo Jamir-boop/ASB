@@ -521,6 +521,26 @@ gatewayTest('the thread route exists only while the PC switch for message text i
   await assert.rejects(gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: 1 }), { statusCode: 400 });
 });
 
+gatewayTest('the dashboard asks for the question text only while the PC switch for message text is on', async (t) => {
+  const switches = [];
+  const { gateway, request, pair, records, port } = await fixture(t, { gateway: { onSendText: (on) => switches.push(on) } });
+  const token = (await pair()).json.token;
+  const dashboards = async () => {
+    records.length = 0;
+    await request('/phone/v1/dashboard', { token });
+    await request('/phone/v1/dashboard?force=1&text=1', { token });
+    await request('/phone/v1/dashboard?text=1', { token });
+    return records.map((record) => record.url);
+  };
+  assert.deepEqual(await dashboards(), ['/api/dashboard', '/api/dashboard?force=1', '/api/dashboard']);
+  await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: true });
+  assert.deepEqual(await dashboards(), ['/api/dashboard?text=1', '/api/dashboard?force=1&text=1', '/api/dashboard?text=1']);
+  await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: false });
+  assert.deepEqual(await dashboards(), ['/api/dashboard', '/api/dashboard?force=1', '/api/dashboard']);
+  // The reader hears the switch at each save: off at the start, then on, then off.
+  assert.deepEqual([switches.at(0), switches.includes(true), switches.at(-1)], [false, true, false]);
+});
+
 test('a phone.json with or without sendText loads, and a save with the switch off writes no key', async (t) => {
   const store = await storage(t);
   await mkdir(path.dirname(store.settingsPath), { recursive: true });
