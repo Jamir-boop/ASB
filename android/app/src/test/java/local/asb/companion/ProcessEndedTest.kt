@@ -29,7 +29,7 @@ class ProcessEndedTest {
         assertEquals("alert", attentionIndicator(ended))
         assertEquals("The Claude Code process ended during a task. Not read yet.", rowPanelNote(ended))
         assertEquals("Process ended during a task, unread", indicatorMeaning(ended, "alert"))
-        assertEquals("Process ended", notificationTitle(ended, BIT_FAILED))
+        assertEquals("Process ended · the PC", notificationTitle(ended, BIT_FAILED))
         // In the drawer the stored mark is a dot with the same words.
         val drawer = ended.copy(unread = false, alert = false, drawer = true)
         assertEquals("dot", attentionIndicator(drawer, drawer = true))
@@ -39,11 +39,11 @@ class ProcessEndedTest {
         val failed = ended.copy(processEnded = false, state = "idle", lastOutcome = "failed")
         assertEquals("Failed. Not read yet.", rowPanelNote(failed))
         assertEquals("Failed task, unread", indicatorMeaning(failed, "alert"))
-        assertEquals("Failed", notificationTitle(failed, BIT_FAILED))
+        assertEquals("Failed · the PC", notificationTitle(failed, BIT_FAILED))
         val limit = failed.copy(lastOutcome = "limit")
         assertEquals("Usage limit stopped the task. Not read yet.", rowPanelNote(limit))
-        assertEquals("Usage limit", notificationTitle(limit, BIT_FAILED))
-        assertEquals("Done", notificationTitle(ended, BIT_DONE))
+        assertEquals("Usage limit · the PC", notificationTitle(limit, BIT_FAILED))
+        assertEquals("Done · the PC", notificationTitle(ended, BIT_DONE))
     }
 
     @Test fun aReadProcessEndIsAQuietUnknownRow() {

@@ -124,6 +124,9 @@ data class Thread(
     val nativeUnread: Boolean? = null,
     val readStatus: String = "",
     val questionPending: Boolean = false,
+    // The pending question (at most 300 characters), sent only while the PC switch for message text is on. It stays in memory:
+    // the Needs input notification shows it, and no saved value or log line holds it.
+    val questionText: String = "",
     val actionRequired: Boolean = false,
     // An older engine sends none.
     val actionAttention: Boolean? = null,
