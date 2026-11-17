@@ -327,7 +327,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       const limit = Number(thread.limitResetsAtMs || 0);
       row.limitResetsAtMs = limit > nowMs && status.state !== 'working' && !(status.state === 'waiting' && row.actionRequired) ? limit : 0;
       Object.defineProperty(row, QUESTION_AT, { value: Number(thread.latestUserQuestionAtMs || 0) });
-      // The newest pending question with a kept text (a wrap-up question has none).
+      // The first pending question with a kept text in `pendingTools` order (finishClaudeSignals sorts it newest first); a wrap-up question has none.
       const questionText = row.questionPending && (thread.pendingTools || []).find((tool) => tool.tool === 'AskUserQuestion' && typeof tool.question === 'string' && tool.question)?.question;
       if (questionText) Object.defineProperty(row, QUESTION_TEXT, { value: questionText });
       Object.defineProperty(row, ACTION_AT, { value: Number(thread.pendingToolAtMs || 0) });

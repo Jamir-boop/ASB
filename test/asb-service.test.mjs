@@ -1141,3 +1141,57 @@ test('the engine reads an exported build and safely ignores a checkout, bad data
   }
   assert.deepEqual(readAsbBuild(home), empty);
 });
+
+// Made-up data only: the real engine with the phone text switch saved on at start, then off and on through the PC route.
+test('the engine sends questionText with text=1 only while the phone text switch is on', { timeout: 90_000 }, async (t) => {
+  const f = await fixture(t);
+  for (const name of ['pw-play', 'paplay', 'canberra-gtk-play', 'aplay', 'ffplay', 'play', 'mpv', 'gst-play-1.0']) {
+    await writeFile(path.join(f.home, 'bin', name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  }
+  const nowMs = Date.now();
+  const id = 'cccccccc-dddd-4eee-8fff-000000000001';
+  const question = 'Synthetic question: blue or green?';
+  const project = path.join(f.home, '.claude', 'projects', 'synthetic-project');
+  await mkdir(project, { recursive: true });
+  const iso = (offset) => new Date(nowMs + offset).toISOString();
+  await writeFile(path.join(project, `${id}.jsonl`), [
+    { type: 'user', timestamp: iso(-60_000), sessionId: id, cwd: '/work/synthetic', entrypoint: 'cli', message: { role: 'user', content: 'Synthetic task' } },
+    { type: 'assistant', timestamp: iso(-30_000), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'ask-1', name: 'AskUserQuestion',
+      input: { questions: [{ question }] } }] } },
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+  const sessions = path.join(f.env.XDG_CONFIG_HOME, 'Claude', 'claude-code-sessions', 'account-1', 'org-1');
+  await mkdir(sessions, { recursive: true });
+  await writeFile(path.join(sessions, 'local_00000000-0000-4000-8000-000000000001.json'), JSON.stringify({
+    sessionId: 'local_00000000-0000-4000-8000-000000000001', cliSessionId: id, cwd: '/work/synthetic', title: 'Synthetic chat',
+    createdAt: nowMs - 120_000, lastActivityAt: nowMs }));
+  const phone = path.join(f.env.XDG_CONFIG_HOME, 'asb', 'phone.json');
+  await mkdir(path.dirname(phone), { recursive: true });
+  await writeFile(phone, JSON.stringify({ schema: 2, enabled: false, bindAddresses: [], port: 4630, devices: [], sendText: true }), { mode: 0o600 });
+  const child = f.launch([engineScript, 'run'], { CLAUDE_APP_DIR: '', CLAUDE_CONFIG_DIR: '', CLAUDE_CODE_CONFIG_DIR: '' });
+  await ready(child);
+  const runtime = await readServiceRuntime(f.env);
+  const base = `http://127.0.0.1:${runtime.port}`;
+  const rows = async (query) => (await (await fetch(`${base}/api/dashboard${query}`)).json()).threads;
+  const texts = async () => (await rows('?text=1')).map((row) => row.questionText).filter(Boolean);
+  const until = async (check) => {
+    for (let index = 0; index < 40; index += 1) {
+      if (await check()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+  };
+  const plainHasNone = async () => (await rows('')).every((row) => !('questionText' in row));
+  assert.equal(await until(async () => (await texts()).includes(question)), true, child.errors);
+  assert.equal(await plainHasNone(), true);
+  const headers = { origin: base, 'content-type': 'application/json', 'X-ASB-Source-Token': runtime.sourceToken };
+  const save = (sendText) => fetch(`${base}/api/phone/settings`, { method: 'POST', headers,
+    body: JSON.stringify({ enabled: false, bindAddresses: [], port: 4630, sendText }) });
+  const off = await save(false);
+  assert.deepEqual([off.status, (await off.json()).sendText], [200, false]);
+  assert.deepEqual(await texts(), []);
+  assert.deepEqual(Object.keys(JSON.parse(await readFile(phone, 'utf8'))).sort(), ['bindAddresses', 'devices', 'enabled', 'port', 'schema']);
+  assert.equal(await plainHasNone(), true);
+  assert.equal((await save(true)).status, 200);
+  assert.equal(await until(async () => (await texts()).includes(question)), true);
+  assert.equal(await plainHasNone(), true);
+});

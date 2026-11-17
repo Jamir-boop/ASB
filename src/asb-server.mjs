@@ -47,9 +47,20 @@ function readPalette(palettePath) {
   return null;
 }
 
-// The list text with `questionText` on each row that has a kept question text; with no such row, the list text itself.
+// A saved reply list: `text` is the list text that it is for, `content` the list that it sends, and the tag hashes `tagPrefix` and the list.
+function listEntry(text, palette, content, tagPrefix = '') {
+  const list = `${content.slice(0, -1)},"palette":${JSON.stringify(palette)}}`;
+  return { text, palette, list, etag: `"${createHash('sha256').update(tagPrefix + list).digest('base64url')}"` };
+}
+
+// A hash of the kept question texts of the rows with their row IDs (a hash, so the entry holds no second copy), or '' when no row has one.
+function questionTexts(dashboard) {
+  const rows = (dashboard.threads || []).filter((row) => row[QUESTION_TEXT]);
+  return rows.length ? createHash('sha256').update(JSON.stringify(rows.map((row) => [row.id, row[QUESTION_TEXT]]))).digest('base64url') : '';
+}
+
+// The list text with `questionText` on each row that has a kept question text.
 function questionListText(dashboard, text) {
-  if (!dashboard.threads?.some((row) => row[QUESTION_TEXT])) return text;
   const { generatedAtMs: _, performance: __, ...rest } = dashboard;
   return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => row[QUESTION_TEXT] ? { ...row, questionText: row[QUESTION_TEXT] } : row),
     summary: { ...(rest.summary || {}) } });
@@ -787,20 +798,15 @@ export function createAsbServer({
         // text again. The saved list and its tag are for one list text and one palette: a scan with the same content keeps them.
         const { generatedAtMs } = dashboard;
         // `text=1` (only the phone gateway, while its text switch is on) adds `questionText` to the rows with a kept question text.
-        // It has its own saved list and tag; without it the reply is the same as before.
-        const withText = url.searchParams.get('text') === '1';
+        // It has its own saved list and tag, kept while the list text, the palette, and the question texts stay the same. With no
+        // question text it is the plain list. Without `text=1` the reply is the same as before.
         const text = snapshot.listText(dashboard);
-        const revision = snapshot.revision();
-        let entry = withText ? savedTextList : savedList;
-        // A question text is not in the list text, so the text list is also for one dashboard and revision.
-        if (entry?.text !== text || entry.palette !== palette || withText && (entry.dashboard !== dashboard || entry.revision !== revision)) {
-          const content = withText ? questionListText(dashboard, text) : text;
-          const list = `${content.slice(0, -1)},"palette":${JSON.stringify(palette)}}`;
-          const etag = `"${createHash('sha256').update(withText ? `text=1\0${list}` : list).digest('base64url')}"`;
-          entry = { text, palette, list, etag, ...(withText ? { dashboard, revision } : {}) };
-          if (withText) savedTextList = entry;
-          else savedList = entry;
+        if (savedList?.text !== text || savedList.palette !== palette) savedList = listEntry(text, palette, text);
+        const questions = url.searchParams.get('text') === '1' ? questionTexts(dashboard) : '';
+        if (questions && (savedTextList?.text !== text || savedTextList.palette !== palette || savedTextList.questions !== questions)) {
+          savedTextList = { ...listEntry(text, palette, questionListText(dashboard, text), 'text=1\0'), questions };
         }
+        const entry = questions ? savedTextList : savedList;
         const { list, etag } = entry;
         const headers = { etag, 'cache-control': 'no-store' };
         const gzip = acceptsGzip(request.headers['accept-encoding']);
@@ -862,6 +868,10 @@ export function createAsbServer({
   };
   // The machine group reads the dashboard for its export and refreshes it after a member's new rows.
   server.dashboardForRequest = dashboardForRequest;
-  server.invalidateDashboard = invalidateDashboard;
+  // The phone text switch change (`phone-text`, from the engine) drops the saved question text list, so no question text stays after it.
+  server.invalidateDashboard = (reason, options) => {
+    if (reason === 'phone-text') savedTextList = null;
+    return invalidateDashboard(reason, options);
+  };
   return server;
 }
