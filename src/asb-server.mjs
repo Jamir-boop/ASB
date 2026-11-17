@@ -9,7 +9,7 @@ import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic,
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
-import { MUTE_DURATIONS_MS } from './switchboard.mjs';
+import { MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
 
 const gzipAsync = promisify(gzip);
 
@@ -45,6 +45,14 @@ function readPalette(palettePath) {
   }
   console.warn('ASB could not read its saved palette. The phone gets the palette at the next window theme apply.');
   return null;
+}
+
+// The list text with `questionText` on each row that has a kept question text; with no such row, the list text itself.
+function questionListText(dashboard, text) {
+  if (!dashboard.threads?.some((row) => row[QUESTION_TEXT])) return text;
+  const { generatedAtMs: _, performance: __, ...rest } = dashboard;
+  return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => row[QUESTION_TEXT] ? { ...row, questionText: row[QUESTION_TEXT] } : row),
+    summary: { ...(rest.summary || {}) } });
 }
 
 export function panelSummary(dashboard, machines) {
@@ -105,6 +113,7 @@ export function createAsbServer({
   let dashboardNotModified = 0;
   let compressedLists = 0;
   let savedList = null;
+  let savedTextList = null;
   const uiClients = new Map();
   const closedUiClients = new Map();
   // Client ID -> its open event streams (`/api/events?ui=<clientId>`): the engine keeps such a client with no repeated report.
@@ -777,12 +786,22 @@ export function createAsbServer({
         // The rows can change in place between scans, and each such change moves the snapshot revision, so the snapshot makes the list
         // text again. The saved list and its tag are for one list text and one palette: a scan with the same content keeps them.
         const { generatedAtMs } = dashboard;
+        // `text=1` (only the phone gateway, while its text switch is on) adds `questionText` to the rows with a kept question text.
+        // It has its own saved list and tag; without it the reply is the same as before.
+        const withText = url.searchParams.get('text') === '1';
         const text = snapshot.listText(dashboard);
-        if (savedList?.text !== text || savedList.palette !== palette) {
-          const list = `${text.slice(0, -1)},"palette":${JSON.stringify(palette)}}`;
-          savedList = { text, palette, list, etag: `"${createHash('sha256').update(list).digest('base64url')}"` };
+        const revision = snapshot.revision();
+        let entry = withText ? savedTextList : savedList;
+        // A question text is not in the list text, so the text list is also for one dashboard and revision.
+        if (entry?.text !== text || entry.palette !== palette || withText && (entry.dashboard !== dashboard || entry.revision !== revision)) {
+          const content = withText ? questionListText(dashboard, text) : text;
+          const list = `${content.slice(0, -1)},"palette":${JSON.stringify(palette)}}`;
+          const etag = `"${createHash('sha256').update(withText ? `text=1\0${list}` : list).digest('base64url')}"`;
+          entry = { text, palette, list, etag, ...(withText ? { dashboard, revision } : {}) };
+          if (withText) savedTextList = entry;
+          else savedList = entry;
         }
-        const { list, etag } = savedList;
+        const { list, etag } = entry;
         const headers = { etag, 'cache-control': 'no-store' };
         const gzip = acceptsGzip(request.headers['accept-encoding']);
         if (request.headers['if-none-match'] === etag) {
@@ -792,7 +811,7 @@ export function createAsbServer({
           return;
         }
         // The list compresses once; the time and the counters go after it as the short tail of each reply.
-        if (gzip && !savedList.gzip) { compressedLists += 1; savedList.gzip = gzipHead(`${list.slice(0, -1)},`); }
+        if (gzip && !entry.gzip) { compressedLists += 1; entry.gzip = gzipHead(`${list.slice(0, -1)},`); }
         const performance = performanceSnapshot();
         performance.dashboard.notModified = dashboardNotModified;
         performance.dashboard.compressedLists = compressedLists;
@@ -800,7 +819,7 @@ export function createAsbServer({
         response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers,
           ...(gzip ? { 'content-encoding': 'gzip', vary: 'Accept-Encoding' } : {}) });
         if (!gzip) { response.end(`${rest.slice(0, -1)},${list.slice(1)}`); return; }
-        response.end(gzipWithTail(savedList.gzip, rest.slice(1)));
+        response.end(gzipWithTail(entry.gzip, rest.slice(1)));
       } catch (error) {
         sendJson(response, 500, {
           error: 'Failed to load dashboard data',

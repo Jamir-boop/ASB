@@ -158,7 +158,7 @@ function readBody(request, limit = 64 * 1024) {
 
 export function createPhoneGateway({ localPort, asbVersion, settingsPath = phoneSettingsPath(), tlsDir = phoneTlsDir(),
   now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = listPhoneAddresses,
-  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {}, platform = process.platform, env = process.env,
+  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {}, onSendText = () => {}, platform = process.platform, env = process.env,
   execFile: run = execFileAsync }) {
   if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw invalid('Invalid ASB port.');
   let settings = defaults();
@@ -200,6 +200,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       for (const device of settings.devices) seenSavedAt.set(device.id, device.lastSeenAtMs);
     }
     loaded = true;
+    onSendText(settings.sendText === true);
   }
 
   async function save(next = settings) {
@@ -213,6 +214,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     } finally { await fs.rm(temporary, { force: true }); }
     settings = next;
     dirty = false;
+    onSendText(settings.sendText === true);
   }
 
   function activePairing() {
@@ -586,7 +588,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
             reject(400, 'Invalid ASB session action.'); return;
           }
         }
-        const target = dashboard ? `/api/dashboard${url.searchParams.get('force') === '1' ? '?force=1' : ''}`
+        // Only with the text switch on does the dashboard carry the question text of a waiting Claude session.
+        const query = [url.searchParams.get('force') === '1' ? 'force=1' : '', settings.sendText === true ? 'text=1' : ''].filter(Boolean).join('&');
+        const target = dashboard ? `/api/dashboard${query ? `?${query}` : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;
         proxy(request, response, target, body, dashboard);
       }
