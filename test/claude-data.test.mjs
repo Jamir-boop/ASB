@@ -2004,3 +2004,112 @@ test('a root queue enqueue changes no agent, status, or other signal', () => {
   // An agent ID is not kept: agent ends are not shell ends.
   assert.deepEqual([...b.keys()], ['bash0001']);
 });
+
+// Background shells of workflow runs. A run log has the same text forms as a subagent log. Synthetic IDs and text.
+const flowLaunch = (offset, taskId = 'wtask0001', runId = 'wf_run1') => [toolCall(offset, `call-${taskId}`, 'Workflow', { script: 'x' }),
+  toolDone(offset + 100, `call-${taskId}`, workflowResult({ taskId, runId }))];
+async function runFile(projectsDir, name, records, { runId = 'wf_run1', mtimeOffset = null } = {}) {
+  const file = path.join(projectsDir, 'project', 'cli_root', 'subagents', 'workflows', runId, `${name}.jsonl`);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, jsonl(records));
+  if (mtimeOffset !== null) await utimes(file, new Date(resumeNowMs + mtimeOffset), new Date(resumeNowMs + mtimeOffset));
+  return file;
+}
+const linuxOnly = { skip: process.platform !== 'linux' || process.getuid?.() === 0 };
+
+test('workflow run shells: two logs, end forms, copies, quoted notices, and Monitor deadlines', linuxOnly, async (t) => {
+  const setup = async (rootRecords = [], a1Records = []) => {
+    const fixture = await signalFixture(t, [resumePrompt(-50_000), ...flowLaunch(-48_000), resumeEnd(-47_000), ...rootRecords]);
+    await runFile(fixture.projectsDir, 'agent-a1', [resumeMessage(-47_800), childBash(-47_000, 'kbash001'), ...a1Records]);
+    await runFile(fixture.projectsDir, 'agent-a2', [resumeMessage(-47_700), childMonitor(-46_000, 'kmon0001', 'expires in 20s')]);
+    await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+    invalidateClaudeData();
+    return fixture;
+  };
+  // Before the Monitor deadline (-46 s + 20 s).
+  const count = async (...args) => backgroundCounts(await (await setup(...args)).load(resumeNowMs - 30_000))[0];
+  assert.equal(await count(), 2, 'Bash and Monitor');
+  assert.equal(await count([], [queuedNotice(-40_000, 'kbash001')]), 1, 'attachment end');
+  assert.equal(await count([queueOp(-40_000, 'enqueue', noticeBody('kbash001', 'killed'))]), 1, 'root queue end');
+  assert.equal(await count([], [resumeEvent('api-request-blob', -40_000, { content: noticeBody('kbash001', 'completed'),
+    message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: 'Command running in background with ID: kblob001. Synthetic.' }] } })]), 2, 'blob copy');
+  assert.equal(await count([], [resumeEvent('user', -40_000, { isSidechain: true,
+    message: { role: 'user', content: `Synthetic quoted prompt.\n\n${noticeBody('kbash001', 'completed')}` } })]), 2, 'quoted notice');
+  // The Monitor has no end: it stops counting at its deadline.
+  assert.equal(backgroundCounts(await (await setup()).load())[0], 1, 'Monitor deadline');
+});
+
+test('workflow run shells do not change the run status', linuxOnly, async (t) => {
+  for (const live of [false, true]) {
+    const { step, projectsDir } = await resumeFixture(t, 'none', workflowLaunch(), []);
+    if (live) await liveRegistry(t, projectsDir, resumeNowMs - 60_000);
+    assert.deepEqual(await step(), [undefined, 'unknown'], `no folder ${live}`);
+    const touch = await workflowLogs(projectsDir, 'project/cli_root', -49_500);
+    await writeFile(path.join(projectsDir, 'project/cli_root/subagents/workflows/wf_run1/agent-a1.jsonl'),
+      jsonl([resumeMessage(-47_800), childBash(-47_000, 'kbash001')]));
+    await touch(-49_500);
+    assert.deepEqual(await step(), [undefined, 'unknown'], `old files ${live}`);
+    await touch(-20_000);
+    assert.deepEqual(await step(), [true, 'working'], `run ${live}`);
+  }
+});
+
+test('workflow run shells: live process bounds, old logs, missing folders, and one read per run', linuxOnly, async (t) => {
+  // A run that ended before the live process started is not read.
+  let fixture = await signalFixture(t, [resumePrompt(-50_000), ...flowLaunch(-48_000), resumeEnd(-47_000), resumeNotice(-40_000, 'wtask0001')]);
+  await runFile(fixture.projectsDir, 'agent-a1', [resumeMessage(-47_800), childBash(-20_000, 'kbash001')]);
+  const registry = await liveRegistry(t, fixture.projectsDir, resumeNowMs - 30_000);
+  invalidateClaudeData();
+  assert.equal(backgroundCounts(await fixture.load())[0], undefined, 'ended before the process');
+  await registry.write({ startedAt: resumeNowMs - 45_000 });
+  invalidateClaudeData();
+  assert.equal(backgroundCounts(await fixture.load())[0], 1, 'ended in the process');
+  // With no live record, no run log is read: the same reads and bytes as with no run folder.
+  await registry.remove();
+  const cost = async () => {
+    invalidateClaudeData();
+    const reads = signalReads(), bytes = getClaudeCacheStats().jsonlSignals.bytesRead;
+    assert.equal(backgroundCounts(await fixture.load())[0], undefined, 'no record');
+    return [signalReads() - reads, getClaudeCacheStats().jsonlSignals.bytesRead - bytes];
+  };
+  const withRun = await cost();
+  await rm(path.join(fixture.projectsDir, 'project', 'cli_root', 'subagents'), { recursive: true });
+  assert.deepEqual(withRun, await cost());
+  assert.equal(withRun[0], 1, 'only the root log is read');
+
+  // A log older than the live start is not read; a launch with no folder does not throw (the open run keeps the row Working).
+  fixture = await signalFixture(t, [resumePrompt(-50_000), ...flowLaunch(-48_000), ...flowLaunch(-47_900, 'wtask0002', 'wf_none'), resumeEnd(-47_000)]);
+  await runFile(fixture.projectsDir, 'agent-a1', [resumeMessage(-47_800), childBash(-47_000, 'kbash001')], { mtimeOffset: -70_000 });
+  await runFile(fixture.projectsDir, 'agent-a2', [resumeMessage(-47_800), childBash(-47_000, 'kbash002')]);
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  let reads = signalReads();
+  const row = await fixture.load();
+  assert.equal(backgroundCounts(row)[0], 1, 'old log not read');
+  assert.equal(signalReads() - reads, 2, 'root and one run log');
+
+  // Two open links of one run read its folder once.
+  fixture = await signalFixture(t, [resumePrompt(-50_000), ...flowLaunch(-48_000), ...flowLaunch(-47_900, 'wtask0002'), resumeEnd(-47_000)]);
+  await runFile(fixture.projectsDir, 'agent-a1', [resumeMessage(-47_800), childBash(-47_000, 'kbash001')]);
+  await runFile(fixture.projectsDir, 'agent-a2', [resumeMessage(-47_800), childBash(-46_000, 'kbash002')]);
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  reads = signalReads();
+  assert.equal(backgroundCounts(await fixture.load())[0], 2, 'two links');
+  assert.equal(signalReads() - reads, 3, 'root and two run logs, once');
+});
+
+test('workflow run shells: a TaskStop ends them, and a relaunch with the same run ID counts only its new shells', linuxOnly, async (t) => {
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), ...flowLaunch(-48_000), resumeEnd(-47_000)]);
+  const log = await runFile(fixture.projectsDir, 'agent-a1', [resumeMessage(-47_800), childBash(-47_000, 'kbash001')]);
+  await liveRegistry(t, fixture.projectsDir, resumeNowMs - 60_000);
+  invalidateClaudeData();
+  assert.equal(backgroundCounts(await fixture.load())[0], 1, 'open');
+  await appendFile(fixture.file, jsonl([...taskStop(-40_000, 'wtask0001', 'local_workflow'), resumeEnd(-39_000)]));
+  const stopped = await fixture.load();
+  assert.equal(backgroundCounts(stopped)[0], undefined, 'stopped');
+  assert.equal(stopped.lifecycleRunning, false, 'a stopped run ends');
+  await appendFile(fixture.file, jsonl([...flowLaunch(-30_000, 'wtask0002'), resumeEnd(-29_000)]));
+  await appendFile(log, jsonl([resumeMessage(-29_800), childBash(-29_000, 'kbash002')]));
+  assert.equal(backgroundCounts(await fixture.load())[0], 1, 'relaunch: the old shell stays ended, the new one counts');
+});
