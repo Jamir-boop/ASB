@@ -12,6 +12,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -775,15 +776,15 @@ fun SessionsScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 chips.forEach { (key, name) ->
-                    SessionChip(name, selected = true, icon = Icons.Default.Close, iconAfter = true,
+                    SessionChip(name, selected = true, icon = Icons.Default.Close, iconAfter = true, button = true,
                         description = "Remove filter: $name",
                         onClick = { viewModel.setFilter(removeFilter(state.filter, key)) })
                 }
-                SessionChip("Clear filters", selected = false, description = "Clear filters",
+                SessionChip("Clear filters", selected = false, description = "Clear filters", button = true,
                     onClick = { viewModel.setFilter(Filter(query = state.filter.query)) })
             }
             HorizontalDivider(thickness = 1.dp, color = hexColor(palette.divider))
-            if (state.offline) OfflineBand(offlineBandText(state.lastUpdateMs, nowMs), !state.refreshing, viewModel::refresh)
+            if (state.offline) OfflineBand(offlineBandAge(state.lastUpdateMs, nowMs), !state.refreshing, viewModel::refresh)
         }
     }
 
@@ -978,6 +979,8 @@ private fun SessionChip(
     /** The icon follows the label (a Remove filter chip); else an icon pill shows only its icon. */
     iconAfter: Boolean = false,
     description: String = label,
+    /** A chip of the filter chip row acts and speaks as a button; a top bar pill is a toggle. */
+    button: Boolean = false,
 ) {
     val palette = LocalPalette.current
     val content = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
@@ -985,9 +988,11 @@ private fun SessionChip(
     // Desktop pill: small and round, accent background when selected, 10 dp at each side so the four pills fit a
     // 384 dp phone with two-digit counts. The touch area is 48 dp high.
     Box(
-        modifier.heightIn(min = 48.dp)
-            .toggleable(value = selected, interactionSource = interaction, indication = null, role = Role.Checkbox,
-                onValueChange = { onClick() })
+        modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .then(if (button) Modifier.clickable(interactionSource = interaction, indication = null, role = Role.Button,
+                onClick = onClick)
+            else Modifier.toggleable(value = selected, interactionSource = interaction, indication = null, role = Role.Checkbox,
+                onValueChange = { onClick() }))
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
@@ -1010,17 +1015,23 @@ private fun SessionChip(
 
 /** The Offline band under the top bar: the age of the saved list, that alerts wait, and Retry (the disc Refresh). */
 @Composable
-private fun OfflineBand(text: String, canRetry: Boolean, onRetry: () -> Unit) {
+private fun OfflineBand(age: String, canRetry: Boolean, onRetry: () -> Unit) {
     val palette = LocalPalette.current
     Row(
         Modifier.fillMaxWidth().background(hexColor(mixColor(palette.background, palette.text, .06)))
             .padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }) {
-            Text(text, style = MaterialTheme.typography.bodyMedium, color = hexColor(palette.text))
+        Column(Modifier.weight(1f)) {
+            Row {
+                // Only words that do not change with time are in the live region, so it speaks once when the band shows.
+                Text("Offline", style = MaterialTheme.typography.bodyMedium, color = hexColor(palette.text),
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite; contentDescription = OFFLINE_BAND_LIVE })
+                // The age is a plain node: TalkBack reads it on focus, not each minute.
+                if (age.isNotEmpty()) Text(" · $age", style = MaterialTheme.typography.bodyMedium, color = hexColor(palette.text))
+            }
             Text("No alerts until the PC answers.", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
-                color = hexColor(palette.muted))
+                color = hexColor(palette.muted), modifier = Modifier.clearAndSetSemantics { })
         }
         TextButton(onClick = onRetry, enabled = canRetry) { Text("Retry") }
     }

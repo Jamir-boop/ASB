@@ -103,9 +103,11 @@ fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): St
 fun lastUpdateText(lastUpdateMs: Long, nowMs: Long): String =
     if (lastUpdateMs <= 0) "" else "Last update " + idleAge(lastUpdateMs, nowMs).replace("Just now", "just now")
 
-/** The Offline band line: Offline · last update 12m ago, or Offline alone with no saved list. */
-fun offlineBandText(lastUpdateMs: Long, nowMs: Long): String =
-    lastUpdateText(lastUpdateMs, nowMs).let { if (it.isEmpty()) "Offline" else "Offline · " + it.replaceFirstChar(Char::lowercase) }
+/** The words of the Offline band that TalkBack reads once when it shows; they hold no age, so the band is quiet each minute. */
+const val OFFLINE_BAND_LIVE = "Offline. No alerts until the PC answers."
+
+/** The age part of the Offline band (Offline · last update 12m ago), "" with no saved list; it is not in the live region. */
+fun offlineBandAge(lastUpdateMs: Long, nowMs: Long): String = lastUpdateText(lastUpdateMs, nowMs).replaceFirstChar(Char::lowercase)
 
 // Search mode stays open while a query is set, for example after a rotation or a return to the screen.
 fun searchOpen(opened: Boolean, query: String): Boolean = opened || query.isNotEmpty()
@@ -354,9 +356,8 @@ fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine)
 fun factLines(line: String, width: Float, measure: (String) -> Float): List<String> {
     val lines = mutableListOf<String>()
     for (words in line.split(" · ")) {
-        // A word joiner keeps a clock (15:49) whole; a fact wider than [width] keeps its spaces, so it breaks between words.
-        val joined = words.replace(Regex("(?<=\\d):(?=\\d)"), "\u2060:\u2060")
-        val fact = joined.replace(' ', '\u00a0').takeIf { measure(it) <= width } ?: joined
+        // A fact wider than [width] keeps its spaces, so it breaks between words and never inside a time (15:49).
+        val fact = words.replace(' ', '\u00a0').takeIf { measure(it) <= width } ?: words
         if (lines.isNotEmpty() && measure("${lines.last()} · $fact") <= width) lines[lines.size - 1] += " · $fact" else lines += fact
     }
     return lines

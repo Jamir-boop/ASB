@@ -9,7 +9,8 @@ import local.asb.companion.ui.backClears
 import local.asb.companion.ui.filtersOn
 import local.asb.companion.ui.homePath
 import local.asb.companion.ui.lastUpdateText
-import local.asb.companion.ui.offlineBandText
+import local.asb.companion.ui.OFFLINE_BAND_LIVE
+import local.asb.companion.ui.offlineBandAge
 import local.asb.companion.ui.pathMatch
 import local.asb.companion.ui.pendingHeader
 import local.asb.companion.ui.pillCounts
@@ -108,11 +109,14 @@ class AndroidCouncilRoundOneListTest {
     }
 
     @Test fun theOfflineBandSaysTheAgeOfTheSavedList() {
-        assertEquals("Offline", offlineBandText(0, now))
+        assertEquals("", offlineBandAge(0, now))
         assertEquals("", lastUpdateText(0, now))
-        assertEquals("Offline · last update just now", offlineBandText(now - 20_000, now))
-        assertEquals("Offline · last update 12m ago", offlineBandText(now - 12 * 60_000, now))
-        assertEquals("Offline · last update 2h ago", offlineBandText(now - 2 * 3_600_000, now))
+        assertEquals("last update just now", offlineBandAge(now - 20_000, now))
+        assertEquals("last update 12m ago", offlineBandAge(now - 12 * 60_000, now))
+        assertEquals("last update 2h ago", offlineBandAge(now - 2 * 3_600_000, now))
         assertEquals("Last update 12m ago", lastUpdateText(now - 12 * 60_000, now))
+        // The live region text has no age, so TalkBack does not read the band again when only the age changes.
+        assertEquals("Offline. No alerts until the PC answers.", OFFLINE_BAND_LIVE)
+        assertFalse(Regex("\\d|ago|now|update").containsMatchIn(OFFLINE_BAND_LIVE))
     }
 }

@@ -228,7 +228,7 @@ and fade at the end when more pills are there.
 
 When a filter is on, a chip row under the top bar shows one chip for each
 filter, as the board filter chips: Pending, each chosen state, Drawer, the app,
-and Include archived. A tap on a chip (`Remove filter: Pending`) removes that
+and Include archived. A chip is a button: a tap on `Remove filter: Pending` removes that
 filter; the last chip, `Clear filters`, removes all of them and keeps the
 search. As Esc and × on the board, Close search clears the search and all
 filters. Back with an open search or a filter on clears them first; the next
@@ -237,7 +237,8 @@ Back leaves the screen.
 While the app is Offline, a band under the top bar says `Offline · last update
 12m ago` (only `Offline` before the first good read) and `No alerts until the
 PC answers.`, with a Retry button that does what Refresh does. The age moves
-each minute, and TalkBack reads a change of the band. A session on a group
+each minute. TalkBack reads `Offline. No alerts until the PC answers.` once
+when the band shows, and does not read the age again when it changes. A session on a group
 machine that is not reachable shows Unknown, and its card description and
 inspector say why (`travel-laptop is not reachable.`), as the board tooltip
 and row panel.

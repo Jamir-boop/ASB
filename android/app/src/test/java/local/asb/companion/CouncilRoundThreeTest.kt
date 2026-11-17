@@ -246,13 +246,12 @@ class CouncilRoundThreeTest {
 
     @Test fun machineStateBreaksOnlyBetweenFacts() = utc {
         val line = machineStateLine(ActivityMachine(state = "offline", lastReportAtMs = at("2026-10-25T14:30:00Z")))
-        // A word joiner has no width.
-        val measure = { text: String -> 6f * text.replace("\u2060", "").length }
-        val clock = "14\u2060:\u206030"
+        val measure = { text: String -> 6f * text.length }
+        val clock = "14:30"
         // Wide: one line. Narrow: a break between the facts drops the ` · `, and the date keeps no-break spaces.
         assertEquals(listOf("Offline · seen\u00a0Oct\u00a025,\u00a0$clock"), factLines(line, 1000f, measure))
         assertEquals(listOf("Offline", "seen\u00a0Oct\u00a025,\u00a0$clock"), factLines(line, 112f, measure))
-        // A fact wider than the column keeps its spaces, so it breaks between words and the clock stays whole (council r1 issue 11).
+        // A fact wider than the column keeps its spaces, so it breaks between words, not inside the time (council r1 issue 11).
         assertEquals(listOf("Offline", "seen Oct 25, $clock"), factLines(line, 50f, measure))
         assertEquals(listOf("Connected"), factLines("Connected", 10f, measure))
         assertFalse(factLines(line, 112f, measure).any { it.endsWith("·") || it.startsWith("·") })
