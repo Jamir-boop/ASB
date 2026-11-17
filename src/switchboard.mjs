@@ -176,6 +176,9 @@ function codexGroupLifecycle(thread, byId, nowMs) {
     groupChildWaiting: blockedChildren.length > 0 && !recent.some((member) => !blocked(member)),
     awaitingUserInput: work.some((member) => member.awaitingUserInput),
     latestUserQuestionAtMs: Math.max(0, ...work.filter((member) => member.awaitingUserInput).map((member) => Number(member.latestUserQuestionAtMs || 0))),
+    // A Codex subagent is a child thread: count the unarchived descendants with a running turn and activity in the 6-hour window.
+    // `groupStatusActivityAtMs` rechecks the row when the oldest of them leaves the window.
+    ...(recent.some((member) => member !== thread) ? { backgroundAgents: recent.filter((member) => member !== thread).length } : {}),
     agentStartedAtMs: starts.length ? Math.min(...starts) : 0,
     agentActivityAtMs: active.length ? Math.max(...active.map((member) => Number(member.agentActivityAtMs || member.latestLifecycleAtMs || 0))) : 0,
     groupStatusActivityAtMs: expirySignals.length ? Math.min(...expirySignals) : 0,

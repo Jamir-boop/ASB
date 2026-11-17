@@ -79,6 +79,8 @@ function openCodeThread(row, subagents, activity, background = {}, quotaStop = f
     readStatus: nativeUnread == null ? 'unknown' : nativeUnread ? 'unread' : 'read',
     ...(background.commands > 0 ? { backgroundCommands: background.commands } : {}),
     ...(background.agents > 0 ? { backgroundAgents: background.agents } : {}),
+    // The counts end with no database change: the engine runs the loader again 1 ms after this time.
+    ...(background.started ? { backgroundCheckAtMs: background.started + BACKGROUND_WINDOW_MS } : {}),
   };
 }
 
@@ -95,7 +97,9 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
   // A WAL append does not change the main file.
   const signature = `${fileSignature(main)}|${fileSignature(wal)}`;
   const cached = cache.get(key);
-  let result = cached?.signature === signature ? cached.result : null;
+  // The counts use a 24-hour window from nowMs, so a kept result ends when its earliest counted start leaves the window.
+  let result = cached?.signature === signature && nowMs < cached.untilMs ? cached.result : null;
+  let untilMs = Infinity;
   if (!result) {
     if (!(await schemaReady(databasePath, query))) {
       result = { generatedAtMs: nowMs, provider: { installed: true, status: 'warning', message: SCHEMA_WARNING }, threads: [] };
@@ -111,29 +115,31 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
         query(databasePath, `select coalesce(s.parent_id, s.id) as root, max(m.time_created) as at
           from session_message m join session_v2 s on s.id = m.session_id group by root;`),
         // json_each has its own `root` column, so the group uses the expression, not the alias.
-        // Background shells (a shell tool part with input background and a shell ID, with no synthetic shell end of that ID) and
-        // busy background subagents (a child session with time_suspended, the busy column of the roots, that a subagent tool
-        // part of its parent started with input background), as counts per parent session, never text. A message that is not
-        // valid JSON gives null to the JSON functions, so it cannot fail the load.
+        // Background shells (a completed shell tool part whose metadata status is running and that has a shell ID, with no
+        // synthetic shell end of that ID: OpenCode also moves a long foreground shell to the background with no input background)
+        // and busy background subagents (a child session with time_suspended, the busy column of the roots, that a subagent tool
+        // part of its parent started with input background), as counts per parent session with the earliest counted start,
+        // never text. A message that is not valid JSON gives null to the JSON functions, so it cannot fail the load.
         // shortcut: ASB does not know whether OpenCode runs, so a shell of an OpenCode that quit with no end record counts until
         // the 24-hour window passes; gate the counts by a live OpenCode signal when ASB gets one.
-        query(databasePath, `select coalesce(s.parent_id, s.id) as root, 'commands' as kind, count(*) as n
+        query(databasePath, `select coalesce(s.parent_id, s.id) as root, 'commands' as kind, count(*) as n, min(m.time_created) as started
           from session_message m join session_v2 s on s.id = m.session_id, json_each(${validJson('m.data')}, '$.content') t
           where m.time_created >= ${since} and m.type = 'assistant' and instr(m.data, '"shellID"') > 0
             and json_extract(t.value, '$.type') = 'tool' and json_extract(t.value, '$.name') = 'shell'
-            and json_extract(t.value, '$.state.input.background') = 1 and json_extract(t.value, '$.state.metadata.shellID') is not null
+            and json_extract(t.value, '$.state.status') = 'completed' and json_extract(t.value, '$.state.metadata.status') = 'running'
+            and json_extract(t.value, '$.state.metadata.shellID') is not null
             and not exists (select 1 from session_message e where e.session_id = m.session_id and e.type = 'synthetic'
               and instr(e.data, '"shellID"') > 0 and json_extract(${validJson('e.data')}, '$.metadata.source') = 'shell'
               and json_extract(${validJson('e.data')}, '$.metadata.shellID') = json_extract(t.value, '$.state.metadata.shellID'))
           group by coalesce(s.parent_id, s.id)
           union all
-          select c.parent_id as root, 'agents' as kind, count(*) as n from session_v2 c
-          where c.parent_id is not null and c.time_suspended is not null
-            and exists (select 1 from session_message p, json_each(${validJson('p.data')}, '$.content') u
+          select root, 'agents' as kind, count(*) as n, min(started) as started from (
+            select c.parent_id as root, (select min(p.time_created) from session_message p, json_each(${validJson('p.data')}, '$.content') u
               where p.session_id = c.parent_id and p.time_created >= ${since} and p.type = 'assistant' and instr(p.data, c.id) > 0
                 and json_extract(u.value, '$.type') = 'tool' and json_extract(u.value, '$.name') = 'subagent'
-                and json_extract(u.value, '$.state.input.background') = 1 and json_extract(u.value, '$.state.metadata.sessionID') = c.id)
-          group by c.parent_id;`),
+                and json_extract(u.value, '$.state.input.background') = 1 and json_extract(u.value, '$.state.metadata.sessionID') = c.id) as started
+            from session_v2 c where c.parent_id is not null and c.time_suspended is not null)
+          where started is not null group by root;`),
         // The error type of the newest assistant message of a failed idle root, never text: `provider.quota` is a usage-limit stop.
         // A later run sets time_suspended or a new idle outcome, so the stop clears.
         query(databasePath, `select s.id as id, json_extract(${validJson('m.data')}, '$.error.type') as error_type
@@ -144,12 +150,17 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
       const subagents = new Map(subagentRows.map((row) => [row.parent_id, row.n]));
       const activity = new Map(activityRows.map((row) => [row.root, Number(row.at || 0)]));
       const background = new Map();
-      for (const { root, kind, n } of backgroundRows) background.set(root, { ...background.get(root), [kind]: Number(n) });
+      for (const { root, kind, n, started } of backgroundRows) {
+        const kept = background.get(root);
+        background.set(root, { ...kept, [kind]: Number(n), started: Math.min(kept?.started ?? Infinity, Number(started)) });
+      }
+      // The query uses `>= since`, so a start leaves the window 1 ms after start + window.
+      untilMs = Math.min(...[...background.values()].map((counts) => counts.started + BACKGROUND_WINDOW_MS + 1));
       const quota = new Set(quotaRows.filter((row) => row.error_type === 'provider.quota').map((row) => row.id));
       const threads = roots.map((row) => openCodeThread(row, subagents, activity.get(row.id), background.get(row.id), quota.has(row.id)));
       result = { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
     }
-    cache.set(key, { signature, result });
+    cache.set(key, { signature, result, untilMs });
   }
   if (typeof stateDir === 'string' && stateDir && result.threads.length) {
     const incoming = new Map();
