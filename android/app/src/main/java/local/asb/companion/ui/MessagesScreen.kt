@@ -54,10 +54,12 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -168,6 +170,11 @@ import local.asb.companion.data.statusKey
 import local.asb.companion.data.statusLabel
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
+import local.asb.companion.data.MESSAGE_NO_TEXT
+import local.asb.companion.data.MESSAGE_TEXT_OFF
+import local.asb.companion.data.THREAD_LIMIT
+import local.asb.companion.data.THREAD_MAX
+import local.asb.companion.data.threadQuery
 
 // ---------- Shared by Messages and Usage ----------
 
@@ -240,7 +247,7 @@ internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, mo
                 modifier = Modifier.heightIn(min = 48.dp)
                     .then(descriptions[value]?.let { Modifier.semantics { contentDescription = it } } ?: Modifier),
                 icon = {},
-            ) { Text(label, maxLines = 1, fontWeight = if (selected == value) FontWeight.Bold else null) }
+            ) { Text(label, maxLines = 2, textAlign = TextAlign.Center, fontWeight = if (selected == value) FontWeight.Bold else null) }
         }
     }
 }
@@ -413,7 +420,7 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                     current.messages.isEmpty() && current.machines.isEmpty() -> ActivityEmpty("No messages in the last ${periodLabel(period)}", colors)
                     else -> {
                         error?.let { Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
-                        MessagesContent(current, selected, chordKey, flights, frameNanos, colors, bucket, strip, { bucket = it },
+                        MessagesContent(api, engine, current, selected, chordKey, flights, frameNanos, colors, bucket, strip, { bucket = it },
                             // A second tap on the selected seat or chord clears the selection.
                             onSeat = { onSelect(it.takeIf { id -> id != selected }); chordKey = null },
                             onChord = { chordKey = it.takeIf { key -> key != chordKey }; onSelect(null) },
@@ -676,7 +683,7 @@ private val NEXT_PERIOD = mapOf("24h" to "7d", "7d" to "30d")
 
 @Composable
 private fun MessagesContent(
-    reply: ActivityMessages, selected: String?, chordKey: String?, flights: List<Flight>, frameNanos: Long,
+    api: AsbApi, engine: String, reply: ActivityMessages, selected: String?, chordKey: String?, flights: List<Flight>, frameNanos: Long,
     colors: ActivityColors, bucket: Int?, strip: StripPlace, onBucket: (Int) -> Unit, onSeat: (String) -> Unit, onChord: (String) -> Unit,
     onClear: () -> Unit, onPeriod: (String) -> Unit,
 ) {
@@ -776,6 +783,11 @@ private fun MessagesContent(
             }
             // The empty block sizes follow the width of the center disc.
             CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, 2 * geom.rc / dp, onPeriod)
+            if (selectedSeat != null || selectedChord != null) {
+                ThreadText(api, engine, reply, selectedSeat, selectedChord?.let { it.a to it.b }, seats, colors) { id, label ->
+                    titles[id] ?: label.ifEmpty { UNLISTED }
+                }
+            }
         }
     }
     val seatedIds = seated.map { it.id }.toSet()
@@ -1159,6 +1171,62 @@ private fun CenterPanel(
     }
 }
 
+/**
+ * The message text of the selected seat or [pair], as the PC thread (open_thread): each message with its from and to names, its
+ * time, its status when not accepted, and its text, newest last; `Show earlier` asks for up to [THREAD_MAX]. The text stays in this
+ * composition only (no saved state, no file, no log).
+ */
+@Composable
+private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, seat: String?, pair: Pair<String, String>?,
+    seats: Map<String, Seat>, colors: ActivityColors, title: (String, String) -> String) {
+    var limit by remember(engine, reply.period, seat, pair) { mutableIntStateOf(THREAD_LIMIT) }
+    var state by remember(engine, reply.period, seat, pair) { mutableStateOf<ThreadState>(ThreadState.Loading) }
+    val query = threadQuery(reply.period, seat, pair, limit) ?: return
+    // A new message in the report loads the thread again; as on the PC, an error after a shown thread keeps it.
+    LaunchedEffect(engine, query, reply.messages.lastOrNull()?.id) {
+        val next = loadThread({ api.messageText(engine) }) { api.activityThread(query, engine) }
+        if (next !is ThreadState.Failed || state !is ThreadState.Shown) state = next
+    }
+    HorizontalDivider(thickness = 1.dp, color = colors.divider)
+    Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        val note = @Composable { text: String -> Text(text, fontSize = 12.sp, color = colors.muted) }
+        when (val current = state) {
+            ThreadState.Loading -> note("Loading messages")
+            ThreadState.Off -> note(MESSAGE_TEXT_OFF)
+            is ThreadState.Failed -> note(current.message)
+            is ThreadState.Shown -> {
+                val thread = current.thread
+                val shown = thread.messages.size
+                if (thread.total > shown) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Newest ${formatCount(shown.toLong())} of ${formatCount(thread.total.toLong())}", fontSize = 12.sp,
+                        color = colors.muted, modifier = Modifier.weight(1f))
+                    if (limit < THREAD_MAX) TextButton(onClick = { limit = THREAD_MAX }) { Text("Show earlier", color = colors.accent) }
+                }
+                if (shown == 0) note("No messages in the last ${periodLabel(reply.period)}")
+                val now = reply.nowMs.takeIf { it > 0 } ?: System.currentTimeMillis()
+                for (message in thread.messages) {
+                    key(message.id) {
+                        Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("${title(message.from, message.fromLabel)} → ${title(message.to, message.toLabel)}", fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold, color = colors.text, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f))
+                                Text(messageTime(message.atMs, now, reply.period), fontSize = 11.sp, style = figures, color = colors.muted, maxLines = 1)
+                            }
+                            if (statusKey(message.status) != "accepted") {
+                                Text(messageStatusLabel(message, seats, reply.machines), fontSize = 11.sp,
+                                    color = statusWordColor(message.status, colors))
+                            }
+                            Text(message.text ?: MESSAGE_NO_TEXT, fontSize = 13.sp, color = if (message.text != null) colors.text else colors.muted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** `1 not sent` (12 sp) in the not-sent status word color, under a count; nothing when [count] is 0. */
 @Composable
 private fun NotSentCount(count: Int, colors: ActivityColors) {
@@ -1243,7 +1311,8 @@ private fun CountStrip(buckets: List<BucketCount>, unit: String, partial: Boolea
     val measurer = rememberTextMeasurer()
     val style = TextStyle(fontSize = 11.sp, color = colors.muted)
     val bad = statusColor("not-sent", colors)
-    val name = "Messages per ${if (unit == "hour") "hour" else "day"}"
+    val scale = stripScale(buckets.maxOf { it.count }, unit)
+    val name = "Messages per ${if (unit == "hour") "hour" else "day"}, $scale"
     val tip = chosen?.let { index ->
         buckets.getOrNull(index)?.let { messageBucketTip(it.startMs, it.count, it.bad, unit, partial && index == buckets.lastIndex) }
     }
@@ -1330,14 +1399,15 @@ private fun CountStrip(buckets: List<BucketCount>, unit: String, partial: Boolea
             if (buckets.size > 1) {
                 drawText(last, topLeft = Offset(lastLeft, top))
                 // The caption, centered between the names with 12 dp from each; the not-sent part goes first when it does not fit.
-                val per = measurer.measure(if (unit == "hour") "per hour" else "per day", style, maxLines = 1)
+                // The scale of the line: the largest count of one bucket.
+                val per = measurer.measure(scale, style, maxLines = 1)
                 val dot = measurer.measure(" · ", style, maxLines = 1)
                 val notSent = measurer.measure(" not sent", style, maxLines = 1)
                 val rest = dot.size.width + 6 * dp + notSent.size.width
                 val left = first.size.width.toFloat()
                 val parts = stripCaptionParts(left, lastLeft, per.size.width.toFloat(), rest, buckets.any { it.bad > 0 }, dp)
                 if (parts > 0) {
-                    val total = per.size.width + if (parts == 2) rest else 0f
+                    val total = per.size.width + (if (parts == 2) rest else 0f)
                     var x = left + 12 * dp + (lastLeft - left - 24 * dp - total) / 2
                     drawText(per, topLeft = Offset(x, top))
                     if (parts == 2) {
@@ -1457,7 +1527,7 @@ private fun LedgerView(
 }
 
 /**
- * A Busiest pairs row: the route with each name ellipsized in the middle and the count; a not-sent line 2 dp under the route when the
+ * A Busiest pairs row: the route with each name cut at its end and the count; a not-sent line 2 dp under the route when the
  * pair has some; and a share bar of [share] (of all messages) 4 dp under the descender line of the last line.
  */
 @Composable
@@ -1476,10 +1546,10 @@ private fun BusyPairRow(pair: BusyPair, share: Float, title: (String) -> String,
             verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val name = Modifier.weight(1f, fill = false)
-                Text(a, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, onTextLayout = layout(12),
+                Text(a, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, onTextLayout = layout(12),
                     modifier = name.then(last(12)))
                 Text("⇄", fontSize = 12.sp, color = colors.text, maxLines = 1)
-                Text(b, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis, modifier = name)
+                Text(b, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = name)
             }
             Text(formatCount(pair.n.toLong()), fontSize = 12.sp, style = figures, color = colors.text)
         }

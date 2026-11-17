@@ -18,7 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** SharedPreferences in memory, so the Store runs in a JVM test. */
-private class MemoryPreferences(val values: MutableMap<String, Any?> = mutableMapOf()) : SharedPreferences {
+internal class MemoryPreferences(val values: MutableMap<String, Any?> = mutableMapOf()) : SharedPreferences {
     override fun getAll(): Map<String, *> = values.toMap()
     override fun getString(key: String, defValue: String?) = values[key] as String? ?: defValue
     @Suppress("UNCHECKED_CAST")

@@ -11,9 +11,12 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import local.asb.companion.data.ActivityMessages
+import local.asb.companion.data.ActivityThread
 import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
@@ -162,7 +165,8 @@ class AsbApi(
         return if (response.code == 304) DashboardResult.NotModified
         // The list keys need unique row IDs; an engine with a reader bug can send a row twice. Keep the first.
         else DashboardResult.Fetched(decode<Dashboard>(response.body).let { it.copy(threads = it.threads.distinctBy { row -> row.id }) },
-            response.etag, response.engine)
+            // Only a full 200 reply gives a snapshot to keep.
+            response.etag.takeIf { response.code == 200 }, response.engine)
     }
 
     suspend fun action(id: String, action: String, body: String = "{}", engine: String = ""): JsonObject {
@@ -184,6 +188,26 @@ class AsbApi(
         if (period !in MESSAGE_PERIODS) throw AsbError.Server("Invalid period.")
         return decode(request("activity", "messages", query = mapOf("period" to period), only = engine,
             notFound = OLDER_ENGINE).body)
+    }
+
+    /**
+     * Whether the PC switch for message text is on for [engine] (hello `sendText`); null from an older PC that has no such switch.
+     */
+    suspend fun messageText(engine: String): Boolean? {
+        val body = request("hello", only = engine).body
+        validHello(body) ?: invalidReply()
+        return (decode<JsonObject>(body)["sendText"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+    }
+
+    /**
+     * The messages with their text of one thread of [engine] ([threadQuery]). The reply stays in memory: the caller keeps it in
+     * screen state only. Every reply but 200 is an error, never an empty thread.
+     */
+    suspend fun activityThread(query: Map<String, String>, engine: String): ActivityThread {
+        if (query["period"] !in MESSAGE_PERIODS) throw AsbError.Server("Invalid period.")
+        val response = request("activity", "thread", query = query, only = engine, notFound = OLDER_ENGINE)
+        if (response.code != 200) invalidReply()
+        return withContext(Dispatchers.Default) { decode<ActivityThread>(response.body) }
     }
 
     suspend fun activityUsage(period: String, engine: String): ActivityUsage {
