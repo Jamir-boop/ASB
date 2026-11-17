@@ -18,7 +18,23 @@ can request permission again or open Android notification settings.
 Background checks use WorkManager with a 15-minute period and a connected network.
 Android and HyperOS can delay these checks. Foreground updates save the attention
 baseline without notifications. Background updates can show Done, Failed, and
-Needs input notifications with Open on PC and Read actions.
+Needs input notifications with Open on PC and Mark read actions.
+The words match the card: the title is the card state word and the machine
+(`Needs your answer · studio-pc`, `Waiting for approval · studio-pc`,
+`Failed · studio-pc`, `Usage limit · studio-pc`, `Done · studio-pc`), the text
+is the card title (or `Untitled session`), and the subtext is the app. When 2
+or more show, they share one app group with the app's own summary, which counts
+by kind (`1 needs input · 1 failed · 1 done`); the summary posts also while the
+app is open, because a group with no summary is one that Android auto-groups.
+While the PC switch for message text is on, the PC sends the pending question
+(`questionText`), and the Needs input notification shows it as expanded text.
+Only the private version has the question; the public version keeps `ASB` and
+`A session needs attention`. On a locked phone, Android shows the version
+without the question when the phone setting hides sensitive notification
+content; otherwise the lock screen shows the question too. The app keeps the
+question text in memory, never in the saved preferences or a log line, but
+Android keeps a posted notification and can give it to notification history, to
+apps with notification access, and to a paired watch.
 **Check now** also shows these notifications while the app is open. An automatic
 check while the app is open does not save the baseline. Unpair removes the
 saved pairing and the app's notifications. Phone acceptance for Phase 7 is pending.
