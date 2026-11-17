@@ -733,4 +733,20 @@ class SessionsViewModelTest {
         }
         assertEquals(1, server.requestCount)
     }
+
+    @Test fun muteAndUnmuteSendTheirBodies() = runBlocking {
+        val model = model()
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one")))
+        load(model, dashboard)
+        for ((action, body) in listOf("mute" to """{"durationMs":1800000}""", "mute" to "{}", "unmute" to "{}")) {
+            server.enqueue(MockResponse().setBody("{}"))
+            server.enqueue(response(dashboard))
+            model.action("one", action, body)
+            await { "one" !in model.state.value.busyIds }
+            val request = server.takeRequest()
+            assertEquals("/phone/v1/threads/one/$action", request.path)
+            assertEquals(body, request.body.readUtf8())
+            server.takeRequest()
+        }
+    }
 }

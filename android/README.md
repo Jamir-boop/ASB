@@ -235,7 +235,12 @@ the app on a second line. Below it are the **Unread**, **Pinned**, and **In the
 drawer** switches, **Pin order** (**Earlier** and **Later**) for a pinned row,
 and **Mark read when done** for a Working row. A control that the row does not
 allow is dimmed, TalkBack says that it is disabled, and a line under it says
-why (for example `ASB does not open CLI sessions.`). The inspector
+why (for example `ASB does not open CLI sessions.`). **Copy reference** copies
+the absolute reference of the row (`asb:1/...`), and the pill says `Copied`;
+when the PC has no reference for the row, the button is dimmed with the reason.
+**Mute** offers the PC times (`30 min`, `1 hour`, `8 hours`, `1 day`, `Always`);
+a muted row shows **Unmute** with `Muted until 14:30` (or `Muted`), and its card
+shows the muted bell after the folder. The inspector
 stays open after a change and shows the new row data. It covers the message
 bar, so it shows the current message (for example an error) as a caption below
 the switches. Back, a tap outside, Open, or the row leaving the list closes it.

@@ -1,6 +1,10 @@
 package local.asb.companion.ui
 
 import androidx.compose.ui.graphics.Color
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.math.abs
@@ -339,7 +343,9 @@ fun rowPanelControls(row: Thread): Map<String, PanelControl> {
 fun panelFocusReturn(key: String?, controls: Map<String, PanelControl>): String? = when (key) {
     null -> null
     "earlier", "later" -> key.takeIf { "order" in controls }
-    else -> key.takeIf { controls[key]?.action != null }
+    // Mute and Unmute always show; a mute time goes back to the Unmute row, and Unmute to the first time.
+    "mute" -> key
+    else -> if (key.startsWith("mute:")) "mute" else key.takeIf { controls[key]?.action != null }
 }
 
 // Port of row_panel_note: the subtitle of the panel Unread switch.
@@ -668,4 +674,61 @@ fun providerMarkTint(palette: Palette, limited: Boolean, messageLit: Boolean, qu
     limited -> hexColor(palette.text).copy(alpha = .4f)
     quiet -> hexColor(palette.quietCaption)
     else -> hexColor(palette.text).copy(alpha = .65f)
+}
+
+// The phone text of each dashboard referenceUnavailable code, as the board REFERENCE_REASONS; <machine> is the row's machineName.
+private val REFERENCE_REASONS = mapOf(
+    "no-machine-identity" to "The PC has no ASB machine ID. Run asb doctor on the PC.",
+    "unknown-source" to "ASB does not know the profile of this session.",
+    "invalid-app-id" to "This session has an ID in a form that ASB does not know.",
+    "unsupported-type" to "This version of ASB does not know this app. Update ASB on the PC.",
+    "old-peer" to "<machine> has an older ASB. Update ASB on that machine.",
+    "ambiguous-source" to "More than one profile reads this session. ASB cannot pick one.",
+)
+
+/**
+ * Port of the absolute part of copy_values: (the `asb:1/...` reference to copy, "") when it is one safe line, else
+ * (null, the reason that the Copy reference button shows).
+ */
+fun copyReference(row: Thread): Pair<String?, String> {
+    val full = row.reference
+    // Printable ASCII with no space or line break; the engine checks the grammar.
+    if (full.length in 1..384 && full.all { it in '!'..'~' }) return full to ""
+    val code = row.referenceUnavailable
+    val machine = row.machineName.ifEmpty { "The other machine" }
+    return null to when {
+        full.isEmpty() && code.isEmpty() -> "The ASB engine on the PC is older. Update ASB on the PC."
+        code == "unknown-source" && row.remote -> "$machine did not send the profile of this session."
+        code in REFERENCE_REASONS -> REFERENCE_REASONS.getValue(code).replace("<machine>", machine)
+        else -> "ASB cannot make a full reference for this session."
+    }
+}
+
+/** The board mute choices (MUTE_WORDS and MUTE_DURATIONS): the words and the duration in ms, null for Always. */
+val MUTE_CHOICES: List<Pair<String, Long?>> = listOf(
+    "30 min" to 1_800_000L, "1 hour" to 3_600_000L, "8 hours" to 28_800_000L, "1 day" to 86_400_000L, "Always" to null,
+)
+
+/** As the board MUTE_TIPS: what a mute choice does, for TalkBack. */
+fun muteTip(words: String): String = when (words) {
+    "30 min" -> "Mute for 30 minutes"
+    "Always" -> "Mute until you unmute"
+    else -> "Mute for $words"
+}
+
+/** Port of mute_body: the gateway `mute` body, `{"durationMs": N}`, or `{}` for Always. */
+fun muteBody(durationMs: Long?): String =
+    if (durationMs == null) "{}" else buildJsonObject { put("durationMs", durationMs) }.toString()
+
+/** Port of mute_active: the row is muted, and a timed mute has not ended. */
+fun muteActive(row: Thread, nowMs: Long = System.currentTimeMillis()): Boolean =
+    row.muted && (row.mutedUntilMs <= 0 || nowMs < row.mutedUntilMs)
+
+/** Port of mute_flag_text in 24 hours: `Muted until 14:30` (with the weekday when the end is not today), `Muted`, or "". */
+fun muteFlagText(row: Thread, nowMs: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): String {
+    if (!muteActive(row, nowMs)) return ""
+    if (row.mutedUntilMs <= 0) return "Muted"
+    val end = Instant.ofEpochMilli(row.mutedUntilMs).atZone(zone)
+    val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate() == end.toLocalDate()
+    return "Muted until " + DateTimeFormatter.ofPattern(if (today) "HH:mm" else "EEEE HH:mm", Locale.US).format(end)
 }

@@ -1,5 +1,7 @@
 package local.asb.companion.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -11,6 +13,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -1132,6 +1136,7 @@ private fun SessionCard(
         backgroundSentence(row, showBackground),
         if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
         indicatorMeaning(row, indicator),
+        muteFlagText(row, nowMs),
         if (row.pinned) "Pinned" else "",
         if (row.drawer) "In the drawer" else "",
         row.sourceLabel.ifEmpty { row.providerLabel },
@@ -1144,6 +1149,7 @@ private fun SessionCard(
     ).filter { it.isNotBlank() }.joinToString(". ")
     val title = if (opening) "Opening…" else cardName
     val workingSign = row.state == "working" && !limited
+    val muted = muteActive(row, nowMs)
     val density = LocalDensity.current
     val fontScale = density.fontScale
     val messageColor = MaterialTheme.colorScheme.primary
@@ -1181,6 +1187,7 @@ private fun SessionCard(
         Box(Modifier.clearAndSetSemantics { }) { mark() }
         Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).clearAndSetSemantics { })
+        if (muted) MutedGlyph(tones.caption)
         if (indicator.isNotEmpty()) IndicatorMark(indicator, palette, compactMarkStyle(row, palette, drawerView, nowMs),
             limit = alertIsLimit(row))
         if (limited) LimitClock(tones.state)
@@ -1211,7 +1218,10 @@ private fun SessionCard(
                 mark()
                 Text(folder.ifEmpty { row.projectName.ifEmpty { "No project" } }, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.caption), maxLines = 1,
-                    overflow = if (folder.isEmpty()) TextOverflow.Ellipsis else TextOverflow.MiddleEllipsis)
+                    overflow = if (folder.isEmpty()) TextOverflow.Ellipsis else TextOverflow.MiddleEllipsis,
+                    modifier = Modifier.weight(1f, fill = false))
+                // As the board asb-mute-glyph: the muted bell after the folder.
+                if (muted) MutedGlyph(tones.caption)
             }
             Text(title, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = hexColor(tones.title),
                 maxLines = COMFORTABLE_TITLE_LINES, minLines = COMFORTABLE_TITLE_MIN_LINES, overflow = TextOverflow.Ellipsis,
@@ -1291,6 +1301,10 @@ private fun BackgroundCounts(row: Thread, color: String, comfortable: Boolean, s
 @Composable
 private fun LimitClock(color: String) = Icon(painterResource(R.drawable.ic_schedule), contentDescription = null,
     tint = hexColor(color), modifier = Modifier.size(LIMIT_CLOCK_SIZE.dp))
+
+@Composable
+private fun MutedGlyph(color: String) = Icon(painterResource(R.drawable.ic_muted), contentDescription = null,
+    tint = hexColor(color), modifier = Modifier.size(12.dp))
 
 // The usage limit corner mark: the accent disc of "!" with a clock in the background color.
 @Composable
@@ -1512,6 +1526,7 @@ private val INSPECTOR_MARGIN = 16.dp
  * The session inspector (desktop row panel, option E): a focusable popup at the long-press point. Back and an
  * outside tap close it. Every change uses the existing actions; the panel stays open and shows the current row.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionInspector(
     row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, serverName: String,
@@ -1519,6 +1534,7 @@ private fun SessionInspector(
     windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
+    val context = LocalContext.current
     val direction = LocalLayoutDirection.current
     val insets = WindowInsets.safeDrawing
     val margin = with(density) { (INSPECTOR_MARGIN - INSPECTOR_SHADOW_ROOM).roundToPx() }
@@ -1634,6 +1650,25 @@ private fun SessionInspector(
                         Text("Show messages", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = text, maxLines = 1,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
                     }
+                    Spacer(Modifier.height(8.dp))
+                    // As the board Copy Absolute: the asb:1/ reference of the row, or a dimmed button with the reason.
+                    val (reference, copyReason) = copyReference(row)
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (reference != null) 1f else .5f)
+                            .clip(RoundedCornerShape(8.dp)).background(hexColor(group))
+                            .clickable(enabled = reference != null, role = Role.Button) {
+                                if (reference == null) return@clickable
+                                context.getSystemService(ClipboardManager::class.java)
+                                    ?.setPrimaryClip(ClipData.newPlainText("ASB reference", reference))
+                                viewModel.showBanner("Copied")
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Copy reference", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = text, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
+                    }
+                    if (copyReason.isNotEmpty()) Text(copyReason, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
+                        modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 4.dp))
                     Spacer(Modifier.height(12.dp))
                     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(hexColor(group))) {
                         val rule = hexColor(palette.divider)
@@ -1655,6 +1690,30 @@ private fun SessionInspector(
                             }
                         }
                         switch("unread", "Unread", rowPanelNote(row))
+                        // As the board row panel: Mute after Read, with its times; a muted row offers Unmute and its end.
+                        item {
+                            val muteText = muteFlagText(row, nowMs)
+                            if (muteText.isNotEmpty()) Column(
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f).then(focusable("mute"))
+                                    .clickable(enabled = !busy, role = Role.Button) {
+                                        viewModel.action(row.id, "unmute"); started("mute")
+                                    }.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text("Unmute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+                                Text(muteText, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+                            } else Column(Modifier.fillMaxWidth().alpha(if (busy) .5f else 1f).padding(start = 12.dp, end = 6.dp, top = 7.dp)) {
+                                Text("Mute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    MUTE_CHOICES.forEachIndexed { index, (words, duration) ->
+                                        // The first time has the key of the Unmute row, so the focus moves between them.
+                                        val key = if (index == 0) "mute" else "mute:$words"
+                                        PanelButton(words, muteTip(words), RoundedCornerShape(6.dp), hexColor(move), text, !busy,
+                                            focusable(key)) { viewModel.action(row.id, "mute", muteBody(duration)); started(key) }
+                                    }
+                                }
+                            }
+                        }
                         switch("pinned", "Pinned")
                         switch("drawer", "In the drawer")
                         if ("order" in controls) item {
@@ -1727,7 +1786,7 @@ private fun PanelButton(
     modifier: Modifier, onClick: () -> Unit,
 ) {
     Box(
-        Modifier.heightIn(min = 48.dp).then(modifier).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).then(modifier).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
