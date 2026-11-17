@@ -414,10 +414,12 @@ class RulesTest {
         assertEquals(60L, clockInterval(listOf(row), now - 1))
         assertEquals(2L, clockInterval(listOf(row), now))
         assertEquals(60L, clockInterval(listOf(row), now + 3_600_000))
-        assertEquals(2L, clockInterval(listOf(row.copy(state = "working")), now - 1))
+        // A Working time updates each 30 s; the Working sign pulses between the updates.
+        assertEquals(30L, clockInterval(listOf(row.copy(state = "working")), now - 1))
         assertEquals(60L, clockInterval(listOf(row.copy(state = "working", archived = true)), now - 1))
         assertEquals(2L, clockInterval(listOf(row.copy(archived = true)), now))
-        assertEquals(2L, clockInterval(listOf(Thread(state = "idle"), Thread(state = "working")), now))
+        assertEquals(30L, clockInterval(listOf(Thread(state = "idle"), Thread(state = "working")), now))
+        assertEquals(2L, clockInterval(listOf(row, Thread(state = "working")), now))
     }
 
     @Test fun aUsageLimitStopShowsTheStopSquareOnlyAfterTheReset() {

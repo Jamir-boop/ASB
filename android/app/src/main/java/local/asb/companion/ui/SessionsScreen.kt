@@ -1,5 +1,7 @@
 package local.asb.companion.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -11,6 +13,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -30,6 +34,9 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -331,6 +338,20 @@ fun SessionsScreen(
         return PetPoint((center.x / density).toDouble(), (center.y / density).toDouble(), (floor / density).toDouble())
     }
 
+    // One pulse phase for every Working sign on screen. It runs only while this list is shown and the app is in view, and
+    // stays still with Android animations off (the setting is read again each time the app comes back).
+    val workingPhase = remember { Animatable(0f) }
+    var animationsOff by remember { mutableStateOf(false) }
+    val anyWorking = visibleRows.any { it.state == "working" }
+    LaunchedEffect(lifecycleOwner, anyWorking) {
+        if (anyWorking) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            animationsOff = systemAnimationsOff(context)
+            workingPhase.snapTo(0f)
+            if (!animationsOff) workingPhase.animateTo(1f,
+                infiniteRepeatable(tween(WORKING_PULSE_MS, easing = LinearEasing), RepeatMode.Restart))
+        }
+    }
+    val workingAlpha = { workingSignAlpha(animationsOff, workingPhase.value) }
     LaunchedEffect(viewModel, lifecycleOwner, state.revoked) {
         if (!state.revoked) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             try {
@@ -381,9 +402,7 @@ fun SessionsScreen(
         withFrameNanos { }
         if (generation != motionGeneration ||
             !lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || state.revoked) return@LaunchedEffect
-        val reducedMotion = try {
-            Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
-        } catch (_: SecurityException) { false }
+        val reducedMotion = systemAnimationsOff(context)
         val startedAt = System.nanoTime()
         val highlightEnd = SystemClock.uptimeMillis() + if (reducedMotion) 2000 else 160
         val added = mutableListOf<MessageFlight>()
@@ -498,6 +517,7 @@ fun SessionsScreen(
                     petTints(flight.plan, flight.elapsedMs(frameNanos))[index] ?: 0.0
                 }?.toFloat() ?: 0f
             },
+            workingAlpha = workingAlpha,
             onOpen = { viewModel.action(row.id, "open") },
             onActions = { point -> keyboard?.hide(); inspector = row.id to point },
             onCorner = { action -> viewModel.action(row.id, action) },
@@ -843,6 +863,24 @@ fun SessionsScreen(
                         }
                     },
                 ) {
+                    // The flights draw under the cards, so no pet or message covers card text; the cards have no fill.
+                    val messageColor = MaterialTheme.colorScheme.primary
+                    Canvas(Modifier.matchParentSize().clipToBounds()) {
+                        for (flight in flights) {
+                            val start = endpoint(flight.message.from) ?: continue
+                            val end = endpoint(flight.message.to) ?: continue
+                            if (!start.outside || !end.outside) drawMessage(flight, frameNanos, start, end, messageColor, flow)
+                        }
+                        pets?.let { sprites ->
+                            val visible = visibleRows.map { it.id }.toSet()
+                            for (flight in petFlights) {
+                                if (flight.message.from !in visible || flight.message.to !in visible) continue
+                                val sender = petPoint(flight.message.from) ?: continue
+                                val receiver = petPoint(flight.message.to) ?: continue
+                                drawPetFlight(sprites, flight.pet, flight.scale, flight.plan, flight.elapsedMs(frameNanos), sender, receiver, messageColor)
+                            }
+                        }
+                    }
                     key(listState) { if (flow) {
                         val divider = MaterialTheme.colorScheme.outline
                         if (rows.isEmpty()) emptyState(Modifier.fillMaxSize())
@@ -893,23 +931,6 @@ fun SessionsScreen(
                         }
                         item(key = "bottom-space") { Spacer(Modifier.height(16.dp)) }
                     } }
-                    val messageColor = MaterialTheme.colorScheme.primary
-                    Canvas(Modifier.matchParentSize().clipToBounds()) {
-                        for (flight in flights) {
-                            val start = endpoint(flight.message.from) ?: continue
-                            val end = endpoint(flight.message.to) ?: continue
-                            if (!start.outside || !end.outside) drawMessage(flight, frameNanos, start, end, messageColor, flow)
-                        }
-                        pets?.let { sprites ->
-                            val visible = visibleRows.map { it.id }.toSet()
-                            for (flight in petFlights) {
-                                if (flight.message.from !in visible || flight.message.to !in visible) continue
-                                val sender = petPoint(flight.message.from) ?: continue
-                                val receiver = petPoint(flight.message.to) ?: continue
-                                drawPetFlight(sprites, flight.pet, flight.scale, flight.plan, flight.elapsedMs(frameNanos), sender, receiver, messageColor)
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -927,6 +948,7 @@ fun SessionsScreen(
         message = snackbar.currentSnackbarData?.visuals?.message,
         error = state.actionErrors[inspectorRow.id],
         nowMs = nowMs,
+        serverName = serverName,
         viewModel = viewModel,
         windowSize = IntSize(constraints.maxWidth, constraints.maxHeight),
         onOpen = { inspector = null; viewModel.action(inspectorRow.id, "open") },
@@ -934,6 +956,11 @@ fun SessionsScreen(
         onDismiss = { inspector = null },
     )
 }
+
+/** True when Android animations are off (Remove animations): the screen then shows still marks. */
+private fun systemAnimationsOff(context: android.content.Context): Boolean = try {
+    Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+} catch (_: SecurityException) { false }
 
 // Card motion: one critically damped spring (about 350 ms) for placement and fade in; a leaving card goes at once.
 private val CardPlacement = spring(dampingRatio = 1f, stiffness = 360f, visibilityThreshold = IntOffset.VisibilityThreshold)
@@ -1078,7 +1105,8 @@ internal fun indicatorMeaning(row: Thread, indicator: String): String = when (in
 private fun SessionCard(
     row: Thread, comfortable: Boolean, showBackground: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
     nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: (Offset) -> Unit,
-    onCorner: (String) -> Unit, onCardFloor: (Float) -> Unit, petTint: () -> Float, modifier: Modifier = Modifier,
+    onCorner: (String) -> Unit, onCardFloor: (Float) -> Unit, petTint: () -> Float, workingAlpha: () -> Float,
+    modifier: Modifier = Modifier,
     /** The folder path that the search matched, shown instead of the project name (see [pathMatch]). */
     folder: String = "",
 ) {
@@ -1100,13 +1128,15 @@ private fun SessionCard(
     val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
     val viewOnly = isViewOnly(row)
     val (whereGlyph, where) = rowWhere(row)
+    val cardName = cardTitle(row)
     val description = listOf(
-        row.title, folder.ifEmpty { row.projectName }, state,
+        cardName, folder.ifEmpty { row.projectName }, state,
         // As the board tooltip: an Unknown row says why, for example that its machine is not reachable.
         if (row.state == "unknown") row.reason else "",
         backgroundSentence(row, showBackground),
         if (limited) "Usage limit. Resets in ${spokenLimit(left)}" else working.ifEmpty { idleAge(row.updatedAtMs, nowMs) },
         indicatorMeaning(row, indicator),
+        muteFlagText(row, nowMs),
         if (row.pinned) "Pinned" else "",
         if (row.drawer) "In the drawer" else "",
         row.sourceLabel.ifEmpty { row.providerLabel },
@@ -1117,7 +1147,9 @@ private fun SessionCard(
         if (viewOnly) "View only" else "",
         if (opening) "Opening" else "",
     ).filter { it.isNotBlank() }.joinToString(". ")
-    val title = if (opening) "Opening…" else row.title
+    val title = if (opening) "Opening…" else cardName
+    val workingSign = row.state == "working" && !limited
+    val muted = muteActive(row, nowMs)
     val density = LocalDensity.current
     val fontScale = density.fontScale
     val messageColor = MaterialTheme.colorScheme.primary
@@ -1155,8 +1187,11 @@ private fun SessionCard(
         Box(Modifier.clearAndSetSemantics { }) { mark() }
         Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).clearAndSetSemantics { })
-        if (indicator.isNotEmpty()) IndicatorMark(indicator, palette, compactMarkStyle(row, palette, drawerView, nowMs))
+        if (muted) MutedGlyph(tones.caption)
+        if (indicator.isNotEmpty()) IndicatorMark(indicator, palette, compactMarkStyle(row, palette, drawerView, nowMs),
+            limit = alertIsLimit(row))
         if (limited) LimitClock(tones.state)
+        if (workingSign) WorkingDot(tones.state, workingAlpha)
         val compactState = compactStateText(row, nowMs)
         Text(buildAnnotatedString {
             append(compactState)
@@ -1170,24 +1205,31 @@ private fun SessionCard(
         if (viewOnly) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = with(density) { 66.sp.toDp() }).clearAndSetSemantics { })
     } else Box(card.semantics { contentDescription = description }) {
+        val slots = cornerSlots(cornerControls(row, drawerView, confirmed, nowMs))
+        // The title and folder lines end before the corner controls; the column has 8 dp of its own.
+        val reserve = (cornerReserve(slots) - 8).coerceAtLeast(0).dp
         Column(
             modifier = Modifier.fillMaxWidth().align(Alignment.CenterStart)
                 .padding(start = 8.dp, end = 8.dp, top = COMFORTABLE_PADDING.dp, bottom = COMFORTABLE_PADDING.dp),
             verticalArrangement = Arrangement.spacedBy(COMFORTABLE_SPACING.dp),
         ) {
-            Row(Modifier.padding(end = 54.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(7.dp),
+            Row(Modifier.padding(end = reserve).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 mark()
                 Text(folder.ifEmpty { row.projectName.ifEmpty { "No project" } }, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.caption), maxLines = 1,
-                    overflow = if (folder.isEmpty()) TextOverflow.Ellipsis else TextOverflow.MiddleEllipsis)
+                    overflow = if (folder.isEmpty()) TextOverflow.Ellipsis else TextOverflow.MiddleEllipsis,
+                    modifier = Modifier.weight(1f, fill = false))
+                // As the board asb-mute-glyph: the muted bell after the folder.
+                if (muted) MutedGlyph(tones.caption)
             }
             Text(title, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = hexColor(tones.title),
-                maxLines = COMFORTABLE_TITLE_LINES, minLines = COMFORTABLE_TITLE_LINES, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 21.dp, end = 54.dp).clearAndSetSemantics { })
+                maxLines = COMFORTABLE_TITLE_LINES, minLines = COMFORTABLE_TITLE_MIN_LINES, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 21.dp, end = reserve).clearAndSetSemantics { })
             Row(Modifier.padding(start = 21.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 if (limited) LimitClock(tones.state)
+                if (workingSign) WorkingDot(tones.state, workingAlpha)
                 Text(if (limited) "Resets in $countdown" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.state), maxLines = 1)
                 BackgroundCounts(row, tones.caption, comfortable = true, shown = showBackground)
@@ -1206,16 +1248,10 @@ private fun SessionCard(
                 }
             }
         }
-        Row(Modifier.align(Alignment.TopEnd).padding(end = 5.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            val controls = cornerControls(row, drawerView, confirmed, nowMs)
-            val title = row.title.ifEmpty { "Untitled session" }
-            controls.firstOrNull { it.kind == "drawer" }?.let { CornerButton(it, title, busy, palette, onCorner) }
-            // The read and pin slots keep their places, as on the desktop.
-            Box(Modifier.size(24.dp)) {
-                controls.firstOrNull { it.kind !in setOf("drawer", "pin") }?.let { CornerButton(it, title, busy, palette, onCorner) }
-            }
-            Box(Modifier.size(24.dp)) {
-                controls.firstOrNull { it.kind == "pin" }?.let { CornerButton(it, title, busy, palette, onCorner) }
+        // Each slot is its own 48 dp target inside the card; the read and pin slots keep their places, as on the desktop.
+        Row(Modifier.align(Alignment.TopEnd)) {
+            for (control in slots) Box(Modifier.size(CORNER_TARGET.dp)) {
+                if (control != null) CornerButton(control, cornerDescription(row, control), alertIsLimit(row), busy, palette, onCorner)
             }
         }
     }
@@ -1267,11 +1303,33 @@ private fun LimitClock(color: String) = Icon(painterResource(R.drawable.ic_sched
     tint = hexColor(color), modifier = Modifier.size(LIMIT_CLOCK_SIZE.dp))
 
 @Composable
-private fun IndicatorMark(indicator: String, palette: Palette, style: CompactMarkStyle? = null) {
+private fun MutedGlyph(color: String) = Icon(painterResource(R.drawable.ic_muted), contentDescription = null,
+    tint = hexColor(color), modifier = Modifier.size(12.dp))
+
+// The usage limit corner mark: the accent disc of "!" with a clock in the background color.
+@Composable
+private fun LimitDisc(disc: Dp, clock: Dp, palette: Palette) = Box(
+    Modifier.size(disc).background(hexColor(palette.accent), CircleShape), contentAlignment = Alignment.Center,
+) {
+    Icon(painterResource(R.drawable.ic_schedule), contentDescription = null, tint = hexColor(palette.background),
+        modifier = Modifier.size(clock))
+}
+
+// The Working sign: a 6 dp dot in the Working color. The alpha is read in the layer, so a pulse frame only redraws the dot.
+@Composable
+private fun WorkingDot(color: String, alpha: () -> Float) = Box(
+    Modifier.size(6.dp).graphicsLayer { this.alpha = alpha() }.background(hexColor(color), CircleShape),
+)
+
+@Composable
+private fun IndicatorMark(indicator: String, palette: Palette, style: CompactMarkStyle? = null, limit: Boolean = false) {
     when (indicator) {
         "question", "alert" -> if (style != null) {
             val glyph = if (indicator == "alert") "!" else "?"
-            if (style.discSize > 0) InkCenteredGlyph(glyph, hexColor(style.color), style.fontSize.sp, style.fontSize.sp,
+            // A usage limit stop has a clock, so "!" means only a failure.
+            if (indicator == "alert" && limit) {
+                if (style.discSize > 0) LimitDisc(style.discSize.dp, (style.discSize - 2).dp, palette) else LimitClock(style.color)
+            } else if (style.discSize > 0) InkCenteredGlyph(glyph, hexColor(style.color), style.fontSize.sp, style.fontSize.sp,
                 Modifier.size(style.discSize.dp).background(hexColor(palette.accent), CircleShape))
             else Text(glyph, color = hexColor(style.color), fontSize = style.fontSize.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                 fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
@@ -1321,17 +1379,19 @@ private fun InkCenteredGlyph(glyph: String, color: Color, fontSize: TextUnit, li
 }
 
 @Composable
-private fun CornerButton(control: CornerControl, title: String, busy: Boolean, palette: Palette, onCorner: (String) -> Unit) {
+private fun CornerButton(
+    control: CornerControl, description: String, limit: Boolean, busy: Boolean, palette: Palette, onCorner: (String) -> Unit,
+) {
     val text = hexColor(palette.text)
     val background = when (control.kind) {
         "dot", "drawer" -> text.copy(alpha = .08f)
         "confirmed" -> hexColor(palette.success).copy(alpha = .12f)
         else -> Color.Transparent
     }
-    // The circle is 24 dp; the touch area is 48 dp around it (it reaches past the slot, as a touch inset).
+    // The circle is 24 dp, 2 dp from the card top as before; the touch area is the whole 48 dp slot.
     Box(
-        Modifier.size(24.dp).wrapContentSize(unbounded = true).size(48.dp)
-            .then(if (control.action == null) Modifier.semantics { contentDescription = "${control.label}: $title" }
+        Modifier.fillMaxSize()
+            .then(if (control.action == null) Modifier.semantics { contentDescription = description }
             else Modifier.clickable(
                 interactionSource = null,
                 indication = null,
@@ -1339,19 +1399,24 @@ private fun CornerButton(control: CornerControl, title: String, busy: Boolean, p
                 role = Role.Button,
                 onClickLabel = control.label,
             ) { onCorner(control.action) }.semantics {
-                contentDescription = "${control.label}: $title"
+                contentDescription = description
                 if (busy) stateDescription = "Busy"
             }),
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Box(Modifier.size(24.dp).background(background, CircleShape), contentAlignment = Alignment.Center) {
+        Box(Modifier.padding(top = 2.dp).size(24.dp).background(background, CircleShape), contentAlignment = Alignment.Center) {
             when (control.kind) {
                 "confirmed" -> Icon(Icons.Default.Check, contentDescription = null, tint = hexColor(palette.success),
                     modifier = Modifier.size(12.dp))
                 "pin" -> Icon(PinIcon, contentDescription = null, tint = hexColor(palette.quietCaption), modifier = Modifier.size(12.dp))
-                // An unread ? or ! is a 16 dp accent disc with the glyph in the background color; a read permission wait is a bare quiet glyph.
-                "question", "alert" -> if (control.action != null) InkCenteredGlyph(
-                    if (control.kind == "alert") "!" else "?", hexColor(palette.background), 11.sp, 11.sp,
+                // An unread ? or ! is a 16 dp accent disc with the glyph in the background color. A usage limit stop has a
+                // clock in the disc, so "!" means only a failure (the PC shows "!" for both).
+                "alert" -> if (limit) LimitDisc(16.dp, 12.dp, palette)
+                else InkCenteredGlyph("!", hexColor(palette.background), 11.sp, 11.sp,
+                    Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape))
+                // A read permission wait is a bare quiet glyph.
+                "question" -> if (control.action != null) InkCenteredGlyph(
+                    "?", hexColor(palette.background), 11.sp, 11.sp,
                     Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape),
                 ) else InkCenteredGlyph("?", hexColor(palette.quietCaption), 11.sp, 14.sp, Modifier.size(24.dp))
                 "drawer" -> DrawerGlyph(hexColor(palette.accent), hexColor(palette.background))
@@ -1461,12 +1526,15 @@ private val INSPECTOR_MARGIN = 16.dp
  * The session inspector (desktop row panel, option E): a focusable popup at the long-press point. Back and an
  * outside tap close it. Every change uses the existing actions; the panel stays open and shows the current row.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionInspector(
-    row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, viewModel: SessionsViewModel,
+    row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, serverName: String,
+    viewModel: SessionsViewModel,
     windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
+    val context = LocalContext.current
     val direction = LocalLayoutDirection.current
     val insets = WindowInsets.safeDrawing
     val margin = with(density) { (INSPECTOR_MARGIN - INSPECTOR_SHADOW_ROOM).roundToPx() }
@@ -1520,7 +1588,7 @@ private fun SessionInspector(
     }
     val time = (if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else "")
         .ifEmpty { idleAge(row.updatedAtMs, nowMs) }
-    val title = row.title.trim().replace(Regex("\\s+"), " ").ifEmpty { "Untitled session" }
+    val title = cardTitle(row)
     val app = row.providerLabel +
         if (row.sourceLabel.isNotEmpty() && row.sourceLabel != row.providerLabel) " · ${row.sourceLabel}" else ""
     val shape = RoundedCornerShape(12.dp)
@@ -1555,20 +1623,23 @@ private fun SessionInspector(
                             lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
                     }
                     val canOpen = row.canOpen && !busy
-                    Box(
+                    // As the board Open button, but it names the machine; the app is the second line. Neither line is cut.
+                    Column(
                         Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (canOpen) 1f else .5f)
                             .clip(RoundedCornerShape(8.dp)).background(hexColor(button))
-                            .clickable(enabled = canOpen, role = Role.Button, onClick = onOpen),
-                        contentAlignment = Alignment.Center,
+                            .clickable(enabled = canOpen, role = Role.Button, onClick = onOpen)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
                     ) {
-                        val label = when {
-                            row.remote -> "On ${row.machineName.ifEmpty { "another machine" }}"
-                            row.surface == "cli" -> "Runs in a terminal"
-                            else -> "Open in $app"
-                        }
-                        Text(label, fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold, color = text, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 12.dp))
+                        Text(openLabel(row, serverName), fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp,
+                            fontWeight = FontWeight.Bold, color = text, textAlign = TextAlign.Center)
+                        if (app.isNotEmpty()) Text(app, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
+                            textAlign = TextAlign.Center)
+                    }
+                    openReason(row).takeIf { it.isNotEmpty() }?.let {
+                        Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
+                            modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 4.dp))
                     }
                     Spacer(Modifier.height(8.dp))
                     Box(
@@ -1579,6 +1650,25 @@ private fun SessionInspector(
                         Text("Show messages", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = text, maxLines = 1,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
                     }
+                    Spacer(Modifier.height(8.dp))
+                    // As the board Copy Absolute: the asb:1/ reference of the row, or a dimmed button with the reason.
+                    val (reference, copyReason) = copyReference(row)
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (reference != null) 1f else .5f)
+                            .clip(RoundedCornerShape(8.dp)).background(hexColor(group))
+                            .clickable(enabled = reference != null, role = Role.Button) {
+                                if (reference == null) return@clickable
+                                context.getSystemService(ClipboardManager::class.java)
+                                    ?.setPrimaryClip(ClipData.newPlainText("ASB reference", reference))
+                                viewModel.showBanner("Copied")
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Copy reference", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = text, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
+                    }
+                    if (copyReason.isNotEmpty()) Text(copyReason, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
+                        modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 4.dp))
                     Spacer(Modifier.height(12.dp))
                     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(hexColor(group))) {
                         val rule = hexColor(palette.divider)
@@ -1592,12 +1682,38 @@ private fun SessionInspector(
                         @Composable
                         fun switch(key: String, label: String, note: String = "") {
                             val control = controls[key] ?: return
+                            // A dimmed switch says why under its label.
+                            val reason = panelReason(row, key, controls)
                             item {
-                                PanelSwitch(label, note, chosen[key] ?: control.on, control.action != null && !busy, text, muted,
+                                PanelSwitch(label, reason.ifEmpty { note }, chosen[key] ?: control.on, control.action != null && !busy, text, muted,
                                     palette, focusable(key)) { change(key, it, control.action) }
                             }
                         }
                         switch("unread", "Unread", rowPanelNote(row))
+                        // As the board row panel: Mute after Read, with its times; a muted row offers Unmute and its end.
+                        item {
+                            val muteText = muteFlagText(row, nowMs)
+                            if (muteText.isNotEmpty()) Column(
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f).then(focusable("mute"))
+                                    .clickable(enabled = !busy, role = Role.Button) {
+                                        viewModel.action(row.id, "unmute"); started("mute")
+                                    }.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text("Unmute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+                                Text(muteText, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+                            } else Column(Modifier.fillMaxWidth().alpha(if (busy) .5f else 1f).padding(start = 12.dp, end = 6.dp, top = 7.dp)) {
+                                Text("Mute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    MUTE_CHOICES.forEachIndexed { index, (words, duration) ->
+                                        // The first time has the key of the Unmute row, so the focus moves between them.
+                                        val key = if (index == 0) "mute" else "mute:$words"
+                                        PanelButton(words, muteTip(words), RoundedCornerShape(6.dp), hexColor(move), text, !busy,
+                                            focusable(key)) { viewModel.action(row.id, "mute", muteBody(duration)); started(key) }
+                                    }
+                                }
+                            }
+                        }
                         switch("pinned", "Pinned")
                         switch("drawer", "In the drawer")
                         if ("order" in controls) item {
@@ -1670,7 +1786,7 @@ private fun PanelButton(
     modifier: Modifier, onClick: () -> Unit,
 ) {
     Box(
-        Modifier.heightIn(min = 48.dp).then(modifier).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).then(modifier).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {

@@ -87,6 +87,7 @@ class SessionsViewModel(
     fun setPet(pet: String) { mutableState.update { it.copy(pet = pet) } }
     fun setView(view: String) { mutableState.update { it.copy(view = view) } }
     fun dismissBanner() { mutableState.update { it.copy(banner = null) } }
+    fun showBanner(message: String) { mutableState.update { it.copy(banner = message) } }
     fun clearError() { mutableState.update { it.copy(lastError = null) } }
 
     suspend fun poll() {
@@ -126,7 +127,8 @@ class SessionsViewModel(
         }
     }
 
-    fun action(id: String, action: String) {
+    /** Runs [action] on row [id]; [body] is the JSON body of the request (a mute has its duration). */
+    fun action(id: String, action: String, body: String = "{}") {
         if (state.value.revoked || id in state.value.busyIds) return
         val row = state.value.dashboard?.threads?.find { it.id == id } ?: return
         if (action == "open" && !row.canOpen) {
@@ -146,17 +148,17 @@ class SessionsViewModel(
                 notificationMutex.withLock {
                     if (state.value.revoked) return@withLock
                     var apiAction = action
-                    var body = "{}"
+                    var payload = body
                     if (action == "pin-up" || action == "pin-down") {
                         val direction = if (action == "pin-up") "up" else "down"
                         val visible = filteredRows(state.value.dashboard?.threads.orEmpty(), state.value.filter)
-                        body = pinMoveBody(visible, id, direction) ?: run {
+                        payload = pinMoveBody(visible, id, direction) ?: run {
                             mutableState.update { it.copy(banner = if (direction == "up") "Already first" else "Already last") }
                             return@withLock
                         }
                         apiAction = "move-pin"
                     }
-                    val reply = api.action(id, apiAction, body, state.value.engine)
+                    val reply = api.action(id, apiAction, payload, state.value.engine)
                     currentCoroutineContext().ensureActive()
                     if (action == "open") {
                         if (reply["opened"] != JsonPrimitive(true)) {

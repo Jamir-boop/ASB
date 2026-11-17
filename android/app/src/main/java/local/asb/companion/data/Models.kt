@@ -153,6 +153,13 @@ data class Thread(
     @Serializable(with = MillisSerializer::class) val mutedAtMs: Long = 0,
     // An active mute; an older engine sends none.
     val muted: Boolean = false,
+    // The end of a timed mute, else 0 (a mute until you unmute, or no mute).
+    @Serializable(with = MillisSerializer::class) val mutedUntilMs: Long = 0,
+    // The absolute reference (asb:1/...), or the code of why there is none; an older engine sends neither.
+    val reference: String = "",
+    val referenceUnavailable: String = "",
+    // The app reference that the board copies as Relative, for example claude-desktop-code/local_<id>.
+    val sessionReference: String = "",
     val unread: Boolean = false,
     // The unread mark comes from a failed or usage-limit stop; an older engine sends none.
     val alert: Boolean = false,
