@@ -103,7 +103,7 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
   // Only the background count query and the quota query read message data, inside SQLite: they return IDs, kinds, counts,
   // and one error type.
   for (const text of sql) assert.doesNotMatch(text, /\b(?:account|control_account|credential|kv)\b/i);
-  for (const text of sql.filter((text) => !/^select coalesce\(s\.parent_id, s\.id\) as root, 'commands' as kind, count\(\*\) as n\s/.test(text)
+  for (const text of sql.filter((text) => !/^select coalesce\(s\.parent_id, s\.id\) as root, 'commands' as kind, count\(\*\) as n, min\(m\.time_created\) as started\s/.test(text)
     && !/^select s\.id as id, json_extract\(case when json_valid\(m\.data\) then m\.data end, '\$\.error\.type'\) as error_type\s/.test(text))) {
     assert.doesNotMatch(text, /\bdata\b/i);
   }
@@ -133,8 +133,10 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
 test('OpenCode rows count open background shells and busy background subagents', async (t) => {
   const { dataDir, databasePath } = await fixture(t);
   const database = createDatabase(databasePath);
-  const part = (shellID, background = true, extra = {}) => ({ type: 'tool', id: `call_${shellID}`, name: 'shell',
-    state: { status: 'completed', input: { command: PROMPT, ...(background ? { background: true } : {}) }, metadata: { shellID, status: 'running' } }, ...extra });
+  const part = (shellID, background = true, status = 'completed') => ({ type: 'tool', id: `call_${shellID}`, name: 'shell',
+    state: { status, input: { command: PROMPT, ...(background ? { background: true } : {}) }, metadata: { shellID, status: 'running' } } });
+  // A foreground shell in progress has no shell ID.
+  const foreground = { type: 'tool', id: 'call_fore', name: 'shell', state: { status: 'running', input: { command: PROMPT }, metadata: {} } };
   let seq = 0;
   const message = (sessionId, type, data, atMs = now - minute) => database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
     .run(`msg_${seq += 1}`, sessionId, type, seq, atMs, atMs, typeof data === 'string' ? data : JSON.stringify(data));
@@ -143,8 +145,10 @@ test('OpenCode rows count open background shells and busy background subagents',
   const end = (sessionId, shellID) => message(sessionId, 'synthetic', { text: PROMPT, description: PROMPT,
     metadata: { source: 'shell', shellID, jobID: 'job_1', state: 'completed', exit: 0, truncated: false } });
   for (const id of ['ses_main', 'ses_quiet', 'ses_old']) addSession(database, { ...base, id, title: id, time_idle: now - hour });
-  // Two open shells, one ended shell, and a shell in the foreground in the root; one open shell in a child.
-  message('ses_main', 'assistant', { content: [{ type: 'text', text: PROMPT }, part('sh_open1'), part('sh_ended'), part('sh_fore', false)] });
+  // Two open shells (one that OpenCode moved to the background with no input background), one ended shell, a shell in the
+  // foreground, and a shell with an error in the root; one open shell in a child.
+  message('ses_main', 'assistant', { content: [{ type: 'text', text: PROMPT }, part('sh_open1'), part('sh_auto', false), part('sh_ended'),
+    foreground, part('sh_error', false, 'error')] });
   end('ses_main', 'sh_ended');
   addSession(database, { ...base, id: 'ses_busy', parent_id: 'ses_main', time_suspended: now - minute });
   addSession(database, { ...base, id: 'ses_idle', parent_id: 'ses_main', time_idle: now - minute });
@@ -165,8 +169,47 @@ test('OpenCode rows count open background shells and busy background subagents',
   const { threads } = await loadOpenCodeDashboard({ dataDir, nowMs: now });
   const counts = Object.fromEntries(buildSwitchboardDashboard(threads, [], now).threads
     .map((row) => [row.id, [row.backgroundCommands, row.backgroundAgents]]));
-  assert.deepEqual(counts, { ses_main: [2, 1], ses_quiet: [1, undefined], ses_old: [undefined, undefined] });
+  assert.deepEqual(counts, { ses_main: [3, 1], ses_quiet: [1, undefined], ses_old: [undefined, undefined] });
   assert.equal(JSON.stringify(threads).includes(PROMPT), false);
+});
+
+test('OpenCode background counts end 24 hours after the earliest counted start with no database change', async (t) => {
+  invalidateOpenCodeData();
+  const { dataDir, databasePath } = await fixture(t);
+  const database = createDatabase(databasePath);
+  const shell = (shellID) => ({ type: 'tool', id: `call_${shellID}`, name: 'shell',
+    state: { status: 'completed', input: { command: PROMPT }, metadata: { shellID, status: 'running' } } });
+  const subagent = (sessionID) => ({ type: 'tool', id: `call_${sessionID}`, name: 'subagent',
+    state: { status: 'running', input: { prompt: PROMPT, background: true }, metadata: { sessionID } } });
+  let seq = 0;
+  const message = (sessionId, content, atMs) => database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
+    .run(`msg_${seq += 1}`, sessionId, 'assistant', seq, atMs, atMs, JSON.stringify({ content }));
+  addSession(database, { ...base, id: 'ses_main', title: 'Main', time_idle: now - hour });
+  addSession(database, { ...base, id: 'ses_busy', parent_id: 'ses_main', time_suspended: now - minute });
+  // The subagent starts first, so its start sets the deadline for both counts.
+  message('ses_main', [subagent('ses_busy')], now - 23 * hour);
+  message('ses_main', [shell('sh_open')], now - 2 * hour);
+  database.close();
+  const deadline = now - 23 * hour + 24 * hour + 1;
+  const { sql, query } = recordingQuery();
+  const load = async (nowMs) => {
+    const result = await loadOpenCodeDashboard({ dataDir, nowMs, query });
+    const board = buildSwitchboardDashboard(result.threads, [], nowMs);
+    return [board.threads.map((row) => [row.backgroundCommands, row.backgroundAgents]), board.nextStatusCheckAtMs];
+  };
+  assert.deepEqual(await load(now), [[[1, 1]], deadline]);
+  const queries = sql.length;
+  assert.deepEqual(await load(deadline - 1), [[[1, 1]], deadline], 'the kept result shows before the deadline');
+  assert.equal(sql.length, queries, 'the kept result reads nothing');
+  const [counts, next] = await load(deadline);
+  assert.deepEqual(counts, [[1, undefined]], 'the subagent call left the window; the shell counts');
+  assert.ok(sql.length > queries, 'the load at the deadline runs the query again');
+  assert.equal(next, now - 2 * hour + 24 * hour + 1);
+  const later = now - 2 * hour + 24 * hour + 1;
+  const [none, after] = await load(later);
+  assert.deepEqual(none, [[undefined, undefined]]);
+  assert.ok(!(after <= later), 'no busy loop: the next check is later or absent');
+  invalidateOpenCodeData();
 });
 
 test('OpenCode card times use messages and idle time before record updates', async (t) => {

@@ -13,6 +13,7 @@ import {
 } from '../src/codex-data.mjs';
 import { enrichThreads } from '../src/insights.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
+import { exportLocalSessions, validExport } from '../src/machine-peers.mjs';
 
 async function createCodexStateDb(rowCount) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-state-'));
@@ -490,10 +491,46 @@ test('a Codex root counts its unarchived running subagents at all levels as back
   }
   const { threads } = await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(dir, 'index.jsonl'),
     globalStatePath: path.join(dir, 'global.json'), nowMs });
-  const roots = threads.filter((thread) => !thread.isSubagent).map((thread) => ({ ...thread, backgroundCommands: 3 }));
-  const board = Object.fromEntries(buildSwitchboardDashboard(roots, [], nowMs).threads.map((row) => [row.id, row]));
+  assert.equal(threads.some((thread) => 'backgroundAgents' in thread), false, 'the switchboard counts the agents, not the loader');
+  const all = threads.map((thread) => thread.isSubagent ? thread : { ...thread, backgroundCommands: 3 });
+  const board = Object.fromEntries(buildSwitchboardDashboard(all, [], nowMs).threads.map((row) => [row.id, row]));
   assert.equal(board[id(1)].backgroundAgents, 2);
   assert.equal('backgroundAgents' in board[id(6)], false);
   for (const row of Object.values(board)) assert.equal('backgroundCommands' in row, false);
   assert.equal(board[id(6)].surface, 'cli');
+});
+
+test('a Codex background agent counts only while its activity is in the 6-hour window, with no file change', async (t) => {
+  const nowMs = Date.parse('2026-10-08T12:00:00.000Z');
+  const activityAtMs = nowMs - (6 * 60 - 1) * 60_000;
+  const { dir, databasePath } = await createSyntheticDb(t, `
+    create table threads (id text primary key, rollout_path text, title text, source text, created_at_ms integer, updated_at_ms integer, archived integer);`);
+  const entry = (type, atMs) => JSON.stringify({ timestamp: new Date(atMs).toISOString(), type: 'event_msg', payload: { type } });
+  const spawn = (parent) => JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: parent } } });
+  const id = (number) => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
+  // An app root and a CLI root, each with one running child and no end record.
+  const rows = [[1, 'vscode', activityAtMs - 60_000, true], [2, spawn(id(1)), activityAtMs], [3, 'cli', activityAtMs - 60_000, true],
+    [4, spawn(id(3)), activityAtMs]];
+  const database = new DatabaseSync(databasePath);
+  t.after(() => database.close());
+  const insert = database.prepare('insert into threads values (?, ?, ?, ?, ?, ?, 0)');
+  for (const [number, source, atMs, ended] of rows) {
+    const rolloutPath = path.join(dir, `rollout-${number}.jsonl`);
+    await fs.writeFile(rolloutPath, `${entry('task_started', atMs)}\n${ended ? `${entry('task_complete', atMs)}\n` : ''}`);
+    insert.run(id(number), rolloutPath, `Synthetic ${number}`, source, atMs - 60_000, atMs);
+  }
+  const { threads } = await loadCodexDashboard({ databasePath, sessionIndexPath: path.join(dir, 'index.jsonl'),
+    globalStatePath: path.join(dir, 'global.json'), nowMs });
+  const machine = { machineId: 'a'.repeat(16), machineName: 'engine-a' };
+  const board = (atMs) => buildSwitchboardDashboard(threads, [], atMs, machine);
+  const counts = (dashboard) => dashboard.threads.map((row) => [row.surface, row.state, row.backgroundAgents, 'backgroundCommands' in row]);
+  const live = board(nowMs);
+  assert.deepEqual(counts(live), [['app', 'working', 1, false], ['cli', 'working', 1, false]]);
+  const deadline = activityAtMs + 6 * 60 * 60_000 + 1;
+  assert.equal(live.nextStatusCheckAtMs, deadline);
+  // A member row of the machine group passes the export check.
+  const exported = exportLocalSessions(live, { machineId: machine.machineId, name: machine.machineName }, nowMs);
+  assert.deepEqual(validExport(exported, { machineId: machine.machineId, name: machine.machineName }).rows.map((row) => row.backgroundAgents), [1, 1]);
+  assert.deepEqual(counts(board(deadline - 1)).map((row) => row[2]), [1, 1]);
+  assert.deepEqual(counts(board(deadline)), [['app', 'unknown', undefined, false], ['cli', 'unknown', undefined, false]]);
 });

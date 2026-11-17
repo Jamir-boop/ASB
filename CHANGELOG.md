@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed background counts that did not end: a Codex background agent (a subagent thread with a running turn) now counts only while it had activity in the last 6 hours, so a child that stopped with no end record no longer counts forever. OpenCode counts now end 24 hours after the earliest counted start also when the OpenCode database does not change. OpenCode also counts the shells that it moves to the background by itself (a long foreground shell), not only the shells started with the `background` input.
 - Fixed the Background commands count of a Claude chat that counted only the commands of the main chat: it now also counts the background Bash and Monitor commands that its subagents start, also after the subagent ended, while the chat's Claude Code process runs. A Monitor with no end record stops counting at its deadline, a TaskStop of a subagent ends its commands, and a command of the main chat now also ends at its queued notice in the main log (before, such a command stayed counted).
 - Android: the Sessions list shows the first 100 chats, with a Show more button after them, so a long history loads fast. The chats that need you sort first, so they are always in view.
 - ASB Bridge is now `0.9.0`: it writes the counts and times of open Codex approvals and OpenCode questions and approvals for the engine.

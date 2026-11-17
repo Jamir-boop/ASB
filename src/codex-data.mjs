@@ -1193,7 +1193,7 @@ async function attachRolloutSignals(threads, {
     }
   });
 
-  return { threads: enriched, logsUnreadable, descendantsFor };
+  return { threads: enriched, logsUnreadable };
 }
 
 // Callers can pass old dashboard options (asbMode, maxOrphanRollouts, and so on). They have no effect.
@@ -1221,13 +1221,7 @@ export async function loadCodexDashboard(options = {}) {
   if (options.codexNativeReadEnabled) {
     for (const thread of threads) Object.assign(thread, codexNativeReadStatus(thread, globalState));
   }
-  const { threads: enriched, logsUnreadable, descendantsFor } = await attachRolloutSignals(threads, options);
-  // A Codex subagent is a child thread: count the unarchived descendants whose logs show a running turn in this scan.
-  for (const thread of enriched) {
-    if (thread.isSubagent) continue;
-    const agents = descendantsFor(thread.id).filter((child) => !child.archived && child.lifecycleRunning === true).length;
-    if (agents > 0) thread.backgroundAgents = agents;
-  }
+  const { threads: enriched, logsUnreadable } = await attachRolloutSignals(threads, options);
   // A stop uses the newest window record at or before it, of any session of the same Codex home: a retry can fail with no record of its own.
   const windowRecords = enriched.filter((thread) => thread.limitWindowAtMs > 0);
   for (const thread of enriched) {
