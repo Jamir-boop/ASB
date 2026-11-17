@@ -99,6 +99,14 @@ fun cardStateLabel(row: Thread): String = when {
 fun connectionText(serverName: String, offline: Boolean, pathLabel: String?): String =
     listOfNotNull(serverName, if (offline) "Offline" else "Live", pathLabel?.takeUnless { offline }).joinToString(" · ")
 
+/** The age of the last good dashboard read, as the row ages: Last update 12m ago, or "" before the first read. */
+fun lastUpdateText(lastUpdateMs: Long, nowMs: Long): String =
+    if (lastUpdateMs <= 0) "" else "Last update " + idleAge(lastUpdateMs, nowMs).replace("Just now", "just now")
+
+/** The Offline band line: Offline · last update 12m ago, or Offline alone with no saved list. */
+fun offlineBandText(lastUpdateMs: Long, nowMs: Long): String =
+    lastUpdateText(lastUpdateMs, nowMs).let { if (it.isEmpty()) "Offline" else "Offline · " + it.replaceFirstChar(Char::lowercase) }
+
 // Search mode stays open while a query is set, for example after a rotation or a return to the screen.
 fun searchOpen(opened: Boolean, query: String): Boolean = opened || query.isNotEmpty()
 
@@ -341,11 +349,14 @@ fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine)
 
 /**
  * Port of facts_lines: the lines of [line] (facts joined by ` · `) in at most [width]. A line breaks only between two facts and
- * drops the ` · ` there; the words of a fact keep no-break spaces, so only a fact wider than [width] breaks inside.
+ * drops the ` · ` there; the words of a fact keep no-break spaces, so only a fact wider than [width] breaks inside, between words.
  */
 fun factLines(line: String, width: Float, measure: (String) -> Float): List<String> {
     val lines = mutableListOf<String>()
-    for (fact in line.split(" · ").map { it.replace(' ', '\u00a0') }) {
+    for (words in line.split(" · ")) {
+        // A word joiner keeps a clock (15:49) whole; a fact wider than [width] keeps its spaces, so it breaks between words.
+        val joined = words.replace(Regex("(?<=\\d):(?=\\d)"), "\u2060:\u2060")
+        val fact = joined.replace(' ', '\u00a0').takeIf { measure(it) <= width } ?: joined
         if (lines.isNotEmpty() && measure("${lines.last()} · $fact") <= width) lines[lines.size - 1] += " · $fact" else lines += fact
     }
     return lines

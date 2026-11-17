@@ -310,7 +310,9 @@ fun SettingsScreen(
                                     onClick = { view = value; store.view = value; onViewChanged(value) },
                                     shape = SegmentedButtonDefaults.itemShape(index, 2),
                                     modifier = Modifier.heightIn(min = 48.dp),
-                                ) { Text(label) }
+                                    // The fill marks the choice; with no check icon each label shows in full.
+                                    icon = {},
+                                ) { Text(label, maxLines = 1, softWrap = false) }
                             }
                         }
                         Text("Card text size", style = MaterialTheme.typography.labelLarge)
@@ -321,7 +323,9 @@ fun SettingsScreen(
                                     onClick = { textScale = value; onTextScaleChanged(value) },
                                     shape = SegmentedButtonDefaults.itemShape(index, TEXT_SCALES.size),
                                     modifier = Modifier.heightIn(min = 48.dp),
-                                ) { Text(label) }
+                                    // The fill marks the choice; with no check icon and 6-letter labels each label shows in full.
+                                    icon = {},
+                                ) { Text(label, maxLines = 1, softWrap = false) }
                             }
                         }
                         Text("Changes the text on the session cards. Other text follows the phone font size.",
@@ -347,6 +351,8 @@ fun SettingsScreen(
                         }
                         Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
                             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Alerts come within seconds while the Live notification is on. Without it, Android checks about every 15 minutes.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (!notificationsAllowed) {
                             Text("Notifications are off for ASB.", style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -481,7 +487,7 @@ private fun LicenseDialog(title: String, paths: List<String>, onDismiss: () -> U
     )
 }
 
-private val TEXT_SCALES = listOf(0.85f to "Small", 1f to "Default", 1.15f to "Large", 1.3f to "Larger")
+private val TEXT_SCALES = listOf(0.85f to "Small", 1f to "Normal", 1.15f to "Large", 1.3f to "Larger")
 
 private val SettingsLicenses = linkedMapOf(
     "ASB (MIT)" to listOf("licenses/asb-LICENSE.txt"),
