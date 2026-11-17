@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createActivityMessages, messageText, periodBuckets, statusGroup, statusReason } from '../src/activity-messages.mjs';
 import { createClaudeMessages } from '../src/claude-messages.mjs';
 import { querySqliteJson } from '../src/codex-data.mjs';
-import { createAsbServer } from '../src/asb-server.mjs';
+import { createAsbServer, panelSummary } from '../src/asb-server.mjs';
 import { createMachineGroup, saveGroup } from '../src/machine-group.mjs';
 import { exportBody, exportLocalSessions, mergePeerRows, validActivity, validExport } from '../src/machine-peers.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
@@ -326,6 +326,21 @@ test('the group merge: one record per ID with the receiver status, offline membe
   assert.deepEqual(validActivity({ messages: [], usage: [...apps, 'x'.repeat(201), 7].map(memberUsage) }).usage.map((item) => item.app), apps);
   await machineGroup.activity('all');
   assert.equal(calls.filter((item) => item.startsWith('/peer/v1/activity')).at(-1), '/peer/v1/activity?period=all');
+});
+
+test('the member session list and the panel summary never carry message text', () => {
+  // Message text on every row field that could hold it; none of it may go out.
+  const secret = 'Secret fixture text.';
+  const rows = [{ id: X, externalId: X, provider: 'codex', title: 'beta task', updatedAtMs: nowMs, pending: true, state: 'working',
+    text: secret, lastMessage: secret, preview: secret, messages: [{ id: msg(1), text: secret }] }];
+  const dashboard = buildSwitchboardDashboard(rows, [], nowMs, { machineId: A.machineId, machineName: A.name });
+  dashboard.threads = dashboard.threads.map((row) => ({ ...row, text: secret, lastMessage: secret, preview: secret, messages: [{ id: msg(1), text: secret }] }));
+  const exported = exportBody(exportLocalSessions(dashboard, A, nowMs)).body;
+  assert.equal(JSON.parse(exported).rows.length, 1);
+  assert.equal(exported.includes(secret), false);
+  const panel = JSON.stringify(panelSummary(dashboard, [{ ...A, self: true, online: true }]));
+  assert.equal(JSON.parse(panel).total, 1);
+  assert.equal(panel.includes(secret), false);
 });
 
 async function listen(t, server) {

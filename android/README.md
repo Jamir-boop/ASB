@@ -163,8 +163,11 @@ reads every 2 seconds while the scan runs or the prices load. When the PC runs a
 older ASB, `All time` shows
 `This PC runs an older ASB. Update ASB on the PC to see All time.`
 The phone gets counts, statuses, session titles, and token usage, never message
-text: the gateway asks the PC for the messages with `text=0`, and there is no
-thread route.
+text in these screens: the gateway asks the PC for the messages with `text=0`.
+The gateway has the thread route `/phone/v1/activity/thread` (with message text)
+only while the PC owner turns on the PC switch for message text (off by default);
+`hello` reports it as `sendText`. The gateway also forwards the `mute` and
+`unmute` row actions.
 
 ## Themes, views, and motion
 
