@@ -37,7 +37,7 @@ class AndroidCouncilRoundTwoNotifyTest {
         // The cards' order: the newest pending row first; at most 3 pending titles.
         val rows = listOf(r("w1", "working"), r("p1", pending = true, at = 100), r("p2", pending = true, at = 400),
             r("p3", pending = true, at = 300), r("p4", pending = true, at = 200), r("i1"))
-        assertEquals(listOf("Task p2", "Task p3", "Task p4", "Task w1"), liveLines(rows))
+        assertEquals(listOf("Task p2", "Task p3", "Task p4", "+1 more pending", "Task w1"), liveLines(rows))
         // A pending row that works is listed once, with the pending titles.
         assertEquals(listOf("Task a", "Task w1"), liveLines(listOf(r("w1", "working"), r("a", "working", pending = true))))
         assertEquals(listOf("No session is working."), liveLines(listOf(r("i1"), r("i2", "waiting"))))

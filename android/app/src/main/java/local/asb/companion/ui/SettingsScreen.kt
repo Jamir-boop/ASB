@@ -85,6 +85,7 @@ import local.asb.companion.net.DashboardResult
 import local.asb.companion.notify.ABOUT_DONE
 import local.asb.companion.notify.ABOUT_FAILED
 import local.asb.companion.notify.ABOUT_INPUT
+import local.asb.companion.notify.ABOUT_LIVE
 import local.asb.companion.notify.LiveService
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -330,9 +331,7 @@ fun SettingsScreen(
                         SettingsSwitch("Failed", notifyFailed, caption = { SettingsCaption(ABOUT_FAILED) }) { notifyFailed = it; store.notifyFailed = it }
                         SettingsSwitch("Needs input", notifyInput, caption = { SettingsCaption(ABOUT_INPUT) }) { notifyInput = it; store.notifyInput = it }
                         SettingsSwitch("Live notification", liveNotification, caption = {
-                            Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
-                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            SettingsCaption("Alerts come within seconds while the Live notification is on. Without it, Android checks about every 15 minutes.")
+                            SettingsCaption(ABOUT_LIVE)
                         }) {
                             // The setter runs first, because startIfEnabled reads the saved switch.
                             onLiveNotificationChanged(it)
@@ -444,7 +443,7 @@ private fun SettingsSwitch(label: String, checked: Boolean, enabled: Boolean = t
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-            Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+            Switch(checked = checked, onCheckedChange = null, enabled = enabled, colors = asbSwitchColors(LocalPalette.current))
         }
         caption()
     }

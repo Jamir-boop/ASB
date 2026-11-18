@@ -22,6 +22,8 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -58,6 +60,23 @@ val LocalPalette = staticCompositionLocalOf { Palette() }
 // Control outlines need 3:1 contrast (WCAG non-text); a custom divider can be almost the background color.
 fun controlOutline(palette: Palette): String =
     if (contrast(palette.divider, palette.background) >= 3.0) palette.divider else palette.muted
+
+/** The colors of every switch; an off switch draws only its edge, so the border and thumb carry its 3:1. */
+internal data class SwitchStyle(
+    val checkedThumb: Color, val checkedTrack: Color, val uncheckedThumb: Color, val uncheckedTrack: Color, val uncheckedBorder: Color,
+)
+
+/** The switch style on [surface]: the off track is the surface, its border and thumb the weakest text mix with 3:1 on it. */
+internal fun switchStyle(palette: Palette, surface: String = palette.background): SwitchStyle {
+    val edge = hexColor(edgeColor(surface, palette.text, .36, listOf(surface)))
+    return SwitchStyle(hexColor(palette.background), hexColor(palette.accent), edge, hexColor(surface), edge)
+}
+
+@Composable
+internal fun asbSwitchColors(palette: Palette, surface: String = palette.background): SwitchColors = switchStyle(palette, surface).let {
+    SwitchDefaults.colors(checkedThumbColor = it.checkedThumb, checkedTrackColor = it.checkedTrack, checkedBorderColor = it.checkedTrack,
+        uncheckedThumbColor = it.uncheckedThumb, uncheckedTrackColor = it.uncheckedTrack, uncheckedBorderColor = it.uncheckedBorder)
+}
 
 // Settings > Appearance > Use the camera area: true draws under the camera hole, false keeps the cutout band clear.
 val LocalUseCameraArea = staticCompositionLocalOf { true }
