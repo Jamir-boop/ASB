@@ -63,6 +63,9 @@ internal fun publicWords(row: Thread, kind: Int): NotificationWords = Notificati
 internal const val ABOUT_DONE = "A session finished a task."
 internal const val ABOUT_INPUT = "A session waits for your answer or approval."
 internal const val ABOUT_FAILED = "A task failed or hit a usage limit."
+/** The Settings caption under the Live notification switch. */
+internal const val ABOUT_LIVE = "Shows the Pending and Working counts. Alerts come within seconds while it is on. " +
+    "Without it, Android checks about every 15 minutes."
 
 internal fun notificationCategory(kind: Int): String = when (kind) {
     BIT_DONE -> Notification.CATEGORY_STATUS
@@ -89,7 +92,10 @@ internal fun channelFor(kind: Int): String = when (kind) {
 internal data class ChildSpec(
     val channel: String, val words: NotificationWords, val public: NotificationWords, val category: String,
     val group: String, val actions: List<Pair<String, String>>, val whenMs: Long? = null, val onlyAlertOnce: Boolean = false,
-)
+) {
+    /** The lock-screen (public) version keeps the same time as the private one, also on a repost. */
+    val publicWhenMs: Long? get() = whenMs
+}
 
 internal fun childSpec(row: Thread, kind: Int, serverName: String): ChildSpec = ChildSpec(channelFor(kind),
     notificationWords(row, kind, serverName), publicWords(row, kind), notificationCategory(kind), GROUP,
@@ -203,7 +209,7 @@ class Notifier(private val app: AsbApp) {
     }
 
     private fun child(spec: ChildSpec, event: Event, engine: String, tag: String, id: Int): Notification {
-        val builder = builder(spec.channel, spec.public).setGroup(spec.group).setContentTitle(spec.words.title)
+        val builder = builder(spec.channel, spec.public, spec.publicWhenMs).setGroup(spec.group).setContentTitle(spec.words.title)
             .setContentText(spec.words.text).setSubText(spec.words.subText).setCategory(spec.category)
             .setContentIntent(contentIntent(tag, id)).setAutoCancel(true).setOnlyAlertOnce(spec.onlyAlertOnce)
             .setDeleteIntent(broadcast(event, engine, "dismiss", ACTION_DISMISS))
@@ -301,12 +307,13 @@ class Notifier(private val app: AsbApp) {
             .setOnlyAlertOnce(true).setContentIntent(contentIntent()).build())
     }
 
-    private fun builder(channel: String, public: NotificationWords = PUBLIC_WORDS): Notification.Builder = Notification.Builder(app, channel)
+    private fun builder(channel: String, public: NotificationWords = PUBLIC_WORDS, publicWhenMs: Long? = null): Notification.Builder =
+        Notification.Builder(app, channel)
         .setSmallIcon(R.drawable.ic_stat_asb).setGroup(GROUP)
         .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
         .setVisibility(Notification.VISIBILITY_PRIVATE)
         .setPublicVersion(Notification.Builder(app, channel).setSmallIcon(R.drawable.ic_stat_asb)
-            .setContentTitle(public.title).setContentText(public.text).build())
+            .setContentTitle(public.title).setContentText(public.text).apply { publicWhenMs?.let { setWhen(it) } }.build())
 
     private fun contentIntent(tag: String? = null, id: Int = 0): PendingIntent {
         val intent = Intent(app, MainActivity::class.java).setAction(ACTION_CONTENT)

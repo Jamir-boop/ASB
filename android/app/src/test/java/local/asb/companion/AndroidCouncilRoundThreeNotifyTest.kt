@@ -52,6 +52,8 @@ class AndroidCouncilRoundThreeNotifyTest {
         val repost = childSpec(row, BIT_INPUT, "studio-pc").copy(whenMs = old.whenMs, onlyAlertOnce = true)
         assertNull(repost.words.bigText)
         assertEquals(normal.copy(whenMs = 1_700_000_000_000, onlyAlertOnce = true), repost)
+        // The lock-screen version keeps the old time too (round 4, F11).
+        assertEquals(old.whenMs, repost.publicWhenMs)
         assertEquals("asb_input", repost.channel)
         assertEquals("asb", repost.group)
         assertEquals(Notification.CATEGORY_REMINDER, repost.category)

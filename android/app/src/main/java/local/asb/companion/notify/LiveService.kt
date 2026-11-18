@@ -60,13 +60,17 @@ internal fun liveTitle(threads: List<Thread>): String {
 
 private const val MAX_PENDING = 3
 
-/** Up to 3 pending titles in the cards' order, then the working titles. */
+/** Up to 3 pending titles in the cards' order and "+N more pending" for the rest, then the working titles and "+N more". */
 internal fun liveLines(threads: List<Thread>): List<String> {
-    val pending = filteredRows(threads, Filter(pendingOnly = true)).take(MAX_PENDING)
-    val working = threads.filter { !it.archived && it.state == "working" && it !in pending }
-    val titles = (pending + working).map { cardTitle(it) }
-    if (titles.isEmpty()) return listOf("No session is working.")
-    return if (titles.size <= MAX_LINES) titles else titles.take(MAX_LINES) + "+${titles.size - MAX_LINES} more"
+    val allPending = filteredRows(threads, Filter(pendingOnly = true))
+    val pending = allPending.take(MAX_PENDING)
+    // A pending row that works is counted once, with the pending rows.
+    val working = threads.filter { !it.archived && it.state == "working" && it !in allPending }.map { cardTitle(it) }
+    if (pending.isEmpty() && working.isEmpty()) return listOf("No session is working.")
+    val head = pending.map { cardTitle(it) } +
+        listOfNotNull("+${allPending.size - MAX_PENDING} more pending".takeIf { allPending.size > MAX_PENDING })
+    val room = MAX_LINES - head.size
+    return head + if (working.size <= room) working else working.take(room) + "+${working.size - room} more"
 }
 
 // Offline retries stay slow: each try can wait for every endpoint to time out. After a network change one retry
