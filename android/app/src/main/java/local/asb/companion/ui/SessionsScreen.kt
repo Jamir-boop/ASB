@@ -198,7 +198,6 @@ import kotlin.math.pow
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.Layout
@@ -1811,7 +1810,7 @@ private fun SessionInspector(
                             val reason = panelReason(row, key, controls)
                             item {
                                 PanelSwitch(label, reason.ifEmpty { note }, chosen[key] ?: control.on, control.action != null && !busy, text, muted,
-                                    palette, focusable(key)) { change(key, it, control.action) }
+                                    palette, group, focusable(key)) { change(key, it, control.action) }
                             }
                         }
                         switch("unread", "Unread", rowPanelNote(row))
@@ -1885,7 +1884,7 @@ private fun SessionInspector(
 
 @Composable
 private fun PanelSwitch(
-    label: String, note: String, checked: Boolean, enabled: Boolean, text: Color, muted: Color, palette: Palette,
+    label: String, note: String, checked: Boolean, enabled: Boolean, text: Color, muted: Color, palette: Palette, group: String,
     modifier: Modifier, onChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -1911,14 +1910,7 @@ private fun PanelSwitch(
             modifier = dim,
             checked = checked,
             onCheckedChange = null,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = hexColor(palette.background),
-                checkedTrackColor = hexColor(palette.accent),
-                checkedBorderColor = hexColor(palette.accent),
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = text.copy(alpha = .2f),
-                uncheckedBorderColor = Color.Transparent,
-            ),
+            colors = asbSwitchColors(palette, group),
         )
     }
 }
