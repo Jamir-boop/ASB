@@ -37,6 +37,7 @@ import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
 import local.asb.companion.ui.Filter
+import local.asb.companion.ui.cardTitle
 import local.asb.companion.ui.filteredRows
 import local.asb.companion.ui.idleAge
 import local.asb.companion.ui.limitLeft
@@ -63,7 +64,7 @@ private const val MAX_PENDING = 3
 internal fun liveLines(threads: List<Thread>): List<String> {
     val pending = filteredRows(threads, Filter(pendingOnly = true)).take(MAX_PENDING)
     val working = threads.filter { !it.archived && it.state == "working" && it !in pending }
-    val titles = (pending + working).map { it.title.ifBlank { it.projectName }.ifBlank { "Untitled session" } }
+    val titles = (pending + working).map { cardTitle(it) }
     if (titles.isEmpty()) return listOf("No session is working.")
     return if (titles.size <= MAX_LINES) titles else titles.take(MAX_LINES) + "+${titles.size - MAX_LINES} more"
 }

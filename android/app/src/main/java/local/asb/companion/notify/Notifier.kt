@@ -13,6 +13,8 @@ import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 import local.asb.companion.AsbApp
 import local.asb.companion.MainActivity
 import local.asb.companion.R
@@ -68,12 +70,51 @@ internal fun notificationCategory(kind: Int): String = when (kind) {
     else -> Notification.CATEGORY_REMINDER
 }
 
-/** The group summary text from the child tags (`key:kind`), for example `1 needs input · 1 failed · 1 done`. */
+/** The group summary text from the child tags (`key:kind`), for example `3 alerts: 1 needs input · 1 failed · 1 done`. */
 internal fun summaryText(tags: Collection<String>): String {
     val kinds = tags.mapNotNull { it.substringAfterLast(':', "").toIntOrNull() }
-    return listOf(BIT_INPUT to "needs input", BIT_FAILED to "failed", BIT_DONE to "done")
+    // The summary exists only for 2 or more children, so the word is always alerts.
+    return "${tags.size} alerts" + listOf(BIT_INPUT to "needs input", BIT_FAILED to "failed", BIT_DONE to "done")
         .mapNotNull { (kind, word) -> kinds.count { it == kind }.takeIf { it > 0 }?.let { "$it $word" } }
-        .joinToString(" · ").ifEmpty { "${tags.size} session updates" }
+        .joinToString(" · ").let { if (it.isEmpty()) "" else ": $it" }
+}
+
+internal fun channelFor(kind: Int): String = when (kind) {
+    BIT_DONE -> "asb_done"
+    BIT_FAILED -> "asb_failed"
+    else -> "asb_input"
+}
+
+/** What a session notification shows; a post and a text-off re-post build from it, so the two are equal. */
+internal data class ChildSpec(
+    val channel: String, val words: NotificationWords, val public: NotificationWords, val category: String,
+    val group: String, val actions: List<Pair<String, String>>, val whenMs: Long? = null, val onlyAlertOnce: Boolean = false,
+)
+
+internal fun childSpec(row: Thread, kind: Int, serverName: String): ChildSpec = ChildSpec(channelFor(kind),
+    notificationWords(row, kind, serverName), publicWords(row, kind), notificationCategory(kind), GROUP,
+    listOfNotNull(("Open on PC" to "open").takeIf { row.canOpen },
+        ("Mark read" to "mark-read").takeIf { rowMenuActions(row).any { it.action == "mark-read" } }))
+
+/**
+ * An active notification: [hasBigText] is true when it shows an expanded (question) text; [whenMs] is its time;
+ * [group] is its group now (asb, or asb-single after summary() moved it).
+ */
+internal data class ActiveChild(val tag: String, val id: Int, val hasBigText: Boolean, val whenMs: Long, val group: String = GROUP)
+
+internal data class Repost(val child: ActiveChild, val row: Thread)
+
+/**
+ * The Needs input children that show a question text while their row has none now (the PC switch is off, or the
+ * question is gone). A row that is gone or no longer needs input is the cancel path, not this one. As in [cleared],
+ * the remote rows of another engine prove nothing.
+ */
+internal fun textOffReposts(active: List<ActiveChild>, threads: List<Thread>, engine: String): List<Repost> {
+    val rows = threads.filter { engine.isEmpty() || !it.remote }.associateBy { notificationTag(it.key, BIT_INPUT) }
+    return active.mapNotNull { child ->
+        rows[child.tag]?.takeIf { child.hasBigText && it.questionText.isBlank() && bits(it) and BIT_INPUT != 0 }
+            ?.let { Repost(child, it) }
+    }
 }
 
 /** The extras of a notification action: [key] names the session on every engine, [engine] gets the action. */
@@ -83,6 +124,11 @@ internal fun actionExtras(row: Thread, kind: Int, action: String, engine: String
 
 class Notifier(private val app: AsbApp) {
     private val manager = app.getSystemService(NotificationManager::class.java)
+
+    init {
+        // The session screen poll and the live service publish each good read here; the worker calls dropQuestionText.
+        MainScope().launch { app.liveUpdates.collect { update -> update?.let { dropQuestionText(it.threads, it.engine) } } }
+    }
 
     companion object {
         fun notificationsAllowed(context: Context): Boolean =
@@ -124,30 +170,49 @@ class Notifier(private val app: AsbApp) {
         val children = children().toMutableSet()
         for (event in events) {
             val row = event.row
-            val channel = when (event.kind) {
-                BIT_DONE -> if (app.store.notifyDone) "asb_done" else continue
-                BIT_FAILED -> if (app.store.notifyFailed) "asb_failed" else continue
-                BIT_INPUT -> if (app.store.notifyInput) "asb_input" else continue
-                else -> continue
+            val on = when (event.kind) {
+                BIT_DONE -> app.store.notifyDone
+                BIT_FAILED -> app.store.notifyFailed
+                BIT_INPUT -> app.store.notifyInput
+                else -> false
             }
-            val words = notificationWords(row, event.kind, app.store.serverName)
+            if (!on) continue
             // The key, so the same session from another engine of the group replaces its notification.
             val tag = notificationTag(row.key, event.kind)
             val id = notificationId(row.key, event.kind)
-            val builder = builder(channel, publicWords(row, event.kind)).setContentTitle(words.title)
-                .setContentText(words.text).setSubText(words.subText).setCategory(notificationCategory(event.kind))
-                .setContentIntent(contentIntent(tag, id)).setAutoCancel(true)
-                .setDeleteIntent(broadcast(event, engine, "dismiss", ACTION_DISMISS))
-            // Only the private version: the public version from builder() keeps its words on the lock screen.
-            words.bigText?.let { builder.setStyle(Notification.BigTextStyle().bigText(it)) }
-            fun action(label: String, action: String) = Notification.Action.Builder(
-                Icon.createWithResource(app, R.drawable.ic_stat_asb), label, broadcast(event, engine, action),
-            ).build()
-            if (row.canOpen) builder.addAction(action("Open on PC", "open"))
-            if (rowMenuActions(row).any { it.action == "mark-read" }) builder.addAction(action("Mark read", "mark-read"))
-            if (show(tag, id, builder.build())) children.add(tag)
+            if (show(tag, id, child(childSpec(row, event.kind, app.store.serverName), event, engine, tag, id))) children.add(tag)
         }
         summary(children)
+    }
+
+    /**
+     * Posts again, with no question text, each Needs input child whose row lost its question (see [textOffReposts]).
+     * The re-post keeps the old time and does not alert, so the child makes no sound and does not move up.
+     */
+    fun dropQuestionText(threads: List<Thread>, engine: String) {
+        // Most reads have no Needs input row without a question; this skips the binder call.
+        if (threads.none { it.questionText.isBlank() && bits(it) and BIT_INPUT != 0 }) return
+        val active = manager.activeNotifications.mapNotNull { item ->
+            item.tag?.let { ActiveChild(it, item.id, item.notification.extras.getCharSequence(Notification.EXTRA_BIG_TEXT) != null,
+                item.notification.`when`, item.notification.group ?: GROUP) }
+        }
+        // The same group as now, so the summary and the other children do not change.
+        for ((child, row) in textOffReposts(active, threads, engine)) show(child.tag, child.id, child(
+            childSpec(row, BIT_INPUT, app.store.serverName).copy(whenMs = child.whenMs, onlyAlertOnce = true, group = child.group),
+            Event(row, BIT_INPUT), engine, child.tag, child.id))
+    }
+
+    private fun child(spec: ChildSpec, event: Event, engine: String, tag: String, id: Int): Notification {
+        val builder = builder(spec.channel, spec.public).setGroup(spec.group).setContentTitle(spec.words.title)
+            .setContentText(spec.words.text).setSubText(spec.words.subText).setCategory(spec.category)
+            .setContentIntent(contentIntent(tag, id)).setAutoCancel(true).setOnlyAlertOnce(spec.onlyAlertOnce)
+            .setDeleteIntent(broadcast(event, engine, "dismiss", ACTION_DISMISS))
+        spec.whenMs?.let { builder.setWhen(it) }
+        // Only the private version: the public version from builder() keeps its words on the lock screen.
+        spec.words.bigText?.let { builder.setStyle(Notification.BigTextStyle().bigText(it)) }
+        for ((label, action) in spec.actions) builder.addAction(Notification.Action.Builder(
+            Icon.createWithResource(app, R.drawable.ic_stat_asb), label, broadcast(event, engine, action)).build())
+        return builder.build()
     }
 
     fun postRevoked() {
