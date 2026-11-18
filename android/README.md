@@ -35,8 +35,8 @@ the kind only: `A session needs your answer`, `A task failed`, `A task hit a
 usage limit`, or `A task is done` (the group summary and the Connection
 notification keep `A session needs attention`). Each switch in Settings has a
 caption with what it covers, the same text as its channel description. The Live
-notification text lists up to 3 pending titles (in the cards' order), then the
-working titles; its public version keeps only the counts. On a locked phone, Android shows the version
+notification text lists up to 3 pending titles (in the cards' order), then
+`+N more pending` when more are pending, then the working titles; its public version keeps only the counts. On a locked phone, Android shows the version
 without the question when the phone setting hides sensitive notification
 content; otherwise the lock screen shows the question too. The app keeps the
 question text in memory, never in the saved preferences or a log line, but
@@ -183,7 +183,8 @@ order), the selected seat or pair, and the ledger. A seat label never sits on a
 chord: with no free place it hides, and the panel under the table names the
 selected seat with its Outgoing and Incoming counts. The per-day (or per-hour)
 line under the Messages total shows its scale (`max 48/day`). Busiest pairs
-names are cut at their end. Usage shows the cost and the tokens by machine, app, model, provider, and session,
+names are cut at their end, and each row is at least 48 dp high. A selected pair
+shows its counts on one line (`→ 115  ← 115`). Usage shows the cost and the tokens by machine, app, model, provider, and session,
 for periods up to `All time`, with the price line in the top bar and `Reading usage` while the PC reads the transcripts.
 Messages first opens on `24 hours`, and Usage on `All time`. Each screen keeps
 the chosen period over a rotation.
@@ -201,7 +202,8 @@ asks the hello of that engine first. With `sendText: true`, it loads the thread
 as the PC thread view does (`seat=` or `a=` and `b=`, the period, `limit=100`)
 and shows each message with its from and to names, its time, its status when it
 is not accepted, and its text (`Text not available` without a copy), newest
-last; `Show earlier` loads up to 200. The text stays in screen memory only: never
+last. A thread opens at its newest message, as on the PC; `Show earlier` loads
+up to 200 and keeps the message in view in its place. The text stays in screen memory only: never
 in the saved settings, a file, or a log. With the switch off, the thread shows
 `Message text is off on the PC. Turn it on in ASB Preferences > Phone.` and makes
 no thread request. A PC with no switch (older ASB) or a 404 shows the older-PC
@@ -212,9 +214,10 @@ body shows six lines; `Show more` shows the rest and `Show less` folds it again.
 TalkBack names each button for its message (`Show more of the message from docs
 at 14:05`). When message text goes off on
 the PC, the open thread hides its text at the next report.
-Under the Messages status bar, the status list is one tap target: a tap shows
-what each status means under its word (the PC tooltip sentences), and a second
-tap hides them. TalkBack reads the sentence with each status.
+Under the Messages status bar, a tap on the status list or its `Show meanings`
+button shows what each status means under its word (the PC tooltip sentences); a
+second tap or `Hide meanings` hides them. TalkBack reads the sentence with each
+status, and the button is the one action of the list.
 
 The Usage chart keeps 8 % headroom above the tallest bar on the round axis
 steps. Its x labels are at even steps (24 hours: every 6 hours on the hour; 7
@@ -245,7 +248,8 @@ high for touch, and Comfortable rows are at least 68 dp. In Comfortable, the
 title takes 1 or 2 lines and the state line follows it, and a row with no title
 shows `Untitled session`, as on the PC. The card corner shows the Read target,
 the pin of a pinned row, the drawer glyph of a drawer row, and the armed **Mark
-read when done** ring. Each corner control has its own 48 dp touch target, and
+read when done** ring. A pinned Compact row with no mark shows a small pin in the
+mark cell. Each corner control has its own 48 dp touch target, and
 the folder and title lines end before the controls. The pin slot is at the end
 and the Read slot left of it, so they keep their places. The marks are `?` for a
 question or an approval, `!` for a failure, and a clock in the same disc for a
@@ -257,7 +261,8 @@ inspector.
 A Working row has a small dot before `Working` that pulses (1.6 s) in the
 Working color, and its working time updates each 30 s. The pulse runs only
 while the list shows and the app is in view; with Android animations off, the
-dot is still. TalkBack reads no change.
+dot is still. TalkBack reads no change. While Offline, the dot is still and
+`Working` has the caption color.
 
 Settings > Appearance > **Pets** is Off by default. Select a pixel crab,
 pigeon, or cat to carry each message from card to card, as on the PC. Pets and
@@ -272,15 +277,17 @@ drawer** switches, **Pin order** (**Earlier** and **Later**) for a pinned row,
 and **Mark read when done** for a Working row. A control that the row does not
 allow is dimmed, TalkBack says that it is disabled, and a line under it says
 why (for example `ASB does not open CLI sessions.`). **Copy reference** copies
-the absolute reference of the row (`asb:1/...`), and the pill says `Copied`;
+the absolute reference of the row (`asb:1/...`), and the button says `Copied`
+with a check for a moment, as on the PC;
 when the PC has no reference for the row, the button is dimmed with the reason.
 **Mute** offers the PC times as five chips of one width, three then two (`30 min`, `1 hour`, `8 hours`, `1 day`, `Always`),
-each with its end time (`1 hour · until 22:41`); a muted row shows an **Unmute**
+each with the time over its end (`1 hour` over `until 22:41`, or `until Thu`
+when the end is on another day; TalkBack reads the full end); a muted row shows an **Unmute**
 button with `Muted until 14:30` (or `Muted`), and its card shows the muted bell and
 `Muted until 14:30` (or `Muted`) after the folder. The inspector
 stays open after a change and shows the new row data. An action error shows
-as a caption below the switches; other messages, for example `Copied`, show in the
-message pill over the panel. Back, a tap outside, Open, or the row leaving the list closes it.
+as a caption below the switches; other messages show in the message pill over the
+panel. After Mute or Unmute the panel keeps its top edge. Back, a tap outside, Open, or the row leaving the list closes it.
 
 After a good Open, `Opened on <PC>` shows in a small dark pill under the top
 bar (and its band and chip row). All other messages and errors show in the same
@@ -303,7 +310,8 @@ so all four show in full on a 384 dp wide phone with two-digit counts. A pill
 shows its count when it is 1 or more (`Pending 4`, spoken `Pending, 4
 sessions`; at 0 it shows no number and is spoken `Pending, 0 sessions`): the rows that the pill shows when it is on with no other filter
 on. The search and the other filters do not change the counts; only Include
-archived does. While Offline the counts are the last known ones, in the muted color. A
+archived does. TalkBack reads the Filters pill as `Filters, 2 on` while two
+Filters sheet values are on. While Offline the counts are the last known ones, dimmed. A
 filled dot on the disc shows Live (success color); a hollow ring shows Offline
 (muted color). Tap or hold the disc to open a menu with the connection text,
 `Last update 12m ago`, and Refresh (Retry while Offline). Pull the list down to refresh. Search
