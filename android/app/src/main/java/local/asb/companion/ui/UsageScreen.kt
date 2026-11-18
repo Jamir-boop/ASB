@@ -35,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -57,6 +58,8 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -69,6 +72,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -531,16 +535,19 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             }
         }
         // TalkBack reaches each bar with its time and values, as the PC tooltip reads; a double tap shows its tooltip. Each node is
-        // the full column of its bar (the plot height), at the same x as the drawn bar and the tap.
-        if (n > 0 && width > 0) for (i in 0 until n) {
-            val (x0, x1) = geom.column(i)
-            val rows = tipOrder(bars[i]).map { seriesLabel(series[it]) to formatValue(bars[i][it], metric) }
-            Box(Modifier.offset { IntOffset(x0.roundToInt(), plotT.roundToInt()) }
-                .size(with(density) { (x1 - x0).toDp() }, with(density) { (plotB - plotT).toDp() })
-                .semantics {
-                    contentDescription = barDescription(tipTitle(i), formatValue(sums[i], metric), rows)
-                    onClick { tapped = if (tapped == i) null else i; true }
-                })
+        // the full column of its bar (the plot height), at the same x as the drawn bar and the tap. No 48 dp minimum touch target:
+        // it would widen each node, and each next node would cover the right part of the one before, one bar to the left.
+        if (n > 0 && width > 0) CompositionLocalProvider(LocalViewConfiguration provides exactTouchBounds(LocalViewConfiguration.current)) {
+            for (i in 0 until n) {
+                val (x0, x1) = geom.column(i)
+                val rows = tipOrder(bars[i]).map { seriesLabel(series[it]) to formatValue(bars[i][it], metric) }
+                Box(Modifier.offset { IntOffset(x0.roundToInt(), plotT.roundToInt()) }
+                    .size(with(density) { (x1 - x0).toDp() }, with(density) { (plotB - plotT).toDp() })
+                    .semantics {
+                        contentDescription = barDescription(tipTitle(i), formatValue(sums[i], metric), rows)
+                        onClick { tapped = if (tapped == i) null else i; true }
+                    })
+            }
         }
         tapped?.takeIf { width > 0 }?.let { i ->
             var tipSize by remember { mutableStateOf(IntSize.Zero) }
@@ -567,6 +574,11 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
  */
 internal fun tipPlace(left: Float, right: Float, width: Float, w: Float, h: Float, plotTop: Float, gap: Float): Offset =
     Offset(((left + right) / 2 - w / 2).coerceIn(0f, maxOf(0f, width - w)), maxOf(0f, plotTop - gap - h))
+
+/** [base] with no minimum touch target, so a node keeps its own bounds for TalkBack. */
+internal fun exactTouchBounds(base: ViewConfiguration): ViewConfiguration = object : ViewConfiguration by base {
+    override val minimumTouchTargetSize = DpSize.Zero
+}
 
 /** The fill alpha of the current (running) bucket of the Usage chart. */
 internal const val SO_FAR_ALPHA = .45f
