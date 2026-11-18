@@ -46,7 +46,8 @@ fun pinnedClient(fingerprintHex: String): OkHttpClient {
         .followRedirects(false)
         .followSslRedirects(false)
         .retryOnConnectionFailure(false)
-        // No retry, so drop idle connections before the gateway closes them (it keeps them 65 s).
+        // No retry, so drop idle connections before the gateway closes them (it keeps them 65 s); AsbApi.send retries a GET
+        // once when a restart of the gateway closed a pooled socket.
         .connectionPool(pinnedConnections)
         // Short, so a GET can try the next endpoint soon when one does not answer.
         .connectTimeout(3, TimeUnit.SECONDS)

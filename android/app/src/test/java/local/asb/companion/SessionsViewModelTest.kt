@@ -33,6 +33,7 @@ import local.asb.companion.data.Mark
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.MemoryEngines
 import local.asb.companion.net.MemoryPaths
+import local.asb.companion.net.pinnedConnections
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.sha256Hex
 import local.asb.companion.notify.BIT_DONE
@@ -191,8 +192,10 @@ class SessionsViewModelTest {
         server.takeRequest()
         takeHello()
 
-        for ((index, waitMs) in listOf(5000L, 5000L, 10000L, 30000L).withIndex()) {
+        for ((index, waitMs) in listOf(5000L, 3000L, 5000L, 10000L).withIndex()) {
             model.clearError()
+            // A new socket for each failure: a GET that fails on a pooled socket tries once more (ReconnectTest).
+            pinnedConnections.evictAll()
             advance(waitMs - 1)
             assertEquals(index + 2, server.requestCount)
             advance(1)
@@ -209,10 +212,11 @@ class SessionsViewModelTest {
         // The top bar names the path of the last good dashboard.
         assertEquals("lan", model.state.value.path)
         server.takeRequest()
+        pinnedConnections.evictAll()
         advance(5000)
         await { model.state.value.offline }
         server.takeRequest()
-        advance(4999)
+        advance(2999)
         assertEquals(8, server.requestCount)
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 3L }
@@ -223,7 +227,7 @@ class SessionsViewModelTest {
         val dashboard = Dashboard(1, threads = listOf(Thread(id = "cached")))
         server.enqueue(response(dashboard))
         server.enqueue(helloReply)
-        repeat(5) { server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)) }
+        repeat(6) { server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)) }
         server.enqueue(response(dashboard.copy(generatedAtMs = 2)))
         val lan = Endpoint("lan", "127.0.0.1")
         val zerotier = Endpoint("zerotier", "127.0.0.3")
@@ -237,8 +241,10 @@ class SessionsViewModelTest {
         server.takeRequest()
         takeHello(networks)
         // The normal backoff reaches the 30 s step.
-        for ((index, waitMs) in listOf(5000L, 5000L, 10000L).withIndex()) {
+        for ((index, waitMs) in listOf(5000L, 3000L, 5000L, 10000L).withIndex()) {
             model.clearError()
+            // A new socket for each failure: a GET that fails on a pooled socket tries once more (ReconnectTest).
+            pinnedConnections.evictAll()
             advance(waitMs)
             await { model.state.value.lastError != null }
             assertEquals(index + 3, server.requestCount)
@@ -248,16 +254,16 @@ class SessionsViewModelTest {
         model.clearError()
         networks.value = 1L
         await { model.state.value.lastError != null }
-        assertEquals(6, server.requestCount)
+        assertEquals(7, server.requestCount)
         server.takeRequest()
         model.clearError()
         advance(2999)
-        assertEquals(6, server.requestCount)
+        assertEquals(7, server.requestCount)
         advance(1)
         await { model.state.value.lastError != null }
         server.takeRequest()
         advance(4999)
-        assertEquals(7, server.requestCount)
+        assertEquals(8, server.requestCount)
         advance(1)
         await { model.state.value.dashboard?.generatedAtMs == 2L }
         assertEquals("/phone/v1/dashboard", server.takeRequest().path)

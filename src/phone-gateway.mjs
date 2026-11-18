@@ -328,7 +328,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       const server = https.createServer(options, (request, response) => { handle(request, response, group, kind); });
       server.requestTimeout = 15_000;
       server.headersTimeout = 10_000;
-      // The app does not retry failed requests, so it must drop idle connections first (it keeps them 30 s).
+      // The app retries only a GET that fails on a pooled socket, so it drops idle connections first (it keeps them 30 s).
       server.keepAliveTimeout = 65_000;
       server.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
       server.on('error', (cause) => {
@@ -653,8 +653,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         || !value.bindAddresses.every((address) => listed.some((item) => item.address === address) || settings.bindAddresses.includes(address))) {
         throw invalid('Choose a phone address on this PC.');
       }
+      const before = settings;
       await save({ ...settings, ...value, bindAddresses: [...value.bindAddresses] });
-      await restart();
+      // Only the text switch changed: the routes read it per request, so the listeners and their sockets stay.
+      const textOnly = (settings.sendText === true) !== (before.sendText === true) && settings.enabled === before.enabled && settings.port === before.port
+        && settings.bindAddresses.join() === before.bindAddresses.join();
+      if (!textOnly) await restart();
       return status();
     }),
     createPairing: () => serialize(async () => {
