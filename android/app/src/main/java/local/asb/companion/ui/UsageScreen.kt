@@ -482,7 +482,8 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     val geom = BarGeom(left, width.toFloat(), n, gap)
     Box(Modifier.fillMaxWidth().height(with(density) { chartHeight.toDp() }).onSizeChanged { width = it.width }) {
         Canvas(Modifier.fillMaxSize().semantics { contentDescription = chartSummary(reply.period, unit, starts, sums, metric) }
-            .pointerInput(n, left, gap) {
+            // Keyed on bars as tapped is: a handler from older bars would set a state that nothing reads.
+            .pointerInput(bars, left, gap) {
                 detectTapGestures { point ->
                     val i = BarGeom(left, size.width.toFloat(), n, gap).indexAt(point.x)
                     tapped = if (i != tapped) i else null

@@ -431,8 +431,9 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
     }
     Scaffold(contentWindowInsets = SafeContentInsets, topBar = { ActivityTopBar("Messages", onBack) }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
+            // Keyed on the buckets as bucket is: a handler from older buckets would clear a state that nothing reads.
             Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().onGloballyPositioned { strip.page = it }
-                .pointerInput(Unit) { clearOnTapOutside(strip) { bucket = null } }.verticalScroll(page)) {
+                .pointerInput(reply?.buckets) { clearOnTapOutside(strip) { bucket = null } }.verticalScroll(page)) {
                 val current = reply
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
