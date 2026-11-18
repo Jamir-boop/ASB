@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Fixed the Android Usage chart for TalkBack: explore by touch finds each bar at its own place, and the focus box is on that bar. Before, each bar node took a 48 dp touch target, so TalkBack read the next bar and drew the box one bar to the left.
 - Fixed the phone reconnect after the PC restarts phone access: a read that fails on a connection that the PC closed tries once more on a new connection (actions are never sent twice), a change of only the message text switch no longer restarts phone access, and the Android session screen offline delays are now 3, 5, 10, and then 30 seconds.
 - Android: the pill counts no longer change with the other filters, a Working row stops counting and loses its pulse while Offline, the Working pulse asks for 5 frames a second, the refresh indicator ends after a failure, the message pill stays under the top bar, and the inspector has a scrim, clear button roles, disabled states for TalkBack, a reason line, and mute end times.
 - Android: Usage chart taps and TalkBack nodes select the drawn bar, the tooltip stays above the plot, and the current bucket reads as so far; Messages threads clamp long messages, offer Show fewer messages for a thread that is too long, hide text when the PC switch goes off, and share one empty and error layout.
