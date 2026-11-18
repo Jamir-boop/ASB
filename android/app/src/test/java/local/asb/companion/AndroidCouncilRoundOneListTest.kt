@@ -36,14 +36,13 @@ class AndroidCouncilRoundOneListTest {
         idle.copy(id = "a", title = "old drawer row", drawer = true, archived = true),
     )
 
-    @Test fun pillCountsIgnoreTheSearchAndUseTheOtherFilters() {
+    @Test fun pillCountsIgnoreTheSearchAndTheOtherFilters() {
         val expected = PillCounts(pending = 3, working = 2, drawer = 1)
         assertEquals(expected, pillCounts(rows, Filter()))
-        // The search does not change a count.
+        // The search, the pills, and the app filter do not change a count; Include archived does.
         assertEquals(expected, pillCounts(rows, Filter(query = "nothing matches this")))
-        // A pill that is on counts the rows it shows; the other filters still apply.
-        assertEquals(expected.pending, pillCounts(rows, Filter(pendingOnly = true)).pending)
-        assertEquals(1, pillCounts(rows, Filter(app = "codex")).working)
+        assertEquals(expected, pillCounts(rows, Filter(pendingOnly = true)))
+        assertEquals(expected, pillCounts(rows, Filter(app = "codex")))
         assertEquals(2, pillCounts(rows, Filter(archived = true)).drawer)
         assertEquals("Pending 12", pillLabel("Pending", 12))
         assertEquals("Drawer", pillLabel("Drawer", 0))
