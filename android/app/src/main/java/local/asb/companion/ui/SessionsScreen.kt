@@ -202,6 +202,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.layout.onPlaced
@@ -229,6 +233,9 @@ fun SessionsScreen(
     onMessages: (String?) -> Unit,
     onUsage: () -> Unit,
     onPairAgain: () -> Unit,
+    /** The Live notification switch; while it is off, the list offers it once (see [liveOfferShows]). */
+    liveNotification: Boolean = true,
+    onTurnOnLive: () -> Unit = {},
 ) = BoxWithConstraints {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -264,6 +271,11 @@ fun SessionsScreen(
     fun dismissWarning(provider: Provider) {
         dismissedWarnings = dismissedWarnings + (provider.id to provider.message)
         store.dismissedWarnings = dismissedWarnings
+    }
+    var liveOfferClosed by remember(store) { mutableStateOf(store.liveOfferClosed) }
+    fun closeLiveOffer() {
+        liveOfferClosed = true
+        store.liveOfferClosed = true
     }
     var initialError by rememberSaveable { mutableStateOf<String?>(null) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -302,14 +314,16 @@ fun SessionsScreen(
     // It starts at the first session that was visible before, so rotation keeps that session in view.
     // A list that was at the top (anchor "") or a missing anchor starts at the top, so warnings and moved rows stay in view.
     // The number of one-column items before the first row: the warnings and the "empty" item.
-    val lead = warnings.size + if (rows.isEmpty()) 1 else 0
+    val liveOffer = liveOfferShows(true, liveNotification, liveOfferClosed, rows.isEmpty())
+    val lead = warnings.size + (if (rows.isEmpty()) 1 else 0) + (if (liveOffer && !flow) 1 else 0)
     val listState = remember(flow, state.view, if (flow) packing.columns to packing.capacity else null) {
         LazyListState(startIndex(rows.indexOfFirst { it.id == viewModel.anchorId }, flow, packing.capacity, lead))
     }
     // The keys of the one-column list, in the same order as its items.
-    val listKeys = remember(warnings, rows, hiddenRows) {
+    val listKeys = remember(warnings, rows, hiddenRows, liveOffer) {
         buildList<Any> {
             warnings.forEach { add("warning:${it.id}") }
+            if (liveOffer) add("live-offer")
             if (rows.isEmpty()) add("empty")
             rows.forEach { add(it.id) }
             if (hiddenRows > 0) add("show-more")
@@ -338,7 +352,6 @@ fun SessionsScreen(
     val hasDrawerRows = threads.any { it.drawer && (state.filter.archived || !it.archived) }
     val workingOnly = state.filter.states == setOf("working")
     val counts = remember(threads, state.filter) { pillCounts(threads, state.filter) }
-    val pendingCount = remember(allRows) { allRows.count { it.pending && !it.pinned } }
     fun endpoint(id: String) = if (flow) flowEndpoint(
         id, providerCenters, listOrigin, listSize, listState.layoutInfo, currentRowIndexes, currentPacking.capacity,
         rowHeight * currentDensity, currentPacking.gap * currentDensity, currentDensity,
@@ -635,7 +648,8 @@ fun SessionsScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SessionChip(pillLabel("Pending", counts.pending), state.filter.pendingOnly,
+            // While Offline the counts are the last known ones, so they show in the muted caption color.
+            SessionChip(pillLabel("Pending", counts.pending), state.filter.pendingOnly, dimCount = state.offline,
                 description = pillDescription("Pending", counts.pending), onClick = {
                 val selected = !state.filter.pendingOnly
                 viewModel.setFilter(state.filter.copy(
@@ -643,16 +657,15 @@ fun SessionsScreen(
                     drawerOnly = if (selected) false else state.filter.drawerOnly,
                 ))
             })
-            SessionChip(pillLabel("Working", counts.working), workingOnly,
+            SessionChip(pillLabel("Working", counts.working), workingOnly, dimCount = state.offline,
                 description = pillDescription("Working", counts.working), onClick = {
                 viewModel.setFilter(state.filter.copy(
                     states = if (workingOnly) STATES.toSet() else setOf("working"),
                 ))
             })
             SessionChip(
-                pillLabel("Drawer", counts.drawer), state.filter.drawerOnly,
-                description = if (counts.drawer > 0) pillDescription("Drawer", counts.drawer)
-                    else if (hasDrawerRows) "Drawer, contains sessions" else "Drawer, empty",
+                pillLabel("Drawer", counts.drawer), state.filter.drawerOnly, dimCount = state.offline,
+                description = pillDescription("Drawer", counts.drawer),
                 // The count says it; the dot shows only drawer rows that the other filters hide.
                 dot = hasDrawerRows && counts.drawer == 0,
                 onClick = {
@@ -708,7 +721,7 @@ fun SessionsScreen(
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp).widthIn(max = 280.dp))
             }
             DropdownMenuItem(
-                text = { Text("Refresh") },
+                text = { Text(discRefreshLabel(state.offline)) },
                 leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
                 enabled = !state.refreshing,
                 onClick = { discMenu = false; viewModel.refresh() },
@@ -811,7 +824,7 @@ fun SessionsScreen(
                 pills(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp))
             }
             val chips = activeFilterChips(state.filter)
-            if (filtersOn(state.filter)) Row(
+            if (chips.isNotEmpty()) Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -858,6 +871,7 @@ fun SessionsScreen(
                 if (flow) warnings.forEach { provider ->
                     ProviderWarning(provider) { dismissWarning(provider) }
                 }
+                if (flow && liveOffer) LiveOffer(onTurnOn = { closeLiveOffer(); onTurnOnLive() }, onNotNow = ::closeLiveOffer)
                 PullToRefreshBox(
                     isRefreshing = state.refreshing,
                     state = pullState,
@@ -951,11 +965,14 @@ fun SessionsScreen(
                                 ProviderWarning(provider) { dismissWarning(provider) }
                             }
                         }
+                        if (liveOffer) item(key = "live-offer") {
+                            LiveOffer(onTurnOn = { closeLiveOffer(); onTurnOnLive() }, onNotNow = ::closeLiveOffer)
+                        }
                         if (rows.isEmpty()) item(key = "empty") { emptyState(Modifier.fillParentMaxSize()) }
                         itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
                             Column(Modifier.animateItem(CardFade, CardPlacement, null)) {
-                                // The Pending rows sort first after the pins; a small header with their count leads them.
-                                if (pendingHeader(rows, index)) Text("Pending · $pendingCount", fontSize = 11.sp,
+                                // The Pending rows sort first after the pins; a small header leads them (the pill has the count).
+                                if (pendingHeader(rows, index)) Text(PENDING_HEADER, fontSize = 11.sp,
                                     lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(LocalPalette.current.muted),
                                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = if (index > 0) 12.dp else 4.dp,
                                         bottom = 4.dp).semantics { heading() })
@@ -967,7 +984,7 @@ fun SessionsScreen(
                         }
                         if (hiddenRows > 0) item(key = "show-more") {
                             Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                                TextButton(onClick = { shown += ROW_PAGE }) { Text("Show more ($hiddenRows)") }
+                                TextButton(onClick = { shown += ROW_PAGE }) { Text("Show more (${showMoreCount(hiddenRows)})") }
                             }
                         }
                         item(key = "bottom-space") { Spacer(Modifier.height(16.dp)) }
@@ -977,18 +994,18 @@ fun SessionsScreen(
         }
     }
     val inspectorOpen = inspectorRow != null && !state.revoked
-    // The pill shows 8 dp under the top bar, its band, and its chip row, so it never covers them. While the inspector is open it
-    // shows the message in its own line, so the pill is hidden (it stays composed, so its message still times out).
+    // The pill shows 8 dp under the top bar, its band, and its chip row, so it never covers them. The SnackbarHost gives each
+    // message a polite live region, so TalkBack reads it.
     val topBarDp = with(phoneDensity) { topBarHeight.toDp() }
-    AsbMessagePill(
-        snackbar, if (state.revoked || topBarHeight == 0) 56.dp else 52.dp,
-        Modifier.align(Alignment.TopCenter)
-            .then(if (state.revoked || topBarHeight == 0) Modifier
-                else Modifier.padding(top = topBarDp).consumeWindowInsets(SafeTopBarInsets))
-            .then(if (inspectorOpen) Modifier.alpha(0f).clearAndSetSemantics { } else Modifier),
-    )
+    val pillModifier = Modifier.then(if (state.revoked || topBarHeight == 0) Modifier
+        else Modifier.padding(top = topBarDp).consumeWindowInsets(SafeTopBarInsets))
+    val pillToolbar = if (state.revoked || topBarHeight == 0) 56.dp else 52.dp
     // The scrim dims the list behind the inspector; a tap outside the panel closes it, as before.
     if (inspectorOpen) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .5f)))
+    // While the inspector is open, the same pill shows in a popup over the panel (for example Copied); this one stays composed
+    // and hidden, so its message still times out.
+    AsbMessagePill(snackbar, pillToolbar, Modifier.align(Alignment.TopCenter).then(pillModifier)
+        .then(if (inspectorOpen) Modifier.alpha(0f).clearAndSetSemantics { } else Modifier))
     if (showFilters && !state.revoked) FilterSheet(
         filter = state.filter,
         onChange = viewModel::setFilter,
@@ -998,7 +1015,6 @@ fun SessionsScreen(
         row = inspectorRow,
         point = inspector?.second ?: Offset.Zero,
         busy = inspectorRow.id in state.busyIds,
-        message = snackbar.currentSnackbarData?.visuals?.message,
         error = state.actionErrors[inspectorRow.id],
         nowMs = nowMs,
         workingNowMs = workingNowMs,
@@ -1009,6 +1025,22 @@ fun SessionsScreen(
         onShowMessages = { inspector = null; onMessages(inspectorRow.id) },
         onDismiss = { inspector = null },
     )
+    // Created after the inspector popup, so its window is above the panel; only while a message shows, so it takes no taps.
+    if (inspectorOpen && snackbar.currentSnackbarData != null) Popup(
+        popupPositionProvider = remember { TopLeftPosition },
+        properties = PopupProperties(focusable = false),
+    ) {
+        Box(Modifier.width(maxWidth), contentAlignment = Alignment.TopCenter) {
+            AsbMessagePill(snackbar, pillToolbar, pillModifier)
+        }
+    }
+}
+
+// The message pill popup covers the window from its top left corner, as the pill of the screen.
+private val TopLeftPosition = object : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize,
+    ): IntOffset = IntOffset.Zero
 }
 
 /** True when Android animations are off (Remove animations): the screen then shows still marks. */
@@ -1062,6 +1094,8 @@ private fun SessionChip(
     description: String = label,
     /** A chip of the filter chip row acts and speaks as a button; a top bar pill is a toggle. */
     button: Boolean = false,
+    /** The count after the last space of [label] shows in the muted caption color (the last known count while Offline). */
+    dimCount: Boolean = false,
 ) {
     val palette = LocalPalette.current
     val content = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
@@ -1086,7 +1120,11 @@ private fun SessionChip(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (icon != null && !iconAfter) Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
-            else Text(label, fontSize = 12.sp, color = content, maxLines = 1)
+            else Text(buildAnnotatedString {
+                append(label)
+                val count = label.lastIndexOf(' ') + 1
+                if (dimCount && count > 0) addStyle(SpanStyle(color = hexColor(palette.muted)), count, label.length)
+            }, fontSize = 12.sp, color = content, maxLines = 1)
             if (icon != null && iconAfter) Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
             if (dot) Box(Modifier.size(5.dp).background(
                 if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary, CircleShape))
@@ -1115,6 +1153,30 @@ private fun OfflineBand(age: String, canRetry: Boolean, onRetry: () -> Unit) {
                 color = hexColor(palette.muted), modifier = Modifier.clearAndSetSemantics { })
         }
         TextButton(onClick = onRetry, enabled = canRetry) { Text("Retry") }
+    }
+}
+
+/** The one-time offer of the Live notification at the top of the list; either button closes it for good. */
+@Composable
+private fun LiveOffer(onTurnOn: () -> Unit, onNotNow: () -> Unit) {
+    val palette = LocalPalette.current
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)
+            .background(hexColor(mixColor(palette.background, palette.text, .06)), RoundedCornerShape(12.dp))
+            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
+    ) {
+        Text("Get alerts at once", style = MaterialTheme.typography.titleSmall, color = hexColor(palette.text),
+            modifier = Modifier.semantics { heading() })
+        Spacer(Modifier.height(4.dp))
+        Text("Turn on the Live notification. Without it, alerts can come up to 15 minutes late.",
+            style = MaterialTheme.typography.bodyMedium, color = hexColor(palette.muted), modifier = Modifier.padding(end = 8.dp))
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onNotNow, modifier = Modifier.heightIn(min = 48.dp)) { Text("Not now") }
+            Button(onClick = onTurnOn, shape = CircleShape, modifier = Modifier.heightIn(min = 48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = hexColor(palette.accent),
+                    contentColor = hexColor(palette.background))) { Text("Turn on") }
+        }
     }
 }
 
@@ -1204,7 +1266,7 @@ private fun SessionCard(
         if (row.surface == "cli") "CLI session" else "",
         if (viewOnly) "View only" else "",
         if (opening) "Opening" else "",
-    ).filter { it.isNotBlank() }.joinToString(". ")
+    ).let(::joinSentences)
     val title = if (opening) "Opening…" else cardName
     val workingSign = row.state == "working" && !limited && !offline
     val muted = muteActive(row, nowMs)
@@ -1277,30 +1339,33 @@ private fun SessionCard(
                     overflow = if (folder.isEmpty()) TextOverflow.Ellipsis else TextOverflow.MiddleEllipsis,
                     modifier = Modifier.weight(1f, fill = false))
             }
-            Text(title, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = hexColor(tones.title),
-                maxLines = COMFORTABLE_TITLE_LINES, minLines = COMFORTABLE_TITLE_MIN_LINES, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 21.dp, end = reserve).clearAndSetSemantics { })
+            CardTitle(title, hexColor(tones.title), reserve, Modifier.padding(start = 21.dp).clearAndSetSemantics { })
             Row(Modifier.padding(start = 21.dp).clearAndSetSemantics { }, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                if (limited) LimitClock(tones.state)
-                if (workingSign) WorkingDot(tones.state, workingAlpha)
-                Text(if (limited) "Resets in $countdown" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
-                    color = hexColor(tones.state), maxLines = 1)
-                // As the board asb-mute-glyph, with the end of the mute beside the bell: Muted until 22:41, or Muted.
-                if (muted) {
-                    MutedGlyph(tones.caption)
-                    Text(muteText, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                // The left part takes only the width that the where part and the age leave, so the age ends at the same x on
+                // every card; the mute text ellipsizes in what is left.
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (limited) LimitClock(tones.state)
+                    if (workingSign) WorkingDot(tones.state, workingAlpha)
+                    Text(if (limited) "Resets in $countdown" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                        color = hexColor(tones.state), maxLines = 1)
+                    // As the board asb-mute-glyph, with the end of the mute beside the bell: Muted until 22:41, or Muted.
+                    if (muted) {
+                        MutedGlyph(tones.caption)
+                        Text(muteText, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    }
+                    BackgroundCounts(row, tones.caption, comfortable = true, shown = showBackground)
                 }
-                BackgroundCounts(row, tones.caption, comfortable = true, shown = showBackground)
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically) {
                     if (whereGlyph != null) Icon(painterResource(whereGlyph), contentDescription = null, tint = hexColor(tones.caption),
                         modifier = Modifier.size(11.dp))
                     // About 12 characters of the 11 sp caption; the machine name ellipsizes before the age.
                     if (viewOnly) Text(if (limited) where else "$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false).widthIn(max = with(density) { 80.sp.toDp() }))
+                        modifier = Modifier.widthIn(max = with(density) { 80.sp.toDp() }))
                     // While the countdown runs, the bottom line has one phrase at the left and no age at the right.
                     if (!limited) Text(working.ifEmpty { idleAge(row.updatedAtMs, nowMs) }, fontSize = 11.sp,
                         lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption), maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -1315,6 +1380,24 @@ private fun SessionCard(
                 CornerButton(control, cornerDescription(row, control), alertIsLimit(row), busy, palette, onCorner)
             }
         }
+    }
+}
+
+/**
+ * The Comfortable title, as the board CardTitle: line 1 keeps the corner [reserve] and breaks at a word; line 2 has the full
+ * width, so it ends at the right edge of the age, with an ellipsis. A one-line title is one line.
+ */
+@Composable
+private fun CardTitle(title: String, color: Color, reserve: Dp, modifier: Modifier) = BoxWithConstraints(modifier) {
+    val style = LocalTextStyle.current.merge(TextStyle(fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp))
+    val measurer = rememberTextMeasurer()
+    val first = with(LocalDensity.current) { (constraints.maxWidth - reserve.roundToPx()).coerceAtLeast(1) }
+    val layout = remember(title, style, first) { measurer.measure(title, style, constraints = Constraints(maxWidth = first)) }
+    val (line1, line2) = titleLines(title, if (layout.lineCount > 1) layout.getLineEnd(0) else title.length)
+    Column {
+        Text(line1, style = style, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(end = reserve))
+        if (line2.isNotEmpty()) Text(line2, style = style, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1364,7 +1447,7 @@ private fun LimitClock(color: String) = Icon(painterResource(R.drawable.ic_sched
     tint = hexColor(color), modifier = Modifier.size(LIMIT_CLOCK_SIZE.dp))
 
 @Composable
-private fun MutedGlyph(color: String) = Icon(painterResource(R.drawable.ic_muted), contentDescription = null,
+internal fun MutedGlyph(color: String) = Icon(painterResource(R.drawable.ic_muted), contentDescription = null,
     tint = hexColor(color), modifier = Modifier.size(12.dp))
 
 // The usage limit corner mark: the accent disc of "!" with a clock in the background color.
@@ -1443,8 +1526,6 @@ private fun InkCenteredGlyph(glyph: String, color: Color, fontSize: TextUnit, li
 private fun CornerButton(
     control: CornerControl, description: String, limit: Boolean, busy: Boolean, palette: Palette, onCorner: (String) -> Unit,
 ) {
-    // One chrome for every corner control: a 24 dp circle in the text color at 8 percent.
-    val background = hexColor(palette.text).copy(alpha = .08f)
     // The circle is 24 dp, 2 dp from the card top as before; the touch area is the whole 48 dp slot. The glyph has no
     // semantics of its own, so TalkBack reads the meaning once and not the "?" or "!" after it.
     Box(
@@ -1462,25 +1543,32 @@ private fun CornerButton(
             }),
         contentAlignment = Alignment.TopCenter,
     ) {
-        Box(Modifier.padding(top = 2.dp).size(24.dp).background(background, CircleShape).clearAndSetSemantics { },
-            contentAlignment = Alignment.Center) {
-            when (control.kind) {
-                "confirmed" -> Icon(Icons.Default.Check, contentDescription = null, tint = hexColor(palette.success),
-                    modifier = Modifier.size(12.dp))
-                "pin" -> Icon(PinIcon, contentDescription = null, tint = hexColor(palette.quietCaption), modifier = Modifier.size(12.dp))
-                // An unread ? or ! is a 16 dp accent disc with the glyph in the background color. A usage limit stop has a
-                // clock in the disc, so "!" means only a failure (the PC shows "!" for both).
-                "alert" -> if (limit) LimitDisc(16.dp, 12.dp, palette)
-                else InkCenteredGlyph("!", hexColor(palette.background), 11.sp, 11.sp,
-                    Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape))
-                // A read permission wait is a bare quiet glyph.
-                "question" -> if (control.action != null) InkCenteredGlyph(
-                    "?", hexColor(palette.background), 11.sp, 11.sp,
-                    Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape),
-                ) else InkCenteredGlyph("?", hexColor(palette.quietCaption), 11.sp, 14.sp, Modifier.size(24.dp))
-                "drawer" -> DrawerGlyph(hexColor(palette.accent), hexColor(palette.background))
-                else -> IndicatorMark(control.kind, palette)
-            }
+        CornerGlyph(control, limit, palette, Modifier.padding(top = 2.dp).clearAndSetSemantics { })
+    }
+}
+
+/** The corner mark of [control] in its 24 dp circle, the same drawing on the card and in the Settings legend. */
+@Composable
+internal fun CornerGlyph(control: CornerControl, limit: Boolean, palette: Palette, modifier: Modifier = Modifier) {
+    // One chrome for every corner control: a 24 dp circle in the text color at 8 percent.
+    val background = hexColor(palette.text).copy(alpha = .08f)
+    Box(modifier.size(24.dp).background(background, CircleShape), contentAlignment = Alignment.Center) {
+        when (control.kind) {
+            "confirmed" -> Icon(Icons.Default.Check, contentDescription = null, tint = hexColor(palette.success),
+                modifier = Modifier.size(12.dp))
+            "pin" -> Icon(PinIcon, contentDescription = null, tint = hexColor(palette.quietCaption), modifier = Modifier.size(12.dp))
+            // An unread ? or ! is a 16 dp accent disc with the glyph in the background color. A usage limit stop has a
+            // clock in the disc, so "!" means only a failure (the PC shows "!" for both).
+            "alert" -> if (limit) LimitDisc(16.dp, 12.dp, palette)
+            else InkCenteredGlyph("!", hexColor(palette.background), 11.sp, 11.sp,
+                Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape))
+            // A read permission wait is a bare quiet glyph.
+            "question" -> if (control.action != null) InkCenteredGlyph(
+                "?", hexColor(palette.background), 11.sp, 11.sp,
+                Modifier.size(16.dp).background(hexColor(palette.accent), CircleShape),
+            ) else InkCenteredGlyph("?", hexColor(palette.quietCaption), 11.sp, 14.sp, Modifier.size(24.dp))
+            "drawer" -> DrawerGlyph(hexColor(palette.accent), hexColor(palette.background))
+            else -> IndicatorMark(control.kind, palette)
         }
     }
 }
@@ -1588,7 +1676,7 @@ private val INSPECTOR_MARGIN = 16.dp
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionInspector(
-    row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, workingNowMs: Long,
+    row: Thread, point: Offset, busy: Boolean, error: String?, nowMs: Long, workingNowMs: Long,
     serverName: String, viewModel: SessionsViewModel,
     windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
 ) {
@@ -1709,7 +1797,10 @@ private fun SessionInspector(
                             modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 4.dp))
                     }
                     Spacer(Modifier.height(8.dp))
-                    FilledTonalButton(onClick = onShowMessages, shape = buttonShape,
+                    // Open is the only filled button; Show messages is outlined in the divider color with the label in the accent.
+                    OutlinedButton(onClick = onShowMessages, shape = buttonShape,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, hexColor(palette.divider)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = hexColor(palette.accent)),
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Text("Show messages", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
                             overflow = TextOverflow.Ellipsis)
@@ -1760,26 +1851,34 @@ private fun SessionInspector(
                         item {
                             val muteText = muteFlagText(row, nowMs)
                             if (muteText.isNotEmpty()) Column(
-                                Modifier.fillMaxWidth().heightIn(min = 48.dp).then(focusable("mute"))
-                                    .panelAction(!busy, Role.Button) {
-                                        viewModel.action(row.id, "unmute"); started("mute")
-                                    }.padding(horizontal = 12.dp, vertical = 7.dp),
-                                verticalArrangement = Arrangement.Center,
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
-                                Text("Unmute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text,
-                                    modifier = Modifier.alpha(if (busy) .5f else 1f))
+                                OutlinedButton(onClick = { viewModel.action(row.id, "unmute"); started("mute") }, enabled = !busy,
+                                    shape = RoundedCornerShape(8.dp), border = androidx.compose.foundation.BorderStroke(1.dp, hexColor(palette.divider)),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = hexColor(palette.accent)),
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).then(focusable("mute"))) {
+                                    Text("Unmute", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
                                 Text(muteText, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
-                            } else Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 6.dp, top = 7.dp)) {
+                            } else Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 7.dp, bottom = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Mute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-                                    MUTE_CHOICES.forEachIndexed { index, (words, duration) ->
-                                        // The first time has the key of the Unmute row, so the focus moves between them.
-                                        val key = if (index == 0) "mute" else "mute:$words"
-                                        val end = muteEndText(duration, nowMs)
-                                        PanelButton(muteChoiceText(words, duration, nowMs),
-                                            muteTip(words) + if (end.isEmpty()) "" else ", until $end",
-                                            RoundedCornerShape(6.dp), hexColor(move), text, !busy,
-                                            focusable(key)) { viewModel.action(row.id, "mute", muteBody(duration)); started(key) }
+                                // Five chips of one width in rows of three: 3 then 2.
+                                muteChoiceRows(MUTE_CHOICES.withIndex().toList()).forEach { choices ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        choices.forEach { (index, choice) ->
+                                            val (words, duration) = choice
+                                            // The first time has the key of the Unmute row, so the focus moves between them.
+                                            val key = if (index == 0) "mute" else "mute:$words"
+                                            val end = muteEndText(duration, nowMs)
+                                            MuteChip(muteChoiceText(words, duration, nowMs),
+                                                muteTip(words) + if (end.isEmpty()) "" else ", until $end",
+                                                hexColor(move), text, !busy, Modifier.weight(1f).then(focusable(key))) {
+                                                viewModel.action(row.id, "mute", muteBody(duration)); started(key)
+                                            }
+                                        }
+                                        repeat(3 - choices.size) { Spacer(Modifier.weight(1f)) }
                                     }
                                 }
                             }
@@ -1788,7 +1887,8 @@ private fun SessionInspector(
                         switch("drawer", "In the drawer")
                         if ("order" in controls) item {
                             Row(
-                                Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 6.dp),
+                                // The same end inset as the switches, so the buttons end at the switch column.
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp),
                                 horizontalArrangement = Arrangement.spacedBy(1.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
@@ -1809,9 +1909,6 @@ private fun SessionInspector(
                         palette.text, listOf(surface))),
                     modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp)
                         .semantics { liveRegion = LiveRegionMode.Polite })
-                // The panel covers the snackbar, so it shows the current message too.
-                if (message != null && message != error) Text(message, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
-                    modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp))
             }
         },
     )
@@ -1870,6 +1967,22 @@ private fun PanelButton(
         Text(label, fontSize = 12.sp, color = text,
             modifier = Modifier.alpha(if (enabled) 1f else .5f).background(background, shape)
                 .padding(horizontal = 10.dp, vertical = 6.dp))
+    }
+}
+
+/** One inspector mute choice: a chip that fills its [modifier] width, 48 dp high, its words centered on one or two lines. */
+@Composable
+private fun MuteChip(
+    label: String, description: String, background: Color, text: Color, enabled: Boolean, modifier: Modifier, onClick: () -> Unit,
+) {
+    Box(
+        modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(6.dp)).background(background)
+            .panelAction(enabled, Role.Button, onClick).semantics { contentDescription = description }
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, fontSize = 12.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = text, textAlign = TextAlign.Center,
+            modifier = Modifier.alpha(if (enabled) 1f else .5f))
     }
 }
 

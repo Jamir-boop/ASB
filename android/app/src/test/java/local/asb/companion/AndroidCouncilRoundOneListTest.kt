@@ -48,7 +48,7 @@ class AndroidCouncilRoundOneListTest {
         assertEquals("Drawer", pillLabel("Drawer", 0))
         assertEquals("Pending, 4 sessions", pillDescription("Pending", 4))
         assertEquals("Working, 1 session", pillDescription("Working", 1))
-        assertEquals("Drawer", pillDescription("Drawer", 0))
+        assertEquals("Drawer, 0 sessions", pillDescription("Drawer", 0))
     }
 
     @Test fun thePendingHeaderLeadsTheFirstPendingRowAfterThePins() {
@@ -66,11 +66,11 @@ class AndroidCouncilRoundOneListTest {
         val all = Filter(pendingOnly = true, states = setOf("working", "idle"), app = "claude-desktop-code", archived = true)
         assertTrue(filtersOn(all))
         assertEquals(
-            listOf("pending" to "Pending", "state:working" to "Working", "state:idle" to "Idle", "app" to "Claude",
+            listOf("state:working" to "Working", "state:idle" to "Idle", "app" to "Claude",
                 "archive" to "Include archived"),
             activeFilterChips(all),
         )
-        assertEquals(listOf("drawer" to "Drawer"), activeFilterChips(Filter(drawerOnly = true)))
+        assertEquals(emptyList<Pair<String, String>>(), activeFilterChips(Filter(drawerOnly = true)))
         assertEquals(all.copy(pendingOnly = false), removeFilter(all, "pending"))
         assertEquals(all.copy(states = setOf("idle")), removeFilter(all, "state:working"))
         // The last state chip shows all states again.

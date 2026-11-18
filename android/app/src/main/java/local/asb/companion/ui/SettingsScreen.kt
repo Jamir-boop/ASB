@@ -341,6 +341,7 @@ fun SettingsScreen(
                         Text("Draw the app under the camera hole. Turn off to keep that band clear.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    CardMarksLegend()
                     HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SettingsHeading("Notifications")

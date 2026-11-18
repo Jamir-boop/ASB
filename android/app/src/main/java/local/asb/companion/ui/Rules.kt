@@ -168,6 +168,9 @@ const val ROW_PAGE = 100
 
 fun pageRows(rows: List<Thread>, shown: Int): List<Thread> = rows.take(shown)
 
+/** The number on Show more: the rows that one tap adds, at most one page. */
+fun showMoreCount(hiddenRows: Int): Int = minOf(hiddenRows, ROW_PAGE)
+
 // Port of filtered_rows
 fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
     val (query, app) = providerQuery(f.query, f.app)
@@ -223,17 +226,42 @@ fun pillCounts(threads: List<Thread>, f: Filter): PillCounts {
 
 fun pillLabel(label: String, count: Int): String = if (count > 0) "$label $count" else label
 
-fun pillDescription(label: String, count: Int): String =
-    if (count > 0) "$label, $count session${if (count == 1) "" else "s"}" else label
+fun pillDescription(label: String, count: Int): String = "$label, $count session${if (count == 1) "" else "s"}"
+
+/** The header over the Pending rows; the Pending pill keeps the count. */
+const val PENDING_HEADER = "Pending"
+
+/** The disc menu word for a new check: Retry while Offline, as the Offline band; else Refresh. */
+fun discRefreshLabel(offline: Boolean): String = if (offline) "Retry" else "Refresh"
+
+/** The Live offer card shows after pairing while the Live notification is off, it was never closed, and the list has rows. */
+fun liveOfferShows(paired: Boolean, liveNotification: Boolean, closed: Boolean, listEmpty: Boolean): Boolean =
+    paired && !liveNotification && !closed && !listEmpty
+
+/** The card description parts as sentences: no empty part, and a part that ends with a period gets no second one. */
+fun joinSentences(parts: List<String>): String = parts.filter { it.isNotBlank() }.joinToString(". ") { it.removeSuffix(".") }
+
+/** The inspector mute choices in rows of three, so the five chips are 3 then 2. */
+fun <T> muteChoiceRows(choices: List<T>): List<List<T>> = choices.chunked(3)
+
+/**
+ * The two Comfortable title lines (as the board CardTitle): line 1 is the title up to [line1End], the end of its first line
+ * when laid out with the corner reserve (a word break); line 2 is the rest, laid out with the full width and ellipsized.
+ */
+fun titleLines(title: String, line1End: Int): Pair<String, String> =
+    title.take(line1End).trimEnd() to title.drop(line1End).trimStart()
 
 /** True when a filter other than the search is on. */
 fun filtersOn(f: Filter): Boolean = f.copy(query = "") != Filter()
 
-/** As the board filter_chips: one (key, name) per active filter, in top bar order. */
+/**
+ * As the board filter_chips: one (key, name) per active sheet filter, in top bar order. A value that a pill sets (Pending,
+ * Drawer, and the Working state set) has no chip, because its pill shows it, as the PC Drawer pill has no chip.
+ */
 fun activeFilterChips(f: Filter): List<Pair<String, String>> = buildList {
-    if (f.pendingOnly) add("pending" to "Pending")
-    if (f.states != STATES.toSet()) STATES.filter { it in f.states }.forEach { add("state:$it" to stateLabel(it)) }
-    if (f.drawerOnly) add("drawer" to "Drawer")
+    if (f.states != STATES.toSet() && f.states != setOf("working")) {
+        STATES.filter { it in f.states }.forEach { add("state:$it" to stateLabel(it)) }
+    }
     if (f.app != "all") add("app" to (APP_FILTERS.firstOrNull { it.first == f.app }?.second ?: f.app))
     if (f.archived) add("archive" to "Include archived")
 }
