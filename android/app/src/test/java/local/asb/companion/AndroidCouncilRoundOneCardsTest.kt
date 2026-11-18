@@ -61,16 +61,17 @@ class AndroidCouncilRoundOneCardsTest {
     }
 
     @Test fun cornerSlotsKeepTheirPlacesAndReserveTheirWidth() {
-        fun slots(row: Thread) = cornerSlots(cornerControls(row, false, false, now)).map { it?.kind }
-        assertEquals(emptyList<String?>(), slots(idle))
+        fun slots(row: Thread) = cornerSlots(cornerControls(row, false, false, now)).map { it.kind }
+        assertEquals(emptyList<String>(), slots(idle))
         assertEquals(listOf("pin"), slots(idle.copy(pinned = true)))
-        // The read mark keeps its slot left of the pin slot, also with no pin.
-        assertEquals(listOf("dot", null), slots(idle.copy(unread = true)))
+        // Right to left from the card end with no empty slot: pin, read, drawer.
+        assertEquals(listOf("dot"), slots(idle.copy(unread = true)))
         assertEquals(listOf("dot", "pin"), slots(idle.copy(unread = true, pinned = true)))
-        assertEquals(listOf("drawer", null, "pin"), slots(idle.copy(drawer = true, pinned = true)))
+        assertEquals(listOf("drawer", "pin"), slots(idle.copy(drawer = true, pinned = true)))
         assertEquals(48, CORNER_TARGET)
         assertEquals(0, cornerReserve(emptyList()))
-        assertEquals(3 * 48, cornerReserve(cornerSlots(cornerControls(idle.copy(drawer = true), false, false, now))))
+        // A row loses only the width of the slots it shows.
+        assertEquals(2 * 48, cornerReserve(cornerSlots(cornerControls(idle.copy(drawer = true, unread = true), false, false, now))))
     }
 
     @Test fun theOpenButtonNamesTheMachineAndADimmedControlSaysWhy() {
@@ -92,12 +93,12 @@ class AndroidCouncilRoundOneCardsTest {
 
     @Test fun theWorkingSignPulsesAndIsStillWithAnimationsOff() {
         assertEquals(1600, WORKING_PULSE_MS)
-        assertEquals(1f, workingSignAlpha(false, 0f), .001f)
-        assertEquals(.4f, workingSignAlpha(false, .5f), .001f)
-        assertEquals(1f, workingSignAlpha(false, 1f), .001f)
-        for (phase in listOf(0f, .25f, .5f, .9f)) {
-            assertEquals(1f, workingSignAlpha(true, phase), .001f)
-            assertTrue(workingSignAlpha(false, phase) in .4f - .001f..1f + .001f)
+        assertEquals(1f, workingSignAlpha(false, 0), .001f)
+        assertEquals(.4f, workingSignAlpha(false, 4), .001f)
+        assertEquals(1f, workingSignAlpha(false, 8), .001f)
+        for (step in 0..9) {
+            assertEquals(1f, workingSignAlpha(true, step), .001f)
+            assertTrue(workingSignAlpha(false, step) in .4f - .001f..1f + .001f)
         }
     }
 }

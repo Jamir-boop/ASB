@@ -101,12 +101,27 @@ fun clockInterval(rows: List<Thread>, nowMs: Long = System.currentTimeMillis()):
 }
 
 const val WORKING_CLOCK_S = 30L
-// The Working sign: a dot before the word Working, alpha 0.4 to 1.0 and back in 1.6 s.
+// The Working sign: a dot before the word Working, alpha 1.0 to 0.4 and back in 1.6 s. It moves in 8 timed steps of 200 ms,
+// so the screen asks for 5 frames a second, not one at each vsync.
+const val WORKING_PULSE_STEPS = 8
+const val WORKING_PULSE_STEP_MS = 200L
 const val WORKING_PULSE_MS = 1600
 
-/** The Working sign alpha at [phase] (0 to 1 of one pulse); still at full alpha with Android animations off. */
-fun workingSignAlpha(animationsOff: Boolean, phase: Float): Float =
-    if (animationsOff) 1f else (.7 + .3 * kotlin.math.cos(2 * Math.PI * phase)).toFloat()
+/** The Working sign alpha at [step] of one pulse (1.0, 0.85, 0.7, 0.55, 0.4, and back); still at full alpha with animations off. */
+fun workingSignAlpha(animationsOff: Boolean, step: Int): Float {
+    if (animationsOff) return 1f
+    val k = Math.floorMod(step, WORKING_PULSE_STEPS)
+    val half = WORKING_PULSE_STEPS / 2
+    return 1f - .6f * (if (k <= half) k else WORKING_PULSE_STEPS - k) / half
+}
+
+/**
+ * The time that a Working duration counts to: while the phone is Offline, the time of the last good dashboard
+ * ([lastUpdateMs]), so the duration stays still; else [nowMs]. The PC shows no Working time for the rows of an offline
+ * machine: the engine sends them as Unknown with no workingSinceMs (src/machine-peers.mjs).
+ */
+fun workingClockMs(nowMs: Long, offline: Boolean, lastUpdateMs: Long): Long =
+    if (offline && lastUpdateMs > 0) minOf(nowMs, lastUpdateMs) else nowMs
 
 /** As the board card_title: the title with its spaces made one, or Untitled session. */
 fun cardTitle(row: Thread): String =
@@ -190,15 +205,19 @@ fun filteredRows(threads: List<Thread>, f: Filter): List<Thread> {
     )
 }
 
-/** The rows each top bar pill would show when it is on, without the search: Pending, Working, and Drawer. */
+/**
+ * The rows each top bar pill would show with no other filter on: Pending, Working, and Drawer. The search and the state, app,
+ * and drawer filters do not change a count; Include archived does. As the board drawer count (asb-native.py, the
+ * `drawer = sum(...)` line of the list render), which counts drawer rows with only the archived filter.
+ */
 data class PillCounts(val pending: Int, val working: Int, val drawer: Int)
 
 fun pillCounts(threads: List<Thread>, f: Filter): PillCounts {
-    val base = f.copy(query = "")
+    val base = Filter(archived = f.archived)
     return PillCounts(
-        filteredRows(threads, base.copy(pendingOnly = true, drawerOnly = false)).size,
+        filteredRows(threads, base.copy(pendingOnly = true)).size,
         filteredRows(threads, base.copy(states = setOf("working"))).size,
-        filteredRows(threads, base.copy(drawerOnly = true, pendingOnly = false)).size,
+        filteredRows(threads, base.copy(drawerOnly = true)).size,
     )
 }
 
@@ -604,20 +623,24 @@ fun cornerDescription(row: Thread, control: CornerControl): String =
 const val CORNER_TARGET = 48
 
 /**
- * The corner slots from left to right, so the read and pin slots keep their places as on the desktop: the pin is at the end,
- * the read mark left of it, the drawer left of that. A slot at the end with no control is null; no control gives no slot.
+ * The corner slots from left to right. They are laid right to left from the card end with no empty slot: the pin, then the read
+ * mark, then the drawer. So the first control of every card is in the same 48 dp slot at the card's right edge.
  */
-fun cornerSlots(controls: List<CornerControl>): List<CornerControl?> {
-    val pin = controls.firstOrNull { it.kind == "pin" }
-    val read = controls.firstOrNull { it.kind !in setOf("drawer", "pin") }
-    val drawer = controls.firstOrNull { it.kind == "drawer" }
-    val slots = listOf(pin, read, drawer)
-    val used = slots.indexOfLast { it != null } + 1
-    return slots.take(used).reversed()
-}
+fun cornerSlots(controls: List<CornerControl>): List<CornerControl> = listOfNotNull(
+    controls.firstOrNull { it.kind == "drawer" },
+    controls.firstOrNull { it.kind !in setOf("drawer", "pin") },
+    controls.firstOrNull { it.kind == "pin" },
+)
+
+/** The distance in dp from the card's right edge to the left edge of slot [index] of [slots]. */
+fun cornerSlotEnd(slots: List<CornerControl>, index: Int): Int = (slots.size - index) * CORNER_TARGET
 
 /** The width in dp that the title and folder lines leave free for the corner controls. */
-fun cornerReserve(slots: List<CornerControl?>): Int = slots.size * CORNER_TARGET
+fun cornerReserve(slots: List<CornerControl>): Int = slots.size * CORNER_TARGET
+
+/** The reason under the inspector state: the meaning of the card's Pending corner mark, else "". */
+fun inspectorReason(row: Thread, nowMs: Long = System.currentTimeMillis()): String =
+    cornerControls(row, false, false, nowMs).firstNotNullOfOrNull { cornerMeaning(row, it).ifEmpty { null } } ?: ""
 
 /** The machine that opens a row: its own machine name, else the paired PC. */
 fun openMachine(row: Thread, serverName: String): String =
@@ -708,6 +731,18 @@ fun copyReference(row: Thread): Pair<String?, String> {
 val MUTE_CHOICES: List<Pair<String, Long?>> = listOf(
     "30 min" to 1_800_000L, "1 hour" to 3_600_000L, "8 hours" to 28_800_000L, "1 day" to 86_400_000L, "Always" to null,
 )
+
+/** The end of a mute of [durationMs] that starts at [nowMs], in 24 hours: `22:41`, with the weekday when not today; "" for Always. */
+fun muteEndText(durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    if (durationMs == null) return ""
+    val end = Instant.ofEpochMilli(nowMs + durationMs).atZone(zone)
+    val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate() == end.toLocalDate()
+    return DateTimeFormatter.ofPattern(if (today) "HH:mm" else "EEEE HH:mm", Locale.US).format(end)
+}
+
+/** The inspector words of a mute choice: `1 hour · until 22:41`; `Always` has no end. */
+fun muteChoiceText(words: String, durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+    muteEndText(durationMs, nowMs, zone).let { if (it.isEmpty()) words else "$words · until $it" }
 
 /** As the board MUTE_TIPS: what a mute choice does, for TalkBack. */
 fun muteTip(words: String): String = when (words) {
