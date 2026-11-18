@@ -47,8 +47,20 @@ internal fun notificationWords(row: Thread, kind: Int, serverName: String): Noti
     notificationTitle(row, kind, serverName), cardTitle(row), row.sourceLabel,
     row.questionText.takeIf { kind == BIT_INPUT && it.isNotBlank() })
 
-/** The public version (lock screen): no session words and no question. */
+/** The public version of the group summary and the connection notification. */
 internal val PUBLIC_WORDS = NotificationWords("ASB", "A session needs attention")
+
+/** The public version (lock screen) of a session notification: the kind only, no session words and no question. */
+internal fun publicWords(row: Thread, kind: Int): NotificationWords = NotificationWords("ASB", when (kind) {
+    BIT_DONE -> "A task is done"
+    BIT_FAILED -> if (row.lastOutcome == "limit") "A task hit a usage limit" else "A task failed"
+    else -> "A session needs your answer"
+})
+
+/** What each kind covers: the channel descriptions and the Settings captions. */
+internal const val ABOUT_DONE = "A session finished a task."
+internal const val ABOUT_INPUT = "A session waits for your answer or approval."
+internal const val ABOUT_FAILED = "A task failed or hit a usage limit."
 
 internal fun notificationCategory(kind: Int): String = when (kind) {
     BIT_DONE -> Notification.CATEGORY_STATUS
@@ -90,11 +102,11 @@ class Notifier(private val app: AsbApp) {
             }
         manager.createNotificationChannels(listOf(
             channel("asb_done", "Done", NotificationManager.IMPORTANCE_DEFAULT, "opencode_staplebops_01",
-                "A session finished a task."),
+                ABOUT_DONE),
             channel("asb_input", "Needs input", NotificationManager.IMPORTANCE_HIGH, "opencode_staplebops_02",
-                "A session waits for your answer or approval."),
+                ABOUT_INPUT),
             channel("asb_failed", "Failed", NotificationManager.IMPORTANCE_DEFAULT, "opencode_nope_03",
-                "A task failed or hit a usage limit."),
+                ABOUT_FAILED),
             channel("asb_status", "Connection", NotificationManager.IMPORTANCE_LOW, null,
                 "The PC stopped answering or removed this phone."),
             channel("asb_live", "Live sessions", NotificationManager.IMPORTANCE_LOW, null,
@@ -122,7 +134,7 @@ class Notifier(private val app: AsbApp) {
             // The key, so the same session from another engine of the group replaces its notification.
             val tag = notificationTag(row.key, event.kind)
             val id = notificationId(row.key, event.kind)
-            val builder = builder(channel).setContentTitle(words.title)
+            val builder = builder(channel, publicWords(row, event.kind)).setContentTitle(words.title)
                 .setContentText(words.text).setSubText(words.subText).setCategory(notificationCategory(event.kind))
                 .setContentIntent(contentIntent(tag, id)).setAutoCancel(true)
                 .setDeleteIntent(broadcast(event, engine, "dismiss", ACTION_DISMISS))
@@ -224,12 +236,12 @@ class Notifier(private val app: AsbApp) {
             .setOnlyAlertOnce(true).setContentIntent(contentIntent()).build())
     }
 
-    private fun builder(channel: String): Notification.Builder = Notification.Builder(app, channel)
+    private fun builder(channel: String, public: NotificationWords = PUBLIC_WORDS): Notification.Builder = Notification.Builder(app, channel)
         .setSmallIcon(R.drawable.ic_stat_asb).setGroup(GROUP)
         .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
         .setVisibility(Notification.VISIBILITY_PRIVATE)
         .setPublicVersion(Notification.Builder(app, channel).setSmallIcon(R.drawable.ic_stat_asb)
-            .setContentTitle(PUBLIC_WORDS.title).setContentText(PUBLIC_WORDS.text).build())
+            .setContentTitle(public.title).setContentText(public.text).build())
 
     private fun contentIntent(tag: String? = null, id: Int = 0): PendingIntent {
         val intent = Intent(app, MainActivity::class.java).setAction(ACTION_CONTENT)
