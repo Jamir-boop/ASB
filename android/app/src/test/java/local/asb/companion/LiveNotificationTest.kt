@@ -34,13 +34,13 @@ class LiveNotificationTest {
     @Test fun linesListWorkingTitlesThenTheRest() {
         assertEquals(listOf("No session is working."), liveLines(listOf(row("a"), row("b", "working", archived = true))))
         // As the cards: a row with no title is Untitled session, not its folder.
-        assertEquals(listOf("Task a", "Untitled session", "Untitled session"), liveLines(listOf(
+        assertEquals(listOf("Working: Task a, Untitled session, Untitled session"), liveLines(listOf(
             row("a", "working"), Thread(id = "b", state = "working", projectName = "proj"),
             Thread(id = "c", state = "working"), row("d", "waiting"),
         )))
         val many = (1..8).map { row("$it", "working") }
-        assertEquals((1..6).map { "Task $it" } + "+2 more", liveLines(many))
-        assertEquals((1..6).map { "Task $it" }, liveLines(many.take(6)))
+        assertEquals(listOf("Working: " + ((1..6).map { "Task $it" } + "+2 more").joinToString(", ")), liveLines(many))
+        assertEquals(listOf("Working: " + (1..6).joinToString(", ") { "Task $it" }), liveLines(many.take(6)))
     }
 
     @Test fun intervalIsShortOnlyWhileAnUnarchivedSessionWorks() {

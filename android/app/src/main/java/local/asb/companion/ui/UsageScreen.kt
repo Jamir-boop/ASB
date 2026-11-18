@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
@@ -33,10 +34,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -44,6 +47,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -73,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -85,6 +90,7 @@ import java.text.DecimalFormatSymbols
 import java.time.Instant
 import java.time.ZoneId
 import java.util.Locale
+import kotlinx.coroutines.flow.drop
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
@@ -173,8 +179,9 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
     Scaffold(contentWindowInsets = SafeContentInsets, topBar = {
         ActivityTopBar("Usage", onBack, subtitle = reply?.let { pricesText(it.prices) }.orEmpty())
     }) { padding ->
+        val pageScroll = rememberScrollState()
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
-            Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().verticalScroll(rememberScrollState())) {
+            Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().verticalScroll(pageScroll)) {
                 val current = reply
                 val machineIds = current?.machines?.map { it.machineId }.orEmpty()
                 val offSet = off.toSet().intersect(machineIds.toSet())
@@ -213,7 +220,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                     else -> {
                         error?.let { Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
                         val totals = remember(current, offSet) { usageTotals(current, offSet) }
-                        UsageContent(current, totals, metric, byMachine, { byMachine = it }, colors)
+                        UsageContent(current, totals, metric, byMachine, { byMachine = it }, colors, pageScroll)
                     }
                 }
             }
@@ -233,7 +240,7 @@ private fun UsageEmpty(period: String, colors: ActivityColors, onAllTime: () -> 
 
 @Composable
 private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metric, byMachine: Boolean,
-    onSplit: (Boolean) -> Unit, colors: ActivityColors) {
+    onSplit: (Boolean) -> Unit, colors: ActivityColors, pageScroll: ScrollState) {
     val hues = remember(reply, colors) { reply.machines.mapIndexed { i, m -> m.machineId to colors.hue(i) }.toMap() }
     val machines = remember(reply) { reply.machines.associateBy { it.machineId } }
     Column(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 16.dp, bottom = 32.dp)) {
@@ -283,7 +290,7 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
             Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(top = 10.dp))
         }
         Spacer(Modifier.height(28.dp))
-        UsageChart(reply, totals, metric, byMachine, onSplit, hues, colors)
+        UsageChart(reply, totals, metric, byMachine, onSplit, hues, colors, pageScroll)
         Spacer(Modifier.height(28.dp))
         SectionTitle(usageTotalsTitle(!reply.scan.complete), colors)
         Spacer(Modifier.height(6.dp))
@@ -319,6 +326,8 @@ private fun UsageContent(reply: ActivityUsage, totals: UsageTotals, metric: Metr
 @Composable
 private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, sub: String?, bar: @Composable () -> Unit,
     spoken: String? = null, name: @Composable () -> Unit) {
+    val shareStyle = LocalTextStyle.current.merge(TextStyle(fontSize = 12.sp))
+    val shareWidth = shareColumnWidth(shareStyle)
     Column {
         // A Machines row adds its app split to what TalkBack reads.
         // The bar, the value, the share, and the leading dot sit on the name line; the state runs under the bar up to the value column.
@@ -340,10 +349,10 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
                 Text(word ?: formatValue(row.value, metric), fontSize = 13.sp, style = figures,
                     color = if (word != null) colors.muted else colors.text, textAlign = TextAlign.End,
                     maxLines = 1, modifier = Modifier.width(84.dp))
-                Text(if (word != null) "" else formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
-                    modifier = Modifier.width(44.dp))
+                Text(if (word != null) "" else formatShare(row.share), style = shareStyle, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
+                    modifier = Modifier.width(shareWidth))
             }
-            sub?.let { FactsText(it, TextStyle(fontSize = 11.sp, color = colors.muted), Modifier.padding(end = MACHINE_STATE_END)) }
+            sub?.let { FactsText(it, TextStyle(fontSize = 11.sp, color = colors.muted), Modifier.padding(end = machineStateEnd(shareWidth))) }
         }
         HorizontalDivider(thickness = 1.dp, color = colors.rule)
     }
@@ -356,8 +365,17 @@ internal fun trackStart(width: Float, fraction: Float, gap: Float): Float = min(
 internal fun arcShare(arc: RoundArc, names: Map<String, String>): String =
     "${formatShare(arc.share)} of ${if (arc.app != null) names[arc.machineId].orEmpty() else "total"}"
 
-/** The end inset of a machine state line: the value column (84 dp), the share column (44 dp), and their two 8 dp gaps. */
-internal val MACHINE_STATE_END = 144.dp
+/** The end inset of a machine state line: the value column (84 dp), the [share] column, and their two 8 dp gaps. */
+internal fun machineStateEnd(share: Dp): Dp = 84.dp + share + 16.dp
+
+/** The width of a share column: `100.0%`, the widest share, measured in [style], so it fits at any font scale. */
+@Composable
+private fun shareColumnWidth(style: TextStyle): Dp {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val px = remember(style, density) { measurer.measure(formatShare(1.0), style, maxLines = 1, softWrap = false, density = density).size.width }
+    return with(density) { px.toDp() }
+}
 
 /** A machine state that breaks only between its facts ([factLines]) and never ellipsizes. */
 @Composable
@@ -450,7 +468,7 @@ private fun RoundChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
 
 @Composable
 private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric, byMachine: Boolean, onSplit: (Boolean) -> Unit,
-    hues: Map<String, Color>, colors: ActivityColors) {
+    hues: Map<String, Color>, colors: ActivityColors, pageScroll: ScrollState) {
     val unit = reply.buckets.unit
     val starts = reply.buckets.startsMs
     val series = chartSeries(totals, byMachine)
@@ -459,6 +477,9 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     val seriesColor = { id: String -> if (byMachine) hues[id] ?: colors.text else appColor(id, colors) }
     val seriesLabel = { id: String -> if (byMachine) names[id].orEmpty() else appLabel(id) }
     var tapped by remember(bars) { mutableStateOf<Int?>(null) }
+    // A scroll of the page clears the selection, so the tooltip does not ride up under the screen header. The TalkBack bar
+    // action only sets the selection and does not scroll the page, so the tooltip it opens stays.
+    LaunchedEffect(pageScroll, bars) { snapshotFlow { pageScroll.value }.drop(1).collect { tapped = null } }
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val first = partialFirstLabel(unit, starts, reply.buckets.firstMs)
@@ -688,6 +709,8 @@ private fun TipRow(label: String, value: String, swatch: Color, colors: Activity
 
 @Composable
 private fun TypeBlock(title: String, shares: List<TypeShare>, format: (Double) -> String, colors: ActivityColors) {
+    val shareStyle = figures.merge(TextStyle(fontSize = 12.sp))
+    val shareWidth = shareColumnWidth(shareStyle)
     Text(title, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(bottom = 8.dp))
     val shown = shares.filter { it.value > 0 }
     Row(Modifier.fillMaxWidth().height(10.dp).semantics {
@@ -703,8 +726,8 @@ private fun TypeBlock(title: String, shares: List<TypeShare>, format: (Double) -
             Box(Modifier.size(8.dp).background(colors.tokens.getValue(share.key), RoundedCornerShape(2.dp)))
             Text(share.label, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Text(format(share.value), fontSize = 12.sp, style = figures, color = colors.text, maxLines = 1)
-            Text(formatShare(share.share), fontSize = 12.sp, style = figures, color = colors.muted, textAlign = TextAlign.End,
-                maxLines = 1, modifier = Modifier.width(52.dp))
+            Text(formatShare(share.share), style = shareStyle, color = colors.muted, textAlign = TextAlign.End,
+                maxLines = 1, modifier = Modifier.width(shareWidth))
         }
     }
 }

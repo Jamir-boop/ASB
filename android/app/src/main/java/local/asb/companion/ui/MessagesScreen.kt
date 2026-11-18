@@ -1174,15 +1174,16 @@ private fun CenterPanel(
     machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String, onPeriod: (String) -> Unit,
 ) {
     HorizontalDivider(thickness = 1.dp, color = colors.divider)
+    // A pair head is one TalkBack node with its words; the other heads merge their texts.
     Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp)
-        .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+        .then(if (chord != null) Modifier.clearAndSetSemantics { liveRegion = LiveRegionMode.Polite; contentDescription = chordText(chord, title) }
+            else Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }),
         verticalArrangement = Arrangement.spacedBy(3.dp)) {
         val route = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.text)
         val newest = newestMessage(reply.messages)
         when {
-            // TalkBack reads one part per direction, then the not-sent count.
-            chord != null -> Column(Modifier.clearAndSetSemantics { contentDescription = chordText(chord, title) },
-                verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            // TalkBack reads one part per direction, then the not-sent count (the words of the head node).
+            chord != null -> Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("${title(chord.a)} ⇄ ${title(chord.b)}", style = route, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(pairCountsText(chord), fontSize = 14.sp, style = figures, color = colors.text, maxLines = 1)
                 NotSentCount(chord.badAb + chord.badBa, colors)

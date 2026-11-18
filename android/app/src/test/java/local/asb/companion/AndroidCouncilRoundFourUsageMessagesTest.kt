@@ -3,7 +3,7 @@ package local.asb.companion
 import androidx.compose.ui.unit.dp
 import local.asb.companion.data.Chord
 import local.asb.companion.ui.BUSY_PAIR_MIN_HEIGHT
-import local.asb.companion.ui.MACHINE_STATE_END
+import local.asb.companion.ui.machineStateEnd
 import local.asb.companion.ui.factLines
 import local.asb.companion.ui.meaningsButtonText
 import local.asb.companion.ui.pairCountsText
@@ -29,8 +29,8 @@ class AndroidCouncilRoundFourUsageMessagesTest {
         assertEquals(listOf("Offline", seen), factLines(line, 150f, measure))
         // Only a fact wider than the row breaks inside, between its words.
         assertEquals(listOf("Offline", "seen Oct 14, 2025, 08:44"), factLines(line, 100f, measure))
-        // The state runs under the bar up to the value column: 84 dp value, 44 dp share, two 8 dp gaps.
-        assertEquals(144.dp, MACHINE_STATE_END)
+        // The state runs under the bar up to the value column: 84 dp value, the share column, two 8 dp gaps.
+        assertEquals(144.dp, machineStateEnd(44.dp))
     }
 
     @Test fun pairHeadIsOneLine() {

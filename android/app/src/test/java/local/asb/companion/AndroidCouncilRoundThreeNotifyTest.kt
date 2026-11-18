@@ -66,7 +66,7 @@ class AndroidCouncilRoundThreeNotifyTest {
 
     @Test fun anUntitledRowIsAnUntitledSessionInLive() {
         val untitled = Thread(id = "u1", state = "working", title = "", projectName = "scratch")
-        assertEquals(listOf("Untitled session"), liveLines(listOf(untitled)))
+        assertEquals(listOf("Working: Untitled session"), liveLines(listOf(untitled)))
     }
 
     @Test fun theSummaryCountsAlertsThenKinds() {

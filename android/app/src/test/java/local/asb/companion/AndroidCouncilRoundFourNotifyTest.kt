@@ -23,15 +23,15 @@ class AndroidCouncilRoundFourNotifyTest {
 
     @Test fun morePendingRowsThanThreeEndInARestCount() {
         val pending = (1..13).map { r("p$it", pending = true, at = 100L - it) }
-        assertEquals(listOf("Task p1", "Task p2", "Task p3", "+10 more pending", "Task w1"),
+        assertEquals(listOf("Pending: Task p1, Task p2, Task p3, +10 more", "Working: Task w1"),
             liveLines(pending + r("w1", "working")))
         // Three pending rows have no rest count; a working row past the first 3 pending is in the rest count, not listed.
-        assertEquals(listOf("Task p1", "Task p2", "Task p3"), liveLines(pending.take(3)))
-        assertEquals(listOf("Task p1", "Task p2", "Task p3", "+1 more pending"),
+        assertEquals(listOf("Pending: Task p1, Task p2, Task p3"), liveLines(pending.take(3)))
+        assertEquals(listOf("Pending: Task p1, Task p2, Task p3, +1 more"),
             liveLines(pending.take(3) + r("p4", "working", pending = true, at = 0)))
         // The working titles still end in +N more after the 6 lines.
         val working = (1..5).map { r("w$it", "working") }
-        assertEquals(listOf("Task p1", "Task p2", "Task p3", "+10 more pending", "Task w1", "Task w2", "+3 more"),
+        assertEquals(listOf("Pending: Task p1, Task p2, Task p3, +10 more", "Working: Task w1, Task w2, +3 more"),
             liveLines(pending + working))
     }
 

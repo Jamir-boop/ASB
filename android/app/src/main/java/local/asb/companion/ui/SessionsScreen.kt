@@ -111,6 +111,7 @@ import kotlinx.coroutines.flow.first
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
@@ -893,9 +894,10 @@ fun SessionsScreen(
                         }
                     },
                 ) {
-                    // Draw order, bottom to top: (1) the message flights, (2) the pet tint, which is the card background of a
-                    // sender or receiver, (3) the pet sprites, all in this canvas; then (4) the cards with their text, which have
-                    // no fill. So the card text is always above the pet and its message, and the pet is above the card background.
+                    // One rule: the pet, its letter, and its tint draw under all list content. This canvas is the first child of
+                    // the box, so the list after it (card text, app glyphs, corner controls and marks, section headers) draws
+                    // above. In the canvas, bottom to top: the message flights, the pet tint (the card background of a sender or
+                    // receiver, as the cards have no fill), then the pet sprites and letter.
                     val messageColor = MaterialTheme.colorScheme.primary
                     Canvas(Modifier.matchParentSize().clipToBounds()) {
                         for (flight in flights) {
@@ -1076,7 +1078,7 @@ private fun SessionChip(
     description: String = label,
     /** A chip of the filter chip row acts and speaks as a button; a top bar pill is a toggle. */
     button: Boolean = false,
-    /** The count after the last space of [label] shows in the dimmed muted color (the last known count while Offline). */
+    /** The count after the last space of [label] shows in the dimmed muted color (the last known count while Offline); a selected pill keeps the label color, as on the PC. */
     dimCount: Boolean = false,
 ) {
     val palette = LocalPalette.current
@@ -1086,11 +1088,14 @@ private fun SessionChip(
     // 384 dp phone with two-digit counts. The touch area is 48 dp high.
     Box(
         modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .then(if (button) Modifier.clickable(interactionSource = interaction, indication = null, role = Role.Button,
-                onClick = onClick)
+            // A button chip is one TalkBack node: its words, its role, and its click, set here over the clickable's own.
+            .then(if (button) Modifier.clearAndSetSemantics {
+                contentDescription = description
+                role = Role.Button
+                this.onClick { onClick(); true }
+            }.clickable(interactionSource = interaction, indication = null, onClick = onClick)
             else Modifier.toggleable(value = selected, interactionSource = interaction, indication = null, role = Role.Checkbox,
-                onValueChange = { onClick() }))
-            .semantics { contentDescription = description },
+                onValueChange = { onClick() }).semantics { contentDescription = description }),
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -1105,7 +1110,7 @@ private fun SessionChip(
             else Text(buildAnnotatedString {
                 append(label)
                 val count = label.lastIndexOf(' ') + 1
-                if (dimCount && count > 0) addStyle(SpanStyle(color = hexColor(palette.muted).copy(alpha = OFFLINE_COUNT_ALPHA)), count, label.length)
+                if (dimCount && !selected && count > 0) addStyle(SpanStyle(color = hexColor(palette.muted).copy(alpha = OFFLINE_COUNT_ALPHA)), count, label.length)
             }, fontSize = 12.sp, color = content, maxLines = 1)
             if (icon != null && iconAfter) Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
         }

@@ -55,12 +55,19 @@ private const val REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
 
 internal fun liveTitle(threads: List<Thread>): String {
     val rows = threads.filter { !it.archived }
-    return "${rows.count { it.pending }} pending · ${rows.count { it.state == "working" }} working"
+    val pending = rows.count { it.pending }
+    val working = rows.count { it.state == "working" }
+    // A zero part is left out, except when both are zero.
+    if (pending == 0 && working == 0) return "0 pending · 0 working"
+    return listOfNotNull("$pending pending".takeIf { pending > 0 }, "$working working".takeIf { working > 0 }).joinToString(" · ")
 }
 
 private const val MAX_PENDING = 3
 
-/** Up to 3 pending titles in the cards' order and "+N more pending" for the rest, then the working titles and "+N more". */
+/**
+ * At most two group lines: `Pending: ` with up to 3 pending titles in the cards' order and `+N more` for the rest, then
+ * `Working: ` with the working titles that the room of [MAX_LINES] titles allows and `+N more`. A group with no rows is left out.
+ */
 internal fun liveLines(threads: List<Thread>): List<String> {
     val allPending = filteredRows(threads, Filter(pendingOnly = true))
     val pending = allPending.take(MAX_PENDING)
@@ -68,10 +75,17 @@ internal fun liveLines(threads: List<Thread>): List<String> {
     val working = threads.filter { !it.archived && it.state == "working" && it !in allPending }.map { cardTitle(it) }
     if (pending.isEmpty() && working.isEmpty()) return listOf("No session is working.")
     val head = pending.map { cardTitle(it) } +
-        listOfNotNull("+${allPending.size - MAX_PENDING} more pending".takeIf { allPending.size > MAX_PENDING })
+        listOfNotNull("+${allPending.size - MAX_PENDING} more".takeIf { allPending.size > MAX_PENDING })
     val room = MAX_LINES - head.size
-    return head + if (working.size <= room) working else working.take(room) + "+${working.size - room} more"
+    val tail = if (working.size <= room) working else working.take(room) + "+${working.size - room} more"
+    return listOfNotNull(
+        head.takeIf { it.isNotEmpty() }?.joinToString(", ", prefix = "Pending: "),
+        tail.takeIf { it.isNotEmpty() }?.joinToString(", ", prefix = "Working: "),
+    )
 }
+
+/** The collapsed text of the group lines: one line, the groups joined with ` · `. */
+internal fun liveText(lines: List<String>): String = lines.joinToString(" · ")
 
 // Offline retries stay slow: each try can wait for every endpoint to time out. After a network change one retry
 // comes after 3 s, because a VPN that the user just turned on can need a few seconds.
@@ -324,7 +338,7 @@ class LiveService : Service() {
             .setContentTitle(title).setOngoing(true).setOnlyAlertOnce(true).setShowWhen(false)
             .setContentIntent(open).setCategory(Notification.CATEGORY_STATUS)
         return builder()
-            .setContentText(status ?: lines.joinToString(", ").ifEmpty { "Checking ASB…" })
+            .setContentText(status ?: liveText(lines).ifEmpty { "Checking ASB…" })
             .apply {
                 // BigTextStyle, not InboxStyle: Android 16 Live Updates accept only the standard styles.
                 if (lines.isNotEmpty()) setStyle(Notification.BigTextStyle().bigText(lines.joinToString("\n")).also { style ->

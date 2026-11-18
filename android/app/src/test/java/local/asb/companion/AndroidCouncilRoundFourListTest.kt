@@ -10,7 +10,6 @@ import local.asb.companion.data.Thread
 import local.asb.companion.ui.COPIED_MS
 import local.asb.companion.ui.Filter
 import local.asb.companion.ui.MUTE_CHOICES
-import local.asb.companion.ui.OFFLINE_COUNT_ALPHA
 import local.asb.companion.ui.activeFilterChips
 import local.asb.companion.ui.cardTones
 import local.asb.companion.ui.compactMarkCell
@@ -62,7 +61,6 @@ class AndroidCouncilRoundFourListTest {
         // Other states keep their tone.
         val idle = Thread(state = "idle")
         assertEquals(cardTones(palette, idle, true, false, false, now), cardTones(palette, idle, true, false, false, now, true))
-        assertEquals(.55f, OFFLINE_COUNT_ALPHA)
     }
 
     @Test fun aPinnedCompactRowShowsThePinOnlyWithNoIndicator() {

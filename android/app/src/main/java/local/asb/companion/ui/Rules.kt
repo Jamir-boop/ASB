@@ -268,8 +268,11 @@ fun activeFilterChips(f: Filter): List<Pair<String, String>> = buildList {
 /** The Filters button words: `Filters, 2 on` while sheet filters are on (the chips of [activeFilterChips]), else `Filters`. */
 fun filtersDescription(f: Filter): String = activeFilterChips(f).size.let { if (it > 0) "Filters, $it on" else "Filters" }
 
-/** The alpha of the muted color of the top bar pill counts while Offline, so a count differs from its label. */
-const val OFFLINE_COUNT_ALPHA = .55f
+/**
+ * The alpha of the muted color of the unselected top bar pill counts while Offline, so a count differs from its label. On the
+ * dark test palette the count is about #8b8b8d on #222226 (about 4.7:1), and it still differs from the label #bcbcbe.
+ */
+const val OFFLINE_COUNT_ALPHA = .68f
 
 /** The mark cell of a Compact row: the indicator, else a pin for a pinned row, else nothing (Compact has no drawer mark). */
 fun compactMarkCell(indicator: String, pinned: Boolean): String = indicator.ifEmpty { if (pinned) "pin" else "" }
