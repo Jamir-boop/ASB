@@ -18,6 +18,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -474,10 +476,17 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
     }
 }
 
-/** Where the count strip is in the window, and the coordinates of the page that holds it. */
+/** Where the count strip is in the window, the coordinates of the page viewport that holds it, and of the center panel. */
 private class StripPlace {
     var page: LayoutCoordinates? = null
     var bounds = Rect.Zero
+    var panel: LayoutCoordinates? = null
+}
+
+/** The coordinates of the shown thread and of each of its messages, for its open scroll and its Show earlier anchor. */
+private class ThreadPlace {
+    var column: LayoutCoordinates? = null
+    val messages = mutableMapOf<String, LayoutCoordinates>()
 }
 
 /** Runs [clear] after a tap (a touch that moves less than the touch slop) outside the count strip; it consumes nothing. */
@@ -831,11 +840,11 @@ private fun MessagesContent(
                 val pageTop = strip.page?.takeIf { it.isAttached }?.positionInWindow()?.y ?: return@LaunchedEffect
                 if (selection != null) page.animateScrollTo((page.value + panelTop - pageTop).roundToInt().coerceAtLeast(0))
             }
-            Box(Modifier.onGloballyPositioned { panelTop = it.positionInWindow().y }) {
+            Box(Modifier.onGloballyPositioned { panelTop = it.positionInWindow().y; strip.panel = it }) {
                 CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, onPeriod)
             }
             if (selectedSeat != null || selectedChord != null) {
-                ThreadText(api, engine, reply, selectedSeat, selectedChord?.let { it.a to it.b }, seats, colors, textOn) { id, label ->
+                ThreadText(api, engine, reply, selectedSeat, selectedChord?.let { it.a to it.b }, seats, colors, textOn, page, strip) { id, label ->
                     titles[id] ?: label.ifEmpty { UNLISTED }
                 }
             }
@@ -1175,10 +1184,8 @@ private fun CenterPanel(
             chord != null -> Column(Modifier.clearAndSetSemantics { contentDescription = chordText(chord, title) },
                 verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("${title(chord.a)} ⇄ ${title(chord.b)}", style = route, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                for ((arrow, count, bad) in listOf(Triple("→", chord.ab, chord.badAb), Triple("←", chord.ba, chord.badBa))) {
-                    Text("$arrow ${formatCount(count.toLong())}", fontSize = 14.sp, style = figures, color = colors.text)
-                    NotSentCount(bad, colors)
-                }
+                Text(pairCountsText(chord), fontSize = 14.sp, style = figures, color = colors.text, maxLines = 1)
+                NotSentCount(chord.badAb + chord.badBa, colors)
             }
             seat != null -> {
                 val info = seats[seat]
@@ -1230,8 +1237,13 @@ private fun MessagesEmpty(period: String, colors: ActivityColors, onPeriod: (Str
  */
 @Composable
 private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, seat: String?, pair: Pair<String, String>?,
-    seats: Map<String, Seat>, colors: ActivityColors, textOn: Boolean?, title: (String, String) -> String) {
+    seats: Map<String, Seat>, colors: ActivityColors, textOn: Boolean?, page: ScrollState, strip: StripPlace,
+    title: (String, String) -> String) {
     var limit by remember(engine, reply.period, seat, pair) { mutableIntStateOf(THREAD_LIMIT) }
+    // The thread opens at its newest message once (the PC thread_stick); Show earlier keeps the message in view in place.
+    var opening by remember(engine, reply.period, seat, pair) { mutableStateOf(true) }
+    var anchor by remember(engine, reply.period, seat, pair) { mutableStateOf<Pair<String, Float>?>(null) }
+    val place = remember(engine, reply.period, seat, pair) { ThreadPlace() }
     var state by remember(engine, reply.period, seat, pair) { mutableStateOf<ThreadState>(ThreadState.Loading) }
     var attempt by remember(engine, reply.period, seat, pair) { mutableIntStateOf(0) }
     val query = threadQuery(reply.period, seat, pair, limit) ?: return
@@ -1242,6 +1254,22 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
         if (textOff) { state = ThreadState.Off; return@LaunchedEffect }
         val next = loadThread({ api.messageText(engine) }) { api.activityThread(query, engine) }
         if (next !is ThreadState.Failed || state !is ThreadState.Shown) state = next
+        if (next !is ThreadState.Shown) { anchor = null; return@LaunchedEffect }
+        val kept = anchor
+        if (!opening && kept == null) return@LaunchedEffect
+        opening = false
+        anchor = null
+        // Three frames: the new thread composes and lays out, then the Show more buttons of its cut messages lay out.
+        repeat(3) { withFrameNanos {} }
+        val view = strip.page?.takeIf { it.isAttached } ?: return@LaunchedEffect
+        val y = { c: LayoutCoordinates -> view.localPositionOf(c, Offset.Zero).y }
+        if (kept != null) {
+            place.messages[kept.first]?.takeIf { it.isAttached }?.let { page.scrollBy(y(it) - kept.second) }
+        } else {
+            val panel = strip.panel?.takeIf { it.isAttached } ?: return@LaunchedEffect
+            val column = place.column?.takeIf { it.isAttached } ?: return@LaunchedEffect
+            page.scrollTo(threadOpenScroll(page.value, y(panel), y(column) + column.size.height, 0f, view.size.height.toFloat()))
+        }
     }
     HorizontalDivider(thickness = 1.dp, color = colors.divider)
     val note = @Composable { text: String ->
@@ -1255,13 +1283,24 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
         is ThreadState.Failed -> errorCopy(current.message, "thread").let { copy ->
             StatePanel(copy.title, copy.sentence, colors, if (copy.retry) "Try again" else null) { attempt++ }
         }
-        is ThreadState.Shown -> Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        is ThreadState.Shown -> Column(Modifier.fillMaxWidth().onGloballyPositioned { place.column = it }.background(colors.background)
+            .padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             val thread = current.thread
             val shown = thread.messages.size
             if (thread.total > shown) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(threadCountText(shown, thread.total, limit), fontSize = 12.sp, color = colors.muted, modifier = Modifier.weight(1f))
-                if (limit == THREAD_LIMIT) TextButton(onClick = { limit = THREAD_MAX }, modifier = Modifier.heightIn(min = 48.dp)) {
+                if (limit == THREAD_LIMIT) TextButton(onClick = {
+                    strip.page?.takeIf { it.isAttached }?.let { view ->
+                        val spans = thread.messages.mapNotNull { message ->
+                            place.messages[message.id]?.takeIf { it.isAttached }?.let {
+                                val top = view.localPositionOf(it, Offset.Zero).y
+                                Triple(message.id, top, top + it.size.height)
+                            }
+                        }
+                        anchor = threadAnchor(spans, 0f)?.let { id -> id to spans.first { it.first == id }.second }
+                    }
+                    limit = THREAD_MAX
+                }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Show earlier", color = colors.accent)
                 }
             }
@@ -1273,7 +1312,8 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
                     var clipped by remember { mutableStateOf(false) }
                     val from = title(message.from, message.fromLabel)
                     val time = messageTime(message.atMs, now, reply.period)
-                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Column(Modifier.fillMaxWidth().onGloballyPositioned { place.messages[message.id] = it },
+                        verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("$from → ${title(message.to, message.toLabel)}", fontSize = 12.sp,
@@ -1338,9 +1378,9 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
         }
         // The legend follows 10 dp under the strip, or 10 dp under the bar.
         strip?.invoke()
-        // A tap on the legend shows each meaning under its word (the phone form of the PC tooltip); a second tap hides them.
+        // A tap on the legend, or its Show meanings button, shows each meaning under its word (the phone form of the PC tooltip); a
+        // second tap hides them. The button is the one click node; the rows stay plain text.
         var meanings by remember { mutableStateOf(false) }
-        // shortcut: the tap has no accessibility action, because TalkBack already reads each sentence on its row.
         Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).pointerInput(Unit) { detectTapGestures { meanings = !meanings } },
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             for ((status, count) in shown) {
@@ -1357,6 +1397,10 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
                     if (meanings) Text(STATUS_TIPS.getValue(status), fontSize = 11.sp, color = colors.muted,
                         modifier = Modifier.padding(start = 16.dp, top = 2.dp))
                 }
+            }
+            TextButton(onClick = { meanings = !meanings }, modifier = Modifier.heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Text(meaningsButtonText(meanings), color = colors.accent)
             }
         }
     }
@@ -1525,7 +1569,7 @@ private fun BarredRow(fraction: Float, colors: ActivityColors, line: BarLine, fo
     barStart: Dp = 0.dp, content: @Composable () -> Unit) {
     Column(modifier.fillMaxWidth().onGloballyPositioned { line.row = it }.drawBehind {
         line.descender(fontSp.sp.toPx())?.let { drawShareBar(barStart.toPx(), it + 4.dp.toPx(), fraction, colors) }
-    }.padding(bottom = 6.dp)) { content() }
+    }.padding(bottom = 6.dp), verticalArrangement = Arrangement.Center) { content() }
 }
 
 /** The ledger under the table: Recent, Busiest pairs, Between machines, and Between apps. */
@@ -1593,8 +1637,9 @@ private fun LedgerView(
 }
 
 /**
- * A Busiest pairs row: the route with each name cut at its end and the count; a not-sent line 2 dp under the route when the
- * pair has some; and a share bar of [share] (of all messages) 4 dp under the descender line of the last line.
+ * A Busiest pairs row, at least [BUSY_PAIR_MIN_HEIGHT] high: the route with each name cut at its end and the count; a not-sent
+ * line 2 dp under the route when the pair has some; and a share bar of [share] (of all messages) 4 dp under the descender line of
+ * the last line.
  */
 @Composable
 private fun BusyPairRow(pair: BusyPair, share: Float, title: (String) -> String, colors: ActivityColors, onClick: () -> Unit) {
@@ -1607,7 +1652,8 @@ private fun BusyPairRow(pair: BusyPair, share: Float, title: (String) -> String,
     val last = { font: Int -> Modifier.onGloballyPositioned { line.text = it }.takeIf { (pair.bad > 0) == (font == 11) } ?: Modifier }
     val layout = { font: Int -> { it: TextLayoutResult -> if ((pair.bad > 0) == (font == 11)) line.layout = it } }
     BarredRow(share, colors, line, if (pair.bad > 0) 11 else 12,
-        Modifier.clickable(onClick = onClick).clearAndSetSemantics { contentDescription = spoken; role = Role.Button }) {
+        Modifier.heightIn(min = BUSY_PAIR_MIN_HEIGHT).clickable(onClick = onClick)
+            .clearAndSetSemantics { contentDescription = spoken; role = Role.Button }) {
         Row(Modifier.fillMaxWidth().heightIn(min = 26.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
