@@ -33,7 +33,8 @@ class LiveNotificationTest {
 
     @Test fun linesListWorkingTitlesThenTheRest() {
         assertEquals(listOf("No session is working."), liveLines(listOf(row("a"), row("b", "working", archived = true))))
-        assertEquals(listOf("Task a", "proj", "Untitled session"), liveLines(listOf(
+        // As the cards: a row with no title is Untitled session, not its folder.
+        assertEquals(listOf("Task a", "Untitled session", "Untitled session"), liveLines(listOf(
             row("a", "working"), Thread(id = "b", state = "working", projectName = "proj"),
             Thread(id = "c", state = "working"), row("d", "waiting"),
         )))

@@ -57,10 +57,10 @@ class AndroidCouncilRoundOneNotifyTest {
 
     @Test fun summaryCountsByKind() {
         val tags = listOf(notificationTag("a:b", BIT_INPUT), notificationTag("c", BIT_FAILED), notificationTag("d", BIT_DONE))
-        assertEquals("1 needs input · 1 failed · 1 done", summaryText(tags))
-        assertEquals("2 done", summaryText(listOf(notificationTag("d", BIT_DONE), notificationTag("e", BIT_DONE))))
-        // The Connection notification of a removed phone has no kind.
-        assertEquals("1 failed", summaryText(listOf("asb-status", notificationTag("c", BIT_FAILED))))
+        assertEquals("3 alerts: 1 needs input · 1 failed · 1 done", summaryText(tags))
+        assertEquals("2 alerts: 2 done", summaryText(listOf(notificationTag("d", BIT_DONE), notificationTag("e", BIT_DONE))))
+        // The Connection notification of a removed phone has no kind, but it is an alert of the group.
+        assertEquals("2 alerts: 1 failed", summaryText(listOf("asb-status", notificationTag("c", BIT_FAILED))))
     }
 
     @Test fun theSavedBaselineHasNoQuestionText() {
