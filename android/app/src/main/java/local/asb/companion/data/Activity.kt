@@ -174,12 +174,12 @@ val STATUS_COLORS = mapOf("accepted" to "#c9ccd1", "written" to "#8c929a", "held
     "not-sent" to "#f5a090", "unknown" to "#5d6268")
 val TOKEN_TYPES = listOf("cacheRead" to "Cache read", "cacheWrite" to "Cache write", "uncached" to "Uncached input", "output" to "Output")
 
-/** The status meanings (PC MESSAGE_STATUS_TIPS); Not sent ends before the thread, which the phone does not have. */
+/** The status meanings, as the PC MESSAGE_STATUS_TIPS. */
 val STATUS_TIPS = mapOf(
     "accepted" to "The receiving session took the message.",
-    "written" to "ASB wrote the message to the receiver. No receipt came back.",
+    "written" to "ASB sent the message to the receiver. No receipt came back.",
     "held" to "The receiver holds the message until its receive setting accepts it.",
-    "not-sent" to "ASB did not send the message.",
+    "not-sent" to "ASB did not send the message. The thread shows the reason.",
     "unknown" to "The message can have gone out, but ASB has no proof.",
 )
 
@@ -228,6 +228,9 @@ fun statusLabel(status: String): String = when (status) {
 }
 
 fun statusKey(status: String): String = if (status in STATUS_ORDER) status else "unknown"
+
+/** The TalkBack text of a status mark: `On hold. The receiver holds the message until its receive setting accepts it.` */
+fun statusDescription(status: String): String = "${statusLabel(status)}. ${STATUS_TIPS.getValue(statusKey(status))}"
 
 /**
  * Port of message_failure_reason: with a known name of the receiver machine (the machineId of the `to` seat, or the ID after

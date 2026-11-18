@@ -158,6 +158,7 @@ import local.asb.companion.data.ActivityMessages
 import local.asb.companion.data.Chord
 import local.asb.companion.data.MESSAGE_PERIODS
 import local.asb.companion.data.STATUS_TIPS
+import local.asb.companion.data.statusDescription
 import local.asb.companion.data.Seat
 import local.asb.companion.data.Ledger
 import local.asb.companion.data.SeatCount
@@ -297,8 +298,7 @@ private val STATUS_PATHS = mapOf(
 @Composable
 internal fun StatusIcon(status: String, color: Color, size: Dp, label: Boolean = false) {
     val path = STATUS_PATHS.getValue(statusKey(status))
-    val name = statusLabel(status)
-    Canvas(Modifier.size(size).then(if (label) Modifier.semantics { contentDescription = name } else Modifier)) {
+    Canvas(Modifier.size(size).then(if (label) Modifier.semantics { contentDescription = statusDescription(status) } else Modifier)) {
         scale(this.size.width / 16f, pivot = Offset.Zero) {
             drawPath(path, color, style = Stroke(1.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
         }
@@ -1271,13 +1271,15 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
                 key(message.id) {
                     var expanded by remember { mutableStateOf(false) }
                     var clipped by remember { mutableStateOf(false) }
+                    val from = title(message.from, message.fromLabel)
+                    val time = messageTime(message.atMs, now, reply.period)
                     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("${title(message.from, message.fromLabel)} → ${title(message.to, message.toLabel)}", fontSize = 12.sp,
+                                Text("$from → ${title(message.to, message.toLabel)}", fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold, color = colors.text, maxLines = 2, overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f))
-                                Text(messageTime(message.atMs, now, reply.period), fontSize = 11.sp, style = figures, color = colors.muted, maxLines = 1)
+                                Text(time, fontSize = 11.sp, style = figures, color = colors.muted, maxLines = 1)
                             }
                             if (statusKey(message.status) != "accepted") {
                                 Text(messageStatusLabel(message, seats, reply.machines), fontSize = 11.sp,
@@ -1287,9 +1289,10 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
                                 maxLines = messageMaxLines(expanded), overflow = TextOverflow.Ellipsis,
                                 onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
                         }
-                        if (clipped && !expanded) TextButton(onClick = { expanded = true },
-                            modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Show more of this message" }) {
-                            Text("Show more", color = colors.accent)
+                        // A cut message has Show more, and once open, Show less; each is a 48 dp touch target named for its message.
+                        if (clipped) TextButton(onClick = { expanded = !expanded },
+                            modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = messageFoldName(!expanded, from, time) }) {
+                            Text(if (expanded) "Show less" else "Show more", color = colors.accent)
                         }
                     }
                 }
@@ -1335,16 +1338,22 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
         }
         // The legend follows 10 dp under the strip, or 10 dp under the bar.
         strip?.invoke()
+        // A tap on a legend row shows its meaning under it (the phone form of the PC tooltip); one row at a time.
+        var meaning by remember { mutableStateOf<String?>(null) }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             for ((status, count) in shown) {
                 // The usual outcomes are quiet; the ones to look at keep the text color.
                 val tone = if (status == "accepted" || status == "written") colors.muted else colors.text
-                Row(Modifier.fillMaxWidth().clearAndSetSemantics {
+                Column(Modifier.fillMaxWidth().clickable { meaning = if (meaning == status) null else status }.clearAndSetSemantics {
                     contentDescription = "${statusLabel(status)}, ${formatCount(count.toLong())}. ${STATUS_TIPS.getValue(status)}"
-                }, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(8.dp).background(statusColor(status, colors), RoundedCornerShape(2.dp)))
-                    Text(statusLabel(status), fontSize = 12.sp, color = tone, modifier = Modifier.weight(1f))
-                    Text(formatCount(count.toLong()), fontSize = 12.sp, style = figures, color = tone)
+                }) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(8.dp).background(statusColor(status, colors), RoundedCornerShape(2.dp)))
+                        Text(statusLabel(status), fontSize = 12.sp, color = tone, modifier = Modifier.weight(1f))
+                        Text(formatCount(count.toLong()), fontSize = 12.sp, style = figures, color = tone)
+                    }
+                    if (meaning == status) Text(STATUS_TIPS.getValue(status), fontSize = 11.sp, color = colors.muted,
+                        modifier = Modifier.padding(start = 16.dp, top = 2.dp))
                 }
             }
         }

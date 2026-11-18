@@ -34,7 +34,7 @@ class CouncilRoundTwoTest {
         assertEquals(listOf("Accepted", "No receipt", "On hold", "Not sent", "Status unknown"), STATUS_ORDER.map(::statusLabel))
         assertEquals("Status unknown", statusLabel("lost"))
         // The meanings keep their words.
-        assertEquals("ASB wrote the message to the receiver. No receipt came back.", STATUS_TIPS.getValue("written"))
+        assertEquals("ASB sent the message to the receiver. No receipt came back.", STATUS_TIPS.getValue("written"))
     }
 
     @Test fun accentGuardMovesOnlyColorsNearTheAccent() {
