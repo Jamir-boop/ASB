@@ -5,8 +5,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -150,6 +150,7 @@ private fun axisLabel(value: Double, metric: Metric): String {
 internal fun appSplit(row: UsageRow, metric: Metric): String =
     row.segments.filter { it.second > 0 }.joinToString(", ") { (app, value) -> "${appLabel(app)} ${formatValue(value, metric)}" }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
@@ -188,9 +189,8 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                             Modifier.width(168.dp), enabled = !statePage) { metric = Metric.valueOf(it) }
                         if (current != null) {
                             val onCount = machineIds.count { it !in offSet }
-                            val chips = rememberScrollState()
-                            Row(Modifier.weight(1f).fadeEnd(chips).horizontalScroll(chips),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // The chips wrap to more lines, so no chip is cut at the screen edge.
+                            FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 current.machines.forEachIndexed { index, machine ->
                                     val on = machine.machineId !in offSet
                                     Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !statePage && !(on && onCount == 1),
@@ -223,10 +223,14 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
     }
 }
 
+/** The title and the action of the Usage empty state, as the PC: All time has no action. */
+internal fun usageEmptyWords(period: String): Pair<String, String?> =
+    if (period == "all") "No usage yet" to null else "No usage in the last ${periodLabel(period)}" to "Show all time"
+
 @Composable
 private fun UsageEmpty(period: String, colors: ActivityColors, onAllTime: () -> Unit) {
-    StatePanel(if (period == "all") "No usage yet" else "No usage in the last ${periodLabel(period)}", USAGE_EMPTY_HINT, colors,
-        if (period != "all") "Show all time" else null, onAllTime)
+    val (title, action) = usageEmptyWords(period)
+    StatePanel(title, USAGE_EMPTY_HINT, colors, action, onAllTime)
 }
 
 @Composable
@@ -488,6 +492,12 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                     val i = BarGeom(left, size.width.toFloat(), n, gap).indexAt(point.x)
                     tapped = if (i != tapped) i else null
                 }
+            }
+            // A horizontal drag after the touch slop moves the selection to the column under the finger; a vertical drag is left
+            // to the page scroll.
+            .pointerInput(bars, left, gap) {
+                val pick = { x: Float -> tapped = scrubIndex(BarGeom(left, size.width.toFloat(), n, gap), x, tapped) }
+                detectHorizontalDragGestures(onDragStart = { pick(it.x) }) { change, _ -> pick(change.position.x) }
             }) {
             if (n == 0) return@Canvas
             val y = { v: Double -> plotB - (plotB - plotT) * (v / yMax).toFloat() }
@@ -612,6 +622,9 @@ internal class BarGeom(val left: Float, val width: Float, val n: Int, val gap: F
     fun indexAt(x: Float): Int? = if (n <= 0 || x < left - gap / 2 || x > width) null
         else ((x - left + gap / 2) / slot).toInt().coerceIn(0, n - 1)
 }
+
+/** The bar a scrub at [x] selects: the column under the finger, or [current] outside the plot. */
+internal fun scrubIndex(geom: BarGeom, x: Float, current: Int?): Int? = geom.indexAt(x) ?: current
 
 /** The TalkBack text of one bar, as the PC chart reads its tooltip: `Sun 14:00: Total $1.20, Claude Code $1.00, Codex $0.20`. */
 internal fun barDescription(title: String, total: String, rows: List<Pair<String, String>>): String =

@@ -690,6 +690,10 @@ internal const val MESSAGE_LINES = 6
 
 internal fun messageMaxLines(expanded: Boolean): Int = if (expanded) Int.MAX_VALUE else MESSAGE_LINES
 
+/** The TalkBack name of `Show more` or `Show less` of a thread message: `Show more of the message from docs at 14:05`. */
+internal fun messageFoldName(more: Boolean, from: String, time: String): String =
+    "Show ${if (more) "more" else "less"} of the message from $from at $time"
+
 /**
  * The count line of a cut thread: `Newest 100 of 230`; when Show earlier cannot ask for more (the [limit] is not the first page),
  * it says where the rest is: `Newest 200 of 230. The PC thread view shows all.`
