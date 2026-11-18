@@ -11,15 +11,12 @@ import local.asb.companion.ui.activeFilterChips
 import local.asb.companion.ui.cornerMeaning
 import local.asb.companion.ui.discRefreshLabel
 import local.asb.companion.ui.joinSentences
-import local.asb.companion.ui.liveOfferShows
 import local.asb.companion.ui.muteChoiceRows
 import local.asb.companion.ui.pillDescription
 import local.asb.companion.ui.pillLabel
 import local.asb.companion.ui.showMoreCount
 import local.asb.companion.ui.titleLines
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidCouncilRoundThreeListTest {
@@ -47,14 +44,6 @@ class AndroidCouncilRoundThreeListTest {
             assertEquals("$label, 0 sessions", pillDescription(label, 0))
         }
         assertEquals("Drawer, 1 session", pillDescription("Drawer", 1))
-    }
-
-    @Test fun theLiveOfferShowsOnlyPairedWithLiveOffNotClosedAndRows() {
-        assertTrue(liveOfferShows(paired = true, liveNotification = false, closed = false, listEmpty = false))
-        assertFalse(liveOfferShows(paired = false, liveNotification = false, closed = false, listEmpty = false))
-        assertFalse(liveOfferShows(paired = true, liveNotification = true, closed = false, listEmpty = false))
-        assertFalse(liveOfferShows(paired = true, liveNotification = false, closed = true, listEmpty = false))
-        assertFalse(liveOfferShows(paired = true, liveNotification = false, closed = false, listEmpty = true))
     }
 
     @Test fun theLegendWordsAreTheCornerMeanings() {

@@ -87,8 +87,6 @@ internal fun pairingLink(action: String?, data: String?): String? =
 class MainActivity : ComponentActivity() {
     private var notificationsAllowed by mutableStateOf(false)
     private var pendingPairingLink by mutableStateOf<String?>(null)
-    // The Live offer asked for the notification permission; the Live notification turns on only when it is granted.
-    private var liveWaitsForPermission by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -112,8 +110,6 @@ class MainActivity : ComponentActivity() {
                 AsbTheme(app.palette) {
                     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                         notificationsAllowed = Notifier.notificationsAllowed(this)
-                        // A refused permission leaves the Live notification off.
-                        if (!notificationsAllowed) liveWaitsForPermission = false
                     }
                     val requestNotifications = {
                         val asked = app.store.notificationPermissionAsked
@@ -136,19 +132,7 @@ class MainActivity : ComponentActivity() {
                         pendingPairingLink?.let(pairingModel::review)
                         pendingPairingLink = null
                     }
-                    // The same path as the Settings switch: save the switch, then start the service.
-                    LaunchedEffect(liveWaitsForPermission, notificationsAllowed) {
-                        if (liveWaitsForPermission && notificationsAllowed) {
-                            liveWaitsForPermission = false
-                            app.useLiveNotification(true)
-                            LiveService.startIfEnabled(app)
-                        }
-                    }
-                    val turnOnLive = {
-                        liveWaitsForPermission = true
-                        if (!notificationsAllowed) requestNotifications()
-                    }
-                    if (paired) PairedApp(app, notificationsAllowed, requestNotifications, turnOnLive) {
+                    if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
                         LiveService.stop(app)
                         app.liveUpdates.value = null
                         app.notifier.clear()
@@ -167,8 +151,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         (application as AsbApp).resumed = true
         notificationsAllowed = Notifier.notificationsAllowed(this)
-        // Back from the app notification settings with notifications still off: the Live notification stays off.
-        if (!notificationsAllowed) liveWaitsForPermission = false
         LiveService.startIfEnabled(this)
     }
 
@@ -202,7 +184,6 @@ private fun PairedApp(
     app: AsbApp,
     notificationsAllowed: Boolean,
     onRequestNotificationPermission: () -> Unit,
-    onTurnOnLive: () -> Unit,
     onUnpair: () -> Unit,
 ) {
     val store = app.store
@@ -279,9 +260,7 @@ private fun PairedApp(
                 onSettings = { screen = Screen.CONNECTION },
                 onMessages = { messagesSeat = it; screen = Screen.MESSAGES },
                 onUsage = { screen = Screen.USAGE },
-                onPairAgain = unpair,
-                liveNotification = app.liveNotification,
-                onTurnOnLive = onTurnOnLive)
+                onPairAgain = unpair)
         }
     }
 }

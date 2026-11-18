@@ -233,9 +233,6 @@ fun SessionsScreen(
     onMessages: (String?) -> Unit,
     onUsage: () -> Unit,
     onPairAgain: () -> Unit,
-    /** The Live notification switch; while it is off, the list offers it once (see [liveOfferShows]). */
-    liveNotification: Boolean = true,
-    onTurnOnLive: () -> Unit = {},
 ) = BoxWithConstraints {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -271,11 +268,6 @@ fun SessionsScreen(
     fun dismissWarning(provider: Provider) {
         dismissedWarnings = dismissedWarnings + (provider.id to provider.message)
         store.dismissedWarnings = dismissedWarnings
-    }
-    var liveOfferClosed by remember(store) { mutableStateOf(store.liveOfferClosed) }
-    fun closeLiveOffer() {
-        liveOfferClosed = true
-        store.liveOfferClosed = true
     }
     var initialError by rememberSaveable { mutableStateOf<String?>(null) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -314,16 +306,14 @@ fun SessionsScreen(
     // It starts at the first session that was visible before, so rotation keeps that session in view.
     // A list that was at the top (anchor "") or a missing anchor starts at the top, so warnings and moved rows stay in view.
     // The number of one-column items before the first row: the warnings and the "empty" item.
-    val liveOffer = liveOfferShows(true, liveNotification, liveOfferClosed, rows.isEmpty())
-    val lead = warnings.size + (if (rows.isEmpty()) 1 else 0) + (if (liveOffer && !flow) 1 else 0)
+    val lead = warnings.size + (if (rows.isEmpty()) 1 else 0)
     val listState = remember(flow, state.view, if (flow) packing.columns to packing.capacity else null) {
         LazyListState(startIndex(rows.indexOfFirst { it.id == viewModel.anchorId }, flow, packing.capacity, lead))
     }
     // The keys of the one-column list, in the same order as its items.
-    val listKeys = remember(warnings, rows, hiddenRows, liveOffer) {
+    val listKeys = remember(warnings, rows, hiddenRows) {
         buildList<Any> {
             warnings.forEach { add("warning:${it.id}") }
-            if (liveOffer) add("live-offer")
             if (rows.isEmpty()) add("empty")
             rows.forEach { add(it.id) }
             if (hiddenRows > 0) add("show-more")
@@ -868,7 +858,6 @@ fun SessionsScreen(
                 if (flow) warnings.forEach { provider ->
                     ProviderWarning(provider) { dismissWarning(provider) }
                 }
-                if (flow && liveOffer) LiveOffer(onTurnOn = { closeLiveOffer(); onTurnOnLive() }, onNotNow = ::closeLiveOffer)
                 PullToRefreshBox(
                     isRefreshing = state.refreshing,
                     state = pullState,
@@ -961,9 +950,6 @@ fun SessionsScreen(
                             item(key = "warning:${provider.id}") {
                                 ProviderWarning(provider) { dismissWarning(provider) }
                             }
-                        }
-                        if (liveOffer) item(key = "live-offer") {
-                            LiveOffer(onTurnOn = { closeLiveOffer(); onTurnOnLive() }, onNotNow = ::closeLiveOffer)
                         }
                         if (rows.isEmpty()) item(key = "empty") { emptyState(Modifier.fillParentMaxSize()) }
                         itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
@@ -1147,30 +1133,6 @@ private fun OfflineBand(age: String, canRetry: Boolean, onRetry: () -> Unit) {
                 color = hexColor(palette.muted), modifier = Modifier.clearAndSetSemantics { })
         }
         TextButton(onClick = onRetry, enabled = canRetry) { Text("Retry") }
-    }
-}
-
-/** The one-time offer of the Live notification at the top of the list; either button closes it for good. */
-@Composable
-private fun LiveOffer(onTurnOn: () -> Unit, onNotNow: () -> Unit) {
-    val palette = LocalPalette.current
-    Column(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)
-            .background(hexColor(mixColor(palette.background, palette.text, .06)), RoundedCornerShape(12.dp))
-            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
-    ) {
-        Text("Get alerts at once", style = MaterialTheme.typography.titleSmall, color = hexColor(palette.text),
-            modifier = Modifier.semantics { heading() })
-        Spacer(Modifier.height(4.dp))
-        Text("Turn on the Live notification. Without it, alerts can come up to 15 minutes late.",
-            style = MaterialTheme.typography.bodyMedium, color = hexColor(palette.muted), modifier = Modifier.padding(end = 8.dp))
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onNotNow, modifier = Modifier.heightIn(min = 48.dp)) { Text("Not now") }
-            Button(onClick = onTurnOn, shape = CircleShape, modifier = Modifier.heightIn(min = 48.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = hexColor(palette.accent),
-                    contentColor = hexColor(palette.background))) { Text("Turn on") }
-        }
     }
 }
 

@@ -158,14 +158,6 @@ class StoreTest {
         assertEquals(175, Store(preferences).cardZoom)
     }
 
-    @Test fun aClosedLiveOfferStaysClosedAfterUnpair() {
-        val preferences = MemoryPreferences()
-        assertFalse(Store(preferences).liveOfferClosed)
-        Store(preferences).liveOfferClosed = true
-        Store(preferences).clear()
-        assertTrue(Store(preferences).liveOfferClosed)
-    }
-
     private val homeLp = Engine("b".repeat(16), "homeLP", 4630, "b".repeat(64), listOf(zerotier))
 
     @Test fun enginesAndTheCurrentEngineAreSavedOnlyForTheCurrentPairing() {

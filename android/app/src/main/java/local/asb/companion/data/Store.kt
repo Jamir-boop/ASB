@@ -91,10 +91,6 @@ class Store(private val preferences: SharedPreferences) {
             try { AsbJson.decodeFromString<Map<String, String>>(it) } catch (_: SerializationException) { null }
         }.orEmpty()
         set(value) { preferences.edit().putString("dismissedWarnings", AsbJson.encodeToString(value)).apply() }
-    /** The Live offer card on the Sessions list was closed (Turn on or Not now); it never shows again. */
-    var liveOfferClosed: Boolean
-        get() = preferences.getBoolean("liveOfferClosed", false)
-        set(value) { preferences.edit { putBoolean("liveOfferClosed", value) } }
     var notificationPermissionAsked: Boolean
         get() = preferences.getBoolean("notificationPermissionAsked", false)
         set(value) { preferences.edit().putBoolean("notificationPermissionAsked", value).apply() }
@@ -201,7 +197,6 @@ class Store(private val preferences: SharedPreferences) {
             .putBoolean("notifyInput", notifyInput)
             .putBoolean("liveNotification", liveNotification)
             .putBoolean("useCameraArea", useCameraArea)
-            .putBoolean("liveOfferClosed", liveOfferClosed)
             .apply()
         etag = null
     }

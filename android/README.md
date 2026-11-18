@@ -288,9 +288,7 @@ pill; while the Offline band shows, the pill does not repeat its error, and whil
 the inspector is open, the pill shows over it. A tap closes it. The
 inspector has a scrim behind it.
 
-After pairing, while the Live notification is off, a card at the top of the list
-says `Get alerts at once` with **Turn on** and **Not now**; either one closes it
-for good. Settings > Card marks explains each card mark.
+Settings > Card marks explains each card mark.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A
 wider window, for example landscape, shows the desktop Column Flow: 240 dp

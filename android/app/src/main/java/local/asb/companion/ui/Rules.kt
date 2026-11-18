@@ -234,10 +234,6 @@ const val PENDING_HEADER = "Pending"
 /** The disc menu word for a new check: Retry while Offline, as the Offline band; else Refresh. */
 fun discRefreshLabel(offline: Boolean): String = if (offline) "Retry" else "Refresh"
 
-/** The Live offer card shows after pairing while the Live notification is off, it was never closed, and the list has rows. */
-fun liveOfferShows(paired: Boolean, liveNotification: Boolean, closed: Boolean, listEmpty: Boolean): Boolean =
-    paired && !liveNotification && !closed && !listEmpty
-
 /** The card description parts as sentences: no empty part, and a part that ends with a period gets no second one. */
 fun joinSentences(parts: List<String>): String = parts.filter { it.isNotBlank() }.joinToString(". ") { it.removeSuffix(".") }
 
