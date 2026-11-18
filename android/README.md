@@ -212,6 +212,9 @@ body shows six lines; `Show more` shows the rest and `Show less` folds it again.
 TalkBack names each button for its message (`Show more of the message from docs
 at 14:05`). When message text goes off on
 the PC, the open thread hides its text at the next report.
+Under the Messages status bar, the status list is one tap target: a tap shows
+what each status means under its word (the PC tooltip sentences), and a second
+tap hides them. TalkBack reads the sentence with each status.
 
 The Usage chart keeps 8 % headroom above the tallest bar on the round axis
 steps. Its x labels are at even steps (24 hours: every 6 hours on the hour; 7
