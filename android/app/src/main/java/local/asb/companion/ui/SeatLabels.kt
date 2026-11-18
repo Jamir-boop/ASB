@@ -725,3 +725,17 @@ internal fun threadOpenScroll(scroll: Int, panelTop: Float, threadBottom: Float,
  */
 internal fun threadAnchor(spans: List<Triple<String, Float, Float>>, viewportTop: Float): String? =
     spans.firstOrNull { it.third > viewportTop }?.first
+
+/**
+ * The translation of the thread head (top [headTop], [headHeight] high) that keeps it at [viewportTop] while its thread (end
+ * [threadBottom]) is in view, as the PC keeps the head out of the thread scroll: 0 while its own place is in view, and the head
+ * never goes past the thread end. All y values are in one coordinate space.
+ */
+internal fun stickyHeadOffset(headTop: Float, headHeight: Float, threadBottom: Float, viewportTop: Float): Float =
+    max(0f, min(viewportTop - headTop, threadBottom - headHeight - headTop))
+
+/** The viewport top of the `Show earlier` anchor ([threadAnchor]): the bottom of the stuck head, else [viewportTop]. */
+internal fun anchorViewportTop(headTop: Float, headHeight: Float, threadBottom: Float, viewportTop: Float): Float {
+    val offset = stickyHeadOffset(headTop, headHeight, threadBottom, viewportTop)
+    return if (offset > 0f) headTop + offset + headHeight else viewportTop
+}

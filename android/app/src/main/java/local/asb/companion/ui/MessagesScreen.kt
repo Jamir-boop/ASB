@@ -87,6 +87,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -105,6 +106,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -840,11 +842,28 @@ private fun MessagesContent(
                 val pageTop = strip.page?.takeIf { it.isAttached }?.positionInWindow()?.y ?: return@LaunchedEffect
                 if (selection != null) page.animateScrollTo((page.value + panelTop - pageTop).roundToInt().coerceAtLeast(0))
             }
-            Box(Modifier.onGloballyPositioned { panelTop = it.positionInWindow().y; strip.panel = it }) {
+            // While its thread is in view, the head (the center panel) stays at the page viewport top by a translation, as the
+            // PC keeps it out of the thread scroll; its background hides the messages under it. The 0 dp marker keeps the head's
+            // own place (the translated head would give a moved place). All three are in page content coordinates.
+            val open = selectedSeat != null || selectedChord != null
+            var headTop by remember { mutableFloatStateOf(0f) }
+            var headHeight by remember { mutableFloatStateOf(0f) }
+            var threadBottom by remember { mutableFloatStateOf(0f) }
+            val contentY = { c: LayoutCoordinates -> strip.page?.takeIf { it.isAttached }?.localPositionOf(c, Offset.Zero)?.y?.plus(page.value) }
+            Spacer(Modifier.onGloballyPositioned { c ->
+                panelTop = c.positionInWindow().y
+                strip.panel = c
+                contentY(c)?.let { headTop = it }
+            })
+            // zIndex draws the head above the messages and hit tests it first, at its drawn (translated) place.
+            Box(Modifier.zIndex(1f).graphicsLayer {
+                translationY = if (open) stickyHeadOffset(headTop - page.value, headHeight, threadBottom - page.value, 0f) else 0f
+            }.onSizeChanged { headHeight = it.height.toFloat() }) {
                 CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, onPeriod)
             }
-            if (selectedSeat != null || selectedChord != null) {
-                ThreadText(api, engine, reply, selectedSeat, selectedChord?.let { it.a to it.b }, seats, colors, textOn, page, strip) { id, label ->
+            if (open) Column(Modifier.fillMaxWidth().onGloballyPositioned { c -> contentY(c)?.let { threadBottom = it + c.size.height } }) {
+                ThreadText(api, engine, reply, selectedSeat, selectedChord?.let { it.a to it.b }, seats, colors, textOn, page, strip,
+                    anchorTop = { anchorViewportTop(headTop - page.value, headHeight, threadBottom - page.value, 0f) }) { id, label ->
                     titles[id] ?: label.ifEmpty { UNLISTED }
                 }
             }
@@ -1239,7 +1258,7 @@ private fun MessagesEmpty(period: String, colors: ActivityColors, onPeriod: (Str
 @Composable
 private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, seat: String?, pair: Pair<String, String>?,
     seats: Map<String, Seat>, colors: ActivityColors, textOn: Boolean?, page: ScrollState, strip: StripPlace,
-    title: (String, String) -> String) {
+    anchorTop: () -> Float, title: (String, String) -> String) {
     var limit by remember(engine, reply.period, seat, pair) { mutableIntStateOf(THREAD_LIMIT) }
     // The thread opens at its newest message once (the PC thread_stick); Show earlier keeps the message in view in place.
     var opening by remember(engine, reply.period, seat, pair) { mutableStateOf(true) }
@@ -1298,7 +1317,7 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
                                 Triple(message.id, top, top + it.size.height)
                             }
                         }
-                        anchor = threadAnchor(spans, 0f)?.let { id -> id to spans.first { it.first == id }.second }
+                        anchor = threadAnchor(spans, anchorTop())?.let { id -> id to spans.first { it.first == id }.second }
                     }
                     limit = THREAD_MAX
                 }, modifier = Modifier.heightIn(min = 48.dp)) {
