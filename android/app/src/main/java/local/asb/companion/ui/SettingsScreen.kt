@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,9 +33,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -256,7 +254,10 @@ fun SettingsScreen(
                         SettingsHeading("ASB")
                         val unread = persistentUnread
                         if (unread != null) {
-                            SettingsSwitch("Persistent unread", unread, !refreshing && !savingUnread && !revoked) { checked ->
+                            SettingsSwitch("Persistent unread", unread, !refreshing && !savingUnread && !revoked, caption = {
+                                Text(PERSISTENT_UNREAD_CAPTION, style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }) { checked ->
                                 savingUnread = true
                                 settingsError = null
                                 scope.launch {
@@ -287,9 +288,9 @@ fun SettingsScreen(
                             Text("Persistent unread", style = MaterialTheme.typography.bodyLarge)
                             Text(if (refreshing) "Loading PC setting…" else "Check connection to load this setting.",
                                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(PERSISTENT_UNREAD_CAPTION,
+                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("Keep unread marks until you select Read. This is the same setting as on the PC.",
-                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (savingUnread) Text("Saving…", style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                         settingsError?.let { SettingsError(it) }
@@ -306,60 +307,37 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodyLarge,
                         )
                         Text("View", style = MaterialTheme.typography.labelLarge)
-                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                            listOf("compact" to "Compact", "comfortable" to "Comfortable").forEachIndexed { index, (value, label) ->
-                                SegmentedButton(
-                                    selected = view == value,
-                                    onClick = { view = value; store.view = value; onViewChanged(value) },
-                                    shape = SegmentedButtonDefaults.itemShape(index, 2),
-                                    modifier = Modifier.heightIn(min = 48.dp),
-                                    // The fill marks the choice; with no check icon each label shows in full.
-                                    icon = {},
-                                ) { Text(label, maxLines = 1, softWrap = false) }
-                            }
-                        }
+                        ChoiceRow(VIEW_CHOICES, view) { value -> view = value; store.view = value; onViewChanged(value) }
                         Text("Card text size", style = MaterialTheme.typography.labelLarge)
-                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                            TEXT_SCALES.forEachIndexed { index, (value, label) ->
-                                SegmentedButton(
-                                    selected = textScale == value,
-                                    onClick = { textScale = value; onTextScaleChanged(value) },
-                                    shape = SegmentedButtonDefaults.itemShape(index, TEXT_SCALES.size),
-                                    modifier = Modifier.heightIn(min = 48.dp),
-                                    // The fill marks the choice; with no check icon and 6-letter labels each label shows in full.
-                                    icon = {},
-                                ) { Text(label, maxLines = 1, softWrap = false) }
-                            }
+                        ChoiceRow(TEXT_SCALE_CHOICES, textScale.toString()) { value ->
+                            textScale = value.toFloat(); onTextScaleChanged(textScale)
                         }
                         Text("Changes the text on the session cards. Other text follows the phone font size.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        SettingsSwitch("Background counts", backgroundCounts, onChecked = onBackgroundCountsChanged)
-                        Text("Show the commands and subagents that a session runs in the background.",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        SettingsSwitch("Background counts", backgroundCounts, caption = {
+                            SettingsCaption("Show the commands and subagents that a session runs in the background.")
+                        }, onChecked = onBackgroundCountsChanged)
                         PetSettings(pet) { value -> pet = value; store.pet = value; onPetChanged(value) }
-                        SettingsSwitch("Use the camera area", useCameraArea, onChecked = onUseCameraAreaChanged)
-                        Text("Draw the app under the camera hole. Turn off to keep that band clear.",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        SettingsSwitch("Use the camera area", useCameraArea, caption = {
+                            SettingsCaption("Draw the app under the camera hole. Turn off to keep that band clear.")
+                        }, onChecked = onUseCameraAreaChanged)
                     }
                     CardMarksLegend()
                     HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SettingsHeading("Notifications")
-                        SettingsSwitch("Done", notifyDone) { notifyDone = it; store.notifyDone = it }
-                        Text(ABOUT_DONE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        SettingsSwitch("Failed", notifyFailed) { notifyFailed = it; store.notifyFailed = it }
-                        Text(ABOUT_FAILED, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        SettingsSwitch("Needs input", notifyInput) { notifyInput = it; store.notifyInput = it }
-                        Text(ABOUT_INPUT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        SettingsSwitch("Live notification", liveNotification) {
+                        SettingsSwitch("Done", notifyDone, caption = { SettingsCaption(ABOUT_DONE) }) { notifyDone = it; store.notifyDone = it }
+                        SettingsSwitch("Failed", notifyFailed, caption = { SettingsCaption(ABOUT_FAILED) }) { notifyFailed = it; store.notifyFailed = it }
+                        SettingsSwitch("Needs input", notifyInput, caption = { SettingsCaption(ABOUT_INPUT) }) { notifyInput = it; store.notifyInput = it }
+                        SettingsSwitch("Live notification", liveNotification, caption = {
+                            Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
+                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            SettingsCaption("Alerts come within seconds while the Live notification is on. Without it, Android checks about every 15 minutes.")
+                        }) {
                             // The setter runs first, because startIfEnabled reads the saved switch.
                             onLiveNotificationChanged(it)
                             if (it) LiveService.startIfEnabled(context) else LiveService.stop(context)
                         }
-                        Text("Shows the number of sessions, Working, and Pending. While the phone is awake, it checks every 5 seconds while a session is working, and every 30 seconds when not. Android can delay checks while the screen is off.",
-                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Alerts come within seconds while the Live notification is on. Without it, Android checks about every 15 minutes.",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (!notificationsAllowed) {
                             Text("Notifications are off for ASB.", style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -370,7 +348,7 @@ fun SettingsScreen(
                         OutlinedButton(onClick = {
                             openSettings(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                                 .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
-                        }, modifier = Modifier.fillMaxWidth()) { Text("Notification sound and style") }
+                        }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Notification sound and style") }
                     }
                     HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -454,17 +432,27 @@ private fun SettingsHeading(title: String) {
     Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
 }
 
+/** A switch row with its caption 4 dp under it; the 8 dp bottom pad and the 8 dp column gap start the next row 16 dp after it. */
 @Composable
-private fun SettingsSwitch(label: String, checked: Boolean, enabled: Boolean = true, onChecked: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
-            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChecked),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+private fun SettingsSwitch(label: String, checked: Boolean, enabled: Boolean = true,
+    caption: @Composable ColumnScope.() -> Unit = {}, onChecked: (Boolean) -> Unit) {
+    Column(Modifier.padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChecked),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        }
+        caption()
     }
+}
+
+@Composable
+private fun SettingsCaption(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
@@ -494,7 +482,13 @@ private fun LicenseDialog(title: String, paths: List<String>, onDismiss: () -> U
     )
 }
 
-private val TEXT_SCALES = listOf(0.85f to "Small", 1f to "Normal", 1.15f to "Large", 1.3f to "Larger")
+private const val PERSISTENT_UNREAD_CAPTION = "Keep unread marks until you select Read. This is the same setting as on the PC."
+
+internal val VIEW_CHOICES = listOf("compact" to "Compact", "comfortable" to "Comfortable")
+
+// ChoiceRow takes string values; Float.toString and String.toFloat round-trip each scale exactly.
+internal val TEXT_SCALE_CHOICES = listOf(0.85f to "Small", 1f to "Normal", 1.15f to "Large", 1.3f to "Larger")
+    .map { (value, label) -> value.toString() to label }
 
 private val SettingsLicenses = linkedMapOf(
     "ASB (MIT)" to listOf("licenses/asb-LICENSE.txt"),
