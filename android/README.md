@@ -24,10 +24,12 @@ The words match the card: the title is the card state word and the machine
 `Failed · studio-pc`, `Usage limit · studio-pc`, `Done · studio-pc`), the text
 is the card title (or `Untitled session`), and the subtext is the app. When 2
 or more show, they share one app group with the app's own summary, which counts
-by kind (`1 needs input · 1 failed · 1 done`); the summary posts also while the
+the alerts, then each kind (`3 alerts: 1 needs input · 1 failed · 1 done`); the summary posts also while the
 app is open, because a group with no summary is one that Android auto-groups.
 While the PC switch for message text is on, the PC sends the pending question
 (`questionText`), and the Needs input notification shows it as expanded text.
+When the switch goes off or the question is gone, the next good read posts the
+notification again without the question, with no sound and at its old time.
 Only the private version has the question; the public version keeps `ASB` and
 the kind only: `A session needs your answer`, `A task failed`, `A task hit a
 usage limit`, or `A task is done` (the group summary and the Connection
@@ -206,14 +208,17 @@ no thread request. A PC with no switch (older ASB) or a 404 shows the older-PC
 message, and every other error reply (for example the gateway 502
 `The ASB reply is too large.`) shows its error, never an empty thread. A thread
 that is too long to load offers `Show fewer messages` (the newest 50). A message
-body shows six lines; `Show more` shows the rest. When message text goes off on
+body shows six lines; `Show more` shows the rest and `Show less` folds it again.
+TalkBack names each button for its message (`Show more of the message from docs
+at 14:05`). When message text goes off on
 the PC, the open thread hides its text at the next report.
 
 The Usage chart keeps 8 % headroom above the tallest bar on the round axis
 steps. Its x labels are at even steps (24 hours: every 6 hours on the hour; 7
 days: each day), and the axis labels get the room that their text needs. A tap
 on a bar or its column shows the PC box above or beside the bar: the title,
-Total, and the series from high to low. A current bucket that is still running has a lighter fill and says so far. TalkBack reads a summary
+Total, and the series from high to low. A horizontal drag over the plot moves the
+box to the bar under the finger; a vertical drag scrolls the page. A current bucket that is still running has a lighter fill and says so far. TalkBack reads a summary
 (`Usage over time, 24 hours. Highest: 14:00, $1.20.`) and reaches each bar
 with its time and values, as the PC tooltip. The gateway also forwards the `mute` and
 `unmute` row actions.
@@ -266,19 +271,23 @@ allow is dimmed, TalkBack says that it is disabled, and a line under it says
 why (for example `ASB does not open CLI sessions.`). **Copy reference** copies
 the absolute reference of the row (`asb:1/...`), and the pill says `Copied`;
 when the PC has no reference for the row, the button is dimmed with the reason.
-**Mute** offers the PC times (`30 min`, `1 hour`, `8 hours`, `1 day`, `Always`),
-each with its end time (`1 hour · until 22:41`); a muted row shows **Unmute**
-with `Muted until 14:30` (or `Muted`), and its card shows the muted bell and
+**Mute** offers the PC times as five chips of one width, three then two (`30 min`, `1 hour`, `8 hours`, `1 day`, `Always`),
+each with its end time (`1 hour · until 22:41`); a muted row shows an **Unmute**
+button with `Muted until 14:30` (or `Muted`), and its card shows the muted bell and
 `Muted until 14:30` (or `Muted`) after the folder. The inspector
-stays open after a change and shows the new row data. It covers the message
-bar, so it shows the current message (for example an error) as a caption below
-the switches. Back, a tap outside, Open, or the row leaving the list closes it.
+stays open after a change and shows the new row data. An action error shows
+as a caption below the switches; other messages, for example `Copied`, show in the
+message pill over the panel. Back, a tap outside, Open, or the row leaving the list closes it.
 
 After a good Open, `Opened on <PC>` shows in a small dark pill under the top
 bar (and its band and chip row). All other messages and errors show in the same
 pill; while the Offline band shows, the pill does not repeat its error, and while
-the inspector is open, the inspector shows the message. A tap closes it. The
+the inspector is open, the pill shows over it. A tap closes it. The
 inspector has a scrim behind it.
+
+After pairing, while the Live notification is off, a card at the top of the list
+says `Get alerts at once` with **Turn on** and **Not now**; either one closes it
+for good. Settings > Card marks explains each card mark.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A
 wider window, for example landscape, shows the desktop Column Flow: 240 dp
@@ -291,12 +300,12 @@ row is at least 48 dp high: the ASB disc, the connection text, Search, and
 Settings. The second row has the Pending, Working, Drawer, and Filters pills,
 so all four show in full on a 384 dp wide phone with two-digit counts. A pill
 shows its count when it is 1 or more (`Pending 4`, spoken `Pending, 4
-sessions`): the rows that the pill shows when it is on with no other filter
+sessions`; at 0 it shows no number and is spoken `Pending, 0 sessions`): the rows that the pill shows when it is on with no other filter
 on. The search and the other filters do not change the counts; only Include
-archived does. A
+archived does. While Offline the counts are the last known ones, in the muted color. A
 filled dot on the disc shows Live (success color); a hollow ring shows Offline
 (muted color). Tap or hold the disc to open a menu with the connection text,
-`Last update 12m ago`, and Refresh. Pull the list down to refresh. Search
+`Last update 12m ago`, and Refresh (Retry while Offline). Pull the list down to refresh. Search
 replaces the first row with a search field. The field stays open while it has
 a query. In Column Flow, the top bar is one row, at least 48 dp high: the disc,
 the connection text, a search field, the pills, and Settings. With large text,
@@ -305,9 +314,9 @@ work in Column Flow, so use Refresh in the disc menu. The pills scroll sideways
 and fade at the end when more pills are there.
 
 When a filter is on, a chip row under the top bar shows one chip for each
-filter, as the board filter chips: Pending, each chosen state, Drawer, the app,
-and Include archived. A chip is a button: a tap on `Remove filter: Pending` removes that
-filter; the last chip, `Clear filters`, removes all of them and keeps the
+Filters sheet value: each chosen state, the app, and Include archived. A value
+that a pill sets (Pending, Working, Drawer) has no chip, because its pill shows it.
+A chip is a button: a tap on `Remove filter: Idle` removes that filter; the last chip, `Clear filters`, removes all of them and keeps the
 search. As Esc and × on the board, Close search clears the search and all
 filters. Back with an open search or a filter on clears them first; the next
 Back leaves the screen.
@@ -322,7 +331,7 @@ inspector say why (`travel-laptop is not reachable.`), as the board tooltip
 and row panel.
 
 Over the Pending rows of the list (Comfortable and Compact), a small header
-says `Pending · 4`. While a search is set, a row that matches only by its
+says `Pending`; the Pending pill has the count. While a search is set, a row that matches only by its
 folder path shows that path (with `~` for a usual home folder, cut in the
 middle when it is long) in place of the project name. An empty list says `No
 sessions on studio-pc.` with a Refresh button (while Offline, no Refresh: the band's Retry is the action); no result says `No sessions
