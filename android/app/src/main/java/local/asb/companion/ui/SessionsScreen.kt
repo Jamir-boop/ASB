@@ -349,7 +349,6 @@ fun SessionsScreen(
     // The inspector shows its row's timer even when the row is off screen.
     val clockRows = visibleRows + listOfNotNull(inspectorRow)
     val clockIntervalMs = if (clockRows.isEmpty()) 0L else clockInterval(clockRows, nowMs) * 1000
-    val hasDrawerRows = threads.any { it.drawer && (state.filter.archived || !it.archived) }
     val workingOnly = state.filter.states == setOf("working")
     val counts = remember(threads, state.filter) { pillCounts(threads, state.filter) }
     fun endpoint(id: String) = if (flow) flowEndpoint(
@@ -665,9 +664,7 @@ fun SessionsScreen(
             })
             SessionChip(
                 pillLabel("Drawer", counts.drawer), state.filter.drawerOnly, dimCount = state.offline,
-                description = drawerPillDescription(counts.drawer, hasDrawerRows && counts.drawer == 0),
-                // The count says it; the dot shows only drawer rows that the other filters hide.
-                dot = hasDrawerRows && counts.drawer == 0,
+                description = pillDescription("Drawer", counts.drawer),
                 onClick = {
                     val selected = !state.filter.drawerOnly
                     viewModel.setFilter(state.filter.copy(
@@ -1087,7 +1084,6 @@ private fun SessionChip(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    dot: Boolean = false,
     icon: ImageVector? = null,
     /** The icon follows the label (a Remove filter chip); else an icon pill shows only its icon. */
     iconAfter: Boolean = false,
@@ -1126,8 +1122,6 @@ private fun SessionChip(
                 if (dimCount && count > 0) addStyle(SpanStyle(color = hexColor(palette.muted)), count, label.length)
             }, fontSize = 12.sp, color = content, maxLines = 1)
             if (icon != null && iconAfter) Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
-            if (dot) Box(Modifier.size(5.dp).background(
-                if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary, CircleShape))
         }
     }
 }

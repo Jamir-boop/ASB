@@ -1340,8 +1340,8 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
         strip?.invoke()
         // A tap on the legend shows each meaning under its word (the phone form of the PC tooltip); a second tap hides them.
         var meanings by remember { mutableStateOf(false) }
-        Column(Modifier.fillMaxWidth().heightIn(min = 48.dp)
-            .clickable(onClickLabel = "${if (meanings) "Hide" else "Show"} what each status means") { meanings = !meanings },
+        // shortcut: the tap has no accessibility action, because TalkBack already reads each sentence on its row.
+        Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).pointerInput(Unit) { detectTapGestures { meanings = !meanings } },
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             for ((status, count) in shown) {
                 // The usual outcomes are quiet; the ones to look at keep the text color.

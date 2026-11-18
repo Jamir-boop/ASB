@@ -13,7 +13,6 @@ import local.asb.companion.ui.discRefreshLabel
 import local.asb.companion.ui.joinSentences
 import local.asb.companion.ui.liveOfferShows
 import local.asb.companion.ui.muteChoiceRows
-import local.asb.companion.ui.drawerPillDescription
 import local.asb.companion.ui.pillDescription
 import local.asb.companion.ui.pillLabel
 import local.asb.companion.ui.showMoreCount
@@ -106,11 +105,5 @@ class AndroidCouncilRoundThreeListTest {
     @Test fun theDiscMenuSaysRetryWhileOffline() {
         assertEquals("Retry", discRefreshLabel(true))
         assertEquals("Refresh", discRefreshLabel(false))
-    }
-
-    @Test fun theDrawerPillKeepsItsDotWords() {
-        assertEquals("Drawer, 0 sessions", drawerPillDescription(0, dot = false))
-        assertEquals("Drawer, 2 sessions", drawerPillDescription(2, dot = false))
-        assertEquals("Drawer, 0 sessions shown, more with other filters", drawerPillDescription(0, dot = true))
     }
 }

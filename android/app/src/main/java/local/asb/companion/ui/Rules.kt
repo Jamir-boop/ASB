@@ -228,10 +228,6 @@ fun pillLabel(label: String, count: Int): String = if (count > 0) "$label $count
 
 fun pillDescription(label: String, count: Int): String = "$label, $count session${if (count == 1) "" else "s"}"
 
-/** The Drawer pill words; while its [dot] shows (drawer rows hidden by other filters) they say so. */
-fun drawerPillDescription(count: Int, dot: Boolean): String =
-    if (dot) "Drawer, 0 sessions shown, more with other filters" else pillDescription("Drawer", count)
-
 /** The header over the Pending rows; the Pending pill keeps the count. */
 const val PENDING_HEADER = "Pending"
 
