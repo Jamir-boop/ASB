@@ -9,6 +9,7 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import local.asb.companion.data.ActivityThread
 import local.asb.companion.data.THREAD_LIMIT
@@ -700,3 +701,27 @@ internal fun messageFoldName(more: Boolean, from: String, time: String): String 
  */
 internal fun threadCountText(shown: Int, total: Int, limit: Int): String =
     "Newest ${formatCount(shown.toLong())} of ${formatCount(total.toLong())}" + if (limit != THREAD_LIMIT) ". The PC thread view shows all." else ""
+
+/** The least height of a Busiest pairs row, with or without its not-sent line: a 48 dp touch target. */
+internal val BUSY_PAIR_MIN_HEIGHT = androidx.compose.ui.unit.Dp(48f)
+
+/** The counts line of a pair thread head, one line as on the PC (message_thread): `→ 115  ← 115`. */
+internal fun pairCountsText(chord: Chord): String = "→ ${formatCount(chord.ab.toLong())}  ← ${formatCount(chord.ba.toLong())}"
+
+/** The words of the status list button: it shows or hides the meaning under each status word. */
+internal fun meaningsButtonText(shown: Boolean): String = if (shown) "Hide meanings" else "Show meanings"
+
+/**
+ * The page scroll at which a thread opens (the PC thread_stick): its newest message (the last) is in view. When the panel top to
+ * the thread end fits in the viewport, the panel top goes to the viewport top; else the thread end goes to the viewport bottom.
+ * All y values are in one coordinate space, as [viewportTop] and [viewportBottom].
+ */
+internal fun threadOpenScroll(scroll: Int, panelTop: Float, threadBottom: Float, viewportTop: Float, viewportBottom: Float): Int =
+    (scroll + max(panelTop - viewportTop, threadBottom - viewportBottom)).roundToInt().coerceAtLeast(0)
+
+/**
+ * The anchor of `Show earlier` (the PC thread_anchor): the first message of [spans] (id, top, bottom, in thread order) that is in
+ * view under [viewportTop]. After the older messages come in above it, the page scrolls so that it stays at the same place.
+ */
+internal fun threadAnchor(spans: List<Triple<String, Float, Float>>, viewportTop: Float): String? =
+    spans.firstOrNull { it.third > viewportTop }?.first

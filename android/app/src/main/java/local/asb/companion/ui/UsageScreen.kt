@@ -184,21 +184,19 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ChoiceRow(USAGE_PERIODS.map { it to periodShortLabel(it) }, period,
                         descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }) { period = it }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name,
-                            Modifier.width(168.dp), enabled = !statePage) { metric = Metric.valueOf(it) }
-                        if (current != null) {
-                            val onCount = machineIds.count { it !in offSet }
-                            // The chips wrap to more lines, so no chip is cut at the screen edge.
-                            FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                current.machines.forEachIndexed { index, machine ->
-                                    val on = machine.machineId !in offSet
-                                    Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !statePage && !(on && onCount == 1),
-                                        role = Role.Switch) { off = toggleMachine(machineIds, offSet, machine.machineId).toList() },
-                                        contentAlignment = Alignment.Center) {
-                                        MachineChip(machine, colors.hue(index), colors, Modifier.alpha(if (on && !statePage) 1f else .5f),
-                                            strike = !on)
-                                    }
+                    ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name,
+                        Modifier.width(168.dp), enabled = !statePage) { metric = Metric.valueOf(it) }
+                    if (current != null) {
+                        val onCount = machineIds.count { it !in offSet }
+                        // The chips have their own row under the metric choice and wrap to more lines, so no chip is cut at the edge.
+                        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            current.machines.forEachIndexed { index, machine ->
+                                val on = machine.machineId !in offSet
+                                Box(Modifier.heightIn(min = 48.dp).toggleable(value = on, enabled = !statePage && !(on && onCount == 1),
+                                    role = Role.Switch) { off = toggleMachine(machineIds, offSet, machine.machineId).toList() },
+                                    contentAlignment = Alignment.Center) {
+                                    MachineChip(machine, colors.hue(index), colors, Modifier.alpha(if (on && !statePage) 1f else .5f),
+                                        strike = !on)
                                 }
                             }
                         }
@@ -323,26 +321,29 @@ private fun UsageRowView(row: UsageRow, metric: Metric, colors: ActivityColors, 
     spoken: String? = null, name: @Composable () -> Unit) {
     Column {
         // A Machines row adds its app split to what TalkBack reads.
-        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 6.dp)
+        // The bar, the value, the share, and the leading dot sit on the name line; the state runs under the bar up to the value column.
+        Column(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 6.dp)
             .then(if (spoken != null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier.semantics(mergeDescendants = true) {}),
-            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.width(112.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { name() }
-                sub?.let { FactsText(it, TextStyle(fontSize = 11.sp, color = colors.muted)) }
+            verticalArrangement = Arrangement.Center) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.width(112.dp), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    name()
+                }
+                // The track starts 1 dp after the filled part, so a background-colored gap separates them.
+                val fraction = row.share.toFloat().coerceIn(0f, 1f)
+                Box(Modifier.weight(1f).height(10.dp).drawBehind {
+                    val start = trackStart(size.width, fraction, 1.dp.toPx())
+                    if (start < size.width) drawRoundRect(colors.track, Offset(start, 0f), Size(size.width - start, size.height),
+                        CornerRadius(2.dp.toPx()))
+                }) { bar() }
+                val word = rowWord(row)
+                Text(word ?: formatValue(row.value, metric), fontSize = 13.sp, style = figures,
+                    color = if (word != null) colors.muted else colors.text, textAlign = TextAlign.End,
+                    maxLines = 1, modifier = Modifier.width(84.dp))
+                Text(if (word != null) "" else formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
+                    modifier = Modifier.width(44.dp))
             }
-            // The track starts 1 dp after the filled part, so a background-colored gap separates them.
-            val fraction = row.share.toFloat().coerceIn(0f, 1f)
-            Box(Modifier.weight(1f).height(10.dp).drawBehind {
-                val start = trackStart(size.width, fraction, 1.dp.toPx())
-                if (start < size.width) drawRoundRect(colors.track, Offset(start, 0f), Size(size.width - start, size.height),
-                    CornerRadius(2.dp.toPx()))
-            }) { bar() }
-            val word = rowWord(row)
-            Text(word ?: formatValue(row.value, metric), fontSize = 13.sp, style = figures,
-                color = if (word != null) colors.muted else colors.text, textAlign = TextAlign.End,
-                maxLines = 1, modifier = Modifier.width(84.dp))
-            Text(if (word != null) "" else formatShare(row.share), fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.End, maxLines = 1,
-                modifier = Modifier.width(44.dp))
+            sub?.let { FactsText(it, TextStyle(fontSize = 11.sp, color = colors.muted), Modifier.padding(end = MACHINE_STATE_END)) }
         }
         HorizontalDivider(thickness = 1.dp, color = colors.rule)
     }
@@ -355,11 +356,14 @@ internal fun trackStart(width: Float, fraction: Float, gap: Float): Float = min(
 internal fun arcShare(arc: RoundArc, names: Map<String, String>): String =
     "${formatShare(arc.share)} of ${if (arc.app != null) names[arc.machineId].orEmpty() else "total"}"
 
+/** The end inset of a machine state line: the value column (84 dp), the share column (44 dp), and their two 8 dp gaps. */
+internal val MACHINE_STATE_END = 144.dp
+
 /** A machine state that breaks only between its facts ([factLines]) and never ellipsizes. */
 @Composable
-private fun FactsText(line: String, style: TextStyle) {
+private fun FactsText(line: String, style: TextStyle, modifier: Modifier = Modifier) {
     val measurer = rememberTextMeasurer()
-    BoxWithConstraints {
+    BoxWithConstraints(modifier) {
         val width = constraints.maxWidth.toFloat()
         val text = remember(line, width, style) {
             factLines(line, width) { measurer.measure(it, style, maxLines = 1, softWrap = false).size.width.toFloat() }.joinToString("\n")
