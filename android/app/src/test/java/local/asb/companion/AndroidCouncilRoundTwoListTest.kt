@@ -1,7 +1,23 @@
 package local.asb.companion
 
 import java.time.ZoneOffset
+import local.asb.companion.data.ActivityBuckets
+import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.Thread
+import local.asb.companion.data.bucketRunning
+import local.asb.companion.data.usageBucketRunning
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.font.FontWeight
+import local.asb.companion.data.Palette
+import local.asb.companion.ui.EmptyAction
+import local.asb.companion.ui.SUGGESTED_PILL_MIN_HEIGHT
+import local.asb.companion.ui.SUGGESTED_PILL_SHAPE
+import local.asb.companion.ui.activityColorsOf
+import local.asb.companion.ui.selectedChoiceStyle
+import local.asb.companion.ui.suggestedPillStyle
+import local.asb.companion.ui.SO_FAR_ALPHA
+import local.asb.companion.ui.barAlpha
+import local.asb.companion.ui.emptyStateAction
 import local.asb.companion.ui.CORNER_TARGET
 import local.asb.companion.ui.Filter
 import local.asb.companion.ui.MUTE_CHOICES
@@ -19,6 +35,9 @@ import local.asb.companion.ui.workingClockMs
 import local.asb.companion.ui.workingDuration
 import local.asb.companion.ui.workingSignAlpha
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Android council round 2, list, card, and inspector fixes (made-up rows). */
@@ -78,19 +97,68 @@ class AndroidCouncilRoundTwoListTest {
         assertEquals("", muteFlagText(idle, now, utc))
     }
 
-    @Test fun allCornersShareOneXAtTheCardEnd() {
-        val cards = listOf(
-            idle.copy(unread = true), idle.copy(pinned = true), idle.copy(unread = true, pinned = true),
-            idle.copy(drawer = true, unread = true), idle.copy(drawer = true, unread = true, pinned = true),
-            idle.copy(state = "waiting", questionAttention = true), idle.copy(state = "waiting", actionRequired = true),
-            idle.copy(unread = true, alert = true, lastOutcome = "failed"),
-        )
-        for (row in cards) {
+    @Test fun aPinnedAndAnUnpinnedRowPutTheReadMarkAtOneX() {
+        // As the PC: the pin slot is at the card end and the read mark left of it, with or without a pin.
+        fun readEnd(row: Thread): Int {
             val slots = cornerSlots(cornerControls(row, false, false, now))
-            // The last slot always ends at the card's right edge: one x for every card; each next slot is one 48 dp target left.
-            assertEquals(CORNER_TARGET, cornerSlotEnd(slots, slots.lastIndex))
-            assertEquals(slots.indices.map { (slots.size - it) * CORNER_TARGET }, slots.indices.map { cornerSlotEnd(slots, it) })
+            return cornerSlotEnd(slots, slots.indexOfFirst { it != null && it.kind != "pin" && it.kind != "drawer" })
         }
+        for (read in listOf(idle.copy(unread = true), idle.copy(state = "waiting", questionAttention = true),
+            idle.copy(unread = true, alert = true, lastOutcome = "failed"))) {
+            assertEquals(2 * CORNER_TARGET, readEnd(read))
+            assertEquals(readEnd(read), readEnd(read.copy(pinned = true)))
+            assertEquals(readEnd(read), readEnd(read.copy(drawer = true)))
+        }
+        val pinned = cornerSlots(cornerControls(idle.copy(pinned = true), false, false, now))
+        assertEquals(CORNER_TARGET, cornerSlotEnd(pinned, pinned.lastIndex))
+    }
+
+    @Test fun theSessionsEmptyStateHasNoRefreshWhileOffline() {
+        assertEquals(EmptyAction.REFRESH, emptyStateAction(hasDashboard = false, hasThreads = false, offline = false))
+        // The Offline band's Retry is the action.
+        assertEquals(EmptyAction.NONE, emptyStateAction(hasDashboard = false, hasThreads = false, offline = true))
+        assertEquals(EmptyAction.NONE, emptyStateAction(hasDashboard = true, hasThreads = false, offline = true))
+        assertEquals(EmptyAction.CLEAR, emptyStateAction(hasDashboard = true, hasThreads = true, offline = true))
+        assertEquals(EmptyAction.CLEAR, emptyStateAction(hasDashboard = true, hasThreads = true, offline = false))
+    }
+
+    @Test fun theSelectedPeriodSegmentHasTheD17AStyle() {
+        val colors = activityColorsOf(Palette(background = "#222226", text = "#ffffff", accent = "#78aeed"))
+        val style = selectedChoiceStyle(colors)
+        // The neutral track fill and the accent label at weight 700, not the Settings accent fill.
+        assertEquals(colors.track, style.container)
+        assertEquals(colors.choice, style.content)
+        assertEquals(FontWeight.Bold, style.weight)
+        assertNotEquals(colors.accent, style.container)
+    }
+
+    @Test fun theStatePanelActionIsTheAccentPill() {
+        val colors = activityColorsOf(Palette(background = "#222226", text = "#ffffff", accent = "#78aeed"))
+        val pill = suggestedPillStyle(colors)
+        assertEquals(colors.accent, pill.container)
+        assertEquals(colors.background, pill.content)
+        assertEquals(CircleShape, SUGGESTED_PILL_SHAPE)
+        assertTrue(SUGGESTED_PILL_MIN_HEIGHT >= 48)
+    }
+
+    @Test fun onlyARunningLastBucketIsLighter() {
+        val day = 86_400_000L
+        val starts = List(7) { now - 6 * day + it * day }
+        val running = ActivityBuckets(unit = "day", startsMs = starts, endMs = starts.last() + day)
+        assertTrue(bucketRunning(running, now + 1))
+        assertEquals(SO_FAR_ALPHA, barAlpha(6, 7, bucketRunning(running, now + 1)))
+        assertEquals(1f, barAlpha(5, 7, bucketRunning(running, now + 1)))
+        // A period whose last bucket has ended: no bar is lighter.
+        assertFalse(bucketRunning(running, starts.last() + day))
+        assertEquals(1f, barAlpha(6, 7, bucketRunning(running, starts.last() + day)))
+        // An older engine with no end: a week bucket runs 7 days.
+        assertTrue(bucketRunning(ActivityBuckets(unit = "week", startsMs = listOf(now)), now + 6 * day))
+        assertFalse(bucketRunning(ActivityBuckets(unit = "week", startsMs = listOf(now)), now + 7 * day))
+        assertFalse(bucketRunning(ActivityBuckets(), now))
+        // All time: its last bucket holds now, but no bar is lighter and no title says so far.
+        assertTrue(usageBucketRunning(ActivityUsage(period = "7d", nowMs = now + 1, buckets = running)))
+        assertFalse(usageBucketRunning(ActivityUsage(period = "all", nowMs = now + 1, buckets = running)))
+        assertFalse(usageBucketRunning(ActivityUsage(period = "7d", nowMs = starts.last() + day, buckets = running)))
     }
 
     @Test fun theInspectorSaysTheReasonOfEachPendingKind() {

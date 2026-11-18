@@ -213,7 +213,7 @@ The Usage chart keeps 8 % headroom above the tallest bar on the round axis
 steps. Its x labels are at even steps (24 hours: every 6 hours on the hour; 7
 days: each day), and the axis labels get the room that their text needs. A tap
 on a bar or its column shows its time and value in a band above the chart,
-never over the bars. The current bucket has a lighter fill and says so far. TalkBack reads a summary
+never over the bars. A current bucket that is still running has a lighter fill and says so far (All time has none). TalkBack reads a summary
 (`Usage over time, 24 hours. Highest: 14:00, $1.20.`) and reaches each bar
 with its time and values, as the PC tooltip. The gateway also forwards the `mute` and
 `unmute` row actions.
@@ -325,7 +325,7 @@ Over the Pending rows of the list (Comfortable and Compact), a small header
 says `Pending · 4`. While a search is set, a row that matches only by its
 folder path shows that path (with `~` for a usual home folder, cut in the
 middle when it is long) in place of the project name. An empty list says `No
-sessions on studio-pc.` with a Refresh button; no result says `No sessions
+sessions on studio-pc.` with a Refresh button (while Offline, no Refresh: the band's Retry is the action); no result says `No sessions
 match the search and filters.` with a `Clear search and filters` button. When
 the PC removed the phone, the screen says `studio-pc removed this phone.`, how
 to make a new pairing link on the PC, and `Pair again`.

@@ -41,7 +41,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -238,14 +239,12 @@ internal fun ActivityTopBar(title: String, onBack: () -> Unit, subtitle: String 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, modifier: Modifier = Modifier,
-    descriptions: Map<String, String> = emptyMap(), enabled: Boolean = true, period: Boolean = false, onSelect: (String) -> Unit) {
+    descriptions: Map<String, String> = emptyMap(), enabled: Boolean = true, onSelect: (String) -> Unit) {
     val colors = activityColors()
-    // A [period] row has the selected style of the Settings segmented controls (the theme defaults: the accent fill). The other
-    // rows, D17 A: a selected choice has the neutral track fill and its label in the accent at weight 700; a selected disabled
-    // choice keeps the track fill with muted text.
-    val buttons = if (period) SegmentedButtonDefaults.colors() else SegmentedButtonDefaults.colors(activeContainerColor = colors.track,
-        activeContentColor = colors.choice, disabledActiveContainerColor = colors.track, disabledActiveContentColor = colors.muted,
-        disabledInactiveContentColor = colors.muted)
+    val style = selectedChoiceStyle(colors)
+    // A selected disabled choice keeps the track fill with muted text.
+    val buttons = SegmentedButtonDefaults.colors(activeContainerColor = style.container, activeContentColor = style.content,
+        disabledActiveContainerColor = colors.track, disabledActiveContentColor = colors.muted, disabledInactiveContentColor = colors.muted)
     SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
         choices.forEachIndexed { index, (value, label) ->
             SegmentedButton(
@@ -257,7 +256,7 @@ internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, mo
                 modifier = Modifier.heightIn(min = 48.dp)
                     .then(descriptions[value]?.let { Modifier.semantics { contentDescription = it } } ?: Modifier),
                 icon = {},
-            ) { Text(label, maxLines = 2, textAlign = TextAlign.Center, fontWeight = if (selected == value && !period) FontWeight.Bold else null) }
+            ) { Text(label, maxLines = 2, textAlign = TextAlign.Center, fontWeight = if (selected == value) style.weight else null) }
         }
     }
 }
@@ -321,7 +320,7 @@ internal fun ActivityError(message: String, screen: String, colors: ActivityColo
 /**
  * The empty and error layout of Messages and Usage: top-aligned, 24 dp under the period row (or the divider above it), 24 dp side
  * padding; the [title] in titleMedium, 8 dp, one [sentence] in bodyMedium in the caption color, 16 dp, and at most one [action] as
- * a FilledTonalButton at least 48 dp high.
+ * the PC suggested pill: an accent fill with the background as its text, at least 48 dp high.
  */
 @Composable
 internal fun StatePanel(title: String, sentence: String, colors: ActivityColors, action: String? = null, onAction: () -> Unit = {}) {
@@ -332,7 +331,9 @@ internal fun StatePanel(title: String, sentence: String, colors: ActivityColors,
         Text(sentence, style = MaterialTheme.typography.bodyMedium, color = colors.muted)
         if (action != null) {
             Spacer(Modifier.height(16.dp))
-            FilledTonalButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) { Text(action) }
+            val pill = suggestedPillStyle(colors)
+            Button(onClick = onAction, modifier = Modifier.heightIn(min = SUGGESTED_PILL_MIN_HEIGHT.dp), shape = SUGGESTED_PILL_SHAPE,
+                colors = ButtonDefaults.buttonColors(containerColor = pill.container, contentColor = pill.content)) { Text(action) }
         }
     }
 }
@@ -435,7 +436,7 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                 val current = reply
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ChoiceRow(MESSAGE_PERIODS.map { it to periodLabel(it) }, period, period = true) { period = it; chordKey = null }
+                    ChoiceRow(MESSAGE_PERIODS.map { it to periodLabel(it) }, period) { period = it; chordKey = null }
                     if (current != null) {
                         val chips = rememberScrollState()
                         Row(Modifier.fadeEnd(chips).horizontalScroll(chips), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

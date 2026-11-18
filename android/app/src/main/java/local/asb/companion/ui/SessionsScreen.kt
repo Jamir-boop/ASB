@@ -567,12 +567,14 @@ fun SessionsScreen(
             Spacer(Modifier.height(8.dp))
             Text(sentence, style = MaterialTheme.typography.bodyMedium, color = hexColor(LocalPalette.current.muted))
             Spacer(Modifier.height(16.dp))
-            if (state.dashboard != null && threads.isNotEmpty()) {
-                FilledTonalButton(onClick = { closeSearch() }, modifier = Modifier.heightIn(min = 48.dp)) {
+            when (emptyStateAction(state.dashboard != null, threads.isNotEmpty(), state.offline)) {
+                EmptyAction.CLEAR -> FilledTonalButton(onClick = { closeSearch() }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Clear search and filters")
                 }
-            } else FilledTonalButton(onClick = viewModel::refresh, enabled = !state.refreshing,
-                modifier = Modifier.heightIn(min = 48.dp)) { Text("Refresh") }
+                EmptyAction.REFRESH -> FilledTonalButton(onClick = viewModel::refresh, enabled = !state.refreshing,
+                    modifier = Modifier.heightIn(min = 48.dp)) { Text("Refresh") }
+                EmptyAction.NONE -> {}
+            }
         }
     }
 
@@ -1306,10 +1308,9 @@ private fun SessionCard(
                 }
             }
         }
-        // Each slot is its own 48 dp target inside the card, laid right to left from the card end with no empty slot, so the
-        // first control of every card is in the same slot at the same x.
+        // Each slot is its own 48 dp target inside the card; the read and pin slots keep their places, as on the desktop.
         slots.forEachIndexed { index, control ->
-            Box(Modifier.align(Alignment.TopEnd).offset(x = -(cornerSlotEnd(slots, index) - CORNER_TARGET).dp)
+            if (control != null) Box(Modifier.align(Alignment.TopEnd).offset(x = -(cornerSlotEnd(slots, index) - CORNER_TARGET).dp)
                 .size(CORNER_TARGET.dp)) {
                 CornerButton(control, cornerDescription(row, control), alertIsLimit(row), busy, palette, onCorner)
             }

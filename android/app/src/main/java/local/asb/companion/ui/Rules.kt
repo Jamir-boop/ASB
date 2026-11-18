@@ -623,24 +623,39 @@ fun cornerDescription(row: Thread, control: CornerControl): String =
 const val CORNER_TARGET = 48
 
 /**
- * The corner slots from left to right. They are laid right to left from the card end with no empty slot: the pin, then the read
- * mark, then the drawer. So the first control of every card is in the same 48 dp slot at the card's right edge.
+ * The corner slots from left to right, so the read and pin slots keep their places as on the desktop: the pin is at the end,
+ * the read mark left of it, the drawer left of that. A slot at the end with no control is null; no control gives no slot.
  */
-fun cornerSlots(controls: List<CornerControl>): List<CornerControl> = listOfNotNull(
-    controls.firstOrNull { it.kind == "drawer" },
-    controls.firstOrNull { it.kind !in setOf("drawer", "pin") },
-    controls.firstOrNull { it.kind == "pin" },
-)
+fun cornerSlots(controls: List<CornerControl>): List<CornerControl?> {
+    val pin = controls.firstOrNull { it.kind == "pin" }
+    val read = controls.firstOrNull { it.kind !in setOf("drawer", "pin") }
+    val drawer = controls.firstOrNull { it.kind == "drawer" }
+    val slots = listOf(pin, read, drawer)
+    val used = slots.indexOfLast { it != null } + 1
+    return slots.take(used).reversed()
+}
 
 /** The distance in dp from the card's right edge to the left edge of slot [index] of [slots]. */
-fun cornerSlotEnd(slots: List<CornerControl>, index: Int): Int = (slots.size - index) * CORNER_TARGET
+fun cornerSlotEnd(slots: List<CornerControl?>, index: Int): Int = (slots.size - index) * CORNER_TARGET
 
 /** The width in dp that the title and folder lines leave free for the corner controls. */
-fun cornerReserve(slots: List<CornerControl>): Int = slots.size * CORNER_TARGET
+fun cornerReserve(slots: List<CornerControl?>): Int = slots.size * CORNER_TARGET
 
 /** The reason under the inspector state: the meaning of the card's Pending corner mark, else "". */
 fun inspectorReason(row: Thread, nowMs: Long = System.currentTimeMillis()): String =
     cornerControls(row, false, false, nowMs).firstNotNullOfOrNull { cornerMeaning(row, it).ifEmpty { null } } ?: ""
+
+enum class EmptyAction { CLEAR, REFRESH, NONE }
+
+/**
+ * The action of the Sessions empty state: Clear search and filters when rows are only filtered out, else Refresh; while the
+ * Offline band shows, no Refresh, as the band's Retry is the action.
+ */
+fun emptyStateAction(hasDashboard: Boolean, hasThreads: Boolean, offline: Boolean): EmptyAction = when {
+    hasDashboard && hasThreads -> EmptyAction.CLEAR
+    offline -> EmptyAction.NONE
+    else -> EmptyAction.REFRESH
+}
 
 /** The machine that opens a row: its own machine name, else the paired PC. */
 fun openMachine(row: Thread, serverName: String): String =

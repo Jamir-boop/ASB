@@ -61,17 +61,16 @@ class AndroidCouncilRoundOneCardsTest {
     }
 
     @Test fun cornerSlotsKeepTheirPlacesAndReserveTheirWidth() {
-        fun slots(row: Thread) = cornerSlots(cornerControls(row, false, false, now)).map { it.kind }
-        assertEquals(emptyList<String>(), slots(idle))
+        fun slots(row: Thread) = cornerSlots(cornerControls(row, false, false, now)).map { it?.kind }
+        assertEquals(emptyList<String?>(), slots(idle))
         assertEquals(listOf("pin"), slots(idle.copy(pinned = true)))
-        // Right to left from the card end with no empty slot: pin, read, drawer.
-        assertEquals(listOf("dot"), slots(idle.copy(unread = true)))
+        // The read mark keeps its slot left of the pin slot, also with no pin.
+        assertEquals(listOf("dot", null), slots(idle.copy(unread = true)))
         assertEquals(listOf("dot", "pin"), slots(idle.copy(unread = true, pinned = true)))
-        assertEquals(listOf("drawer", "pin"), slots(idle.copy(drawer = true, pinned = true)))
+        assertEquals(listOf("drawer", null, "pin"), slots(idle.copy(drawer = true, pinned = true)))
         assertEquals(48, CORNER_TARGET)
         assertEquals(0, cornerReserve(emptyList()))
-        // A row loses only the width of the slots it shows.
-        assertEquals(2 * 48, cornerReserve(cornerSlots(cornerControls(idle.copy(drawer = true, unread = true), false, false, now))))
+        assertEquals(3 * 48, cornerReserve(cornerSlots(cornerControls(idle.copy(drawer = true), false, false, now))))
     }
 
     @Test fun theOpenButtonNamesTheMachineAndADimmedControlSaysWhy() {

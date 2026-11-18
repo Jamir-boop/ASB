@@ -88,6 +88,7 @@ import kotlin.math.sin
 import local.asb.companion.R
 import local.asb.companion.data.ActivityMachine
 import local.asb.companion.data.ActivityUsage
+import local.asb.companion.data.usageBucketRunning
 import local.asb.companion.data.Metric
 import local.asb.companion.data.RoundArc
 import local.asb.companion.data.TypeShare
@@ -176,7 +177,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ChoiceRow(USAGE_PERIODS.map { it to periodShortLabel(it) }, period,
-                        descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }, period = true) { period = it }
+                        descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }) { period = it }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name,
                             Modifier.width(168.dp), enabled = !statePage) { metric = Metric.valueOf(it) }
@@ -472,7 +473,9 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     val xHeight = measurer.measure("00:00", axis, maxLines = 1).size.height
     val chartHeight = plotB + 6 * dp + xHeight + 2 * dp
     val gap = (if (n >= 90) 1 else 2) * dp
-    val tipTitle = { i: Int -> tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1, first.takeIf { i == 0 }, reply.nowMs) }
+    // Only a last bucket that is still running is lighter and says so far; All time has none.
+    val running = usageBucketRunning(reply)
+    val tipTitle = { i: Int -> tooltipTitle(starts.getOrElse(i) { 0L }, unit, running && i == n - 1, first.takeIf { i == 0 }, reply.nowMs) }
     var width by remember { mutableIntStateOf(0) }
     val geom = BarGeom(left, width.toFloat(), n, gap)
     Box(Modifier.fillMaxWidth().height(with(density) { chartHeight.toDp() }).onSizeChanged { width = it.width }) {
@@ -496,7 +499,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
             bars.forEachIndexed { i, values ->
                 val x = g.barLeft(i)
                 // The current bucket is still running: a lighter fill, so that it does not read as a drop.
-                val fill = if (i == n - 1) SO_FAR_ALPHA else 1f
+                val fill = barAlpha(i, n, running)
                 var acc = 0.0
                 val visible = values.indices.filter { values[it] > 0 }
                 for (s in visible) {
@@ -567,6 +570,9 @@ internal fun tipPlace(left: Float, right: Float, width: Float, w: Float, h: Floa
 
 /** The fill alpha of the current (running) bucket of the Usage chart. */
 internal const val SO_FAR_ALPHA = .45f
+
+/** The fill alpha of bar [i] of [n]: [SO_FAR_ALPHA] only for the last bar while its bucket is [running], else 1. */
+internal fun barAlpha(i: Int, n: Int, running: Boolean): Float = if (running && i == n - 1) SO_FAR_ALPHA else 1f
 
 /**
  * The bar geometry of the Usage chart: [n] bars from [left] to [width], [gap] apart. The drawing, the tap, and the TalkBack
