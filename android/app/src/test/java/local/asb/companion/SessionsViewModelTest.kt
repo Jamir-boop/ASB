@@ -338,8 +338,12 @@ class SessionsViewModelTest {
         val afterLimit = stored
 
         server.enqueue(MockResponse().setResponseCode(304))
+        // The poll reads hello after its first good dashboard; answer it before the cancel, or it takes the next reply.
+        server.enqueue(helloReply)
         val polling = poll(model)
         await { baselines.size == 2 }
+        repeat(2) { server.takeRequest() }
+        takeHello()
         polling.cancel()
         scheduler.runCurrent()
         assertEquals(afterLimit, stored)
