@@ -35,8 +35,9 @@ the kind only: `A session needs your answer`, `A task failed`, `A task hit a
 usage limit`, or `A task is done` (the group summary and the Connection
 notification keep `A session needs attention`). Each switch in Settings has a
 caption with what it covers, the same text as its channel description. The Live
-notification text lists up to 3 pending titles (in the cards' order), then
-`+N more pending` when more are pending, then the working titles; its public version keeps only the counts. On a locked phone, Android shows the version
+notification text has two groups, `Pending: ` with up to 3 pending titles (in the cards' order)
+and `+N more`, then `Working: ` with the working titles and `+N more`; a group with no rows is left out. The title
+leaves out a zero count (`13 pending`, `2 working`). Its public version keeps only the counts. On a locked phone, Android shows the version
 without the question when the phone setting hides sensitive notification
 content; otherwise the lock screen shows the question too. The app keeps the
 question text in memory, never in the saved preferences or a log line, but
@@ -202,7 +203,8 @@ asks the hello of that engine first. With `sendText: true`, it loads the thread
 as the PC thread view does (`seat=` or `a=` and `b=`, the period, `limit=100`)
 and shows each message with its from and to names, its time, its status when it
 is not accepted, and its text (`Text not available` without a copy), newest
-last. A thread opens at its newest message, as on the PC; `Show earlier` loads
+last. A thread opens at its newest message, as on the PC, and its head (the seat or the pair) stays at the
+top of the screen while the thread is in view; `Show earlier` loads
 up to 200 and keeps the message in view in its place. The text stays in screen memory only: never
 in the saved settings, a file, or a log. With the switch off, the thread shows
 `Message text is off on the PC. Turn it on in ASB Preferences > Phone.` and makes
@@ -311,7 +313,7 @@ shows its count when it is 1 or more (`Pending 4`, spoken `Pending, 4
 sessions`; at 0 it shows no number and is spoken `Pending, 0 sessions`): the rows that the pill shows when it is on with no other filter
 on. The search and the other filters do not change the counts; only Include
 archived does. TalkBack reads the Filters pill as `Filters, 2 on` while two
-Filters sheet values are on. While Offline the counts are the last known ones, dimmed. A
+Filters sheet values are on. While Offline the counts are the last known ones, dimmed on the unselected pills; a selected pill keeps its count in the label color, as on the PC. A
 filled dot on the disc shows Live (success color); a hollow ring shows Offline
 (muted color). Tap or hold the disc to open a menu with the connection text,
 `Last update 12m ago`, and Refresh (Retry while Offline). Pull the list down to refresh. Search
