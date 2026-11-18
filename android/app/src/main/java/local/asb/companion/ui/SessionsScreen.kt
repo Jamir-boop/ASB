@@ -665,7 +665,7 @@ fun SessionsScreen(
             })
             SessionChip(
                 pillLabel("Drawer", counts.drawer), state.filter.drawerOnly, dimCount = state.offline,
-                description = pillDescription("Drawer", counts.drawer),
+                description = drawerPillDescription(counts.drawer, hasDrawerRows && counts.drawer == 0),
                 // The count says it; the dot shows only drawer rows that the other filters hide.
                 dot = hasDrawerRows && counts.drawer == 0,
                 onClick = {

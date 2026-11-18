@@ -1338,13 +1338,15 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
         }
         // The legend follows 10 dp under the strip, or 10 dp under the bar.
         strip?.invoke()
-        // A tap on a legend row shows its meaning under it (the phone form of the PC tooltip); one row at a time.
-        var meaning by remember { mutableStateOf<String?>(null) }
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // A tap on the legend shows each meaning under its word (the phone form of the PC tooltip); a second tap hides them.
+        var meanings by remember { mutableStateOf(false) }
+        Column(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .clickable(onClickLabel = "${if (meanings) "Hide" else "Show"} what each status means") { meanings = !meanings },
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
             for ((status, count) in shown) {
                 // The usual outcomes are quiet; the ones to look at keep the text color.
                 val tone = if (status == "accepted" || status == "written") colors.muted else colors.text
-                Column(Modifier.fillMaxWidth().clickable { meaning = if (meaning == status) null else status }.clearAndSetSemantics {
+                Column(Modifier.fillMaxWidth().clearAndSetSemantics {
                     contentDescription = "${statusLabel(status)}, ${formatCount(count.toLong())}. ${STATUS_TIPS.getValue(status)}"
                 }) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1352,7 +1354,7 @@ private fun MessagesSummary(ledger: Ledger, colors: ActivityColors, strip: (@Com
                         Text(statusLabel(status), fontSize = 12.sp, color = tone, modifier = Modifier.weight(1f))
                         Text(formatCount(count.toLong()), fontSize = 12.sp, style = figures, color = tone)
                     }
-                    if (meaning == status) Text(STATUS_TIPS.getValue(status), fontSize = 11.sp, color = colors.muted,
+                    if (meanings) Text(STATUS_TIPS.getValue(status), fontSize = 11.sp, color = colors.muted,
                         modifier = Modifier.padding(start = 16.dp, top = 2.dp))
                 }
             }
