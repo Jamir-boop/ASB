@@ -10,6 +10,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,6 +61,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -72,12 +74,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -96,6 +103,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -174,6 +182,7 @@ import local.asb.companion.data.MESSAGE_NO_TEXT
 import local.asb.companion.data.MESSAGE_TEXT_OFF
 import local.asb.companion.data.THREAD_LIMIT
 import local.asb.companion.data.THREAD_MAX
+import local.asb.companion.data.THREAD_FEWER
 import local.asb.companion.data.threadQuery
 
 // ---------- Shared by Messages and Usage ----------
@@ -232,9 +241,9 @@ internal fun ActivityTopBar(title: String, onBack: () -> Unit, subtitle: String 
 internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, modifier: Modifier = Modifier,
     descriptions: Map<String, String> = emptyMap(), enabled: Boolean = true, onSelect: (String) -> Unit) {
     val colors = activityColors()
-    // D17 A: a selected choice has the neutral track fill and its label in the accent at weight 700; a selected disabled choice
-    // keeps the track fill with muted text.
-    val buttons = SegmentedButtonDefaults.colors(activeContainerColor = colors.track, activeContentColor = colors.choice,
+    val style = selectedChoiceStyle(colors)
+    // A selected disabled choice keeps the track fill with muted text.
+    val buttons = SegmentedButtonDefaults.colors(activeContainerColor = style.container, activeContentColor = style.content,
         disabledActiveContainerColor = colors.track, disabledActiveContentColor = colors.muted, disabledInactiveContentColor = colors.muted)
     SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
         choices.forEachIndexed { index, (value, label) ->
@@ -247,7 +256,7 @@ internal fun ChoiceRow(choices: List<Pair<String, String>>, selected: String, mo
                 modifier = Modifier.heightIn(min = 48.dp)
                     .then(descriptions[value]?.let { Modifier.semantics { contentDescription = it } } ?: Modifier),
                 icon = {},
-            ) { Text(label, maxLines = 2, textAlign = TextAlign.Center, fontWeight = if (selected == value) FontWeight.Bold else null) }
+            ) { Text(label, maxLines = 2, textAlign = TextAlign.Center, fontWeight = if (selected == value) style.weight else null) }
         }
     }
 }
@@ -301,20 +310,44 @@ internal fun ActivityLoading() {
     Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
 }
 
+/** An error page of [screen] (`messages`, `usage`) as [StatePanel]; Try again only where a retry can help ([errorCopy]). */
 @Composable
-internal fun ActivityError(message: String, colors: ActivityColors, onRetry: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(message, color = colors.text, textAlign = TextAlign.Center,
-            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-        Button(onClick = onRetry) { Text("Try again") }
+internal fun ActivityError(message: String, screen: String, colors: ActivityColors, onRetry: () -> Unit) {
+    val copy = errorCopy(message, screen)
+    StatePanel(copy.title, copy.sentence, colors, if (copy.retry) "Try again" else null, onRetry)
+}
+
+/**
+ * The empty and error layout of Messages and Usage: top-aligned, 24 dp under the period row (or the divider above it), 24 dp side
+ * padding; the [title] in titleMedium, 8 dp, one [sentence] in bodyMedium in the caption color, 16 dp, and at most one [action] as
+ * the PC suggested pill: an accent fill with the background as its text, at least 48 dp high.
+ */
+@Composable
+internal fun StatePanel(title: String, sentence: String, colors: ActivityColors, action: String? = null, onAction: () -> Unit = {}) {
+    Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 24.dp)
+        .semantics { liveRegion = LiveRegionMode.Polite }) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = colors.text)
+        Spacer(Modifier.height(8.dp))
+        Text(sentence, style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+        if (action != null) {
+            Spacer(Modifier.height(16.dp))
+            val pill = suggestedPillStyle(colors)
+            Button(onClick = onAction, modifier = Modifier.heightIn(min = SUGGESTED_PILL_MIN_HEIGHT.dp), shape = SUGGESTED_PILL_SHAPE,
+                colors = ButtonDefaults.buttonColors(containerColor = pill.container, contentColor = pill.content)) { Text(action) }
+        }
     }
 }
 
-@Composable
-internal fun ActivityEmpty(text: String, colors: ActivityColors) {
-    Text(text, color = colors.muted, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(48.dp))
-}
+/** Fades the end of a horizontally scrolled row while more content is past its end, so that no glyph shows cut. */
+internal fun Modifier.fadeEnd(scroll: ScrollState, length: Dp = 24.dp): Modifier =
+    graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen).drawWithContent {
+        drawContent()
+        if (scroll.canScrollForward) {
+            val start = size.width - length.toPx()
+            drawRect(Brush.horizontalGradient(listOf(Color.Black, Color.Transparent), startX = start, endX = size.width),
+                topLeft = Offset(start, 0f), size = Size(length.toPx(), size.height), blendMode = BlendMode.DstIn)
+        }
+    }
 
 @Composable
 internal fun SectionTitle(text: String, colors: ActivityColors) {
@@ -369,8 +402,13 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
     var chordKey by remember { mutableStateOf<String?>(null) }
     var frameNanos by remember { mutableLongStateOf(0L) }
     var bucket by remember(reply?.buckets) { mutableStateOf<Int?>(null) }
+    // The PC message text switch, read at each report poll while a thread shows: false hides the text at once.
+    var textOn by remember(engine) { mutableStateOf<Boolean?>(null) }
     val strip = remember { StripPlace() }
+    val page = rememberScrollState()
+    val hasThread = selected != null || chordKey != null
     PollWhileResumed(api, engine, period, attempt, intervalMs = { 10_000L }) {
+        if (hasThread) try { textOn = api.messageText(engine) } catch (_: AsbError) {}
         try {
             val next = api.activityMessages(period, engine)
             val landed = arrivals(previous, next.messages, next.nowMs)
@@ -394,13 +432,14 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
     Scaffold(contentWindowInsets = SafeContentInsets, topBar = { ActivityTopBar("Messages", onBack) }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             Column(Modifier.widthIn(max = 840.dp).fillMaxWidth().onGloballyPositioned { strip.page = it }
-                .pointerInput(Unit) { clearOnTapOutside(strip) { bucket = null } }.verticalScroll(rememberScrollState())) {
+                .pointerInput(Unit) { clearOnTapOutside(strip) { bucket = null } }.verticalScroll(page)) {
                 val current = reply
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ChoiceRow(MESSAGE_PERIODS.map { it to periodLabel(it) }, period) { period = it; chordKey = null }
                     if (current != null) {
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val chips = rememberScrollState()
+                        Row(Modifier.fadeEnd(chips).horizontalScroll(chips), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             current.machines.forEachIndexed { index, machine ->
                                 MachineChip(machine, colors.hue(index), colors)
                             }
@@ -415,12 +454,13 @@ fun MessagesScreen(api: AsbApi, engine: String, selected: String?, onSelect: (St
                 }
                 HorizontalDivider(thickness = 1.dp, color = colors.divider)
                 when {
-                    current == null && error != null -> ActivityError(error.orEmpty(), colors) { attempt++ }
+                    current == null && error != null -> ActivityError(error.orEmpty(), "messages", colors) { attempt++ }
                     current == null -> ActivityLoading()
-                    current.messages.isEmpty() && current.machines.isEmpty() -> ActivityEmpty("No messages in the last ${periodLabel(period)}", colors)
+                    current.messages.isEmpty() && current.machines.isEmpty() -> MessagesEmpty(period, colors) { period = it; chordKey = null }
                     else -> {
                         error?.let { Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
-                        MessagesContent(api, engine, current, selected, chordKey, flights, frameNanos, colors, bucket, strip, { bucket = it },
+                        MessagesContent(api, engine, current, selected, chordKey, flights, frameNanos, colors, bucket, strip, page, textOn,
+                            { bucket = it },
                             // A second tap on the selected seat or chord clears the selection.
                             onSeat = { onSelect(it.takeIf { id -> id != selected }); chordKey = null },
                             onChord = { chordKey = it.takeIf { key -> key != chordKey }; onSelect(null) },
@@ -684,7 +724,8 @@ private val NEXT_PERIOD = mapOf("24h" to "7d", "7d" to "30d")
 @Composable
 private fun MessagesContent(
     api: AsbApi, engine: String, reply: ActivityMessages, selected: String?, chordKey: String?, flights: List<Flight>, frameNanos: Long,
-    colors: ActivityColors, bucket: Int?, strip: StripPlace, onBucket: (Int) -> Unit, onSeat: (String) -> Unit, onChord: (String) -> Unit,
+    colors: ActivityColors, bucket: Int?, strip: StripPlace, page: ScrollState, textOn: Boolean?, onBucket: (Int) -> Unit,
+    onSeat: (String) -> Unit, onChord: (String) -> Unit,
     onClear: () -> Unit, onPeriod: (String) -> Unit,
 ) {
     val seats = remember(reply) { reply.seats.associateBy { it.id } }
@@ -761,7 +802,7 @@ private fun MessagesContent(
                                 val chord = curves.entries.mapNotNull { (key, draw) -> draw?.let { key to it.curve.distanceTo(point) } }
                                     .minByOrNull { it.second }
                                 when {
-                                    seat != null && seatDistance <= 20 * dp -> currentOnSeat(seat)
+                                    seat != null && seatDistance <= 24 * dp -> currentOnSeat(seat)
                                     chord != null && chord.second <= 14 * dp -> currentOnChord(chord.first)
                                     else -> currentOnClear()
                                 }
@@ -776,15 +817,24 @@ private fun MessagesContent(
                     val count = counts[seat.id]
                     val label = "${title(seat.id)}, ${appLabel(seat.app)}, ${machines[seat.machineId]?.name.orEmpty()}: " +
                         seatDirections(count)
-                    Box(Modifier.offset { IntOffset((pin.x - 20 * dp).roundToInt(), (pin.y - 20 * dp).roundToInt()) }.size(40.dp)
+                    // A 48 dp target on each seat; the table keeps 12 seats as on the PC.
+                    Box(Modifier.offset { IntOffset((pin.x - 24 * dp).roundToInt(), (pin.y - 24 * dp).roundToInt()) }.size(48.dp)
                         .clickable(interactionSource = null, indication = null, role = Role.Button) { onSeat(seat.id) }
                         .clearAndSetSemantics { contentDescription = label; role = Role.Button })
                 }
             }
-            // The empty block sizes follow the width of the center disc.
-            CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, 2 * geom.rc / dp, onPeriod)
+            // After a seat or pair is selected, the page scrolls so that the thread title (the top of the center panel) is at the top.
+            var panelTop by remember { mutableFloatStateOf(0f) }
+            val selection = selectedSeat ?: selectedChord?.key
+            LaunchedEffect(selection) {
+                val pageTop = strip.page?.takeIf { it.isAttached }?.positionInWindow()?.y ?: return@LaunchedEffect
+                if (selection != null) page.animateScrollTo((page.value + panelTop - pageTop).roundToInt().coerceAtLeast(0))
+            }
+            Box(Modifier.onGloballyPositioned { panelTop = it.positionInWindow().y }) {
+                CenterPanel(reply, selectedSeat, selectedChord, counts, seats, machines, colors, title, onPeriod)
+            }
             if (selectedSeat != null || selectedChord != null) {
-                ThreadText(api, engine, reply, selectedSeat, selectedChord?.let { it.a to it.b }, seats, colors) { id, label ->
+                ThreadText(api, engine, reply, selectedSeat, selectedChord?.let { it.a to it.b }, seats, colors, textOn) { id, label ->
                     titles[id] ?: label.ifEmpty { UNLISTED }
                 }
             }
@@ -1111,7 +1161,7 @@ private fun pairKey(message: ActivityMessage, seated: List<Seat>): String? {
 @Composable
 private fun CenterPanel(
     reply: ActivityMessages, seat: String?, chord: Chord?, counts: Map<String, SeatCount>, seats: Map<String, Seat>,
-    machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String, disc: Float, onPeriod: (String) -> Unit,
+    machines: Map<String, ActivityMachine>, colors: ActivityColors, title: (String) -> String, onPeriod: (String) -> Unit,
 ) {
     HorizontalDivider(thickness = 1.dp, color = colors.divider)
     Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp)
@@ -1157,18 +1207,19 @@ private fun CenterPanel(
                     }
                 }, fontSize = 11.sp, style = figures, color = colors.muted)
             }
-            // The block of the Usage empty page: the icon, the title, the hint, and the pill; larger from a 520 dp disc.
-            else -> Column(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally) {
-                val (icon, titleSp) = emptyBlockSizes(disc)
-                EmptyBlock(R.drawable.ic_messages, "No messages in the last ${periodLabel(reply.period)}", MESSAGES_EMPTY_HINT, colors,
-                    icon.dp, titleSp)
-                NEXT_PERIOD[reply.period]?.let { next ->
-                    AccentButton("Show the last ${periodLabel(next)}", colors, Modifier.padding(top = 4.dp)) { onPeriod(next) }
-                }
-            }
+            else -> Unit
         }
     }
+    // The empty period: the empty layout under the table.
+    if (chord == null && seat == null && newestMessage(reply.messages) == null) MessagesEmpty(reply.period, colors, onPeriod)
+}
+
+/** The Messages empty layout ([StatePanel]): the period title, the hint, and `Show the last 7 days` (a longer period) if any. */
+@Composable
+private fun MessagesEmpty(period: String, colors: ActivityColors, onPeriod: (String) -> Unit) {
+    val next = NEXT_PERIOD[period]
+    StatePanel("No messages in the last ${periodLabel(period)}", MESSAGES_EMPTY_HINT, colors,
+        next?.let { "Show the last ${periodLabel(it)}" }) { next?.let(onPeriod) }
 }
 
 /**
@@ -1178,35 +1229,48 @@ private fun CenterPanel(
  */
 @Composable
 private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, seat: String?, pair: Pair<String, String>?,
-    seats: Map<String, Seat>, colors: ActivityColors, title: (String, String) -> String) {
+    seats: Map<String, Seat>, colors: ActivityColors, textOn: Boolean?, title: (String, String) -> String) {
     var limit by remember(engine, reply.period, seat, pair) { mutableIntStateOf(THREAD_LIMIT) }
     var state by remember(engine, reply.period, seat, pair) { mutableStateOf<ThreadState>(ThreadState.Loading) }
+    var attempt by remember(engine, reply.period, seat, pair) { mutableIntStateOf(0) }
     val query = threadQuery(reply.period, seat, pair, limit) ?: return
-    // A new message in the report loads the thread again; as on the PC, an error after a shown thread keeps it.
-    LaunchedEffect(engine, query, reply.messages.lastOrNull()?.id) {
+    val textOff = textOn == false
+    // A new message in the report loads the thread again; as on the PC, an error after a shown thread keeps it. The switch of the
+    // report poll: off drops the text at once with no request; on after off loads the thread once.
+    LaunchedEffect(engine, query, reply.messages.lastOrNull()?.id, textOff, attempt) {
+        if (textOff) { state = ThreadState.Off; return@LaunchedEffect }
         val next = loadThread({ api.messageText(engine) }) { api.activityThread(query, engine) }
         if (next !is ThreadState.Failed || state !is ThreadState.Shown) state = next
     }
     HorizontalDivider(thickness = 1.dp, color = colors.divider)
-    Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        val note = @Composable { text: String -> Text(text, fontSize = 12.sp, color = colors.muted) }
-        when (val current = state) {
-            ThreadState.Loading -> note("Loading messages")
-            ThreadState.Off -> note(MESSAGE_TEXT_OFF)
-            is ThreadState.Failed -> note(current.message)
-            is ThreadState.Shown -> {
-                val thread = current.thread
-                val shown = thread.messages.size
-                if (thread.total > shown) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Newest ${formatCount(shown.toLong())} of ${formatCount(thread.total.toLong())}", fontSize = 12.sp,
-                        color = colors.muted, modifier = Modifier.weight(1f))
-                    if (limit < THREAD_MAX) TextButton(onClick = { limit = THREAD_MAX }) { Text("Show earlier", color = colors.accent) }
+    val note = @Composable { text: String ->
+        Text(text, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+    }
+    when (val current = polledThread(state, textOn)) {
+        ThreadState.Loading -> note("Loading messages")
+        ThreadState.Off -> note(MESSAGE_TEXT_OFF)
+        ThreadState.TooLong -> StatePanel(THREAD_TOO_LONG, "Load the newest ${formatCount(THREAD_FEWER.toLong())} messages of this thread.",
+            colors, "Show fewer messages") { limit = THREAD_FEWER }
+        is ThreadState.Failed -> errorCopy(current.message, "thread").let { copy ->
+            StatePanel(copy.title, copy.sentence, colors, if (copy.retry) "Try again" else null) { attempt++ }
+        }
+        is ThreadState.Shown -> Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            val thread = current.thread
+            val shown = thread.messages.size
+            if (thread.total > shown) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(threadCountText(shown, thread.total, limit), fontSize = 12.sp, color = colors.muted, modifier = Modifier.weight(1f))
+                if (limit == THREAD_LIMIT) TextButton(onClick = { limit = THREAD_MAX }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Show earlier", color = colors.accent)
                 }
-                if (shown == 0) note("No messages in the last ${periodLabel(reply.period)}")
-                val now = reply.nowMs.takeIf { it > 0 } ?: System.currentTimeMillis()
-                for (message in thread.messages) {
-                    key(message.id) {
+            }
+            if (shown == 0) Text("No messages in the last ${periodLabel(reply.period)}", fontSize = 12.sp, color = colors.muted)
+            val now = reply.nowMs.takeIf { it > 0 } ?: System.currentTimeMillis()
+            for (message in thread.messages) {
+                key(message.id) {
+                    var expanded by remember { mutableStateOf(false) }
+                    var clipped by remember { mutableStateOf(false) }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Column(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("${title(message.from, message.fromLabel)} → ${title(message.to, message.toLabel)}", fontSize = 12.sp,
@@ -1218,7 +1282,13 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
                                 Text(messageStatusLabel(message, seats, reply.machines), fontSize = 11.sp,
                                     color = statusWordColor(message.status, colors))
                             }
-                            Text(message.text ?: MESSAGE_NO_TEXT, fontSize = 13.sp, color = if (message.text != null) colors.text else colors.muted)
+                            Text(message.text ?: MESSAGE_NO_TEXT, fontSize = 13.sp, color = if (message.text != null) colors.text else colors.muted,
+                                maxLines = messageMaxLines(expanded), overflow = TextOverflow.Ellipsis,
+                                onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
+                        }
+                        if (clipped && !expanded) TextButton(onClick = { expanded = true },
+                            modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Show more of this message" }) {
+                            Text("Show more", color = colors.accent)
                         }
                     }
                 }
@@ -1231,22 +1301,6 @@ private fun ThreadText(api: AsbApi, engine: String, reply: ActivityMessages, sea
 @Composable
 private fun NotSentCount(count: Int, colors: ActivityColors) {
     if (count > 0) Text("${formatCount(count.toLong())} not sent", fontSize = 12.sp, style = figures, color = statusWordColor("not-sent", colors))
-}
-
-/** The empty page block: a muted [iconSize] icon, the [titleSp] bold title (at most 2 lines), and the hint (at most 260 dp wide). */
-@Composable
-internal fun EmptyBlock(icon: Int, title: String, hint: String, colors: ActivityColors, iconSize: Dp = 64.dp, titleSp: Int = 20) {
-    Icon(painterResource(icon), contentDescription = null, tint = colors.muted, modifier = Modifier.size(iconSize))
-    Text(title, fontSize = titleSp.sp, fontWeight = FontWeight.Bold, color = colors.text, textAlign = TextAlign.Center, maxLines = 2,
-        overflow = TextOverflow.Ellipsis)
-    Text(hint, fontSize = 12.sp, color = colors.muted, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 260.dp))
-}
-
-/** A filled pill button in the accent, with the background as its content color (the PC suggested-action pill). */
-@Composable
-internal fun AccentButton(text: String, colors: ActivityColors, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Button(onClick = onClick, modifier = modifier, shape = CircleShape,
-        colors = ButtonDefaults.buttonColors(containerColor = colors.accent, contentColor = colors.background)) { Text(text) }
 }
 
 /** The Messages section: the total with the not-sent count, the status bar, the [strip] (6 dp under the bar), and the legend. */
@@ -1546,10 +1600,10 @@ private fun BusyPairRow(pair: BusyPair, share: Float, title: (String) -> String,
             verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val name = Modifier.weight(1f, fill = false)
-                Text(a, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, onTextLayout = layout(12),
+                Text(a, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = NAME_OVERFLOW, onTextLayout = layout(12),
                     modifier = name.then(last(12)))
                 Text("⇄", fontSize = 12.sp, color = colors.text, maxLines = 1)
-                Text(b, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = name)
+                Text(b, fontSize = 12.sp, color = colors.text, maxLines = 1, overflow = NAME_OVERFLOW, modifier = name)
             }
             Text(formatCount(pair.n.toLong()), fontSize = 12.sp, style = figures, color = colors.text)
         }

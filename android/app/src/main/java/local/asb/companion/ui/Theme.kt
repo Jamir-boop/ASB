@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -72,6 +74,19 @@ internal fun Color.hex(): String = "#" + Integer.toHexString(toArgb() and 0xffff
 
 /** [color] mixed [fraction] of the way from [base], as mixColor (no alpha). */
 internal fun mixToward(base: Color, color: Color, fraction: Double): Color = hexColor(mixColor(base.hex(), color.hex(), fraction))
+
+/** The look of a selected choice or of a suggested pill: its fill, its text color, and its text weight. */
+internal data class ChoiceStyle(val container: Color, val content: Color, val weight: FontWeight? = null)
+
+/** D17 A, for every choice row (periods, Cost and Tokens, By app and By machine): the neutral track fill, the accent label at 700. */
+internal fun selectedChoiceStyle(colors: ActivityColors) = ChoiceStyle(colors.track, colors.choice, FontWeight.Bold)
+
+/** The PC suggested pill (Try again, Show the last 7 days): the solid accent fill, the background as its text. */
+internal fun suggestedPillStyle(colors: ActivityColors) = ChoiceStyle(colors.accent, colors.background)
+
+/** The suggested pill shape and its least height in dp. */
+internal val SUGGESTED_PILL_SHAPE = CircleShape
+internal const val SUGGESTED_PILL_MIN_HEIGHT = 48
 
 // Other and Unknown (#5d6268) move toward the text until they have 3:1 on the background; then each data color too near the
 // accent changes only its lightness (the PC accent_guard).

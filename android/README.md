@@ -29,7 +29,12 @@ app is open, because a group with no summary is one that Android auto-groups.
 While the PC switch for message text is on, the PC sends the pending question
 (`questionText`), and the Needs input notification shows it as expanded text.
 Only the private version has the question; the public version keeps `ASB` and
-`A session needs attention`. On a locked phone, Android shows the version
+the kind only: `A session needs your answer`, `A task failed`, `A task hit a
+usage limit`, or `A task is done` (the group summary and the Connection
+notification keep `A session needs attention`). Each switch in Settings has a
+caption with what it covers, the same text as its channel description. The Live
+notification text lists up to 3 pending titles (in the cards' order), then the
+working titles; its public version keeps only the counts. On a locked phone, Android shows the version
 without the question when the phone setting hides sensitive notification
 content; otherwise the lock screen shows the question too. The app keeps the
 question text in memory, never in the saved preferences or a log line, but
@@ -135,7 +140,11 @@ drops the idle connections of the old network, and the session screen and the
 live notification read the dashboard at once. They do not wait for the offline
 delay. When the PC does not answer yet (a new VPN can need a few seconds), the
 next try comes after 3 seconds, then the normal delays. The session screen
-waits 5, 10, and then 30 seconds; the live notification waits 30 seconds. A
+waits 3, 5, 10, and then 30 seconds after the last good read; the live
+notification waits 30 seconds. When the PC restarts phone access and closes the
+open connections, a read that fails on such a connection tries once more on a
+new connection (never an action), so the app reconnects at once. A change of
+only the PC message text switch does not restart phone access. A
 change while the app is in the background also counts when the session screen
 opens again. The first good read after a network change also reads hello, so
 an address that you select later on the PC (for example ZeroTier) reaches the
@@ -195,13 +204,16 @@ in the saved settings, a file, or a log. With the switch off, the thread shows
 `Message text is off on the PC. Turn it on in ASB Preferences > Phone.` and makes
 no thread request. A PC with no switch (older ASB) or a 404 shows the older-PC
 message, and every other error reply (for example the gateway 502
-`The ASB reply is too large.`) shows its error, never an empty thread.
+`The ASB reply is too large.`) shows its error, never an empty thread. A thread
+that is too long to load offers `Show fewer messages` (the newest 50). A message
+body shows six lines; `Show more` shows the rest. When message text goes off on
+the PC, the open thread hides its text at the next report.
 
 The Usage chart keeps 8 % headroom above the tallest bar on the round axis
 steps. Its x labels are at even steps (24 hours: every 6 hours on the hour; 7
 days: each day), and the axis labels get the room that their text needs. A tap
-on a bar shows its tooltip above the bar, or beside it when there is no room
-above, never over the bar. TalkBack reads a summary
+on a bar or its column shows its time and value in a band above the chart,
+never over the bars. A current bucket that is still running has a lighter fill and says so far. TalkBack reads a summary
 (`Usage over time, 24 hours. Highest: 14:00, $1.20.`) and reaches each bar
 with its time and values, as the PC tooltip. The gateway also forwards the `mute` and
 `unmute` row actions.
@@ -254,15 +266,19 @@ allow is dimmed, TalkBack says that it is disabled, and a line under it says
 why (for example `ASB does not open CLI sessions.`). **Copy reference** copies
 the absolute reference of the row (`asb:1/...`), and the pill says `Copied`;
 when the PC has no reference for the row, the button is dimmed with the reason.
-**Mute** offers the PC times (`30 min`, `1 hour`, `8 hours`, `1 day`, `Always`);
-a muted row shows **Unmute** with `Muted until 14:30` (or `Muted`), and its card
-shows the muted bell after the folder. The inspector
+**Mute** offers the PC times (`30 min`, `1 hour`, `8 hours`, `1 day`, `Always`),
+each with its end time (`1 hour · until 22:41`); a muted row shows **Unmute**
+with `Muted until 14:30` (or `Muted`), and its card shows the muted bell and
+`Muted until 14:30` (or `Muted`) after the folder. The inspector
 stays open after a change and shows the new row data. It covers the message
 bar, so it shows the current message (for example an error) as a caption below
 the switches. Back, a tap outside, Open, or the row leaving the list closes it.
 
-After a good Open, `Opened on <PC>` shows in a small dark pill over the toolbar.
-All other messages and errors show in the same pill. A tap closes it.
+After a good Open, `Opened on <PC>` shows in a small dark pill under the top
+bar (and its band and chip row). All other messages and errors show in the same
+pill; while the Offline band shows, the pill does not repeat its error, and while
+the inspector is open, the inspector shows the message. A tap closes it. The
+inspector has a scrim behind it.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A
 wider window, for example landscape, shows the desktop Column Flow: 240 dp
@@ -275,7 +291,9 @@ row is at least 48 dp high: the ASB disc, the connection text, Search, and
 Settings. The second row has the Pending, Working, Drawer, and Filters pills,
 so all four show in full on a 384 dp wide phone with two-digit counts. A pill
 shows its count when it is 1 or more (`Pending 4`, spoken `Pending, 4
-sessions`): the rows that the pill shows when it is on, without the search. A
+sessions`): the rows that the pill shows when it is on with no other filter
+on. The search and the other filters do not change the counts; only Include
+archived does. A
 filled dot on the disc shows Live (success color); a hollow ring shows Offline
 (muted color). Tap or hold the disc to open a menu with the connection text,
 `Last update 12m ago`, and Refresh. Pull the list down to refresh. Search
@@ -307,7 +325,7 @@ Over the Pending rows of the list (Comfortable and Compact), a small header
 says `Pending · 4`. While a search is set, a row that matches only by its
 folder path shows that path (with `~` for a usual home folder, cut in the
 middle when it is long) in place of the project name. An empty list says `No
-sessions on studio-pc.` with a Refresh button; no result says `No sessions
+sessions on studio-pc.` with a Refresh button (while Offline, no Refresh: the band's Retry is the action); no result says `No sessions
 match the search and filters.` with a `Clear search and filters` button. When
 the PC removed the phone, the screen says `studio-pc removed this phone.`, how
 to make a new pairing link on the PC, and `Pair again`.

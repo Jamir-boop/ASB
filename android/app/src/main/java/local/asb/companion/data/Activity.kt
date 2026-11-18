@@ -252,11 +252,25 @@ fun messageStatusLabel(message: ActivityMessage, seats: Map<String, Seat> = empt
  * Port of message_bucket_partial: the last bucket holds nowMs (the current hour or day, which is not complete). Its end is
  * [ActivityBuckets.endMs], or without it an hour or a day after its start.
  */
-fun messageBucketPartial(reply: ActivityMessages): Boolean {
-    val last = reply.buckets.startsMs.lastOrNull() ?: return false
-    val end = reply.buckets.endMs ?: (last + if (reply.buckets.unit == "hour") 3_600_000L else 86_400_000L)
-    return reply.nowMs in last until end
+fun messageBucketPartial(reply: ActivityMessages): Boolean = bucketRunning(reply.buckets, reply.nowMs)
+
+/**
+ * The last bucket of [buckets] is still running: it holds [nowMs]. Its end is [ActivityBuckets.endMs], or without it an hour,
+ * a week, a calendar month, or a day after its start.
+ */
+fun bucketRunning(buckets: ActivityBuckets, nowMs: Long): Boolean {
+    val last = buckets.startsMs.lastOrNull() ?: return false
+    val end = buckets.endMs ?: when (buckets.unit) {
+        "hour" -> last + 3_600_000L
+        "week" -> last + 7 * 86_400_000L
+        "month" -> java.time.Instant.ofEpochMilli(last).atZone(java.time.ZoneId.systemDefault()).plusMonths(1).toInstant().toEpochMilli()
+        else -> last + 86_400_000L
+    }
+    return nowMs in last until end
 }
+
+/** The Usage chart's last bucket is lighter and says so far while it is still running (All time too: its last bucket holds now, as on the PC). */
+fun usageBucketRunning(reply: ActivityUsage): Boolean = bucketRunning(reply.buckets, reply.nowMs)
 
 /** Port of offline_band_color: the offline machine band, the [hue] mixed 55% toward [win], or less, as far as keeps 3:1 on [win]. */
 fun offlineBandColor(win: String, hue: String): String =
@@ -336,6 +350,8 @@ fun seatTitles(reply: ActivityMessages): Map<String, String> = reply.seats.assoc
 /** The first thread page and the most that Show earlier asks for (the gateway allows at most 200). */
 const val THREAD_LIMIT = 100
 const val THREAD_MAX = 200
+/** The thread page that Show fewer messages asks for after the gateway refused a reply as too large. */
+const val THREAD_FEWER = 50
 
 const val MESSAGE_TEXT_OFF = "Message text is off on the PC. Turn it on in ASB Preferences > Phone."
 

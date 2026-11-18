@@ -11,6 +11,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 import local.asb.companion.data.ActivityThread
+import local.asb.companion.data.THREAD_LIMIT
 import local.asb.companion.data.Chord
 import local.asb.companion.data.SeatCount
 import local.asb.companion.net.AsbError
@@ -457,9 +458,6 @@ internal fun seatDirections(count: SeatCount?): String = "${count?.sent ?: 0} ou
 /** The hint of the empty Messages block. */
 internal const val MESSAGES_EMPTY_HINT = "When an agent sends a message to another session with ASB Bridge, it shows here."
 
-/** The icon (dp) and the bold title (sp) sizes of the empty block in a center disc [disc] dp across: 96 and 20, from 520 dp 128 and 26. */
-internal fun emptyBlockSizes(disc: Float): Pair<Int, Int> = if (disc < 520) 96 to 20 else 128 to 26
-
 /** The center of the device pixel at [value] px (pixels are whole in a Canvas draw scope). */
 internal fun pixelCenter(value: Float): Float = kotlin.math.floor(value) + .5f
 
@@ -640,6 +638,8 @@ internal fun chordText(chord: Chord, title: (String) -> String): String =
 internal sealed interface ThreadState {
     data object Loading : ThreadState
     data object Off : ThreadState
+    /** The gateway refused a thread reply over its size cap; fewer messages can fit. */
+    data object TooLong : ThreadState
     data class Failed(val message: String) : ThreadState
     data class Shown(val thread: ActivityThread) : ThreadState
 }
@@ -655,5 +655,44 @@ internal suspend fun loadThread(textOn: suspend () -> Boolean?, fetch: suspend (
         true -> ThreadState.Shown(fetch())
     }
 } catch (cause: AsbError) {
-    ThreadState.Failed(cause.message ?: "Cannot load the messages.")
+    if (cause.message == TOO_LARGE_REPLY) ThreadState.TooLong else ThreadState.Failed(cause.message ?: "Cannot load the messages.")
 }
+
+/** The 502 error text of the phone gateway for a reply over its size cap. */
+internal const val TOO_LARGE_REPLY = "The ASB reply is too large."
+
+/** The cut of a session name in the Usage Sessions table and the Messages Busiest pairs: at the end, never in the middle. */
+internal val NAME_OVERFLOW = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+
+/** The title, the one sentence, and whether Try again can help, of an error on the [screen] (`messages`, `usage`, `thread`). */
+internal data class ErrorCopy(val title: String, val sentence: String, val retry: Boolean)
+
+private const val OLDER_HEAD = "This PC runs an older ASB."
+
+/**
+ * An older PC gets no Try again (a retry cannot help) and names only the [screen] it is on; another error is `Cannot load
+ * <screen>` with its message and Try again.
+ */
+internal fun errorCopy(message: String, screen: String): ErrorCopy = when {
+    message == OLDER_ENGINE ->
+        ErrorCopy(OLDER_HEAD.removeSuffix("."), "Update ASB on the PC to see ${if (screen == "thread") "messages" else screen}.", false)
+    message.startsWith(OLDER_HEAD) -> ErrorCopy(OLDER_HEAD.removeSuffix("."), message.removePrefix(OLDER_HEAD).trim(), false)
+    else -> ErrorCopy("Cannot load ${if (screen == "thread") "the messages" else screen}", message, true)
+}
+
+internal const val THREAD_TOO_LONG = "This thread is too long to load."
+
+/** The thread after a report poll that read the PC switch [textOn]: off holds no message text; else the state stays. */
+internal fun polledThread(state: ThreadState, textOn: Boolean?): ThreadState = if (textOn == false) ThreadState.Off else state
+
+/** The lines of a thread message body: at most [MESSAGE_LINES] until its `Show more` expands it. */
+internal const val MESSAGE_LINES = 6
+
+internal fun messageMaxLines(expanded: Boolean): Int = if (expanded) Int.MAX_VALUE else MESSAGE_LINES
+
+/**
+ * The count line of a cut thread: `Newest 100 of 230`; when Show earlier cannot ask for more (the [limit] is not the first page),
+ * it says where the rest is: `Newest 200 of 230. The PC thread view shows all.`
+ */
+internal fun threadCountText(shown: Int, total: Int, limit: Int): String =
+    "Newest ${formatCount(shown.toLong())} of ${formatCount(total.toLong())}" + if (limit != THREAD_LIMIT) ". The PC thread view shows all." else ""

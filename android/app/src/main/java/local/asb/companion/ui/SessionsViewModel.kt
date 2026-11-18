@@ -233,8 +233,9 @@ class SessionsViewModel(
                 ensureActive()
                 showError(cause, dashboardFailure = true)
                 if (cause is AsbError.Offline) {
-                    offlineFailures++
-                    when (offlineFailures) { 0 -> 3000L; 1 -> 5000L; 2 -> 10000L; else -> 30000L }
+                    // A network change sets -1, a good dashboard 0: both start again at the 3 s step.
+                    offlineFailures = offlineFailures.coerceAtLeast(0) + 1
+                    when (offlineFailures) { 1 -> 3000L; 2 -> 5000L; 3 -> 10000L; else -> 30000L }
                 } else 5000L
             }
         }

@@ -144,6 +144,12 @@ fun formatTime(ms: Long): String = TIME.format(local(ms))
 
 fun formatDate(ms: Long): String = DATE.format(local(ms))
 
+private val DATE_YEAR = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US)
+
+/** [formatDate], with the year (`Oct 12, 2025`) for a day before the year of [nowMs]. */
+fun formatDateYear(ms: Long, nowMs: Long): String =
+    if (local(ms).year < local(nowMs).year) DATE_YEAR.format(local(ms)) else formatDate(ms)
+
 private val WEEKDAY = DateTimeFormatter.ofPattern("EEE", Locale.US)
 
 /** Port of message_time: the clock in 24 hours and for today, the weekday and the clock within 6 days, else the date and the clock. */
@@ -325,9 +331,9 @@ fun machineStateText(machine: ActivityMachine): String = when (machine.state) {
 }
 
 /** Last report Oct 25, 14:30; "" when the machine is not offline or never reported. */
-fun lastReportText(machine: ActivityMachine): String =
+fun lastReportText(machine: ActivityMachine, nowMs: Long = System.currentTimeMillis()): String =
     if (machineStateText(machine) == "Offline" && machine.lastReportAtMs > 0)
-        "Last report ${formatDate(machine.lastReportAtMs)}, ${formatTime(machine.lastReportAtMs)}" else ""
+        "Last report ${formatDateYear(machine.lastReportAtMs, nowMs)}, ${formatTime(machine.lastReportAtMs)}" else ""
 
 /** The Usage toolbar price line: Prices: LiteLLM, Oct 26 (the day of the download), loading, or not available. */
 fun pricesText(prices: UsagePrices): String = when (prices.status) {
@@ -345,7 +351,7 @@ fun scanText(scan: UsageScan): String = when {
 }
 
 /** The Usage machine row line: Local, Connected, Offline, or Offline · seen Oct 25, 14:30. */
-fun machineStateLine(machine: ActivityMachine): String = lastReportText(machine).let { report ->
+fun machineStateLine(machine: ActivityMachine, nowMs: Long = System.currentTimeMillis()): String = lastReportText(machine, nowMs).let { report ->
     if (report.isEmpty()) machineStateText(machine) else "Offline · seen" + report.removePrefix("Last report")
 }
 

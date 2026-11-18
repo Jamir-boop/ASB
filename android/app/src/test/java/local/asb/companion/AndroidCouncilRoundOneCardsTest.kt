@@ -92,12 +92,12 @@ class AndroidCouncilRoundOneCardsTest {
 
     @Test fun theWorkingSignPulsesAndIsStillWithAnimationsOff() {
         assertEquals(1600, WORKING_PULSE_MS)
-        assertEquals(1f, workingSignAlpha(false, 0f), .001f)
-        assertEquals(.4f, workingSignAlpha(false, .5f), .001f)
-        assertEquals(1f, workingSignAlpha(false, 1f), .001f)
-        for (phase in listOf(0f, .25f, .5f, .9f)) {
-            assertEquals(1f, workingSignAlpha(true, phase), .001f)
-            assertTrue(workingSignAlpha(false, phase) in .4f - .001f..1f + .001f)
+        assertEquals(1f, workingSignAlpha(false, 0), .001f)
+        assertEquals(.4f, workingSignAlpha(false, 4), .001f)
+        assertEquals(1f, workingSignAlpha(false, 8), .001f)
+        for (step in 0..9) {
+            assertEquals(1f, workingSignAlpha(true, step), .001f)
+            assertTrue(workingSignAlpha(false, step) in .4f - .001f..1f + .001f)
         }
     }
 }

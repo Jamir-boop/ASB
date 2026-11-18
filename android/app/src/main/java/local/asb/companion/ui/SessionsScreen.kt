@@ -34,9 +34,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -103,6 +100,18 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.flow.first
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.toSize
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -245,6 +254,10 @@ fun SessionsScreen(
     val rowGap = if (comfortable) COMFORTABLE_CARD_GAP else 0
     val rowHeight = if (comfortable) comfortableCardHeight(cardScale) else compactRowHeight(cardScale)
     var showFilters by rememberSaveable { mutableStateOf(false) }
+    // The top bar height in px with its inset, the band, and the chip row: the message pill shows under it.
+    var topBarHeight by remember { mutableIntStateOf(0) }
+    val pullState = rememberPullToRefreshState()
+    val scope = rememberCoroutineScope()
     // The inspector row ID and the long-press point in window pixels. A rotation closes it.
     var inspector by remember { mutableStateOf<Pair<String, Offset>?>(null) }
     var dismissedWarnings by remember { mutableStateOf(store.dismissedWarnings) }
@@ -255,7 +268,8 @@ fun SessionsScreen(
     var initialError by rememberSaveable { mutableStateOf<String?>(null) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val providerCenters = remember { mutableStateMapOf<String, Offset>() }
-    val cardFloors = remember { mutableStateMapOf<String, Float>() }
+    // Each card's bounds in the root: a pet stands on the bottom, and the pet tint fills the card (see the flight canvas).
+    val cardBounds = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
     val pets by rememberPets()
     var petFlights by remember { mutableStateOf(emptyList<PetFlight>()) }
     var listOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -334,24 +348,29 @@ fun SessionsScreen(
 
     fun petPoint(id: String): PetPoint? {
         val center = providerCenters[id]?.minus(listOrigin) ?: return null
-        val floor = cardFloors[id]?.minus(listOrigin.y) ?: return null
+        val floor = cardBounds[id]?.bottom?.minus(listOrigin.y) ?: return null
         return PetPoint((center.x / density).toDouble(), (center.y / density).toDouble(), (floor / density).toDouble())
     }
 
-    // One pulse phase for every Working sign on screen. It runs only while this list is shown and the app is in view, and
-    // stays still with Android animations off (the setting is read again each time the app comes back).
-    val workingPhase = remember { Animatable(0f) }
+    // One pulse step for every Working sign on screen: a timed step every 200 ms, not a frame at each vsync. It runs only while
+    // this list is shown, the app is in view, and the phone is Live (an Offline row has no sign), and stays still with Android
+    // animations off (the setting is read again each time the app comes back).
+    var workingStep by remember { mutableIntStateOf(0) }
     var animationsOff by remember { mutableStateOf(false) }
-    val anyWorking = visibleRows.any { it.state == "working" }
+    val anyWorking = !state.offline && visibleRows.any { it.state == "working" }
     LaunchedEffect(lifecycleOwner, anyWorking) {
         if (anyWorking) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             animationsOff = systemAnimationsOff(context)
-            workingPhase.snapTo(0f)
-            if (!animationsOff) workingPhase.animateTo(1f,
-                infiniteRepeatable(tween(WORKING_PULSE_MS, easing = LinearEasing), RepeatMode.Restart))
+            workingStep = 0
+            if (!animationsOff) while (isActive) {
+                delay(WORKING_PULSE_STEP_MS)
+                workingStep = (workingStep + 1) % WORKING_PULSE_STEPS
+            }
         }
     }
-    val workingAlpha = { workingSignAlpha(animationsOff, workingPhase.value) }
+    val workingAlpha = { workingSignAlpha(animationsOff, workingStep) }
+    // While Offline, a Working time stays at the last good dashboard and does not count up.
+    val workingNowMs = workingClockMs(nowMs, state.offline, state.lastUpdateMs)
     LaunchedEffect(viewModel, lifecycleOwner, state.revoked) {
         if (!state.revoked) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             try {
@@ -387,7 +406,7 @@ fun SessionsScreen(
         flights = flights.filter { it.message.from in rowsById && it.message.to in rowsById }
         petFlights = petFlights.filter { it.message.from in rowsById && it.message.to in rowsById }
         highlights = highlights.filterKeys { it in rowsById }
-        cardFloors.keys.filter { it !in rowsById }.forEach { cardFloors.remove(it) }
+        cardBounds.keys.filter { it !in rowsById }.forEach { cardBounds.remove(it) }
         providerCenters.keys.filter { it !in rowsById }.forEach { providerCenters.remove(it) }
     }
     LaunchedEffect(viewModel, state.dashboard?.messages, rowsById, state.revoked) {
@@ -482,7 +501,8 @@ fun SessionsScreen(
     LaunchedEffect(state.lastError) {
         state.lastError?.let { message ->
             if (state.dashboard == null) initialError = message
-            snackbar.showSnackbar(message)
+            // The Offline band is the message while it shows, so the pill does not say the same error again.
+            if (!state.offline) snackbar.showSnackbar(message)
             if (viewModel.state.value.lastError == message) viewModel.clearError()
         }
     }
@@ -508,15 +528,11 @@ fun SessionsScreen(
             opening = row.id in state.openingIds,
             confirmed = row.id in state.readConfirmedIds,
             nowMs = nowMs,
+            workingNowMs = workingNowMs,
+            offline = state.offline,
             messageLit = row.id in highlights,
             onProviderCenter = { center -> providerCenters[row.id] = center },
-            onCardFloor = { floor -> cardFloors[row.id] = floor },
-            petTint = {
-                petFlights.maxOfOrNull { flight ->
-                    val index = when (row.id) { flight.message.from -> 0; flight.message.to -> 1; else -> -1 }
-                    petTints(flight.plan, flight.elapsedMs(frameNanos))[index] ?: 0.0
-                }?.toFloat() ?: 0f
-            },
+            onCardBounds = { bounds -> cardBounds[row.id] = bounds },
             workingAlpha = workingAlpha,
             onOpen = { viewModel.action(row.id, "open") },
             onActions = { point -> keyboard?.hide(); inspector = row.id to point },
@@ -527,32 +543,37 @@ fun SessionsScreen(
     }
 
     @Composable
-    fun emptyState(modifier: Modifier) = Box(modifier.padding(24.dp), contentAlignment = Alignment.Center) {
-        if (state.dashboard == null && !state.offline && initialError == null && state.lastError == null) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(Modifier.semantics {
-                    contentDescription = "Loading sessions"
-                })
-                Spacer(Modifier.height(16.dp))
-                Text("Loading sessions…")
-            }
-        } else Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                when {
-                    state.dashboard == null -> initialError ?: state.lastError
-                        ?: "Could not load sessions. Check the PC and Wi-Fi, then refresh."
-                    threads.isEmpty() -> "No sessions on ${serverName.ifBlank { "the PC" }}."
-                    else -> "No sessions match the search and filters."
-                },
-                style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Center,
-            )
-            if (state.dashboard != null && threads.isEmpty()) {
-                Text("Chats from Claude, Codex, and OpenCode on the PC show here.", fontSize = 11.sp,
-                    color = hexColor(LocalPalette.current.muted), textAlign = TextAlign.Center)
-                TextButton(onClick = viewModel::refresh, enabled = !state.refreshing) { Text("Refresh") }
-            } else if (state.dashboard != null) {
-                TextButton(onClick = { closeSearch() }) { Text("Clear search and filters") }
+    fun emptyState(modifier: Modifier) = if (state.dashboard == null && !state.offline && initialError == null &&
+        state.lastError == null) Box(modifier.padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(Modifier.semantics {
+                contentDescription = "Loading sessions"
+            })
+            Spacer(Modifier.height(16.dp))
+            Text("Loading sessions…")
+        }
+    } else Box(modifier) {
+        // The shared empty layout of Sessions, Messages, and Usage: top-aligned, 24 dp from the top bar and the sides; a
+        // titleMedium line, 8 dp, one bodyMedium sentence in the caption color, 16 dp, and at most one tonal action.
+        val (title, sentence) = when {
+            state.dashboard == null -> "Could not load sessions" to
+                (initialError ?: state.lastError ?: "Check the PC and Wi-Fi, then refresh.")
+            threads.isEmpty() -> "No sessions on ${serverName.ifBlank { "the PC" }}" to
+                "Chats from Claude, Codex, and OpenCode on the PC show here."
+            else -> "No matching sessions" to "Change the search or filters."
+        }
+        Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 24.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = hexColor(LocalPalette.current.text))
+            Spacer(Modifier.height(8.dp))
+            Text(sentence, style = MaterialTheme.typography.bodyMedium, color = hexColor(LocalPalette.current.muted))
+            Spacer(Modifier.height(16.dp))
+            when (emptyStateAction(state.dashboard != null, threads.isNotEmpty(), state.offline)) {
+                EmptyAction.CLEAR -> FilledTonalButton(onClick = { closeSearch() }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Clear search and filters")
+                }
+                EmptyAction.REFRESH -> FilledTonalButton(onClick = viewModel::refresh, enabled = !state.refreshing,
+                    modifier = Modifier.heightIn(min = 48.dp)) { Text("Refresh") }
+                EmptyAction.NONE -> {}
             }
         }
     }
@@ -741,7 +762,7 @@ fun SessionsScreen(
                 }
             }
         }
-        Column(Modifier.fillMaxWidth().background(hexColor(palette.background))
+        Column(Modifier.fillMaxWidth().onSizeChanged { topBarHeight = it.height }.background(hexColor(palette.background))
             .windowInsetsPadding(SafeTopBarInsets)) {
             // The connection words beside the disc; the disc says them to TalkBack.
             @Composable
@@ -839,7 +860,16 @@ fun SessionsScreen(
                 }
                 PullToRefreshBox(
                     isRefreshing = state.refreshing,
-                    onRefresh = viewModel::refresh,
+                    state = pullState,
+                    onRefresh = {
+                        // The box hides its indicator only when isRefreshing changes; a refresh that fails or ends within one
+                        // frame (or that does not start) never shows a change, so the indicator hides when refreshing is false.
+                        viewModel.refresh()
+                        scope.launch {
+                            viewModel.state.first { !it.refreshing }
+                            pullState.animateToHidden()
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth().weight(1f).onGloballyPositioned {
                         listOrigin = it.positionInRoot()
                         listSize = it.size
@@ -863,13 +893,24 @@ fun SessionsScreen(
                         }
                     },
                 ) {
-                    // The flights draw under the cards, so no pet or message covers card text; the cards have no fill.
+                    // Draw order, bottom to top: (1) the message flights, (2) the pet tint, which is the card background of a
+                    // sender or receiver, (3) the pet sprites, all in this canvas; then (4) the cards with their text, which have
+                    // no fill. So the card text is always above the pet and its message, and the pet is above the card background.
                     val messageColor = MaterialTheme.colorScheme.primary
                     Canvas(Modifier.matchParentSize().clipToBounds()) {
                         for (flight in flights) {
                             val start = endpoint(flight.message.from) ?: continue
                             val end = endpoint(flight.message.to) ?: continue
                             if (!start.outside || !end.outside) drawMessage(flight, frameNanos, start, end, messageColor, flow)
+                        }
+                        for ((id, bounds) in cardBounds) {
+                            val alpha = petFlights.maxOfOrNull { flight ->
+                                val index = when (id) { flight.message.from -> 0; flight.message.to -> 1; else -> -1 }
+                                petTints(flight.plan, flight.elapsedMs(frameNanos))[index] ?: 0.0
+                            }?.toFloat() ?: 0f
+                            if (alpha > 0) drawRoundRect(messageColor.copy(alpha = .15f * alpha),
+                                topLeft = bounds.topLeft - listOrigin, size = bounds.size,
+                                cornerRadius = CornerRadius(3.dp.toPx()))
                         }
                         pets?.let { sprites ->
                             val visible = visibleRows.map { it.id }.toSet()
@@ -935,19 +976,32 @@ fun SessionsScreen(
             }
         }
     }
-    AsbMessagePill(snackbar, if (flow) 48.dp else 56.dp, Modifier.align(Alignment.TopCenter))
+    val inspectorOpen = inspectorRow != null && !state.revoked
+    // The pill shows 8 dp under the top bar, its band, and its chip row, so it never covers them. While the inspector is open it
+    // shows the message in its own line, so the pill is hidden (it stays composed, so its message still times out).
+    val topBarDp = with(phoneDensity) { topBarHeight.toDp() }
+    AsbMessagePill(
+        snackbar, if (state.revoked || topBarHeight == 0) 56.dp else 52.dp,
+        Modifier.align(Alignment.TopCenter)
+            .then(if (state.revoked || topBarHeight == 0) Modifier
+                else Modifier.padding(top = topBarDp).consumeWindowInsets(SafeTopBarInsets))
+            .then(if (inspectorOpen) Modifier.alpha(0f).clearAndSetSemantics { } else Modifier),
+    )
+    // The scrim dims the list behind the inspector; a tap outside the panel closes it, as before.
+    if (inspectorOpen) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .5f)))
     if (showFilters && !state.revoked) FilterSheet(
         filter = state.filter,
         onChange = viewModel::setFilter,
         onDismiss = { showFilters = false },
     )
-    if (inspectorRow != null && !state.revoked) SessionInspector(
+    if (inspectorOpen && inspectorRow != null) SessionInspector(
         row = inspectorRow,
         point = inspector?.second ?: Offset.Zero,
         busy = inspectorRow.id in state.busyIds,
         message = snackbar.currentSnackbarData?.visuals?.message,
         error = state.actionErrors[inspectorRow.id],
         nowMs = nowMs,
+        workingNowMs = workingNowMs,
         serverName = serverName,
         viewModel = viewModel,
         windowSize = IntSize(constraints.maxWidth, constraints.maxHeight),
@@ -1105,8 +1159,12 @@ internal fun indicatorMeaning(row: Thread, indicator: String): String = when (in
 private fun SessionCard(
     row: Thread, comfortable: Boolean, showBackground: Boolean, drawerView: Boolean, busy: Boolean, opening: Boolean, confirmed: Boolean,
     nowMs: Long, messageLit: Boolean, onProviderCenter: (Offset) -> Unit, onOpen: () -> Unit, onActions: (Offset) -> Unit,
-    onCorner: (String) -> Unit, onCardFloor: (Float) -> Unit, petTint: () -> Float, workingAlpha: () -> Float,
+    onCorner: (String) -> Unit, onCardBounds: (androidx.compose.ui.geometry.Rect) -> Unit, workingAlpha: () -> Float,
     modifier: Modifier = Modifier,
+    /** The time a Working duration counts to (see [workingClockMs]); [nowMs] while Live. */
+    workingNowMs: Long = nowMs,
+    /** While Offline a Working row has no pulse dot. */
+    offline: Boolean = false,
     /** The folder path that the search matched, shown instead of the project name (see [pathMatch]). */
     folder: String = "",
 ) {
@@ -1125,7 +1183,7 @@ private fun SessionCard(
     val countdown = if (limited) limitText(left) else ""
     val indicator = cardIndicator(row, drawerView, nowMs)
     val state = cardStateLabel(row)
-    val working = if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else ""
+    val working = if (row.state == "working") workingDuration(row.workingSinceMs, workingNowMs) else ""
     val viewOnly = isViewOnly(row)
     val (whereGlyph, where) = rowWhere(row)
     val cardName = cardTitle(row)
@@ -1148,17 +1206,13 @@ private fun SessionCard(
         if (opening) "Opening" else "",
     ).filter { it.isNotBlank() }.joinToString(". ")
     val title = if (opening) "Opening…" else cardName
-    val workingSign = row.state == "working" && !limited
+    val workingSign = row.state == "working" && !limited && !offline
     val muted = muteActive(row, nowMs)
+    val muteText = muteFlagText(row, nowMs)
     val density = LocalDensity.current
     val fontScale = density.fontScale
-    val messageColor = MaterialTheme.colorScheme.primary
     val card = modifier.fillMaxWidth().onPlaced { coordinates.value = it }
-        .onGloballyPositioned { onCardFloor(it.positionInRoot().y + it.size.height) }
-        .drawBehind {
-            val alpha = petTint()
-            if (alpha > 0) drawRoundRect(messageColor.copy(alpha = .15f * alpha), cornerRadius = CornerRadius(3.dp.toPx()))
-        }
+        .onGloballyPositioned { onCardBounds(androidx.compose.ui.geometry.Rect(it.positionInRoot(), it.size.toSize())) }
         .heightIn(min = (if (comfortable) comfortableCardHeight(fontScale) else compactRowHeight(fontScale)).dp)
         .combinedClickable(
             interactionSource = interaction,
@@ -1188,11 +1242,13 @@ private fun SessionCard(
         Text(title, fontSize = 13.sp, lineHeight = 16.sp, color = hexColor(tones.title), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).clearAndSetSemantics { })
         if (muted) MutedGlyph(tones.caption)
-        if (indicator.isNotEmpty()) IndicatorMark(indicator, palette, compactMarkStyle(row, palette, drawerView, nowMs),
-            limit = alertIsLimit(row))
+        // The card description says the mark's meaning, so the glyph text is not read after it.
+        if (indicator.isNotEmpty()) Box(Modifier.clearAndSetSemantics { }) {
+            IndicatorMark(indicator, palette, compactMarkStyle(row, palette, drawerView, nowMs), limit = alertIsLimit(row))
+        }
         if (limited) LimitClock(tones.state)
         if (workingSign) WorkingDot(tones.state, workingAlpha)
-        val compactState = compactStateText(row, nowMs)
+        val compactState = compactStateText(row, if (limited) nowMs else workingNowMs)
         Text(buildAnnotatedString {
             append(compactState)
             if (!limited && compactState.length > state.length) {
@@ -1220,8 +1276,6 @@ private fun SessionCard(
                     color = hexColor(tones.caption), maxLines = 1,
                     overflow = if (folder.isEmpty()) TextOverflow.Ellipsis else TextOverflow.MiddleEllipsis,
                     modifier = Modifier.weight(1f, fill = false))
-                // As the board asb-mute-glyph: the muted bell after the folder.
-                if (muted) MutedGlyph(tones.caption)
             }
             Text(title, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = hexColor(tones.title),
                 maxLines = COMFORTABLE_TITLE_LINES, minLines = COMFORTABLE_TITLE_MIN_LINES, overflow = TextOverflow.Ellipsis,
@@ -1232,6 +1286,12 @@ private fun SessionCard(
                 if (workingSign) WorkingDot(tones.state, workingAlpha)
                 Text(if (limited) "Resets in $countdown" else state, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
                     color = hexColor(tones.state), maxLines = 1)
+                // As the board asb-mute-glyph, with the end of the mute beside the bell: Muted until 22:41, or Muted.
+                if (muted) {
+                    MutedGlyph(tones.caption)
+                    Text(muteText, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                }
                 BackgroundCounts(row, tones.caption, comfortable = true, shown = showBackground)
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically) {
@@ -1249,9 +1309,10 @@ private fun SessionCard(
             }
         }
         // Each slot is its own 48 dp target inside the card; the read and pin slots keep their places, as on the desktop.
-        Row(Modifier.align(Alignment.TopEnd)) {
-            for (control in slots) Box(Modifier.size(CORNER_TARGET.dp)) {
-                if (control != null) CornerButton(control, cornerDescription(row, control), alertIsLimit(row), busy, palette, onCorner)
+        slots.forEachIndexed { index, control ->
+            if (control != null) Box(Modifier.align(Alignment.TopEnd).offset(x = -(cornerSlotEnd(slots, index) - CORNER_TARGET).dp)
+                .size(CORNER_TARGET.dp)) {
+                CornerButton(control, cornerDescription(row, control), alertIsLimit(row), busy, palette, onCorner)
             }
         }
     }
@@ -1382,13 +1443,10 @@ private fun InkCenteredGlyph(glyph: String, color: Color, fontSize: TextUnit, li
 private fun CornerButton(
     control: CornerControl, description: String, limit: Boolean, busy: Boolean, palette: Palette, onCorner: (String) -> Unit,
 ) {
-    val text = hexColor(palette.text)
-    val background = when (control.kind) {
-        "dot", "drawer" -> text.copy(alpha = .08f)
-        "confirmed" -> hexColor(palette.success).copy(alpha = .12f)
-        else -> Color.Transparent
-    }
-    // The circle is 24 dp, 2 dp from the card top as before; the touch area is the whole 48 dp slot.
+    // One chrome for every corner control: a 24 dp circle in the text color at 8 percent.
+    val background = hexColor(palette.text).copy(alpha = .08f)
+    // The circle is 24 dp, 2 dp from the card top as before; the touch area is the whole 48 dp slot. The glyph has no
+    // semantics of its own, so TalkBack reads the meaning once and not the "?" or "!" after it.
     Box(
         Modifier.fillMaxSize()
             .then(if (control.action == null) Modifier.semantics { contentDescription = description }
@@ -1404,7 +1462,8 @@ private fun CornerButton(
             }),
         contentAlignment = Alignment.TopCenter,
     ) {
-        Box(Modifier.padding(top = 2.dp).size(24.dp).background(background, CircleShape), contentAlignment = Alignment.Center) {
+        Box(Modifier.padding(top = 2.dp).size(24.dp).background(background, CircleShape).clearAndSetSemantics { },
+            contentAlignment = Alignment.Center) {
             when (control.kind) {
                 "confirmed" -> Icon(Icons.Default.Check, contentDescription = null, tint = hexColor(palette.success),
                     modifier = Modifier.size(12.dp))
@@ -1529,8 +1588,8 @@ private val INSPECTOR_MARGIN = 16.dp
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionInspector(
-    row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, serverName: String,
-    viewModel: SessionsViewModel,
+    row: Thread, point: Offset, busy: Boolean, message: String?, error: String?, nowMs: Long, workingNowMs: Long,
+    serverName: String, viewModel: SessionsViewModel,
     windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -1543,7 +1602,10 @@ private fun SessionInspector(
         insets.getLeft(density, direction) + margin, insets.getTop(density) + margin,
         windowSize.width - insets.getRight(density, direction) - margin, windowSize.height - insets.getBottom(density) - margin,
     )
-    val width = with(density) { minOf(300.dp, windowSize.width.toDp() - INSPECTOR_MARGIN * 2) }
+    // A phone window is filled to its 16 dp margins, the inset of the card text, so no list text shows beside the panel.
+    val width = with(density) {
+        if (windowSize.width.toDp() < 600.dp) maxOf(0, safe.width - 2 * room).toDp() else 300.dp
+    }
     val maxHeight = with(density) { maxOf(0, safe.height - 2 * room).toDp() }
     // A change keeps its chosen state while its action and the board refresh after it are pending.
     val chosen = remember(row.id) { mutableStateMapOf<String, Boolean>() }
@@ -1576,7 +1638,6 @@ private fun SessionInspector(
     val palette = LocalPalette.current
     val surface = mixColor(palette.background, palette.text, .06)
     val group = mixColor(surface, palette.text, .06)
-    val button = mixColor(surface, palette.text, .1)
     val move = mixColor(group, palette.text, .1)
     val ring = edgeColor(surface, palette.accent, .7, listOf(palette.background, surface))
     val text = hexColor(palette.text)
@@ -1586,7 +1647,7 @@ private fun SessionInspector(
         controls.getValue("unread").on -> text
         else -> muted
     }
-    val time = (if (row.state == "working") workingDuration(row.workingSinceMs, nowMs) else "")
+    val time = (if (row.state == "working") workingDuration(row.workingSinceMs, workingNowMs) else "")
         .ifEmpty { idleAge(row.updatedAtMs, nowMs) }
     val title = cardTitle(row)
     val app = row.providerLabel +
@@ -1618,54 +1679,59 @@ private fun SessionInspector(
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(cardStateLabel(row) + if (time.isNotEmpty()) " · $time" else "", fontSize = 11.sp,
                             lineHeight = CAPTION_LINE_HEIGHT.sp, color = stateColor)
+                        // The meaning of the card's Pending corner mark, in the words its corner says to TalkBack.
+                        inspectorReason(row, nowMs).takeIf { it.isNotEmpty() }?.let {
+                            Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = text)
+                        }
                         // As the board row panel: an Unknown row says why.
                         if (row.state == "unknown" && row.reason.isNotBlank()) Text(row.reason, fontSize = 11.sp,
                             lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
                     }
                     val canOpen = row.canOpen && !busy
                     // As the board Open button, but it names the machine; the app is the second line. Neither line is cut.
-                    Column(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (canOpen) 1f else .5f)
-                            .clip(RoundedCornerShape(8.dp)).background(hexColor(button))
-                            .clickable(enabled = canOpen, role = Role.Button, onClick = onOpen)
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Text(openLabel(row, serverName), fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp,
-                            fontWeight = FontWeight.Bold, color = text, textAlign = TextAlign.Center)
-                        if (app.isNotEmpty()) Text(app, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
-                            textAlign = TextAlign.Center)
+                    // It is the one filled primary button; the other buttons are tonal or outlined.
+                    val buttonShape = RoundedCornerShape(8.dp)
+                    val openWords = openLabel(row, serverName)
+                    PanelDisabled(canOpen, openWords + if (app.isNotEmpty()) ". $app" else "") {
+                        Button(onClick = onOpen, enabled = canOpen, shape = buttonShape,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(openWords, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp,
+                                    fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                                if (app.isNotEmpty()) Text(app, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                                    textAlign = TextAlign.Center)
+                            }
+                        }
                     }
                     openReason(row).takeIf { it.isNotEmpty() }?.let {
                         Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
                             modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 4.dp))
                     }
                     Spacer(Modifier.height(8.dp))
-                    Box(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(8.dp)).background(hexColor(group))
-                            .clickable(role = Role.Button, onClick = onShowMessages),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("Show messages", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = text, maxLines = 1,
-                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
+                    FilledTonalButton(onClick = onShowMessages, shape = buttonShape,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Text("Show messages", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
                     }
                     Spacer(Modifier.height(8.dp))
-                    // As the board Copy Absolute: the asb:1/ reference of the row, or a dimmed button with the reason.
+                    // As the board Copy Absolute: the asb:1/ reference of the row, or a disabled button with the reason.
                     val (reference, copyReason) = copyReference(row)
-                    Box(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (reference != null) 1f else .5f)
-                            .clip(RoundedCornerShape(8.dp)).background(hexColor(group))
-                            .clickable(enabled = reference != null, role = Role.Button) {
-                                if (reference == null) return@clickable
-                                context.getSystemService(ClipboardManager::class.java)
-                                    ?.setPrimaryClip(ClipData.newPlainText("ASB reference", reference))
-                                viewModel.showBanner("Copied")
+                    PanelDisabled(reference != null, "Copy reference") {
+                        OutlinedButton(
+                            onClick = {
+                                if (reference != null) {
+                                    context.getSystemService(ClipboardManager::class.java)
+                                        ?.setPrimaryClip(ClipData.newPlainText("ASB reference", reference))
+                                    viewModel.showBanner("Copied")
+                                }
                             },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("Copy reference", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = text, maxLines = 1,
-                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
+                            enabled = reference != null, shape = buttonShape,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        ) {
+                            Text("Copy reference", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
+                        }
                     }
                     if (copyReason.isNotEmpty()) Text(copyReason, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
                         modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 4.dp))
@@ -1694,21 +1760,25 @@ private fun SessionInspector(
                         item {
                             val muteText = muteFlagText(row, nowMs)
                             if (muteText.isNotEmpty()) Column(
-                                Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f).then(focusable("mute"))
-                                    .clickable(enabled = !busy, role = Role.Button) {
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp).then(focusable("mute"))
+                                    .panelAction(!busy, Role.Button) {
                                         viewModel.action(row.id, "unmute"); started("mute")
                                     }.padding(horizontal = 12.dp, vertical = 7.dp),
                                 verticalArrangement = Arrangement.Center,
                             ) {
-                                Text("Unmute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+                                Text("Unmute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text,
+                                    modifier = Modifier.alpha(if (busy) .5f else 1f))
                                 Text(muteText, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
-                            } else Column(Modifier.fillMaxWidth().alpha(if (busy) .5f else 1f).padding(start = 12.dp, end = 6.dp, top = 7.dp)) {
+                            } else Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 6.dp, top = 7.dp)) {
                                 Text("Mute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
                                 FlowRow(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
                                     MUTE_CHOICES.forEachIndexed { index, (words, duration) ->
                                         // The first time has the key of the Unmute row, so the focus moves between them.
                                         val key = if (index == 0) "mute" else "mute:$words"
-                                        PanelButton(words, muteTip(words), RoundedCornerShape(6.dp), hexColor(move), text, !busy,
+                                        val end = muteEndText(duration, nowMs)
+                                        PanelButton(muteChoiceText(words, duration, nowMs),
+                                            muteTip(words) + if (end.isEmpty()) "" else ", until $end",
+                                            RoundedCornerShape(6.dp), hexColor(move), text, !busy,
                                             focusable(key)) { viewModel.action(row.id, "mute", muteBody(duration)); started(key) }
                                     }
                                 }
@@ -1718,8 +1788,7 @@ private fun SessionInspector(
                         switch("drawer", "In the drawer")
                         if ("order" in controls) item {
                             Row(
-                                Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (busy) .5f else 1f)
-                                    .padding(start = 12.dp, end = 6.dp),
+                                Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp, end = 6.dp),
                                 horizontalArrangement = Arrangement.spacedBy(1.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
@@ -1754,18 +1823,26 @@ private fun PanelSwitch(
     modifier: Modifier, onChange: (Boolean) -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).alpha(if (enabled) 1f else .5f).then(modifier)
-            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).then(modifier)
+            .then(if (enabled) Modifier.toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+                else Modifier.semantics(mergeDescendants = true) {
+                    disabled()
+                    role = Role.Switch
+                    toggleableState = ToggleableState(checked)
+                })
             .padding(horizontal = 12.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Only the label and the switch dim; the note (the reason of a disabled switch) keeps its 4.5:1 contrast.
+        val dim = Modifier.alpha(if (enabled) 1f else .5f)
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+            Text(label, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text, modifier = dim)
             if (note.isNotEmpty()) Text(note, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
         }
         // The row is the toggle; the switch only shows the state, so it keeps its colors when the row is disabled.
         Switch(
+            modifier = dim,
             checked = checked,
             onCheckedChange = null,
             colors = SwitchDefaults.colors(
@@ -1786,17 +1863,33 @@ private fun PanelButton(
     modifier: Modifier, onClick: () -> Unit,
 ) {
     Box(
-        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).then(modifier).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).then(modifier).panelAction(enabled, Role.Button, onClick)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
         Text(label, fontSize = 12.sp, color = text,
-            modifier = Modifier.background(background, shape).padding(horizontal = 10.dp, vertical = 6.dp))
+            modifier = Modifier.alpha(if (enabled) 1f else .5f).background(background, shape)
+                .padding(horizontal = 10.dp, vertical = 6.dp))
     }
 }
 
-// Port of panel_place: centered on the point, below it when there is room or more room than above, inside safe.
+/** A panel control: clickable when [enabled]; else disabled for TalkBack, with no click action. */
+private fun Modifier.panelAction(enabled: Boolean, role: Role, onClick: () -> Unit): Modifier =
+    if (enabled) clickable(role = role, onClick = onClick)
+    else semantics(mergeDescendants = true) { disabled(); this.role = role }
+
+/** A disabled panel button says [words] and "disabled" to TalkBack, with no click action; an enabled one keeps its own semantics. */
+@Composable
+private fun PanelDisabled(enabled: Boolean, words: String, content: @Composable () -> Unit) {
+    if (enabled) content()
+    else Box(Modifier.clearAndSetSemantics { contentDescription = words; role = Role.Button; disabled() }) { content() }
+}
+
+// Port of panel_place: centered on the point, below it when there is room or more room than above, inside safe. The first
+// place stays: a later size change (an action that changes a row of the panel) only moves the panel to keep it inside safe.
 private class InspectorPosition(private val point: Offset, private val safe: IntRect) : PopupPositionProvider {
+    private var placed: IntOffset? = null
+
     override fun calculatePosition(
         anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize,
     ): IntOffset {
@@ -1805,10 +1898,14 @@ private class InspectorPosition(private val point: Offset, private val safe: Int
         val x = point.x.roundToInt()
         val y = point.y.roundToInt()
         val (width, height) = popupContentSize
-        val left = (x - width / 2).coerceAtMost(right - width).coerceAtLeast(safe.left)
-        val top = (if (bottom - y >= height || bottom - y >= y - safe.top) y else y - height)
-            .coerceAtMost(bottom - height).coerceAtLeast(safe.top)
-        return IntOffset(left, top)
+        val first = placed ?: IntOffset(
+            x - width / 2,
+            if (bottom - y >= height || bottom - y >= y - safe.top) y else y - height,
+        ).also { if (height > 0) placed = it }
+        return IntOffset(
+            first.x.coerceAtMost(right - width).coerceAtLeast(safe.left),
+            first.y.coerceAtMost(bottom - height).coerceAtLeast(safe.top),
+        )
     }
 }
 

@@ -36,6 +36,8 @@ import local.asb.companion.data.Thread
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
+import local.asb.companion.ui.Filter
+import local.asb.companion.ui.filteredRows
 import local.asb.companion.ui.idleAge
 import local.asb.companion.ui.limitLeft
 
@@ -55,9 +57,13 @@ internal fun liveTitle(threads: List<Thread>): String {
     return "${rows.count { it.pending }} pending · ${rows.count { it.state == "working" }} working"
 }
 
+private const val MAX_PENDING = 3
+
+/** Up to 3 pending titles in the cards' order, then the working titles. */
 internal fun liveLines(threads: List<Thread>): List<String> {
-    val titles = threads.filter { !it.archived && it.state == "working" }
-        .map { it.title.ifBlank { it.projectName }.ifBlank { "Untitled session" } }
+    val pending = filteredRows(threads, Filter(pendingOnly = true)).take(MAX_PENDING)
+    val working = threads.filter { !it.archived && it.state == "working" && it !in pending }
+    val titles = (pending + working).map { it.title.ifBlank { it.projectName }.ifBlank { "Untitled session" } }
     if (titles.isEmpty()) return listOf("No session is working.")
     return if (titles.size <= MAX_LINES) titles else titles.take(MAX_LINES) + "+${titles.size - MAX_LINES} more"
 }

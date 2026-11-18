@@ -84,6 +84,9 @@ import local.asb.companion.data.otherEngines
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
+import local.asb.companion.notify.ABOUT_DONE
+import local.asb.companion.notify.ABOUT_FAILED
+import local.asb.companion.notify.ABOUT_INPUT
 import local.asb.companion.notify.LiveService
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -342,8 +345,11 @@ fun SettingsScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SettingsHeading("Notifications")
                         SettingsSwitch("Done", notifyDone) { notifyDone = it; store.notifyDone = it }
+                        Text(ABOUT_DONE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         SettingsSwitch("Failed", notifyFailed) { notifyFailed = it; store.notifyFailed = it }
+                        Text(ABOUT_FAILED, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         SettingsSwitch("Needs input", notifyInput) { notifyInput = it; store.notifyInput = it }
+                        Text(ABOUT_INPUT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         SettingsSwitch("Live notification", liveNotification) {
                             // The setter runs first, because startIfEnabled reads the saved switch.
                             onLiveNotificationChanged(it)
