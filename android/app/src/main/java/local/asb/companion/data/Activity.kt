@@ -269,8 +269,8 @@ fun bucketRunning(buckets: ActivityBuckets, nowMs: Long): Boolean {
     return nowMs in last until end
 }
 
-/** The Usage chart's last bucket is lighter and says so far: it is still running, and the period is not All time. */
-fun usageBucketRunning(reply: ActivityUsage): Boolean = reply.period != "all" && bucketRunning(reply.buckets, reply.nowMs)
+/** The Usage chart's last bucket is lighter and says so far while it is still running (All time too: its last bucket holds now, as on the PC). */
+fun usageBucketRunning(reply: ActivityUsage): Boolean = bucketRunning(reply.buckets, reply.nowMs)
 
 /** Port of offline_band_color: the offline machine band, the [hue] mixed 55% toward [win], or less, as far as keeps 3:1 on [win]. */
 fun offlineBandColor(win: String, hue: String): String =

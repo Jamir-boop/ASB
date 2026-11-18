@@ -155,9 +155,9 @@ class AndroidCouncilRoundTwoListTest {
         assertTrue(bucketRunning(ActivityBuckets(unit = "week", startsMs = listOf(now)), now + 6 * day))
         assertFalse(bucketRunning(ActivityBuckets(unit = "week", startsMs = listOf(now)), now + 7 * day))
         assertFalse(bucketRunning(ActivityBuckets(), now))
-        // All time: its last bucket holds now, but no bar is lighter and no title says so far.
+        // All time too: its last bucket holds now, so it is lighter and says so far, as the PC header title.
         assertTrue(usageBucketRunning(ActivityUsage(period = "7d", nowMs = now + 1, buckets = running)))
-        assertFalse(usageBucketRunning(ActivityUsage(period = "all", nowMs = now + 1, buckets = running)))
+        assertTrue(usageBucketRunning(ActivityUsage(period = "all", nowMs = now + 1, buckets = running)))
         assertFalse(usageBucketRunning(ActivityUsage(period = "7d", nowMs = starts.last() + day, buckets = running)))
     }
 

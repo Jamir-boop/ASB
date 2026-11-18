@@ -473,7 +473,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     val xHeight = measurer.measure("00:00", axis, maxLines = 1).size.height
     val chartHeight = plotB + 6 * dp + xHeight + 2 * dp
     val gap = (if (n >= 90) 1 else 2) * dp
-    // Only a last bucket that is still running is lighter and says so far; All time has none.
+    // Only a last bucket that is still running is lighter and says so far.
     val running = usageBucketRunning(reply)
     val tipTitle = { i: Int -> tooltipTitle(starts.getOrElse(i) { 0L }, unit, running && i == n - 1, first.takeIf { i == 0 }, reply.nowMs) }
     var width by remember { mutableIntStateOf(0) }
