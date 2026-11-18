@@ -22,13 +22,12 @@ import androidx.compose.ui.unit.dp
 /** One row of the card marks legend: the corner control it draws (null for the bell), the usage limit clock, and its words. */
 internal data class CardMark(val control: CornerControl?, val limit: Boolean, val words: String)
 
-/** The card marks in legend order, with the words that TalkBack reads for each mark (see [cornerMeaning]). */
+/** The card marks in legend order, with the PC legend words (DESIGN.md); the card TalkBack words are [cornerMeaning]. */
 internal val CARD_MARKS = listOf(
-    CardMark(CornerControl("question", "mark-read", ""), false, "Needs your answer"),
-    CardMark(CornerControl("question", null, ""), false, "Waiting for approval"),
+    CardMark(CornerControl("question", "mark-read", ""), false, "Needs your answer or approval"),
+    CardMark(CornerControl("question", null, ""), false, "Waiting for approval, read"),
     CardMark(CornerControl("alert", "mark-read", ""), false, "Failed"),
     CardMark(CornerControl("alert", "mark-read", ""), true, "Usage limit"),
-    CardMark(CornerControl("dot", "mark-read", ""), false, "Done, unread"),
     CardMark(CornerControl("dot", "mark-read", ""), false, "Unread"),
     CardMark(CornerControl("discard", "keep-result", ""), false, "Mark read when done"),
     CardMark(CornerControl("pin", "unpin", ""), false, "Pinned"),

@@ -1,6 +1,9 @@
 package local.asb.companion.ui
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -260,6 +263,31 @@ fun activeFilterChips(f: Filter): List<Pair<String, String>> = buildList {
     }
     if (f.app != "all") add("app" to (APP_FILTERS.firstOrNull { it.first == f.app }?.second ?: f.app))
     if (f.archived) add("archive" to "Include archived")
+}
+
+/** The Filters button words: `Filters, 2 on` while sheet filters are on (the chips of [activeFilterChips]), else `Filters`. */
+fun filtersDescription(f: Filter): String = activeFilterChips(f).size.let { if (it > 0) "Filters, $it on" else "Filters" }
+
+/** The alpha of the muted color of the top bar pill counts while Offline, so a count differs from its label. */
+const val OFFLINE_COUNT_ALPHA = .55f
+
+/** The mark cell of a Compact row: the indicator, else a pin for a pinned row, else nothing (Compact has no drawer mark). */
+fun compactMarkCell(indicator: String, pinned: Boolean): String = indicator.ifEmpty { if (pinned) "pin" else "" }
+
+/**
+ * Port of panel_place: the inspector top left. The first place is centered on [point], below it when there is room or more
+ * room than above; a [placed] panel keeps its top edge and moves up only when its bottom would leave [safe].
+ */
+fun inspectorPlace(point: IntOffset, size: IntSize, safe: IntRect, placed: IntOffset?): IntOffset {
+    val (width, height) = size
+    val first = placed ?: IntOffset(
+        point.x - width / 2,
+        if (safe.bottom - point.y >= height || safe.bottom - point.y >= point.y - safe.top) point.y else point.y - height,
+    )
+    return IntOffset(
+        first.x.coerceAtMost(safe.right - width).coerceAtLeast(safe.left),
+        first.y.coerceAtMost(safe.bottom - height).coerceAtLeast(safe.top),
+    )
 }
 
 /** As the board clear_filter_chip: the filter without the chip [key]; a state filter with no state left shows all states. */
@@ -569,10 +597,19 @@ fun quietRow(row: Thread, comfortable: Boolean, drawerView: Boolean, nowMs: Long
 
 data class CardTones(val title: String, val caption: String, val state: String)
 
-/** Text colors of a card as palette hex values, as update_session_row, update_row_text, and set_palette give them. */
+/**
+ * Text colors of a card as palette hex values, as update_session_row, update_row_text, and set_palette give them. While
+ * [offline] the Working word has the caption tone, so saved data does not look live.
+ */
 fun cardTones(
     palette: Palette, row: Thread, comfortable: Boolean, drawerView: Boolean, pressed: Boolean,
-    nowMs: Long = System.currentTimeMillis(),
+    nowMs: Long = System.currentTimeMillis(), offline: Boolean = false,
+): CardTones = liveCardTones(palette, row, comfortable, drawerView, pressed, nowMs).let {
+    if (offline && row.state == "working" && limitLeft(row, nowMs) <= 0) it.copy(state = it.caption) else it
+}
+
+private fun liveCardTones(
+    palette: Palette, row: Thread, comfortable: Boolean, drawerView: Boolean, pressed: Boolean, nowMs: Long,
 ): CardTones {
     if (limitLeft(row, nowMs) > 0) {
         val limited = if (pressed) palette.limitedPressed else palette.limited
@@ -766,6 +803,9 @@ fun copyReference(row: Thread): Pair<String?, String> {
     }
 }
 
+/** How long the inspector Copy reference button says Copied, in ms. */
+const val COPIED_MS = 1_600L
+
 /** The board mute choices (MUTE_WORDS and MUTE_DURATIONS): the words and the duration in ms, null for Always. */
 val MUTE_CHOICES: List<Pair<String, Long?>> = listOf(
     "30 min" to 1_800_000L, "1 hour" to 3_600_000L, "8 hours" to 28_800_000L, "1 day" to 86_400_000L, "Always" to null,
@@ -779,16 +819,20 @@ fun muteEndText(durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefa
     return DateTimeFormatter.ofPattern(if (today) "HH:mm" else "EEEE HH:mm", Locale.US).format(end)
 }
 
-/** The inspector words of a mute choice: `1 hour · until 22:41`; `Always` has no end. */
-fun muteChoiceText(words: String, durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
-    muteEndText(durationMs, nowMs, zone).let { if (it.isEmpty()) words else "$words · until $it" }
-
-/** As the board MUTE_TIPS: what a mute choice does, for TalkBack. */
-fun muteTip(words: String): String = when (words) {
-    "30 min" -> "Mute for 30 minutes"
-    "Always" -> "Mute until you unmute"
-    else -> "Mute for $words"
+/**
+ * The two lines of an inspector mute chip: the time, then `until 22:41` when the end is today, else `until Thu` (the weekday
+ * only, so `1 day` does not wrap); `Always` has no line 2.
+ */
+fun muteChoiceLines(words: String, durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): Pair<String, String> {
+    if (durationMs == null) return words to ""
+    val end = Instant.ofEpochMilli(nowMs + durationMs).atZone(zone)
+    val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate() == end.toLocalDate()
+    return words to "until " + DateTimeFormatter.ofPattern(if (today) "HH:mm" else "EEE", Locale.US).format(end)
 }
+
+/** The TalkBack words of a mute chip, with the full end: `1 day, until Thursday 08:31`; `Always, mute until you unmute`. */
+fun muteChoiceDescription(words: String, durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+    if (durationMs == null) "$words, mute until you unmute" else "$words, until ${muteEndText(durationMs, nowMs, zone)}"
 
 /** Port of mute_body: the gateway `mute` body, `{"durationMs": N}`, or `{}` for Always. */
 fun muteBody(durationMs: Long?): String =

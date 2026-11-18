@@ -8,7 +8,6 @@ import local.asb.companion.ui.copyReference
 import local.asb.companion.ui.muteActive
 import local.asb.companion.ui.muteBody
 import local.asb.companion.ui.muteFlagText
-import local.asb.companion.ui.muteTip
 import local.asb.companion.ui.panelFocusReturn
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,9 +50,6 @@ class AndroidCouncilRoundOneCopyMuteTest {
         assertEquals(listOf("30 min", "1 hour", "8 hours", "1 day", "Always"), MUTE_CHOICES.map { it.first })
         assertEquals(listOf("""{"durationMs":1800000}""", """{"durationMs":3600000}""", """{"durationMs":28800000}""",
             """{"durationMs":86400000}""", "{}"), MUTE_CHOICES.map { muteBody(it.second) })
-        assertEquals("Mute for 30 minutes", muteTip("30 min"))
-        assertEquals("Mute for 8 hours", muteTip("8 hours"))
-        assertEquals("Mute until you unmute", muteTip("Always"))
     }
 
     @Test fun aMutedRowSaysUntilWhen() {

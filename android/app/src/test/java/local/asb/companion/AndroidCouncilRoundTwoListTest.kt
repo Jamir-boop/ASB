@@ -28,7 +28,7 @@ import local.asb.companion.ui.cornerControls
 import local.asb.companion.ui.cornerSlotEnd
 import local.asb.companion.ui.cornerSlots
 import local.asb.companion.ui.inspectorReason
-import local.asb.companion.ui.muteChoiceText
+import local.asb.companion.ui.muteChoiceLines
 import local.asb.companion.ui.muteFlagText
 import local.asb.companion.ui.pillCounts
 import local.asb.companion.ui.workingClockMs
@@ -90,8 +90,8 @@ class AndroidCouncilRoundTwoListTest {
     }
 
     @Test fun eachMuteChoiceShowsItsEndAndAMutedCardSaysUntilWhen() {
-        assertEquals(listOf("30 min · until 08:30", "1 hour · until 09:00", "8 hours · until 16:00",
-            "1 day · until Saturday 08:00", "Always"), MUTE_CHOICES.map { (words, duration) -> muteChoiceText(words, duration, now, utc) })
+        assertEquals(listOf("30 min" to "until 08:30", "1 hour" to "until 09:00", "8 hours" to "until 16:00",
+            "1 day" to "until Sat", "Always" to ""), MUTE_CHOICES.map { (words, duration) -> muteChoiceLines(words, duration, now, utc) })
         assertEquals("Muted until 09:00", muteFlagText(idle.copy(muted = true, mutedUntilMs = now + 3_600_000), now, utc))
         assertEquals("Muted", muteFlagText(idle.copy(muted = true), now, utc))
         assertEquals("", muteFlagText(idle, now, utc))

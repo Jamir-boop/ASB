@@ -73,7 +73,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -666,7 +668,7 @@ fun SessionsScreen(
             SessionChip(
                 "Filters", state.filter.app != "all" || state.filter.archived ||
                     state.filter.states != STATES.toSet(),
-                description = "Filters",
+                description = filtersDescription(state.filter),
                 icon = FiltersIcon,
                 onClick = { keyboard?.hide(); showFilters = true },
             )
@@ -985,7 +987,7 @@ fun SessionsScreen(
     val pillToolbar = if (state.revoked || topBarHeight == 0) 56.dp else 52.dp
     // The scrim dims the list behind the inspector; a tap outside the panel closes it, as before.
     if (inspectorOpen) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .5f)))
-    // While the inspector is open, the same pill shows in a popup over the panel (for example Copied); this one stays composed
+    // While the inspector is open, the same pill shows in a popup over the panel (for example an error); this one stays composed
     // and hidden, so its message still times out.
     AsbMessagePill(snackbar, pillToolbar, Modifier.align(Alignment.TopCenter).then(pillModifier)
         .then(if (inspectorOpen) Modifier.alpha(0f).clearAndSetSemantics { } else Modifier))
@@ -1076,7 +1078,7 @@ private fun SessionChip(
     description: String = label,
     /** A chip of the filter chip row acts and speaks as a button; a top bar pill is a toggle. */
     button: Boolean = false,
-    /** The count after the last space of [label] shows in the muted caption color (the last known count while Offline). */
+    /** The count after the last space of [label] shows in the dimmed muted color (the last known count while Offline). */
     dimCount: Boolean = false,
 ) {
     val palette = LocalPalette.current
@@ -1105,7 +1107,7 @@ private fun SessionChip(
             else Text(buildAnnotatedString {
                 append(label)
                 val count = label.lastIndexOf(' ') + 1
-                if (dimCount && count > 0) addStyle(SpanStyle(color = hexColor(palette.muted)), count, label.length)
+                if (dimCount && count > 0) addStyle(SpanStyle(color = hexColor(palette.muted).copy(alpha = OFFLINE_COUNT_ALPHA)), count, label.length)
             }, fontSize = 12.sp, color = content, maxLines = 1)
             if (icon != null && iconAfter) Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
         }
@@ -1181,7 +1183,7 @@ private fun SessionCard(
     modifier: Modifier = Modifier,
     /** The time a Working duration counts to (see [workingClockMs]); [nowMs] while Live. */
     workingNowMs: Long = nowMs,
-    /** While Offline a Working row has no pulse dot. */
+    /** While Offline a Working row has no pulse dot, and its Working word has the caption tone. */
     offline: Boolean = false,
     /** The folder path that the search matched, shown instead of the project name (see [pathMatch]). */
     folder: String = "",
@@ -1195,7 +1197,7 @@ private fun SessionCard(
     LaunchedEffect(interaction) {
         interaction.interactions.collect { press.value = (it as? PressInteraction.Press)?.pressPosition }
     }
-    val tones = cardTones(palette, row, comfortable, drawerView, pressed, nowMs)
+    val tones = cardTones(palette, row, comfortable, drawerView, pressed, nowMs, offline)
     val left = limitLeft(row, nowMs)
     val limited = left > 0
     val countdown = if (limited) limitText(left) else ""
@@ -1263,6 +1265,8 @@ private fun SessionCard(
         // The card description says the mark's meaning, so the glyph text is not read after it.
         if (indicator.isNotEmpty()) Box(Modifier.clearAndSetSemantics { }) {
             IndicatorMark(indicator, palette, compactMarkStyle(row, palette, drawerView, nowMs), limit = alertIsLimit(row))
+        } else if (compactMarkCell(indicator, row.pinned) == "pin") {
+            Icon(PinIcon, contentDescription = null, tint = hexColor(tones.caption), modifier = Modifier.size(12.dp))
         }
         if (limited) LimitClock(tones.state)
         if (workingSign) WorkingDot(tones.state, workingAlpha)
@@ -1764,20 +1768,28 @@ private fun SessionInspector(
                     Spacer(Modifier.height(8.dp))
                     // As the board Copy Absolute: the asb:1/ reference of the row, or a disabled button with the reason.
                     val (reference, copyReason) = copyReference(row)
+                    // As the board copy control: the button says Copied for a moment (no pill over the panel); each tap restarts it.
+                    var copiedAt by remember(row.id) { mutableStateOf<Long?>(null) }
+                    LaunchedEffect(copiedAt) { if (copiedAt != null) { delay(COPIED_MS); copiedAt = null } }
                     PanelDisabled(reference != null, "Copy reference") {
                         OutlinedButton(
                             onClick = {
                                 if (reference != null) {
                                     context.getSystemService(ClipboardManager::class.java)
                                         ?.setPrimaryClip(ClipData.newPlainText("ASB reference", reference))
-                                    viewModel.showBanner("Copied")
+                                    copiedAt = SystemClock.uptimeMillis()
                                 }
                             },
                             enabled = reference != null, shape = buttonShape,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                // Live only while it says Copied, so TalkBack reads Copied and not the return to Copy reference.
+                                .then(if (copiedAt != null) Modifier.semantics { liveRegion = LiveRegionMode.Polite } else Modifier),
                         ) {
-                            Text("Copy reference", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
-                                overflow = TextOverflow.Ellipsis)
+                            if (copiedAt != null) Icon(Icons.Default.Check, contentDescription = null,
+                                tint = hexColor(palette.accent), modifier = Modifier.padding(end = 6.dp).size(16.dp))
+                            Text(if (copiedAt != null) "Copied" else "Copy reference", fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                color = if (copiedAt != null) hexColor(palette.accent) else Color.Unspecified)
                         }
                     }
                     if (copyReason.isNotEmpty()) Text(copyReason, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
@@ -1822,15 +1834,16 @@ private fun SessionInspector(
                                 Text("Mute", fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
                                 // Five chips of one width in rows of three: 3 then 2.
                                 muteChoiceRows(MUTE_CHOICES.withIndex().toList()).forEach { choices ->
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    // IntrinsicSize.Min gives each chip of a row the height of the tallest one.
+                                    Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                         choices.forEach { (index, choice) ->
                                             val (words, duration) = choice
                                             // The first time has the key of the Unmute row, so the focus moves between them.
                                             val key = if (index == 0) "mute" else "mute:$words"
-                                            val end = muteEndText(duration, nowMs)
-                                            MuteChip(muteChoiceText(words, duration, nowMs),
-                                                muteTip(words) + if (end.isEmpty()) "" else ", until $end",
-                                                hexColor(move), text, !busy, Modifier.weight(1f).then(focusable(key))) {
+                                            MuteChip(muteChoiceLines(words, duration, nowMs),
+                                                muteChoiceDescription(words, duration, nowMs),
+                                                hexColor(move), text, !busy,
+                                                Modifier.weight(1f).fillMaxHeight().then(focusable(key))) {
                                                 viewModel.action(row.id, "mute", muteBody(duration)); started(key)
                                             }
                                         }
@@ -1926,10 +1939,10 @@ private fun PanelButton(
     }
 }
 
-/** One inspector mute choice: a chip that fills its [modifier] width, 48 dp high, its words centered on one or two lines. */
+/** One inspector mute choice: a chip that fills its [modifier] width, 48 dp high, the time over its end, centered. */
 @Composable
 private fun MuteChip(
-    label: String, description: String, background: Color, text: Color, enabled: Boolean, modifier: Modifier, onClick: () -> Unit,
+    lines: Pair<String, String>, description: String, background: Color, text: Color, enabled: Boolean, modifier: Modifier, onClick: () -> Unit,
 ) {
     Box(
         modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(6.dp)).background(background)
@@ -1937,8 +1950,11 @@ private fun MuteChip(
             .padding(horizontal = 6.dp, vertical = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontSize = 12.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = text, textAlign = TextAlign.Center,
-            modifier = Modifier.alpha(if (enabled) 1f else .5f))
+        Column(Modifier.alpha(if (enabled) 1f else .5f), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(lines.first, fontSize = 12.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = text, maxLines = 1)
+            if (lines.second.isNotEmpty()) Text(lines.second, fontSize = 12.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = text,
+                maxLines = 1)
+        }
     }
 }
 
@@ -1954,8 +1970,8 @@ private fun PanelDisabled(enabled: Boolean, words: String, content: @Composable 
     else Box(Modifier.clearAndSetSemantics { contentDescription = words; role = Role.Button; disabled() }) { content() }
 }
 
-// Port of panel_place: centered on the point, below it when there is room or more room than above, inside safe. The first
-// place stays: a later size change (an action that changes a row of the panel) only moves the panel to keep it inside safe.
+// Port of panel_place (see [inspectorPlace]): the panel keeps its top edge after a size change (an action that changes a row
+// of the panel); it moves up only to keep its bottom inside safe.
 private class InspectorPosition(private val point: Offset, private val safe: IntRect) : PopupPositionProvider {
     private var placed: IntOffset? = null
 
@@ -1966,15 +1982,9 @@ private class InspectorPosition(private val point: Offset, private val safe: Int
         val bottom = minOf(safe.bottom, windowSize.height)
         val x = point.x.roundToInt()
         val y = point.y.roundToInt()
-        val (width, height) = popupContentSize
-        val first = placed ?: IntOffset(
-            x - width / 2,
-            if (bottom - y >= height || bottom - y >= y - safe.top) y else y - height,
-        ).also { if (height > 0) placed = it }
-        return IntOffset(
-            first.x.coerceAtMost(right - width).coerceAtLeast(safe.left),
-            first.y.coerceAtMost(bottom - height).coerceAtLeast(safe.top),
-        )
+        // The kept place is the shown one, so a shorter panel keeps its top edge (it no longer drops back to the point).
+        return inspectorPlace(IntOffset(x, y), popupContentSize, IntRect(safe.left, safe.top, right, bottom), placed)
+            .also { if (popupContentSize.height > 0) placed = it }
     }
 }
 

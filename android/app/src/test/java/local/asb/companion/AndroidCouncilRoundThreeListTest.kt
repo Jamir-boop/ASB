@@ -46,25 +46,19 @@ class AndroidCouncilRoundThreeListTest {
         assertEquals("Drawer, 1 session", pillDescription("Drawer", 1))
     }
 
-    @Test fun theLegendWordsAreTheCornerMeanings() {
-        val failed = Thread(lastOutcome = "failed")
-        val limit = Thread(lastOutcome = "limit")
-        val done = Thread(completionAttention = true)
-        val read = CornerControl("question", "mark-read", "")
-        assertEquals(
-            listOf(
-                cornerMeaning(Thread(), read),
-                cornerMeaning(Thread(), CornerControl("question", null, "")),
-                cornerMeaning(failed, CornerControl("alert", "mark-read", "")),
-                cornerMeaning(limit, CornerControl("alert", "mark-read", "")),
-                cornerMeaning(done, CornerControl("dot", "mark-read", "")),
-                cornerMeaning(Thread(), CornerControl("dot", "mark-read", "")),
-            ),
-            CARD_MARKS.take(6).map { it.words },
-        )
-        assertEquals(listOf("Mark read when done", "Pinned", "In the drawer", "Muted"), CARD_MARKS.drop(6).map { it.words })
+    @Test fun theLegendHasThePcWordsAndTheCardWordsStay() {
+        // As the PC legend (DESIGN.md): one row for the filled question mark, one for the passive mark, and one dot row.
+        assertEquals(listOf("Needs your answer or approval", "Waiting for approval, read", "Failed", "Usage limit", "Unread",
+            "Mark read when done", "Pinned", "In the drawer", "Muted"), CARD_MARKS.map { it.words })
+        // The card TalkBack words do not change.
+        assertEquals("Needs your answer", cornerMeaning(Thread(), CARD_MARKS[0].control!!))
+        assertEquals("Waiting for approval", cornerMeaning(Thread(), CARD_MARKS[1].control!!))
+        assertEquals("Failed", cornerMeaning(Thread(lastOutcome = "failed"), CARD_MARKS[2].control!!))
+        assertEquals("Usage limit", cornerMeaning(Thread(lastOutcome = "limit"), CARD_MARKS[3].control!!))
+        assertEquals("Done, unread", cornerMeaning(Thread(completionAttention = true), CornerControl("dot", "mark-read", "")))
+        assertEquals("Unread", cornerMeaning(Thread(), CARD_MARKS[4].control!!))
         // The glyph follows the mark: the clock only for the usage limit, and the bell has no corner control.
-        assertEquals(listOf(false, false, false, true), CARD_MARKS.take(4).map { it.limit })
+        assertEquals(listOf(false, false, false, true, false), CARD_MARKS.take(5).map { it.limit })
         assertEquals(null, CARD_MARKS.last().control)
     }
 
