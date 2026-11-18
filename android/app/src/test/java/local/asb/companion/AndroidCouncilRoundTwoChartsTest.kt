@@ -79,13 +79,20 @@ class AndroidCouncilRoundTwoChartsTest {
         assertTrue(barDescription(tooltipTitle(starts[i], "hour", false), "\$0.61", emptyList()).startsWith("Tue 18:00:"))
     }
 
-    @Test fun theTooltipStaysAboveThePlot() {
-        val plotTop = 120f
-        for (i in 0 until 24) {
-            val tip = tipPlace(geom.barLeft(i), geom.barLeft(i) + geom.bar, geom.width, 300f, 90f, plotTop, 2 * dp)
-            // Never inside the plot, so never in a bar's column above its top.
-            assertTrue(tip.y + 90f <= plotTop)
-            assertTrue(tip.x >= 0f && tip.x + 300f <= geom.width)
+    @Test fun theTooltipIsThePcBoxInsideTheChart() {
+        // The PC box, 160 by 120, in a 300 dp tall chart: above a short middle bar, beside a tall one on the side with more room.
+        val height = 300f * dp
+        val i = 12
+        val above = tipPlace(geom.barLeft(i), geom.barLeft(i) + geom.bar, height - 20f, geom.width, height, 160f, 120f, 8 * dp)
+        assertEquals(height - 20f - 8 * dp - 120f, above.y)
+        assertEquals(geom.center(i) - 80f, above.x, 1e-3f)
+        for (j in 0 until 24) {
+            val tip = tipPlace(geom.barLeft(j), geom.barLeft(j) + geom.bar, 10f, geom.width, height, 160f, 120f, 8 * dp)
+            // Beside a tall bar: never over its column, and inside the chart.
+            assertTrue(tip.x + 160f <= geom.barLeft(j) || tip.x >= geom.barLeft(j) + geom.bar)
+            assertTrue(tip.x >= 0f && tip.x + 160f <= geom.width && tip.y >= 0f && tip.y + 120f <= height)
+            // Left of the bar for the right half, so a box near the end does not cover the last buckets.
+            if (j >= 22) assertTrue(tip.x + 160f <= geom.barLeft(j))
         }
     }
 
