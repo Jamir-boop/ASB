@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -469,10 +470,7 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     // The y labels set the left room and the top inset, and the x labels the room under the plot, so no label is cut at any text size.
     val yLabels = (1..lines).map { measurer.measure(axisLabel(step * it, metric), axis, maxLines = 1) }
     val left = maxOf(48 * dp, (yLabels.maxOfOrNull { it.size.width } ?: 0) + 12 * dp)
-    // The tooltip band above the plot: two 12 sp lines in 8 dp of padding, so a tooltip never covers a bar.
-    val tipLine = measurer.measure("Tg", TextStyle(fontSize = 12.sp), maxLines = 1).size.height
-    val band = 2 * tipLine + 18 * dp
-    val plotT = band + maxOf(8 * dp, (yLabels.maxOfOrNull { it.size.height } ?: 0) / 2f + 1 * dp)
+    val plotT = maxOf(8 * dp, (yLabels.maxOfOrNull { it.size.height } ?: 0) / 2f + 1 * dp)
     val plotB = plotT + 212 * dp
     val xHeight = measurer.measure("00:00", axis, maxLines = 1).size.height
     val chartHeight = plotB + 6 * dp + xHeight + 2 * dp
@@ -551,29 +549,40 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
         }
         tapped?.takeIf { width > 0 }?.let { i ->
             var tipSize by remember { mutableStateOf(IntSize.Zero) }
-            val place = tipPlace(geom.barLeft(i), geom.barLeft(i) + geom.bar, width.toFloat(), tipSize.width.toFloat(),
-                tipSize.height.toFloat(), plotT, 2 * dp)
-            // One or two lines in the band above the plot: the time and the total, then the series high to low (ties keep the
-            // series order).
+            val barTop = plotB - (plotB - plotT) * (sums[i] / yMax).toFloat()
+            val place = tipPlace(geom.barLeft(i), geom.barLeft(i) + geom.bar, barTop, width.toFloat(), chartHeight,
+                tipSize.width.toFloat(), tipSize.height.toFloat(), 8 * dp)
+            // The PC box: the title, Total, a rule, and the series. Its width is the widest row, so no text is cut.
             Column(Modifier.offset { IntOffset(place.x.roundToInt(), place.y.roundToInt()) }.onSizeChanged { tipSize = it }
-                .widthIn(max = with(density) { width.toDp() }).background(colors.background, RoundedCornerShape(4.dp))
-                .border(1.dp, colors.edge, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 4.dp).clearAndSetSemantics {}) {
-                Text("${tipTitle(i)} · ${formatValue(sums[i], metric)}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                    style = figures, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val split = tipOrder(bars[i]).filter { bars[i][it] > 0 }
-                if (split.size > 1) Text(split.joinToString(" · ") { "${seriesLabel(series[it])} ${formatValue(bars[i][it], metric)}" },
-                    fontSize = 12.sp, style = figures, color = colors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                .width(IntrinsicSize.Max).widthIn(min = 150.dp).background(colors.background, RoundedCornerShape(4.dp))
+                .border(1.dp, colors.edge, RoundedCornerShape(4.dp)).padding(horizontal = 10.dp, vertical = 8.dp).clearAndSetSemantics {}) {
+                Text(tipTitle(i), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
+                TipRow("Total", formatValue(sums[i], metric), colors.accent, colors)
+                HorizontalDivider(Modifier.padding(vertical = 4.dp), thickness = 1.dp, color = colors.rule)
+                // The series high to low by their value in this bucket; a stable sort keeps the series order for ties.
+                for (s in tipOrder(bars[i])) TipRow(seriesLabel(series[s]), formatValue(bars[i][s], metric), seriesColor(series[s]), colors)
             }
         }
     }
 }
 
 /**
- * The top left of the bar tooltip ([w] by [h]) in a chart [width] wide: centered over the bar from [left] to [right] and kept
- * inside the chart, with its bottom [gap] above the plot top [plotTop]. So it never covers a bar or the plot.
+ * The top left of the bar tooltip ([w] by [h]) in the chart ([width] by [height]); it never covers its bar, from [left] to [right]
+ * with its top at [top]. Above the bar when it fits there; else beside the bar on the side with more room (as the PC tip_box);
+ * else above the chart.
  */
-internal fun tipPlace(left: Float, right: Float, width: Float, w: Float, h: Float, plotTop: Float, gap: Float): Offset =
-    Offset(((left + right) / 2 - w / 2).coerceIn(0f, maxOf(0f, width - w)), maxOf(0f, plotTop - gap - h))
+internal fun tipPlace(left: Float, right: Float, top: Float, width: Float, height: Float, w: Float, h: Float, gap: Float): Offset {
+    val centered = ((left + right) / 2 - w / 2).coerceIn(0f, maxOf(0f, width - w))
+    if (top - gap - h >= 0) return Offset(centered, top - gap - h)
+    val y = (top - h / 2).coerceIn(0f, maxOf(0f, height - h))
+    val rightRoom = width - right - gap
+    val leftRoom = left - gap
+    return when {
+        rightRoom >= w && (rightRoom >= leftRoom || leftRoom < w) -> Offset(right + gap, y)
+        leftRoom >= w -> Offset(left - gap - w, y)
+        else -> Offset(centered, -gap - h)
+    }
+}
 
 /** [base] with no minimum touch target, so a node keeps its own bounds for TalkBack. */
 internal fun exactTouchBounds(base: ViewConfiguration): ViewConfiguration = object : ViewConfiguration by base {
@@ -647,6 +656,17 @@ internal fun evenAxisLabels(starts: List<Long>, unit: String, centers: List<Floa
 
 /** The tooltip series order: the series indexes high to low by [values]; ties keep the series order. */
 internal fun tipOrder(values: List<Double>): List<Int> = values.indices.sortedByDescending { values[it] }
+
+@Composable
+private fun TipRow(label: String, value: String, swatch: Color, colors: ActivityColors) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).background(swatch, RoundedCornerShape(2.dp)))
+        Text(label, fontSize = 12.sp, color = colors.text)
+        Spacer(Modifier.weight(1f))
+        Text(value, fontSize = 12.sp, style = figures, color = colors.text, modifier = Modifier.padding(start = 12.dp))
+    }
+}
 
 @Composable
 private fun TypeBlock(title: String, shares: List<TypeShare>, format: (Double) -> String, colors: ActivityColors) {

@@ -212,8 +212,8 @@ the PC, the open thread hides its text at the next report.
 The Usage chart keeps 8 % headroom above the tallest bar on the round axis
 steps. Its x labels are at even steps (24 hours: every 6 hours on the hour; 7
 days: each day), and the axis labels get the room that their text needs. A tap
-on a bar or its column shows its time and value in a band above the chart,
-never over the bars. A current bucket that is still running has a lighter fill and says so far. TalkBack reads a summary
+on a bar or its column shows the PC box above or beside the bar: the title,
+Total, and the series from high to low. A current bucket that is still running has a lighter fill and says so far. TalkBack reads a summary
 (`Usage over time, 24 hours. Highest: 14:00, $1.20.`) and reaches each bar
 with its time and values, as the PC tooltip. The gateway also forwards the `mute` and
 `unmute` row actions.
