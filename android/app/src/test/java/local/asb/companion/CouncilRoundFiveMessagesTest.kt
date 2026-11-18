@@ -20,7 +20,6 @@ import local.asb.companion.ui.MESSAGES_EMPTY_HINT
 import local.asb.companion.ui.PIN_RING
 import local.asb.companion.ui.SeatLabelInput
 import local.asb.companion.ui.dashedCircles
-import local.asb.companion.ui.emptyBlockSizes
 import local.asb.companion.ui.exitCircles
 import local.asb.companion.ui.messageBucketTip
 import local.asb.companion.ui.pinCircle
@@ -249,10 +248,9 @@ class CouncilRoundFiveMessagesTest {
         assertEquals("0 outgoing, 0 incoming", seatDirections(null))
     }
 
-    @Test fun theEmptyBlockGrowsWithTheDisc() {
+    @Test fun theEmptyHintStays() {
+        // Council round 2 replaced the sized empty block with the shared empty layout.
         assertEquals("When an agent sends a message to another session with ASB Bridge, it shows here.", MESSAGES_EMPTY_HINT)
-        assertEquals(96 to 20, emptyBlockSizes(519.9f))
-        assertEquals(128 to 26, emptyBlockSizes(520f))
     }
 
     private fun utc(body: () -> Unit) {

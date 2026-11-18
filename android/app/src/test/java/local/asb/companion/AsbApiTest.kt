@@ -663,7 +663,7 @@ class AsbApiTest {
         val on = suspend { true }
         // The gateway refuses a reply over its limit with 502.
         server.enqueue(MockResponse().setResponseCode(502).setBody("""{"error":"The ASB reply is too large."}"""))
-        assertEquals(ThreadState.Failed("The ASB reply is too large."), loadThread(on) { api().activityThread(query, "") })
+        assertEquals(ThreadState.TooLong, loadThread(on) { api().activityThread(query, "") })
         // Another 2xx than 200 is no thread either.
         server.enqueue(MockResponse().setResponseCode(203).setBody(threadBody))
         assertTrue(loadThread(on) { api().activityThread(query, "") } is ThreadState.Failed)
