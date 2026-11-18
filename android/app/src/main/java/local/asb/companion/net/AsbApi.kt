@@ -1,7 +1,10 @@
 package local.asb.companion.net
 
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.security.cert.CertificateException
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLPeerUnverifiedException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -33,6 +36,7 @@ import local.asb.companion.data.orderEndpoints
 import local.asb.companion.data.otherEngines
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.EventListener
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -340,7 +344,25 @@ class AsbApi(
         }
     }
 
-    private suspend fun send(client: OkHttpClient, request: Request): Reply = suspendCancellableCoroutine { continuation ->
+    // A restart of the gateway listener closes its sockets, and the pool hands each closed socket to one request, which fails
+    // (retryOnConnectionFailure is off, so a POST never repeats). So a GET that fails on a reused socket drops the idle
+    // sockets and tries once on a new one; a POST and a GET on a new socket do not retry.
+    private suspend fun send(client: OkHttpClient, request: Request): Reply {
+        if (request.method != "GET") return call(client, request)
+        val connected = AtomicBoolean(false)
+        val watched = client.newBuilder().eventListener(object : EventListener() {
+            override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) = connected.set(true)
+        }).build()
+        return try {
+            call(watched, request)
+        } catch (cause: IOException) {
+            if (connected.get()) throw cause
+            client.connectionPool.evictAll()
+            call(client, request)
+        }
+    }
+
+    private suspend fun call(client: OkHttpClient, request: Request): Reply = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {

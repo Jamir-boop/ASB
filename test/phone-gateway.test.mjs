@@ -467,20 +467,56 @@ gatewayTest('mute and unmute go to the PC route only with the allowed bodies', a
   assert.deepEqual(records, []);
 });
 
-gatewayTest('a sendText change restarts the listener: an open connection drops once and the token still works', async (t) => {
-  const { gateway, request, pair, port } = await fixture(t);
+gatewayTest('a sendText change keeps the listener and its open connections; a port or address change restarts it', async (t) => {
+  const listed = [{ address: '127.0.0.1', interface: 'lo', kind: 'lan' }, { address: '127.0.0.3', interface: 'ztabcdef12', kind: 'zerotier' }];
+  const { gateway, request, pair, port } = await fixture(t, { gateway: { listAddresses: () => listed } });
   const token = (await pair()).json.token;
+  // One keep-alive socket, as the phone pool keeps it, for requests before and after each change.
   const socket = tls.connect({ host: '127.0.0.1', port, rejectUnauthorized: false });
   await new Promise((resolve, reject) => { socket.once('secureConnect', resolve); socket.once('error', reject); });
-  let closes = 0;
-  const closed = new Promise((resolve) => socket.on('close', () => { closes += 1; resolve(); }));
   socket.on('error', () => {});
-  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: true })).running, true);
-  await closed;
-  assert.equal(closes, 1);
-  const hello = await request('/phone/v1/hello', { token });
-  assert.deepEqual([hello.status, hello.json.sendText], [200, true]);
-  assert.equal((await gateway.devices()).length, 1);
+  let closed = false;
+  socket.on('close', () => { closed = true; });
+  let received = '';
+  socket.on('data', (chunk) => { received += chunk; });
+  const hello = async () => {
+    received = '';
+    socket.write(`GET /phone/v1/hello HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer ${token}\r\n\r\n`);
+    const deadline = Date.now() + 5000;
+    // The reply can be chunked: wait for its last chunk, then read the JSON between the first { and the last }.
+    while (!/\}(\r\n)?(0\r\n\r\n)?$/.test(received) && !closed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    const body = received.slice(received.indexOf('\r\n\r\n') + 4);
+    return JSON.parse(body.slice(body.indexOf('{'), body.lastIndexOf('}') + 1));
+  };
+  assert.equal((await hello()).sendText, false);
+  for (const sendText of [true, false, true]) {
+    const status = await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText });
+    assert.deepEqual([status.running, status.sendText], [true, sendText]);
+    assert.equal((await hello()).sendText, sendText);
+  }
+  assert.equal(closed, false);
+  // A pairing code stays too, because the listener did not restart.
+  const pairing = await gateway.createPairing();
+  await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: false });
+  const code = new URL(pairing.uri).searchParams.get('c');
+  assert.equal((await request('/phone/v1/pair', { method: 'POST', body: { code, deviceName: 'Second phone' } })).status, 200);
+  // Another address restarts the listener: the open socket drops, and a new request works.
+  const dropped = new Promise((resolve) => socket.once('close', resolve));
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1', '127.0.0.3'], port, sendText: false })).running, true);
+  await dropped;
+  assert.deepEqual((await gateway.status()).listening.map(({ address }) => address).sort(), ['127.0.0.1', '127.0.0.3']);
+  assert.equal((await request('/phone/v1/hello', { token })).status, 200);
+  // Another port restarts it too: the old port does not answer, the new one does.
+  const second = tls.connect({ host: '127.0.0.1', port, rejectUnauthorized: false });
+  await new Promise((resolve, reject) => { second.once('secureConnect', resolve); second.once('error', reject); });
+  second.on('error', () => {});
+  const secondDropped = new Promise((resolve) => second.once('close', resolve));
+  const next = await freePort();
+  assert.equal((await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port: next, sendText: false })).running, true);
+  await secondDropped;
+  await assert.rejects(request('/phone/v1/hello', { token }));
+  assert.equal((await gateway.status()).port, next);
+  assert.equal((await gateway.devices()).length, 2);
 });
 
 gatewayTest('the thread route exists only while the PC switch for message text is on', async (t) => {
