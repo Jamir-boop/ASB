@@ -665,8 +665,7 @@ fun SessionsScreen(
                 },
             )
             SessionChip(
-                "Filters", state.filter.app != "all" || state.filter.archived ||
-                    state.filter.states != STATES.toSet(),
+                "Filters", activeFilterChips(state.filter).isNotEmpty(),
                 description = filtersDescription(state.filter),
                 icon = FiltersIcon,
                 onClick = { keyboard?.hide(); showFilters = true },

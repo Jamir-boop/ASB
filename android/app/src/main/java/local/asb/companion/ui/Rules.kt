@@ -820,14 +820,13 @@ fun muteEndText(durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefa
 }
 
 /**
- * The two lines of an inspector mute chip: the time, then `until 22:41` when the end is today, else `until Thu` (the weekday
- * only, so `1 day` does not wrap); `Always` has no line 2.
+ * The two lines of an inspector mute chip: the time, then `until 22:41` for a time under 24 hours (also past midnight), else
+ * `until Thu` (the weekday only, so `1 day` does not wrap); `Always` has no line 2.
  */
 fun muteChoiceLines(words: String, durationMs: Long?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): Pair<String, String> {
     if (durationMs == null) return words to ""
     val end = Instant.ofEpochMilli(nowMs + durationMs).atZone(zone)
-    val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate() == end.toLocalDate()
-    return words to "until " + DateTimeFormatter.ofPattern(if (today) "HH:mm" else "EEE", Locale.US).format(end)
+    return words to "until " + DateTimeFormatter.ofPattern(if (durationMs < 86_400_000L) "HH:mm" else "EEE", Locale.US).format(end)
 }
 
 /** The TalkBack words of a mute chip, with the full end: `1 day, until Thursday 08:31`; `Always, mute until you unmute`. */

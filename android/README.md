@@ -281,8 +281,8 @@ the absolute reference of the row (`asb:1/...`), and the button says `Copied`
 with a check for a moment, as on the PC;
 when the PC has no reference for the row, the button is dimmed with the reason.
 **Mute** offers the PC times as five chips of one width, three then two (`30 min`, `1 hour`, `8 hours`, `1 day`, `Always`),
-each with the time over its end (`1 hour` over `until 22:41`, or `until Thu`
-when the end is on another day; TalkBack reads the full end); a muted row shows an **Unmute**
+each with the time over its end (`1 hour` over `until 22:41`; `1 day` over `until Thu`; TalkBack reads the
+full end); a muted row shows an **Unmute**
 button with `Muted until 14:30` (or `Muted`), and its card shows the muted bell and
 `Muted until 14:30` (or `Muted`) after the folder. The inspector
 stays open after a change and shows the new row data. An action error shows

@@ -11,6 +11,7 @@ import local.asb.companion.ui.COPIED_MS
 import local.asb.companion.ui.Filter
 import local.asb.companion.ui.MUTE_CHOICES
 import local.asb.companion.ui.OFFLINE_COUNT_ALPHA
+import local.asb.companion.ui.activeFilterChips
 import local.asb.companion.ui.cardTones
 import local.asb.companion.ui.compactMarkCell
 import local.asb.companion.ui.filtersDescription
@@ -18,6 +19,7 @@ import local.asb.companion.ui.inspectorPlace
 import local.asb.companion.ui.muteChoiceDescription
 import local.asb.companion.ui.muteChoiceLines
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Android council round 4, list and inspector fixes (made-up rows). */
@@ -31,9 +33,11 @@ class AndroidCouncilRoundFourListTest {
     @Test fun muteChipsAreTheTimeOverTheEnd() {
         assertEquals(listOf("30 min" to "until 09:01", "1 hour" to "until 09:31", "8 hours" to "until 16:31",
             "1 day" to "until Thu", "Always" to ""), MUTE_CHOICES.map { (words, ms) -> muteChoiceLines(words, ms, now, utc) })
-        // Late in the day, 8 hours ends on another day: the weekday only.
+        // A time under 24 hours keeps its clock time past midnight; only 1 day shows the weekday.
         val late = Instant.parse("2026-11-18T20:00:00Z").toEpochMilli()
-        assertEquals("8 hours" to "until Thu", muteChoiceLines("8 hours", 28_800_000L, late, utc))
+        assertEquals("8 hours" to "until 04:00", muteChoiceLines("8 hours", 28_800_000L, late, utc))
+        val nearMidnight = Instant.parse("2026-11-18T23:45:00Z").toEpochMilli()
+        assertEquals("30 min" to "until 00:15", muteChoiceLines("30 min", 1_800_000L, nearMidnight, utc))
         assertEquals(listOf("30 min, until 09:01", "1 hour, until 09:31", "8 hours, until 16:31", "1 day, until Thursday 08:31",
             "Always, mute until you unmute"), MUTE_CHOICES.map { (words, ms) -> muteChoiceDescription(words, ms, now, utc) })
     }
@@ -43,6 +47,8 @@ class AndroidCouncilRoundFourListTest {
         // A pill value is not a sheet filter.
         assertEquals("Filters", filtersDescription(Filter(pendingOnly = true, drawerOnly = true)))
         assertEquals("Filters", filtersDescription(Filter(states = setOf("working"))))
+        // The Working pill alone does not draw the Filters button selected.
+        assertTrue(activeFilterChips(Filter(states = setOf("working"))).isEmpty())
         assertEquals("Filters, 1 on", filtersDescription(Filter(archived = true)))
         assertEquals("Filters, 3 on", filtersDescription(Filter(states = setOf("waiting", "idle"), archived = true)))
     }
