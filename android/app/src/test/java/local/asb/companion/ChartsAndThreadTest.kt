@@ -69,16 +69,10 @@ class ChartsAndThreadTest {
     }
 
     @Test fun theTooltipNeverCoversItsBar() {
-        // A short bar: above it.
-        assertEquals(Offset(35f, 52f), tipPlace(100f, 130f, 200f, 360f, 242f, 160f, 140f, 8f))
-        // A tall bar near the left: to its right; near the right: to its left.
-        val right = tipPlace(60f, 90f, 10f, 360f, 242f, 160f, 140f, 8f)
-        assertEquals(98f, right.x)
-        val left = tipPlace(300f, 330f, 10f, 360f, 242f, 160f, 140f, 8f)
-        assertEquals(132f, left.x)
-        assertTrue(right.x >= 90f && left.x + 160f <= 300f)
-        // No room beside a wide middle bar: above the chart.
-        assertEquals(Offset(100f, -148f), tipPlace(120f, 240f, 10f, 360f, 242f, 160f, 140f, 8f))
+        // Council round 2: centered over the bar, its bottom 2 px above the plot top (60), inside the chart.
+        assertEquals(Offset(35f, 18f), tipPlace(100f, 130f, 360f, 160f, 40f, 60f, 2f))
+        assertEquals(Offset(0f, 18f), tipPlace(0f, 10f, 360f, 160f, 40f, 60f, 2f))
+        assertEquals(Offset(200f, 18f), tipPlace(340f, 360f, 360f, 160f, 40f, 60f, 2f))
     }
 
     @Test fun talkBackHearsTheChartSummaryAndEachBar() = utc {

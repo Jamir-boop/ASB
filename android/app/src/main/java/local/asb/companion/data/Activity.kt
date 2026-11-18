@@ -336,6 +336,8 @@ fun seatTitles(reply: ActivityMessages): Map<String, String> = reply.seats.assoc
 /** The first thread page and the most that Show earlier asks for (the gateway allows at most 200). */
 const val THREAD_LIMIT = 100
 const val THREAD_MAX = 200
+/** The thread page that Show fewer messages asks for after the gateway refused a reply as too large. */
+const val THREAD_FEWER = 50
 
 const val MESSAGE_TEXT_OFF = "Message text is off on the PC. Turn it on in ASB Preferences > Phone."
 

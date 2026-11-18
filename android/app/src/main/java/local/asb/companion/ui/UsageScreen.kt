@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -177,13 +176,14 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 Column(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ChoiceRow(USAGE_PERIODS.map { it to periodShortLabel(it) }, period,
-                        descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }) { period = it }
+                        descriptions = USAGE_PERIODS.associateWith { periodLabel(it) }, period = true) { period = it }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ChoiceRow(listOf(Metric.COST.name to "Cost", Metric.TOKENS.name to "Tokens"), metric.name,
                             Modifier.width(168.dp), enabled = !statePage) { metric = Metric.valueOf(it) }
                         if (current != null) {
                             val onCount = machineIds.count { it !in offSet }
-                            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                            val chips = rememberScrollState()
+                            Row(Modifier.weight(1f).fadeEnd(chips).horizontalScroll(chips),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 current.machines.forEachIndexed { index, machine ->
                                     val on = machine.machineId !in offSet
@@ -203,7 +203,7 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
                 }
                 HorizontalDivider(thickness = 1.dp, color = colors.divider)
                 when {
-                    current == null && error != null -> ActivityError(error.orEmpty(), colors) { attempt++ }
+                    current == null && error != null -> ActivityError(error.orEmpty(), "usage", colors) { attempt++ }
                     current == null -> ActivityLoading()
                     current.records.isEmpty() -> UsageEmpty(period, colors) { period = "all" }
                     else -> {
@@ -219,12 +219,8 @@ fun UsageScreen(api: AsbApi, engine: String, onBack: () -> Unit) {
 
 @Composable
 private fun UsageEmpty(period: String, colors: ActivityColors, onAllTime: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(48.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        EmptyBlock(R.drawable.ic_usage, if (period == "all") "No usage yet" else "No usage in the last ${periodLabel(period)}",
-            USAGE_EMPTY_HINT, colors)
-        if (period != "all") AccentButton("Show all time", colors, Modifier.padding(top = 4.dp), onClick = onAllTime)
-    }
+    StatePanel(if (period == "all") "No usage yet" else "No usage in the last ${periodLabel(period)}", USAGE_EMPTY_HINT, colors,
+        if (period != "all") "Show all time" else null, onAllTime)
 }
 
 @Composable
@@ -468,20 +464,23 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
     // The y labels set the left room and the top inset, and the x labels the room under the plot, so no label is cut at any text size.
     val yLabels = (1..lines).map { measurer.measure(axisLabel(step * it, metric), axis, maxLines = 1) }
     val left = maxOf(48 * dp, (yLabels.maxOfOrNull { it.size.width } ?: 0) + 12 * dp)
-    val plotT = maxOf(8 * dp, (yLabels.maxOfOrNull { it.size.height } ?: 0) / 2f + 1 * dp)
+    // The tooltip band above the plot: two 12 sp lines in 8 dp of padding, so a tooltip never covers a bar.
+    val tipLine = measurer.measure("Tg", TextStyle(fontSize = 12.sp), maxLines = 1).size.height
+    val band = 2 * tipLine + 18 * dp
+    val plotT = band + maxOf(8 * dp, (yLabels.maxOfOrNull { it.size.height } ?: 0) / 2f + 1 * dp)
     val plotB = plotT + 212 * dp
     val xHeight = measurer.measure("00:00", axis, maxLines = 1).size.height
     val chartHeight = plotB + 6 * dp + xHeight + 2 * dp
     val gap = (if (n >= 90) 1 else 2) * dp
     val tipTitle = { i: Int -> tooltipTitle(starts.getOrElse(i) { 0L }, unit, i == n - 1, first.takeIf { i == 0 }, reply.nowMs) }
     var width by remember { mutableIntStateOf(0) }
+    val geom = BarGeom(left, width.toFloat(), n, gap)
     Box(Modifier.fillMaxWidth().height(with(density) { chartHeight.toDp() }).onSizeChanged { width = it.width }) {
         Canvas(Modifier.fillMaxSize().semantics { contentDescription = chartSummary(reply.period, unit, starts, sums, metric) }
-            .pointerInput(n, left) {
+            .pointerInput(n, left, gap) {
                 detectTapGestures { point ->
-                    val bw = (size.width - left - gap * (n - 1)) / n
-                    val i = ((point.x - left) / (bw + gap)).toInt()
-                    tapped = if (point.x >= left && i in 0 until n && i != tapped) i else null
+                    val i = BarGeom(left, size.width.toFloat(), n, gap).indexAt(point.x)
+                    tapped = if (i != tapped) i else null
                 }
             }) {
             if (n == 0) return@Canvas
@@ -492,9 +491,12 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                 val layout = yLabels[k - 1]
                 drawText(layout, topLeft = Offset(left - 8 * dp - layout.size.width, gy - layout.size.height / 2f))
             }
-            val bw = (size.width - left - gap * (n - 1)) / n
+            val g = BarGeom(left, size.width, n, gap)
+            val bw = g.bar
             bars.forEachIndexed { i, values ->
-                val x = left + i * (bw + gap)
+                val x = g.barLeft(i)
+                // The current bucket is still running: a lighter fill, so that it does not read as a drop.
+                val fill = if (i == n - 1) SO_FAR_ALPHA else 1f
                 var acc = 0.0
                 val visible = values.indices.filter { values[it] > 0 }
                 for (s in visible) {
@@ -505,14 +507,14 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                     drawPath(Path().apply {
                         moveTo(x, y0); lineTo(x, y1 + r); quadraticTo(x, y1, x + r, y1); lineTo(x + bw - r, y1)
                         quadraticTo(x + bw, y1, x + bw, y1 + r); lineTo(x + bw, y0); close()
-                    }, seriesColor(series[s]))
+                    }, seriesColor(series[s]).copy(alpha = fill))
                 }
                 if (i == tapped && sums[i] > 0) {
                     val top = y(sums[i])
                     drawRect(colors.text, Offset(x - .5f * dp, top - .5f * dp), Size(bw + dp, plotB - top + dp), style = Stroke(1 * dp))
                 }
             }
-            val centers = List(n) { left + it * (bw + gap) + bw / 2 }
+            val centers = List(n) { g.center(it) }
             val measure = { text: String -> measurer.measure(text, axis, maxLines = 1).size.width.toFloat() }
             val even = unit == "hour" || unit == "day"
             val labels = if (even) evenAxisLabels(starts, unit, centers, size.width, 4 * dp, measure)
@@ -525,51 +527,62 @@ private fun UsageChart(reply: ActivityUsage, totals: UsageTotals, metric: Metric
                 drawText(layout, topLeft = Offset(cx - w / 2, plotB + 6 * dp))
             }
         }
-        // TalkBack reaches each bar with its time and values, as the PC tooltip reads; a double tap shows its tooltip.
-        if (n > 0) Row(Modifier.padding(start = with(density) { left.toDp() }).fillMaxWidth().height(with(density) { plotB.toDp() })) {
-            for (i in 0 until n) {
-                val rows = tipOrder(bars[i]).map { seriesLabel(series[it]) to formatValue(bars[i][it], metric) }
-                Box(Modifier.weight(1f).fillMaxHeight().semantics {
+        // TalkBack reaches each bar with its time and values, as the PC tooltip reads; a double tap shows its tooltip. Each node is
+        // the full column of its bar (the plot height), at the same x as the drawn bar and the tap.
+        if (n > 0 && width > 0) for (i in 0 until n) {
+            val (x0, x1) = geom.column(i)
+            val rows = tipOrder(bars[i]).map { seriesLabel(series[it]) to formatValue(bars[i][it], metric) }
+            Box(Modifier.offset { IntOffset(x0.roundToInt(), plotT.roundToInt()) }
+                .size(with(density) { (x1 - x0).toDp() }, with(density) { (plotB - plotT).toDp() })
+                .semantics {
                     contentDescription = barDescription(tipTitle(i), formatValue(sums[i], metric), rows)
                     onClick { tapped = if (tapped == i) null else i; true }
                 })
-            }
         }
-        tapped?.let { i ->
+        tapped?.takeIf { width > 0 }?.let { i ->
             var tipSize by remember { mutableStateOf(IntSize.Zero) }
-            val bw = (width - left - gap * (n - 1)) / n
-            val x = left + i * (bw + gap)
-            val barTop = plotB - (plotB - plotT) * (sums[i] / yMax).toFloat()
-            val place = tipPlace(x, x + bw, barTop, width.toFloat(), chartHeight, tipSize.width.toFloat(), tipSize.height.toFloat(), 8 * dp)
+            val place = tipPlace(geom.barLeft(i), geom.barLeft(i) + geom.bar, width.toFloat(), tipSize.width.toFloat(),
+                tipSize.height.toFloat(), plotT, 2 * dp)
+            // One or two lines in the band above the plot: the time and the total, then the series high to low (ties keep the
+            // series order).
             Column(Modifier.offset { IntOffset(place.x.roundToInt(), place.y.roundToInt()) }.onSizeChanged { tipSize = it }
-                .widthIn(min = 150.dp).background(colors.background, RoundedCornerShape(4.dp)).border(1.dp, colors.edge, RoundedCornerShape(4.dp))
-                .padding(horizontal = 10.dp, vertical = 8.dp).clearAndSetSemantics {}) {
-                Text(tipTitle(i), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.text, modifier = Modifier.padding(bottom = 4.dp))
-                TipRow("Total", formatValue(sums[i], metric), colors.accent, colors)
-                HorizontalDivider(Modifier.padding(vertical = 4.dp), thickness = 1.dp, color = colors.rule)
-                // The series high to low by their value in this bucket; a stable sort keeps the series order for ties.
-                for (s in tipOrder(bars[i])) TipRow(seriesLabel(series[s]), formatValue(bars[i][s], metric), seriesColor(series[s]), colors)
+                .widthIn(max = with(density) { width.toDp() }).background(colors.background, RoundedCornerShape(4.dp))
+                .border(1.dp, colors.edge, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 4.dp).clearAndSetSemantics {}) {
+                Text("${tipTitle(i)} · ${formatValue(sums[i], metric)}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    style = figures, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val split = tipOrder(bars[i]).filter { bars[i][it] > 0 }
+                if (split.size > 1) Text(split.joinToString(" · ") { "${seriesLabel(series[it])} ${formatValue(bars[i][it], metric)}" },
+                    fontSize = 12.sp, style = figures, color = colors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
 }
 
 /**
- * The top left of the bar tooltip ([w] by [h]) in the chart ([width] by [height]); it never covers its bar, from [left] to [right]
- * with its top at [top]. Above the bar when it fits there; else beside the bar on the side with more room (as the PC tip_box);
- * else above the chart.
+ * The top left of the bar tooltip ([w] by [h]) in a chart [width] wide: centered over the bar from [left] to [right] and kept
+ * inside the chart, with its bottom [gap] above the plot top [plotTop]. So it never covers a bar or the plot.
  */
-internal fun tipPlace(left: Float, right: Float, top: Float, width: Float, height: Float, w: Float, h: Float, gap: Float): Offset {
-    val centered = ((left + right) / 2 - w / 2).coerceIn(0f, maxOf(0f, width - w))
-    if (top - gap - h >= 0) return Offset(centered, top - gap - h)
-    val y = (top - h / 2).coerceIn(0f, maxOf(0f, height - h))
-    val rightRoom = width - right - gap
-    val leftRoom = left - gap
-    return when {
-        rightRoom >= w && (rightRoom >= leftRoom || leftRoom < w) -> Offset(right + gap, y)
-        leftRoom >= w -> Offset(left - gap - w, y)
-        else -> Offset(centered, -gap - h)
-    }
+internal fun tipPlace(left: Float, right: Float, width: Float, w: Float, h: Float, plotTop: Float, gap: Float): Offset =
+    Offset(((left + right) / 2 - w / 2).coerceIn(0f, maxOf(0f, width - w)), maxOf(0f, plotTop - gap - h))
+
+/** The fill alpha of the current (running) bucket of the Usage chart. */
+internal const val SO_FAR_ALPHA = .45f
+
+/**
+ * The bar geometry of the Usage chart: [n] bars from [left] to [width], [gap] apart. The drawing, the tap, and the TalkBack
+ * nodes all use it, so a bar, its tap, and its node have one index.
+ */
+internal class BarGeom(val left: Float, val width: Float, val n: Int, val gap: Float) {
+    /** A bar and the gap after it. */
+    val slot = if (n > 0) (width - left + gap) / n else 0f
+    val bar = slot - gap
+    fun barLeft(i: Int) = left + i * slot
+    fun center(i: Int) = barLeft(i) + bar / 2
+    /** The column of bar [i]: its slot centered on the bar, so the columns tile the plot and touch at the gap middles. */
+    fun column(i: Int): Pair<Float, Float> = center(i) - slot / 2 to center(i) + slot / 2
+    /** The bar whose center is nearest to [x], or null outside the plot. */
+    fun indexAt(x: Float): Int? = if (n <= 0 || x < left - gap / 2 || x > width) null
+        else ((x - left + gap / 2) / slot).toInt().coerceIn(0, n - 1)
 }
 
 /** The TalkBack text of one bar, as the PC chart reads its tooltip: `Sun 14:00: Total $1.20, Claude Code $1.00, Codex $0.20`. */
@@ -616,16 +629,6 @@ internal fun evenAxisLabels(starts: List<Long>, unit: String, centers: List<Floa
 
 /** The tooltip series order: the series indexes high to low by [values]; ties keep the series order. */
 internal fun tipOrder(values: List<Double>): List<Int> = values.indices.sortedByDescending { values[it] }
-
-@Composable
-private fun TipRow(label: String, value: String, swatch: Color, colors: ActivityColors) {
-    Row(Modifier.height(18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(8.dp).background(swatch, RoundedCornerShape(2.dp)))
-        Text(label, fontSize = 12.sp, color = colors.text, maxLines = 1)
-        Spacer(Modifier.weight(1f))
-        Text(value, fontSize = 12.sp, style = figures, color = colors.text, maxLines = 1, modifier = Modifier.padding(start = 12.dp))
-    }
-}
 
 @Composable
 private fun TypeBlock(title: String, shares: List<TypeShare>, format: (Double) -> String, colors: ActivityColors) {
@@ -757,8 +760,8 @@ private fun SessionLine(title: String, app: String?, dot: Pair<Color, Boolean>?,
                 .clickable(role = Role.Button, onClick = onMore).padding(end = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 dot?.let { (hue, offline) -> MachineDot(hue, offline) }
-                // A title is a name, so it is cut in the middle.
-                Text(title, fontSize = 12.sp, color = ink, maxLines = 1, overflow = TextOverflow.MiddleEllipsis,
+                // A title is cut at its end, as the session titles elsewhere.
+                Text(title, fontSize = 12.sp, color = ink, maxLines = 1, overflow = NAME_OVERFLOW,
                     modifier = Modifier.weight(1f, fill = false).clearAndSetSemantics {})
                 if (more != null) Text("\u25be", fontSize = 12.sp, color = colors.muted, modifier = Modifier.clearAndSetSemantics {})
             }
