@@ -395,7 +395,9 @@ test('OpenCode shows a provider.quota failure as a usage-limit stop with no rese
 test('OpenCode shows Bridge questions and approvals only for a live receiver', async (t) => {
   const f = await messageFixture(t);
   try {
-    const procStart = await processStart(process.pid);
+    // On Windows a receiver counts while its PID lives (bridgeReceiverLive); the start time is a Linux /proc rule.
+    const windows = process.platform === 'win32';
+    const procStart = windows ? 'start' : await processStart(process.pid);
     assert.ok(procStart);
     f.writer.exec(`create table receiver(singleton integer primary key, pid integer not null, proc_start text not null);
       create table runtime(singleton integer primary key, status text not null, mode text not null,
@@ -422,8 +424,10 @@ test('OpenCode shows Bridge questions and approvals only for a live receiver', a
     assert.equal(thread.awaitingUserInput, undefined);
     assert.equal(buildSwitchboardDashboard([thread], [], now).threads[0].actionRequired, true);
     // A receiver process that ended, or a PID with another start time, gives no wait.
-    f.writer.prepare('update receiver set proc_start = ?').run(`${procStart}0`);
-    thread = (await load()).threads.find((item) => item.id === sessionIds[0]);
-    assert.equal(Object.hasOwn(thread, 'awaitingPermission'), false);
+    if (!windows) {
+      f.writer.prepare('update receiver set proc_start = ?').run(`${procStart}0`);
+      thread = (await load()).threads.find((item) => item.id === sessionIds[0]);
+      assert.equal(Object.hasOwn(thread, 'awaitingPermission'), false);
+    }
   } finally { f.writer.close(); }
 });

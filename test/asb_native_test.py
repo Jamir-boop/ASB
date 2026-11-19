@@ -12695,7 +12695,7 @@ class WidgetCheck(unittest.TestCase):
         window, preferences, layout_path = self.pets_preferences()
         tiles = window.pet_tiles
         strip = tiles[0].get_parent()
-        pets_label = window.view_filter.get_parent().get_next_sibling()
+        pets_label = window.background_counts_setting.get_parent().get_next_sibling()
         self.assertEqual((pets_label.get_label(), pets_label.get_xalign()), ("Pets", 0))
         self.assertIs(pets_label.get_next_sibling(), strip)
         self.assertEqual([tile.name for tile in tiles], list(asb.PETS))
