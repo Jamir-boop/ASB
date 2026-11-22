@@ -209,7 +209,7 @@
 <main>
   <h1>ASB status mapping and app support</h1>
   <p class="lead">What ASB supports per app, what each gap waits on, and how app signals map to card states.</p>
-  <nav class="parts" aria-label="Parts"><a href="#support">Support by app</a><a href="#rename">Rename</a><a href="#status">Status by app and CLI</a></nav>
+  <nav class="parts" aria-label="Parts"><a href="#support">Support by app</a><a href="#rename">Rename</a><a href="#phone-answers">Phone answers</a><a href="#status">Status by app and CLI</a></nav>
 
   <h2 id="support">Support by app</h2>
   <p class="lead" id="support-sum"></p>
@@ -226,6 +226,12 @@
     <thead><tr><th scope="col">App</th><th scope="col">Waits on</th><th scope="col">How it could work</th></tr></thead>
     <tbody id="rename-list"></tbody></table></div>
 
+  <h2 id="phone-answers">Answer questions from the phone (not built)</h2>
+  <p class="dim" id="phone-answers-checked"></p>
+  <div class="scroll"><table class="rn"><caption class="sr">Answer questions from the phone, per app</caption>
+    <thead><tr><th scope="col">App</th><th scope="col">Waits on</th><th scope="col">How it could work</th></tr></thead>
+    <tbody id="phone-answers-list"></tbody></table></div>
+
   <h2 id="status">Status by app and CLI</h2>
   <p class="lead">Each row is one situation: the signal of each app and CLI, and the card that ASB shows.</p>
   <div class="tally" id="tally"></div>
@@ -237,15 +243,16 @@
 </main>
 <script>
 // One copy of the facts: the summaries and the details are built from these lists. README.md has the same Support table (test/asb-docs.test.mjs).
-const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Open', 'Messages', 'Background', 'Usage', 'Rename', 'Archive', 'Windows'];
+// Phone answers is not built: change its cells and the Phone answers section when a part of the build merges.
+const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Phone answers', 'Open', 'Messages', 'Background', 'Usage', 'Rename', 'Archive', 'Windows'];
 // A cell is the mark, then an optional note after one space. A ✗ note starts with what the gap waits on.
 const SUPPORT = [
-  ['Codex app', '✓', '✓', '✓', '✓ with ASB Bridge', '✓', '✓', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Codex CLI', '✓', '✓', '✓', '✓ with ASB Bridge, daemon tasks only', '✗ ASB work: terminal tab', '✓ daemon tasks only', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
-  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
-  ['OpenCode 2', '✓', '✓', '✓ with ASB Bridge', '✓ with ASB Bridge', '✗ ASB work: terminal tab', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
+  ['Codex app', '✓', '✓', '✓', '✓ with ASB Bridge', '✗ ASB work: docs only', '✓', '✓', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Codex CLI', '✓', '✓', '✓', '✓ with ASB Bridge, daemon tasks only', '✗ ASB work: docs only', '✗ ASB work: terminal tab', '✓ daemon tasks only', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✗ ASB work: hook tested', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
+  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: hook tested', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
+  ['OpenCode 2', '✓', '✓', '✓ with ASB Bridge', '✓ with ASB Bridge', '✗ ASB work: docs only', '✗ ASB work: terminal tab', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✗ Not planned: login', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
 ];
 const APP_ICONS = { 'Codex app': ['openai'], 'Codex CLI': ['openai', 'terminal'], 'Claude Desktop Code': ['claude'], 'Claude Code CLI': ['claude', 'terminal'], 'OpenCode 2': ['opencode'], 'Claude Code on the web': ['claude', 'globe'] };
 // What a gap waits on, in the order of the summaries.
@@ -257,6 +264,7 @@ const OWNERS = [
   ['Not planned', 'Not planned', 'ASB will not do it.'],
 ];
 const FEATURE_NOTES = {
+  'Phone answers': 'Answer the questions of a session from the paired phone. Not built yet.',
   Background: 'Counts the commands and subagents that a session runs in the background now. An option in Preferences > Appearance and in Android Settings, off by default.',
   Usage: 'The tokens and the API price of the session in the Usage window.',
   Rename: 'From the board.',
@@ -277,6 +285,16 @@ const RENAME = [
   [[], 'All', 'ASB would then change app data, so the README and the privacy page must change. Cards of other machines and the phone need the engine of that machine. The bridge send name follows the title.'],
 ];
 
+const PHONE_ANSWERS_CHECKED = 'Checked on 2026-11-22 with a live test of Claude Code 2.1.330. OpenCode and Codex are from their docs only.';
+// [support app names, what the note says], as in RENAME.
+const PHONE_ANSWERS = [
+  [['Claude Desktop Code', 'Claude Code CLI'], 'Claude Desktop Code and CLI', 'A `PermissionRequest` hook with the matcher `AskUserQuestion` gets the questions and their options and can answer them, in the default, accept-edits, bypass, and auto modes (plan and dontAsk are not tested). The question card stays on the PC while the hook waits, and the first answer applies. Part 1 of the build is for these two apps, on Linux only.'],
+  [['OpenCode 2'], 'OpenCode 2', 'The OpenCode reply routes can answer a question, by the OpenCode docs. No live test.'],
+  [['Codex app', 'Codex CLI'], 'Codex app and CLI', 'The Codex app server can answer a question (experimental API), by the Codex docs. Codex hooks answer approvals only. No live test.'],
+  [['Claude Code on the web'], 'Claude Code on the web', 'Needs a claude.ai login, as Rename does. Not planned.'],
+  [[], 'All', 'The phone gets the question and its options only while the PC switches for message text and for phone answers are on (part 1 design). Approvals and plan approval come later.'],
+];
+
 const STATES = ['Working', 'Waiting', 'Idle', 'Unknown', 'Error (new)', 'Failed', 'Stopped', 'Hidden', 'No change'];
 const ICONS = ['None', 'Dot', 'Hollow dot', '?', '!', 'Stop square', 'Lock', '×', 'Check'];
 const PENDING = ['No', 'Yes, until Read', 'Yes, until resolved'];
@@ -288,9 +306,9 @@ const ROWS = [
   ['unseen', 'Task ended, you did not see it', '', 'Unread flag', '=', 'ASB saw Working, then Idle', '=', '`time_idle` after `time_viewed`', 'Cached unread mark', 'Idle', 'Dot', 'Yes, until Read'],
   ['failed', 'Task failed', 'Codex and Claude: also a subagent failure that ends last.', '`task_complete` with an error', '=', '`is_error`, or a failed task notification', '=', '`idle_outcome` `failed`', 'Session `failed`', 'Failed', '!', 'Yes, until Read'],
   ['stopped', 'You stopped the task', '', '`turn_aborted` or cancelled', '=', 'Interrupted or cancelled', '=', '`idle_outcome` `interrupted`', 'Not applicable', 'Stopped', 'Stop square', 'No'],
-  ['ask-sync', 'Question, the task waits', '', '`request_user_input`', '=', '`AskUserQuestion`, or a wrap-up with an ask', '`AskUserQuestion`', 'ASB Bridge: open `form.created`', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
+  ['ask-sync', 'Question, the task waits', 'OpenCode needs ASB Bridge 0.9.0 or later.', '`request_user_input`', '=', '`AskUserQuestion`, or a wrap-up with an ask', '`AskUserQuestion`', 'ASB Bridge: open `form.created`', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
   ['ask-async', 'Question, the task goes on', '', '`request_user_input_async`', '=', '`AskUserQuestion` while a subagent works', '=', 'Not saved', 'Not applicable', 'Working', '?', 'Yes, until Read'],
-  ['approval', 'Approval or plan wait', 'Claude permission waits show after 10 s. Codex and OpenCode need ASB Bridge. Read only moves the card down.', 'ASB Bridge: `waitingOnApproval`', '=', 'Live session `waiting`, app log, or `ExitPlanMode`', 'Live session `waiting`, or `ExitPlanMode`', 'ASB Bridge: open `permission.asked`', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
+  ['approval', 'Approval or plan wait', 'Claude permission waits show after 10 s. Codex and OpenCode need ASB Bridge 0.9.0 or later. Read only moves the card down.', 'ASB Bridge: `waitingOnApproval`', '=', 'Live session `waiting`, app log, or `ExitPlanMode`', 'Live session `waiting`, or `ExitPlanMode`', 'ASB Bridge: open `permission.asked`', 'Worker `requires_action`', 'Waiting', '?', 'Yes, until Read'],
   ['child-run', 'Subagent works after the root ends', '', 'Subagent running', '=', 'Open subagent log', '=', 'Execution claim', 'Not applicable', 'Working', 'None', 'No'],
   ['cli-new', 'CLI session, no prompt yet', '', 'Not applicable', 'Not saved', 'Not applicable', 'Live record, no transcript', 'Not applicable', 'Not applicable', 'Idle', 'None', 'No'],
   ['cli-ended', 'Claude Code process ended during a task', 'Linux and Windows. Reason: "The Claude Code process ended during a task."', 'Not applicable', 'Not saved', 'Open task, no live record', '=', 'Not applicable', 'Not applicable', 'Unknown', 'None', 'No'],
@@ -547,12 +565,15 @@ allReasons.addEventListener('change', () => FEATURES.forEach((_, i) => openWhy(i
 addEventListener('beforeprint', () => FEATURES.forEach((_, i) => openWhy(i, true, '')));
 document.getElementById('also').innerHTML = `${esc(ALSO)} ${esc(REMOTE)}`;
 
-const renameCol = FEATURES.indexOf('Rename');
-document.getElementById('rename-checked').innerHTML = esc(RENAME_CHECKED);
-document.getElementById('rename-list').innerHTML = RENAME.map(([support, name, note]) => {
-  const owner = support.length ? parseCell(SUPPORT.find(([app]) => app === support[0])[renameCol + 1]).owner : '';
+// A not-built feature: one row per app group, with the owner of its support cell.
+const planRows = (list, feature) => list.map(([support, name, note]) => {
+  const owner = support.length ? parseCell(SUPPORT.find(([app]) => app === support[0])[FEATURES.indexOf(feature) + 1]).owner : '';
   return `<tr><th scope="row">${support.length ? appName(support[0]).replace(esc(support[0]), esc(name)) : esc(name)}</th><td class="who">${owner ? ownerIcon(owner) + owner : '<span class="dim">All apps</span>'}</td><td>${code(note)}</td></tr>`;
 }).join('');
+document.getElementById('rename-checked').innerHTML = esc(RENAME_CHECKED);
+document.getElementById('rename-list').innerHTML = planRows(RENAME, 'Rename');
+document.getElementById('phone-answers-checked').innerHTML = esc(PHONE_ANSWERS_CHECKED);
+document.getElementById('phone-answers-list').innerHTML = planRows(PHONE_ANSWERS, 'Phone answers');
 
 document.getElementById('tally').innerHTML = `<span>${ROWS.length} situations. Cards:</span>` + stateCounts().map(([state, n]) => `<span><b>${state}</b> ${n}</span>`).join('');
 document.getElementById('marks').innerHTML = [['read', 'ASB reads the app signal'], ['gap', 'The app does not save it'], ['na', 'Not applicable'], ['asb', 'An ASB mark, the same for all apps']]
