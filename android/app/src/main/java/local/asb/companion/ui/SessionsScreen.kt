@@ -126,6 +126,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.selection.selectableGroup
+import local.asb.companion.data.PhoneQuestion
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -235,6 +238,8 @@ fun SessionsScreen(
     onMessages: (String?) -> Unit,
     onUsage: () -> Unit,
     onPairAgain: () -> Unit,
+    questionTap: QuestionTap? = null,
+    onQuestionTapDone: () -> Unit = {},
 ) = BoxWithConstraints {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -501,6 +506,14 @@ fun SessionsScreen(
     BackHandler(enabled = !state.revoked && backClears(searching, state.filter)) { closeSearch() }
     LaunchedEffect(inspector, inspectorRow) {
         if (inspector != null && inspectorRow == null) inspector = null
+    }
+    // A notification tap opens the inspector of its row after the next dashboard read, only while that row of the list on
+    // screen has an open question. The panel anchors at the top left of the safe area, as the card can be off screen.
+    LaunchedEffect(questionTap, state.lastUpdateMs) {
+        val tap = questionTap ?: return@LaunchedEffect
+        if (state.lastUpdateMs <= tap.atMs) return@LaunchedEffect
+        questionRowToOpen(tap.tag, rows)?.let { keyboard?.hide(); inspector = it.id to Offset.Zero }
+        onQuestionTapDone()
     }
     LaunchedEffect(state.lastError) {
         state.lastError?.let { message ->
@@ -1001,6 +1014,8 @@ fun SessionsScreen(
         point = inspector?.second ?: Offset.Zero,
         busy = inspectorRow.id in state.busyIds,
         error = state.actionErrors[inspectorRow.id],
+        offline = state.offline,
+        lastUpdateMs = state.lastUpdateMs,
         nowMs = nowMs,
         workingNowMs = workingNowMs,
         serverName = serverName,
@@ -1639,7 +1654,7 @@ private val INSPECTOR_MARGIN = 16.dp
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionInspector(
-    row: Thread, point: Offset, busy: Boolean, error: String?, nowMs: Long, workingNowMs: Long,
+    row: Thread, point: Offset, busy: Boolean, error: String?, offline: Boolean, lastUpdateMs: Long, nowMs: Long, workingNowMs: Long,
     serverName: String, viewModel: SessionsViewModel,
     windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
 ) {
@@ -1716,6 +1731,7 @@ private fun SessionInspector(
                     .semantics { paneTitle = title },
             ) {
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(12.dp)) {
+                    row.question?.let { QuestionCardPanel(row.id, it, offline, lastUpdateMs, viewModel, text, muted, group) }
                     Column(
                         Modifier.padding(start = 2.dp, end = 2.dp, bottom = 12.dp).semantics(mergeDescendants = true) { },
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -1884,6 +1900,85 @@ private fun SessionInspector(
             }
         },
     )
+}
+
+/** The question card at the top of the inspector; [QuestionCard] holds its logic, and its choices live in this screen only. */
+@Composable
+private fun QuestionCardPanel(
+    rowId: String, question: PhoneQuestion, offline: Boolean, lastUpdateMs: Long, viewModel: SessionsViewModel,
+    text: Color, muted: Color, group: String,
+) {
+    var card by remember(rowId, question.requestId) { mutableStateOf(QuestionCard(question)) }
+    if (!card.shownFor(question, lastUpdateMs)) return
+    val keyboard = LocalSoftwareKeyboardController.current
+    val enabled = !card.locked
+    Column(
+        Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(10.dp)).background(hexColor(group))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        question.questions.forEachIndexed { index, item ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (item.header.isNotEmpty()) Text(item.header, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+                Text(item.question, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, fontWeight = FontWeight.Bold, color = text)
+            }
+            Column(Modifier.selectableGroup()) {
+                for (option in item.options) {
+                    val checked = option.label in card.selected[index]
+                    val choose = { card = card.choose(question, index, option.label) }
+                    // One node per option: its control, label, and description merge, so TalkBack reads them together.
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(6.dp))
+                            .then(if (item.multiSelect) Modifier.toggleable(checked, enabled = enabled, role = Role.Checkbox) { choose() }
+                                else Modifier.selectable(checked, enabled = enabled, role = Role.RadioButton, onClick = choose))
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (item.multiSelect) Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
+                        else RadioButton(selected = checked, onClick = null, enabled = enabled)
+                        Column(Modifier.weight(1f)) {
+                            Text(option.label, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text)
+                            if (option.description.isNotEmpty()) Text(option.description, fontSize = 11.sp,
+                                lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+                        }
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = card.other[index],
+                onValueChange = { card = card.type(question, index, it) },
+                enabled = enabled,
+                label = { Text("Other") },
+                textStyle = MaterialTheme.typography.bodyMedium,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            )
+        }
+        card.note(offline)?.let {
+            Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        }
+        val answers = card.answers(question)
+        Button(
+            onClick = {
+                if (answers != null) {
+                    keyboard?.hide()
+                    card = card.sending()
+                    viewModel.answer(rowId, card.requestId, answers) { reply ->
+                        card = card.replied(reply, viewModel.state.value.lastUpdateMs)
+                    }
+                }
+            },
+            enabled = card.canSend(question, offline),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                .then(if (enabled && answers == null) Modifier.semantics { contentDescription = SEND_NOT_READY } else Modifier),
+        ) {
+            Text("Send", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+    }
 }
 
 @Composable

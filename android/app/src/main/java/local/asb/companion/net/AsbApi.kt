@@ -16,8 +16,11 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import local.asb.companion.data.ActivityMessages
 import local.asb.companion.data.ActivityThread
 import local.asb.companion.data.ActivityUsage
@@ -30,6 +33,7 @@ import local.asb.companion.data.Hello
 import local.asb.companion.data.MESSAGE_PERIODS
 import local.asb.companion.data.PairReply
 import local.asb.companion.data.PairingInfo
+import local.asb.companion.data.PhoneAnswer
 import local.asb.companion.data.USAGE_PERIODS
 import local.asb.companion.data.endpointLabel
 import local.asb.companion.data.orderEndpoints
@@ -50,8 +54,15 @@ sealed class AsbError(message: String) : Exception(message) {
     data object NotPaired : AsbError("This phone was removed from ASB. Pair again.")
     data object Throttled : AsbError("Too many attempts. Wait one minute, then try again.")
     data object PinMismatch : AsbError("The ASB certificate does not match the paired PC. Check the fingerprint in ASB Preferences.")
-    class Server(message: String) : AsbError(message)
+    /** [code] is the HTTP status of an error reply, else 0. */
+    class Server(message: String, val code: Int = 0) : AsbError(message)
 }
+
+/** What the PC did with an answer. Sent means that the hook on the PC has it, not that Claude took it: a PC answer can win. */
+enum class AnswerReply { Sent, Closed, Off, Refused }
+
+// The gateway text of a route that the PC switches turned off; every other 404 means the row is gone.
+const val ROUTE_NOT_AVAILABLE = "Route is not available."
 
 // An engine without the activity routes answers 404.
 const val OLDER_ENGINE = "This PC runs an older ASB. Update ASB on the PC to see messages and usage."
@@ -180,6 +191,31 @@ class AsbApi(
         val parsed = try { AsbJson.parseToJsonElement(body) } catch (_: SerializationException) { null }
         if (parsed !is JsonObject) throw AsbError.Server("Invalid action body.")
         return decode<JsonObject>(request("threads", id, action, body = body, only = engine).body)
+    }
+
+    /** Answers the open question [requestId] of row [id] on [engine]; other errors than the mapped replies are thrown. */
+    suspend fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, engine: String): AnswerReply {
+        if (id.isEmpty() || id == "." || id == "..") throw AsbError.Server("Invalid session ID.")
+        val body = buildJsonObject {
+            put("requestId", requestId)
+            putJsonArray("answers") {
+                for (answer in answers) addJsonObject {
+                    putJsonArray("selected") { answer.selected.forEach { add(it) } }
+                    answer.other?.let { put("other", it) }
+                }
+            }
+        }
+        return try {
+            request("threads", id, "answer", body = body.toString(), only = engine)
+            AnswerReply.Sent
+        } catch (cause: AsbError.Server) {
+            when (cause.code) {
+                409 -> AnswerReply.Closed
+                400 -> AnswerReply.Refused
+                404 -> if (cause.message == ROUTE_NOT_AVAILABLE) AnswerReply.Off else AnswerReply.Closed
+                else -> throw cause
+            }
+        }
     }
 
     suspend fun setPersistentUnread(value: Boolean, engine: String = "") {
@@ -339,7 +375,7 @@ class AsbApi(
                 var message = listOf(error.error, error.detail).filter { it.isNotBlank() }.joinToString(" ")
                     .ifEmpty { "ASB returned HTTP ${response.code}. Try again." }
                 for (value in listOf(token, secret).filter { it.isNotEmpty() }) message = message.replace(value, "[removed]")
-                throw AsbError.Server(message)
+                throw AsbError.Server(message, response.code)
             }
         }
     }

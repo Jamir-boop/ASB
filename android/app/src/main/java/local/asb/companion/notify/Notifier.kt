@@ -234,12 +234,14 @@ class Notifier(private val app: AsbApp) {
         if (show(STATUS_TAG, 0, notification)) summary(children() + STATUS_TAG)
     }
 
-    fun opened(intent: Intent) {
-        if (intent.action != ACTION_CONTENT) return
-        if (intent.getStringExtra("deviceId") != app.store.deviceId || !app.store.paired) return
-        val tag = intent.getStringExtra("notificationTag") ?: return
-        if (!intent.hasExtra("notificationId")) return
+    /** Cancels the tapped notification of this pairing and returns its tag, else null. */
+    fun opened(intent: Intent): String? {
+        if (intent.action != ACTION_CONTENT) return null
+        if (intent.getStringExtra("deviceId") != app.store.deviceId || !app.store.paired) return null
+        val tag = intent.getStringExtra("notificationTag") ?: return null
+        if (!intent.hasExtra("notificationId")) return null
         cancel(tag, intent.getIntExtra("notificationId", 0))
+        return tag
     }
 
     fun clear() = manager.cancelAll()

@@ -23,6 +23,8 @@ import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Mark
 import local.asb.companion.data.Message
 import local.asb.companion.data.Palette
+import local.asb.companion.data.PhoneAnswer
+import local.asb.companion.net.AnswerReply
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
 import local.asb.companion.net.DashboardResult
@@ -180,6 +182,38 @@ class SessionsViewModel(
                 cause.message?.let { message -> mutableState.update { it.copy(actionErrors = it.actionErrors + (id to message)) } }
             } finally {
                 mutableState.update { it.copy(busyIds = it.busyIds - id, openingIds = it.openingIds - id) }
+            }
+        }
+    }
+
+    /**
+     * Sends [answers] to the open question [requestId] of row [id] on the engine on screen. [done] gets the reply before the board
+     * refresh, or null after an error (the row error shows it, as for the other actions).
+     */
+    fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, done: (AnswerReply?) -> Unit) {
+        if (state.value.revoked || id in state.value.busyIds) { done(null); return }
+        mutableState.update { it.copy(busyIds = it.busyIds + id) }
+        viewModelScope.launch {
+            var replied = false
+            try {
+                notificationMutex.withLock {
+                    if (state.value.revoked) return@withLock
+                    val reply = api.answer(id, requestId, answers, state.value.engine)
+                    currentCoroutineContext().ensureActive()
+                    mutableState.update { it.copy(actionErrors = it.actionErrors - id,
+                        lastError = it.lastError.takeIf { e -> e != it.actionErrors[id] }) }
+                    replied = true
+                    done(reply)
+                    etag = null
+                    fetchDashboard()
+                }
+            } catch (cause: AsbError) {
+                currentCoroutineContext().ensureActive()
+                showError(cause)
+                cause.message?.let { message -> mutableState.update { it.copy(actionErrors = it.actionErrors + (id to message)) } }
+            } finally {
+                if (!replied) done(null)
+                mutableState.update { it.copy(busyIds = it.busyIds - id) }
             }
         }
     }

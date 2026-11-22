@@ -76,6 +76,7 @@ import local.asb.companion.ui.MessagesScreen
 import local.asb.companion.ui.UsageScreen
 import local.asb.companion.ui.PairScreen
 import local.asb.companion.ui.PairingViewModel
+import local.asb.companion.ui.QuestionTap
 import local.asb.companion.ui.SessionsScreen
 import local.asb.companion.ui.SessionsViewModel
 import local.asb.companion.ui.SettingsScreen
@@ -87,6 +88,8 @@ internal fun pairingLink(action: String?, data: String?): String? =
 class MainActivity : ComponentActivity() {
     private var notificationsAllowed by mutableStateOf(false)
     private var pendingPairingLink by mutableStateOf<String?>(null)
+    // A notification tap that can open the inspector of a row with an open question.
+    private var questionTap by mutableStateOf<QuestionTap?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,10 +102,12 @@ class MainActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
         }
         val app = application as AsbApp
-        app.notifier.opened(intent)
-        // A recreate restores the screen, and Recents gives the old intent again: neither reviews the link again.
+        val tag = app.notifier.opened(intent)
+        // A recreate restores the screen, and Recents gives the old intent again: neither reviews the link again or opens the
+        // inspector again.
         if (savedInstanceState == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
             openPairingLink(intent)
+            tag?.let { questionTap = QuestionTap(it, System.currentTimeMillis()) }
         }
         notificationsAllowed = Notifier.notificationsAllowed(this)
         setContent {
@@ -132,7 +137,7 @@ class MainActivity : ComponentActivity() {
                         pendingPairingLink?.let(pairingModel::review)
                         pendingPairingLink = null
                     }
-                    if (paired) PairedApp(app, notificationsAllowed, requestNotifications) {
+                    if (paired) PairedApp(app, notificationsAllowed, requestNotifications, questionTap, { questionTap = null }) {
                         LiveService.stop(app)
                         app.liveUpdates.value = null
                         app.notifier.clear()
@@ -162,7 +167,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        (application as AsbApp).notifier.opened(intent)
+        (application as AsbApp).notifier.opened(intent)?.let { questionTap = QuestionTap(it, System.currentTimeMillis()) }
         openPairingLink(intent)
     }
 
@@ -184,6 +189,8 @@ private fun PairedApp(
     app: AsbApp,
     notificationsAllowed: Boolean,
     onRequestNotificationPermission: () -> Unit,
+    questionTap: QuestionTap?,
+    onQuestionTapDone: () -> Unit,
     onUnpair: () -> Unit,
 ) {
     val store = app.store
@@ -194,6 +201,10 @@ private fun PairedApp(
     var serverName by rememberSaveable(deviceId) { mutableStateOf(store.serverName) }
     // The session that Show messages selected; it keeps its seat in Messages.
     var messagesSeat by rememberSaveable(deviceId) { mutableStateOf<String?>(null) }
+    // A tap that comes while another screen shows opens the app as before, with no inspector.
+    LaunchedEffect(questionTap) {
+        if (questionTap != null && screen != Screen.VERIFY && screen != Screen.SESSIONS) onQuestionTapDone()
+    }
     if (screen == Screen.VERIFY) {
         ConnectionScreen(app, api, onUnpair = onUnpair, onVerified = {
             serverName = it.serverName
@@ -260,7 +271,9 @@ private fun PairedApp(
                 onSettings = { screen = Screen.CONNECTION },
                 onMessages = { messagesSeat = it; screen = Screen.MESSAGES },
                 onUsage = { screen = Screen.USAGE },
-                onPairAgain = unpair)
+                onPairAgain = unpair,
+                questionTap = questionTap,
+                onQuestionTapDone = onQuestionTapDone)
         }
     }
 }

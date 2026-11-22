@@ -6,6 +6,7 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
@@ -17,6 +18,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
@@ -127,6 +129,9 @@ data class Thread(
     // The pending question (at most 300 characters), sent only while the PC switch for message text is on. It stays in memory:
     // the Needs input notification shows it, and no saved value or log line holds it.
     val questionText: String = "",
+    // The open Claude Code question that the phone can answer (local rows only, while the text switch is on); memory only, as
+    // questionText. An older engine sends none.
+    @Serializable(with = QuestionSerializer::class) val question: PhoneQuestion? = null,
     val actionRequired: Boolean = false,
     // An older engine sends none.
     val actionAttention: Boolean? = null,
@@ -176,6 +181,61 @@ data class Thread(
 ) {
     /** The ID that is the same on every engine of a machine group; older PCs send no globalId. */
     val key: String get() = globalId.ifEmpty { id }
+}
+
+@Serializable
+data class QuestionOption(val label: String, val description: String = "")
+
+@Serializable
+data class QuestionItem(
+    val question: String,
+    val header: String = "",
+    val options: List<QuestionOption>,
+    val multiSelect: Boolean = false,
+)
+
+@Serializable
+data class PhoneQuestion(val requestId: String, val questions: List<QuestionItem>)
+
+/** One answer item, in the order of the questions: the chosen labels, exactly as received, and the typed text. */
+data class PhoneAnswer(val selected: List<String>, val other: String? = null)
+
+private val requestIdPattern = Regex("[0-9a-f]{32}")
+
+private fun jsonString(value: JsonElement?): String? = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+/** The question of a row, or null when it breaks a rule; the card selects by label, so the labels of a question are unique. */
+internal fun parseQuestion(value: JsonElement): PhoneQuestion? {
+    val root = value as? JsonObject ?: return null
+    val requestId = jsonString(root["requestId"])?.takeIf { requestIdPattern.matches(it) } ?: return null
+    val list = (root["questions"] as? JsonArray)?.takeIf { it.size in 1..4 } ?: return null
+    val questions = list.map { entry ->
+        val item = entry as? JsonObject ?: return null
+        val text = jsonString(item["question"])?.takeIf { it.isNotEmpty() } ?: return null
+        val header = item["header"]?.let { jsonString(it) ?: return null } ?: ""
+        val multiSelect = item["multiSelect"]?.let { (it as? JsonPrimitive)?.takeIf { p -> !p.isString }?.booleanOrNull ?: return null } ?: false
+        val options = (item["options"] as? JsonArray)?.takeIf { it.size in 1..8 }?.map { option ->
+            val fields = option as? JsonObject ?: return null
+            val label = jsonString(fields["label"])?.takeIf { it.isNotEmpty() } ?: return null
+            QuestionOption(label, fields["description"]?.let { jsonString(it) ?: return null } ?: "")
+        } ?: return null
+        if (options.distinctBy { it.label }.size != options.size) return null
+        QuestionItem(text, header, options, multiSelect)
+    }
+    return PhoneQuestion(requestId, questions)
+}
+
+/** A malformed question is null, so it cannot fail its row. */
+object QuestionSerializer : KSerializer<PhoneQuestion?> {
+    override val descriptor = PhoneQuestion.serializer().nullable.descriptor
+
+    override fun deserialize(decoder: Decoder): PhoneQuestion? {
+        if (decoder !is JsonDecoder) return decoder.decodeSerializableValue(PhoneQuestion.serializer().nullable)
+        return parseQuestion(decoder.decodeJsonElement())
+    }
+
+    override fun serialize(encoder: Encoder, value: PhoneQuestion?) =
+        encoder.encodeSerializableValue(PhoneQuestion.serializer().nullable, value)
 }
 
 /** The saved attention bits of a row and its result times; a time of 0 is not known. */

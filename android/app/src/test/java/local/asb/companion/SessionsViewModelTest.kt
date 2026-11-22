@@ -30,6 +30,12 @@ import local.asb.companion.data.Thread
 import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Engine
 import local.asb.companion.data.Mark
+import local.asb.companion.data.PhoneAnswer
+import local.asb.companion.data.PhoneQuestion
+import local.asb.companion.data.QuestionItem
+import local.asb.companion.data.QuestionOption
+import local.asb.companion.data.Store
+import local.asb.companion.net.AnswerReply
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.MemoryEngines
 import local.asb.companion.net.MemoryPaths
@@ -757,6 +763,34 @@ class SessionsViewModelTest {
             assertEquals("/phone/v1/threads/one/$action", request.path)
             assertEquals(body, request.body.readUtf8())
             server.takeRequest()
+        }
+    }
+
+    @Test fun anAnswerLeavesNoQuestionOrAnswerTextInTheSavedStore() = runBlocking {
+        val questionText = "Which retry order should the checkout keep?"
+        val answerText = "Keep the order of the first tap"
+        val question = PhoneQuestion("a".repeat(32), listOf(QuestionItem(questionText, "Retry", listOf(QuestionOption("Oldest first")))))
+        val preferences = MemoryPreferences(mutableMapOf("token" to "t".repeat(43), "deviceId" to "0123456789ab"))
+        val store = Store(preferences)
+        val model = model(saveBaseline = { baseline, engine -> store.saveBaselineIfPaired("t".repeat(43), AsbJson.encodeToString(baseline), engine) })
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", questionAttention = true, questionText = questionText, question = question)))
+        load(model, dashboard)
+        assertEquals(question, model.state.value.dashboard?.threads?.single()?.question)
+        server.enqueue(MockResponse().setBody("""{"answered":true}"""))
+        server.enqueue(response(dashboard.copy(threads = listOf(Thread(id = "one")))))
+        var reply: AnswerReply? = null
+        model.answer("one", question.requestId, listOf(PhoneAnswer(emptyList(), answerText))) { reply = it }
+        await { "one" !in model.state.value.busyIds }
+        assertEquals(AnswerReply.Sent, reply)
+        val request = server.takeRequest()
+        assertEquals("/phone/v1/threads/one/answer", request.path)
+        assertTrue(request.body.readUtf8().contains(answerText))
+        server.takeRequest()
+        assertTrue(preferences.values.containsKey("baseline"))
+        for (value in preferences.values.values) {
+            assertFalse(value.toString().contains(questionText))
+            assertFalse(value.toString().contains(answerText))
+            assertFalse(value.toString().contains("Oldest first"))
         }
     }
 }
