@@ -2,7 +2,7 @@
 process.env.TZ = 'America/New_York';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateBuckets, aggregateHourly, bucketIndex, periodBuckets } from '../src/usage-aggregation.mjs';
+import { aggregateBuckets, aggregateHourly, bucketIndex, periodBuckets, USAGE_PERIODS } from '../src/usage-aggregation.mjs';
 import { execFileSync } from 'node:child_process';
 import { parseRateTable } from '../src/usage-pricing.mjs';
 
@@ -29,6 +29,19 @@ test('day buckets are local midnights across the DST end, today last', { skip },
   assert.equal(bucketIndex(startsMs, endMs, new Date(2026, 10, 2, 0, 10).getTime()), 5);
   assert.equal(bucketIndex(startsMs, endMs, startsMs[0] - 1), -1);
   assert.equal(bucketIndex(startsMs, endMs, endMs), -1);
+});
+
+test('the API-only 91d period ends today at local midnights across DST', { skip }, () => {
+  const nowMs = new Date(2026, 10, 3, 12).getTime();
+  const { unit, startsMs, endMs } = periodBuckets('91d', nowMs);
+  assert.equal(unit, 'day');
+  assert.equal(startsMs.length, 91);
+  assert.deepEqual(startsMs, Array.from({ length: 91 }, (_, day) => new Date(2026, 10, 3 - 90 + day).getTime()));
+  assert.equal(startsMs.at(-1), new Date(2026, 10, 3).getTime());
+  assert.equal(endMs, new Date(2026, 10, 4).getTime());
+  assert.ok(startsMs.some((start, index) => index > 0 && start - startsMs[index - 1] === 25 * HOUR));
+  assert.equal(Object.keys(USAGE_PERIODS).at(-1), '91d');
+  assert.deepEqual(Object.keys(USAGE_PERIODS).slice(0, 3), ['24h', '7d', '30d']);
 });
 
 test('24 hourly buckets end at the local hour of now, across the repeated hour', { skip }, () => {

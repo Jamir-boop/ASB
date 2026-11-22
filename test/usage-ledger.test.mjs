@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { createActivityUsage, LEDGER_FIRST_MS, LEDGER_REFRESH_MS, RELEASE_AFTER_MS, SAVE_INTERVAL_MS } from '../src/activity-usage.mjs';
+import { createActivityUsage, LEDGER_FIRST_MS, MAX_HOURLY_RECORDS, LEDGER_REFRESH_MS, RELEASE_AFTER_MS, SAVE_INTERVAL_MS } from '../src/activity-usage.mjs';
 import { usageLedgerPath } from '../src/usage-ledger.mjs';
 import { parseRateTable, priceTokens } from '../src/usage-pricing.mjs';
 
@@ -87,6 +87,44 @@ test('without a ledger file nothing changes: a deleted transcript drops out, and
   await usage.stop();
   await usage.flush();
   await assert.rejects(fs.access(path.join(root, 'config')), { code: 'ENOENT' });
+});
+
+test('91d merges the machines of 90d, with one more first day, and lists the members whose first day may miss usage', async (t) => {
+  const { service, write } = await setup(t);
+  await write('a.jsonl', [claudeLine(BASE - HOUR, 1, 7), claudeLine(BASE - 40 * DAY, 2, 9)]);
+  const usage = service();
+  await settle(usage);
+  const SAVED = 'd'.repeat(16);
+  const record = (hourMs, output) => ({ app: 'codex', model: 'gpt-test-1', hourMs, tokens: tokens(1, 2, 3, output) });
+  const first = usage.report('91d').buckets.startsMs[0];
+  const live = { machineId: MEMBER, name: 'engine-b', state: 'online', lastReportAtMs: BASE,
+    usage: [record(first + HOUR, 5), record(hourOf(BASE - 20 * DAY), 6), record(hourOf(BASE - HOUR), 7)] };
+  // The saved member answers once, then is offline: its usage comes from the ledger.
+  usage.report('91d', [{ machineId: SAVED, name: 'engine-d', state: 'online', lastReportAtMs: BASE - DAY, usage: [record(hourOf(BASE - 10 * DAY), 8)] }]);
+  await usage.importAll({ format: 'asb-usage-export', version: 1, exportedAtMs: BASE, machines: [{ machineId: OTHER, name: 'retired',
+    records: [[hourOf(BASE - 30 * DAY), 'codex', 'gpt-test-1', 1, 2, 3, 9]] }] });
+  const members = [live, { machineId: SAVED, name: 'engine-d', state: 'offline', lastReportAtMs: BASE - DAY, usage: [] },
+    { machineId: SELF, name: 'engine-a', state: 'offline', lastReportAtMs: 0, usage: [] }];
+  const days90 = usage.report('90d', members);
+  const days91 = usage.report('91d', members);
+  assert.equal(days91.buckets.startsMs.length, 91);
+  assert.deepEqual(days91.buckets.startsMs.slice(1), days90.buckets.startsMs);
+  assert.deepEqual(days91.machines, days90.machines);
+  assert.deepEqual(new Set(days90.machines.map((machine) => machine.machineId)), new Set([SELF, MEMBER, SAVED, OTHER]));
+  const shifted = days91.records.filter((item) => item.bucket > 0).map((item) => ({ ...item, bucket: item.bucket - 1 }));
+  const order = (items) => items.map((item) => JSON.stringify(item)).sort();
+  assert.deepEqual(order(shifted), order(days90.records));
+  assert.equal(new Set(days90.records.map((item) => item.machineId)).size, 4);
+  // The extra first day has the live member hour that 90d leaves out.
+  assert.deepEqual(days91.records.filter((item) => item.bucket === 0).map((item) => [item.machineId, item.tokens.output]), [[MEMBER, 5]]);
+  // The offline member is listed; the live member, this machine, and the imported machine are not.
+  assert.deepEqual(days91.firstDayIncomplete, [SAVED]);
+  assert.equal(Object.hasOwn(days90, 'firstDayIncomplete'), false);
+  // A reply at the record limit is cut unless its oldest hour reaches the first day.
+  const full = (oldest) => ({ machineId: 'e'.repeat(16), name: 'engine-e', state: 'online', lastReportAtMs: BASE,
+    usage: [record(oldest, 1), ...Array.from({ length: MAX_HOURLY_RECORDS - 1 }, () => record(hourOf(BASE - HOUR), 1))] });
+  assert.deepEqual(usage.report('91d', [full(first + HOUR)]).firstDayIncomplete, ['e'.repeat(16)]);
+  assert.deepEqual(usage.report('91d', [full(first)]).firstDayIncomplete, []);
 });
 
 test('a deleted transcript keeps its tokens and cost in report and localHourly, with no double count', async (t) => {

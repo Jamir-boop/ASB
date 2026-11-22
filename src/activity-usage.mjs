@@ -651,6 +651,10 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
         sessions: sessionReport(sessionLists, records),
         prices: rates.pricing(),
         scan,
+        // A cut or missing member reply can lack the hours of the extra first day, which 90d replies do not cover.
+        ...(period === '91d' ? { firstDayIncomplete: [...new Set(members.filter((member) => member.machineId !== machineId && !(member.state === 'online'
+          && Array.isArray(member.usage) && (member.usage.length < MAX_HOURLY_RECORDS
+            || member.usage.reduce((oldest, record) => Math.min(oldest, record.hourMs), Infinity) <= startsMs[0]))).map((member) => member.machineId))].sort() } : {}),
       };
     },
     // The usage part of contract 4: UTC hours, tokens only. It starts early enough to fill the first local bucket of any time zone.

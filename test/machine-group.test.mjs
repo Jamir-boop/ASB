@@ -394,6 +394,12 @@ test('a member that was offline at an activity check is asked again 30 s later',
   clock += 30_000;
   assert.deepEqual((await machine.activity('all')).map((item) => [item.state, item.scan.files]), [['online', 3]]);
   assert.deepEqual(asked, ['/peer/v1/activity?period=all']);
+  // 91d asks with all and shares its cached reply.
+  assert.deepEqual((await machine.activity('91d')).map((item) => [item.state, item.scan.files]), [['online', 3]]);
+  assert.deepEqual(asked, ['/peer/v1/activity?period=all']);
+  clock += 30_000;
+  await machine.activity('91d');
+  assert.deepEqual(asked, ['/peer/v1/activity?period=all', '/peer/v1/activity?period=all']);
   await machine.stop();
 });
 
