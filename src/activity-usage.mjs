@@ -639,8 +639,9 @@ export function createActivityUsage({ readSources = async () => [], machine = {}
       const imported = importedOnly(members);
       for (const machine of imported) addMachine(machine.machineId, [...machine.records.values()]);
       // One pricing for all sessions: the table and function of the records. Member sessions come with their models and no cost.
+      // A 91d member reply is an all-time reply, so its session sums do not fit the 91 days: 91d lists only local sessions.
       const sessionLists = [[machineId, priceSessions(named(sessionSums(kept || allParts(), startsMs[0], endMs).sessions, title), table)],
-        ...members.map((member) => [member.machineId, priceSessions(validSessions(member.sessions)
+        ...(period === '91d' ? [] : members).map((member) => [member.machineId, priceSessions(validSessions(member.sessions)
           .map((item) => ({ ...item, title: item.title || UNLISTED_SESSION })), table)])];
       return {
         period, nowMs, buckets: period === 'all' ? { unit, startsMs, firstMs } : { unit, startsMs },

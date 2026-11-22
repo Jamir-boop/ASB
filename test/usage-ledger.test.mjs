@@ -98,7 +98,8 @@ test('91d merges the machines of 90d, with one more first day, and lists the mem
   const record = (hourMs, output) => ({ app: 'codex', model: 'gpt-test-1', hourMs, tokens: tokens(1, 2, 3, output) });
   const first = usage.report('91d').buckets.startsMs[0];
   const live = { machineId: MEMBER, name: 'engine-b', state: 'online', lastReportAtMs: BASE,
-    usage: [record(first + HOUR, 5), record(hourOf(BASE - 20 * DAY), 6), record(hourOf(BASE - HOUR), 7)] };
+    usage: [record(first + HOUR, 5), record(hourOf(BASE - 20 * DAY), 6), record(hourOf(BASE - HOUR), 7)],
+    sessions: [{ id: 'member-chat', app: 'codex', title: 'Member chat', models: [{ model: 'gpt-test-1', tokens: tokens(1, 2, 3, 99) }] }] };
   // The saved member answers once, then is offline: its usage comes from the ledger.
   usage.report('91d', [{ machineId: SAVED, name: 'engine-d', state: 'online', lastReportAtMs: BASE - DAY, usage: [record(hourOf(BASE - 10 * DAY), 8)] }]);
   await usage.importAll({ format: 'asb-usage-export', version: 1, exportedAtMs: BASE, machines: [{ machineId: OTHER, name: 'retired',
@@ -120,6 +121,9 @@ test('91d merges the machines of 90d, with one more first day, and lists the mem
   // The offline member is listed; the live member, this machine, and the imported machine are not.
   assert.deepEqual(days91.firstDayIncomplete, [SAVED]);
   assert.equal(Object.hasOwn(days90, 'firstDayIncomplete'), false);
+  // Member sessions of a 91d reply are all-time sums, so 91d lists only the sessions of this machine.
+  assert.ok(days90.sessions.rows.some((row) => row.machineId === MEMBER));
+  assert.ok(days91.sessions.rows.length > 0 && days91.sessions.rows.every((row) => row.machineId === SELF));
   // A reply at the record limit is cut unless its oldest hour reaches the first day.
   const full = (oldest) => ({ machineId: 'e'.repeat(16), name: 'engine-e', state: 'online', lastReportAtMs: BASE,
     usage: [record(oldest, 1), ...Array.from({ length: MAX_HOURLY_RECORDS - 1 }, () => record(hourOf(BASE - HOUR), 1))] });
