@@ -5,7 +5,8 @@ import { priceTokens } from './usage-pricing.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 export const USAGE_PERIODS = { '24h': { unit: 'hour', count: 24 }, '7d': { unit: 'day', count: 7 },
-  '30d': { unit: 'day', count: 30 }, '90d': { unit: 'day', count: 90 }, all: { unit: 'span' } };
+  '30d': { unit: 'day', count: 30 }, '90d': { unit: 'day', count: 90 }, all: { unit: 'span' },
+  '91d': { unit: 'day', count: 91 } }; // API-only, after the window periods to keep the Messages periods unchanged.
 
 // Bucket starts, oldest first, and the end of the last bucket. Day starts use local date arithmetic, so they are DST safe.
 // All time picks its unit from the span of local calendar days from the first record to today, both counted:

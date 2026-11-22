@@ -73,6 +73,19 @@ test('the switchboard usage route reads the registered Claude source and prices 
   assert.match(fetches[0], /litellm/);
 });
 
+test('the loopback usage route accepts 91d but Messages still refuses it', async (t) => {
+  const { usage, server } = await setup(t);
+  const reply = await usage('91d');
+  assert.equal(reply.period, '91d');
+  assert.equal(reply.buckets.unit, 'day');
+  assert.equal(reply.buckets.startsMs.length, 91);
+  assert.deepEqual(Object.keys(reply).sort(), [...Object.keys(await usage('90d')), 'firstDayIncomplete'].sort());
+  assert.deepEqual(reply.firstDayIncomplete, []);
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/activity/messages?period=91d`);
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: 'Invalid period.' });
+});
+
 test('the usage reply adds the group members, and a failed member read gives the local reply only', async (t) => {
   const record = { app: 'codex', model: 'gpt-test-1', hourMs: Math.floor(Date.now() / HOUR) * HOUR - HOUR,
     tokens: { uncached: 1, cacheRead: 2, cacheWrite: 3, output: 4 } };

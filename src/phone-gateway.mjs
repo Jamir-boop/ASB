@@ -24,7 +24,7 @@ const fields = (value, names) => value !== null && typeof value === 'object' && 
 const defaults = () => ({ schema: 2, enabled: false, bindAddresses: [], port: DEFAULT_PHONE_PORT, devices: [] });
 const KINDS = ['lan', 'zerotier', 'tailscale'];
 // The periods of the activity routes; the message routes take the first three.
-const ACTIVITY_PERIODS = Object.keys(USAGE_PERIODS);
+const ACTIVITY_PERIODS = Object.keys(USAGE_PERIODS).filter((period) => period !== '91d');
 const validPort = (port) => Number.isInteger(port) && port >= 1024 && port <= 65535;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => left.length === right.length && timingSafeEqual(left, right);

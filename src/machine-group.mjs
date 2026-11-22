@@ -360,10 +360,11 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
     // Contract 4, the asking side: the activity of each active member, asked in parallel (5 s timeout each), by name.
     activity: async (period) => {
       if (!ACTIVITY_PERIODS.includes(period)) throw new Error('Invalid period.');
+      // Members do not know the API-only 91d period: they answer it with all, and the asking side buckets the days.
       const states = peerStates();
       const ids = new Set(states.map((state) => state.member.machineId));
       for (const key of activityReplies.keys()) if (!ids.has(key.split('\0')[0])) activityReplies.delete(key);
-      const members = await Promise.all(states.map((state) => memberActivity(state, period)));
+      const members = await Promise.all(states.map((state) => memberActivity(state, period === '91d' ? 'all' : period)));
       const order = (item) => `${item.name.toLowerCase()}\0${item.machineId}`;
       return members.sort((left, right) => order(left) < order(right) ? -1 : 1);
     },
