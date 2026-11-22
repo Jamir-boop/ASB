@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Added an API-only `91d` usage period: `GET /api/activity/usage?period=91d` gives 91 local-day buckets that end today, with the same machines and records as `90d` (the members are asked with `all`). `firstDayIncomplete` lists the members whose first day may miss usage, and only the sessions of this machine are listed. The windows, the phone, and the member routes do not accept `91d`.
+
 ## ASB 1.16.0 - 2026-11-22
 
 - Android: while Offline a selected pill keeps its count in the label color, as on the PC, and the dimmed counts of the other pills are easier to read. The Usage share columns show `100.0%` in full at any text size. A page scroll closes the Usage chart tooltip. The Live notification shows a `Pending: …` and a `Working: …` group (each with `+N more`), and its title leaves out a zero count (`13 pending`). The active filter chip and the pair thread head are each one TalkBack stop. The Messages thread head stays at the top of the screen while its thread is open.
