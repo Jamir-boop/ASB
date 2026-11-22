@@ -2,6 +2,22 @@
 
 ## Latest publication
 
+ASB [1.16.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.16.0) was published on `2026-11-22` (Lima). Its source and tag use commit [f4849d3](https://github.com/Jamir-boop/ASB/commit/f4849d36c87ae326e579fe4a28046cf61989ef7c). ASB Bridge is `0.9.0` in this release. The Android app is still `0.1.0` (version code 1), and the release has no APK file.
+
+- Uploaded `asb_1.16.0_all.deb`, `asb-1.16.0-1.noarch.rpm`, `asb-1.16.0-linux.tar.gz`, `PKGBUILD`, and `SHA256SUMS`. They are the `dist` artifact of the [Distros run](https://github.com/Jamir-boop/ASB/actions/runs/45063754771) of the tag. All five downloads matched those CI files byte-for-byte, and `SHA256SUMS` passed. The `asb-linux` artifact of the [Test run](https://github.com/Jamir-boop/ASB/actions/runs/45063754828) was byte-equal to them. A local build from a clean export made the same `.deb`, archive, and `PKGBUILD` bytes.
+- CI on the tag passed: Test (6 jobs), Distros (32 jobs, with the RPM installs in Fedora 43, Fedora 44 on x86-64 and arm64, AlmaLinux 10, openSUSE Leap 16, and Tumbleweed), and the [Bridge run](https://github.com/Jamir-boop/ASB/actions/runs/45063754778). CI also passed on `fcdbc5e`, the source before the version change. On `165899d`, the Windows test job found one test with a Linux-only check; `fcdbc5e` fixed that test.
+- The RPM comes from rpm 6.0.1 in the CI image: rpm 6 package format, zstd payload, stripped cpio (the `1.15.0` RPM came from rpm 4.18.2 with gzip). The release check script now reads the stripped cpio. No check installed this RPM with rpm 4.16 of RHEL 9 or its rebuilds.
+- Each package payload had 122 runtime files, all matching source bytes and modes, and the RPM had the same files as the `.deb`, except the license path. A disposable home installed the `1.15.0` CI archive, then the `1.16.0` archive of the local build: the upgrade kept the settings, and the uninstall removed the launcher and the release folder.
+- Local checks are in the [release notes](releases/v1.16.0.md). The 38 GTK tests that press real keys and buttons ran on a display that allows real input and passed. The npm pack of the release commit has 128 files.
+- After the publication, the Linux test machine installed the release commit: its 122 runtime files matched the source, and its engine and board started from the `1.16.0` folder. `asb bridge status` showed ASB Bridge `0.9.0` as current in both Codex homes and OpenCode. Both Windows test machines were offline and did not get this release.
+- The test phone runs the release build of `165899d`; no Android file changed after it.
+- The release text is the notes file with its relative links made absolute at the `v1.16.0` tag, plus one sentence about the RPM format. All 10 web links of the release page returned HTTP `200`.
+- A privacy scan of the lines added since `v1.15.0` found no private addresses, keys, or tokens. Its 11 hits are made-up addresses and zero IDs in tests.
+
+ASB [1.15.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.15.0) was published on `2026-11-10` (Lima) from commit [fb66845](https://github.com/Jamir-boop/ASB/commit/fb66845). See its [release notes](releases/v1.15.0.md) for its checks.
+
+## Earlier publications
+
 ASB [1.14.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.14.0) was published on `2026-11-01` (Lima). Its source and tag use commit [7363780](https://github.com/Jamir-boop/ASB/commit/7363780ca8427f671775fba746fc8d9bd77c9206). ASB Bridge is `0.8.1` in this release. The Android app is still `0.1.0` (version code 1), and the release has no APK file.
 
 - Uploaded `asb_1.14.0_all.deb`, `asb-1.14.0-1.noarch.rpm`, `asb-1.14.0-linux.tar.gz`, `PKGBUILD`, and `SHA256SUMS`. They are the `dist` artifact of the [Distros run](https://github.com/Jamir-boop/ASB/actions/runs/41276703643) of the release commit. All five downloads matched those CI files byte-for-byte, and `SHA256SUMS` passed. The `asb-linux` artifact of the [Test run](https://github.com/Jamir-boop/ASB/actions/runs/41276703732) is a second CI build, and its five files were byte-equal to the first. A local build on Debian from a clean export made the same `.deb`, archive, and `PKGBUILD` bytes as CI.
@@ -17,8 +33,6 @@ ASB [1.14.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.14.0) was publish
 - The release text is the notes file with its three relative links made absolute at the `v1.14.0` tag. All 10 web links of the release page returned HTTP `200`, and the source of the `PKGBUILD` downloaded and matched its SHA-256.
 - A privacy scan of the 6,901 lines added since `v1.13.0` found no private addresses, keys, or tokens. Its 7 hits are made-up LAN addresses in tests. The MIT license of ASB and `THIRD_PARTY_NOTICES.md` did not change, and the README keeps the upstream credits in its new **Credits** list.
 - No `apt`, `dnf`, `zypper`, or `makepkg` install on a real machine (CI installed the packages in its images), real-app opens with the release build, GNOME Shell 45, 46, 47, or 49, the stock GNOME Shell theme, GTK 4.12 and Libadwaita 1.4 (CI has no row for them now), the pets on Windows, Claude sessions that run in the cloud, macOS, or FPS check on the real display was run. See [release notes](releases/v1.14.0.md) for check limits.
-
-## Earlier publications
 
 ASB [1.13.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.13.0) was published on `2026-10-28` (Lima). Its source and tag use commit [d45e2ce](https://github.com/Jamir-boop/ASB/commit/d45e2ceaa3c76fce49ef0cd7b3800241ced3a0b4). ASB Bridge is still `0.8.0` in this release. The Android app is still `0.1.0` (version code 1), and the release has no APK file.
 
