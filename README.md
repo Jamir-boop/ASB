@@ -37,14 +37,28 @@ The GNOME top bar and the Android app show the same counts, and Read on the phon
 
 ![GNOME top bar and ASB Android app with made-up sessions: a line goes from each count of the top bar to the phone part that shows it; a session finishes and another asks a question, the phone shows each change at its next read, and Read on the phone makes the Needs you count go down on the PC](docs/media/top-bar-phone.svg)
 
+## Answer questions from the phone
+
+On Linux, the Android app can answer the questions of Claude Desktop Code and Claude Code CLI sessions on the PC that it is paired to. On main, not in a release yet.
+
+1. In Preferences > Phone, turn on **Send message text to phones**, then **Answer questions from phones** (off by default). Phone access must be on, with a paired phone.
+2. Run `asb agent claude-hook install`. It adds one hook to the Claude settings of each Claude profile that ASB reads, and keeps the old file as `settings.json.asb-backup`. `asb agent claude-hook status` shows the state, and `asb agent claude-hook remove` takes the hook out.
+3. Update the phone app: the question card is in the app from this build on. A tap on a Needs input notification opens it.
+
+The card stays on the PC too, and the first answer wins. A long wait works (checked with an answer after 4,000 s). With the answer switch on, each paired phone can answer for your agents: unpair a lost phone in Preferences > Phone.
+
+- An engine restart ends the phone path of an open question: answer it on the PC.
+- Run `asb agent claude-hook remove` before `asb uninstall`.
+- Linux and Claude only: no approvals, Codex, OpenCode, group members, or Windows yet.
+
 ## Support by app
 
 | App | Cards | Status | Questions | Approvals | Phone answers | Open | Messages | Background | Usage | Rename | Archive | Windows |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Codex app | ✓ | ✓ | ✓ | ✓ with ASB Bridge | ✗ ASB work: docs only | ✓ | ✓ | ✓ subagents only | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Codex CLI | ✓ | ✓ | ✓ | ✓ with ASB Bridge, daemon tasks only | ✗ ASB work: docs only | ✗ ASB work: terminal tab | ✓ daemon tasks only | ✓ subagents only | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✗ ASB work: hook tested | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
-| Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✗ ASB work: hook tested | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
+| Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
+| Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
 | OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: docs only | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 

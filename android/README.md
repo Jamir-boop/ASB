@@ -297,6 +297,21 @@ pill; while the Offline band shows, the pill does not repeat its error, and whil
 the inspector is open, the pill shows over it. A tap closes it. The
 inspector has a scrim behind it.
 
+When the PC has an open Claude Code question for the row (the PC switches
+**Send message text to phones** and **Answer questions from phones** on, and
+the hook from `asb agent claude-hook install`), the inspector shows a question
+card: for each question the header, the text, and the options with their
+descriptions (one choice, or several for a multi-select question), one
+**Other** text field, and one **Send** for the whole card. Send stays off until
+each question has an answer, and while Offline. A tap on the Needs input
+notification of that row opens its inspector. After Send, `Answer sent` or
+`Answered on the PC` shows as a banner and the inspector closes;
+`Answers are off on the PC.` and `The PC did not take this answer.` stay on the
+card. `Answer sent` means that the hook on the PC has the answer, not that
+Claude took it: a PC answer at the same moment wins. The question and the
+answer stay in memory only. The card is checked by tests only (no device look
+yet).
+
 Settings > Card marks explains each card mark.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A

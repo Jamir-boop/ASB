@@ -226,10 +226,10 @@
     <thead><tr><th scope="col">App</th><th scope="col">Waits on</th><th scope="col">How it could work</th></tr></thead>
     <tbody id="rename-list"></tbody></table></div>
 
-  <h2 id="phone-answers">Answer questions from the phone (not built)</h2>
+  <h2 id="phone-answers">Answer questions from the phone</h2>
   <p class="dim" id="phone-answers-checked"></p>
   <div class="scroll"><table class="rn"><caption class="sr">Answer questions from the phone, per app</caption>
-    <thead><tr><th scope="col">App</th><th scope="col">Waits on</th><th scope="col">How it could work</th></tr></thead>
+    <thead><tr><th scope="col">App</th><th scope="col">Status</th><th scope="col">Notes</th></tr></thead>
     <tbody id="phone-answers-list"></tbody></table></div>
 
   <h2 id="status">Status by app and CLI</h2>
@@ -243,14 +243,14 @@
 </main>
 <script>
 // One copy of the facts: the summaries and the details are built from these lists. README.md has the same Support table (test/asb-docs.test.mjs).
-// Phone answers is not built: change its cells and the Phone answers section when a part of the build merges.
+// Phone answers is built for Claude Desktop Code and Claude Code CLI on Linux; change its cells and section when more of it merges.
 const FEATURES = ['Cards', 'Status', 'Questions', 'Approvals', 'Phone answers', 'Open', 'Messages', 'Background', 'Usage', 'Rename', 'Archive', 'Windows'];
 // A cell is the mark, then an optional note after one space. A ✗ note starts with what the gap waits on.
 const SUPPORT = [
   ['Codex app', '✓', '✓', '✓', '✓ with ASB Bridge', '✗ ASB work: docs only', '✓', '✓', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
   ['Codex CLI', '✓', '✓', '✓', '✓ with ASB Bridge, daemon tasks only', '✗ ASB work: docs only', '✗ ASB work: terminal tab', '✓ daemon tasks only', '✓ subagents only', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✗ ASB work: hook tested', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
-  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✗ ASB work: hook tested', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
+  ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓ Linux, with the hook', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
+  ['Claude Code CLI', '✓', '✓', '✓', '✓', '✓ Linux, with the hook', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
   ['OpenCode 2', '✓', '✓', '✓ with ASB Bridge', '✓ with ASB Bridge', '✗ ASB work: docs only', '✗ ASB work: terminal tab', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
   ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✗ Not planned: login', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
 ];
@@ -264,7 +264,7 @@ const OWNERS = [
   ['Not planned', 'Not planned', 'ASB will not do it.'],
 ];
 const FEATURE_NOTES = {
-  'Phone answers': 'Answer the questions of a session from the paired phone. Not built yet.',
+  'Phone answers': 'Answer the questions of a session from the paired phone. Needs the two switches in Preferences > Phone and asb agent claude-hook install.',
   Background: 'Counts the commands and subagents that a session runs in the background now. An option in Preferences > Appearance and in Android Settings, off by default.',
   Usage: 'The tokens and the API price of the session in the Usage window.',
   Rename: 'From the board.',
@@ -285,14 +285,14 @@ const RENAME = [
   [[], 'All', 'ASB would then change app data, so the README and the privacy page must change. Cards of other machines and the phone need the engine of that machine. The bridge send name follows the title.'],
 ];
 
-const PHONE_ANSWERS_CHECKED = 'Checked on 2026-11-22 with a live test of Claude Code 2.1.330. OpenCode and Codex are from their docs only.';
+const PHONE_ANSWERS_CHECKED = 'Built for Claude Desktop Code and Claude Code CLI on Linux, on main, not in a release yet. Checked on 2026-11-22 end to end with a Claude Code 2.1.330 terminal session; in the desktop Code tab the hook and its answer were checked by hand; the session mapping of desktop rows by tests. OpenCode and Codex are from their docs only.';
 // [support app names, what the note says], as in RENAME.
 const PHONE_ANSWERS = [
-  [['Claude Desktop Code', 'Claude Code CLI'], 'Claude Desktop Code and CLI', 'A `PermissionRequest` hook with the matcher `AskUserQuestion` gets the questions and their options and can answer them, in the default, accept-edits, bypass, and auto modes (plan and dontAsk are not tested). The question card stays on the PC while the hook waits, and the first answer applies. Part 1 of the build is for these two apps, on Linux only.'],
+  [['Claude Desktop Code', 'Claude Code CLI'], 'Claude Desktop Code and CLI', 'Works on Linux with the hook (`asb agent claude-hook install`) and the two switches in Preferences > Phone. The phone shows a question card (header, question, options, one Other text, one Send); the card stays on the PC, and the first answer wins. End to end in the default and bypassPermissions modes; the hook fires in acceptEdits and auto (spike); plan and dontAsk are not checked. The phone route and the Android card are checked by tests only. Limits: an engine restart ends the phone path of an open question; run `asb agent claude-hook remove` before `asb uninstall`.'],
   [['OpenCode 2'], 'OpenCode 2', 'The OpenCode reply routes can answer a question, by the OpenCode docs. No live test.'],
   [['Codex app', 'Codex CLI'], 'Codex app and CLI', 'The Codex app server can answer a question (experimental API), by the Codex docs. Codex hooks answer approvals only. No live test.'],
   [['Claude Code on the web'], 'Claude Code on the web', 'Needs a claude.ai login, as Rename does. Not planned.'],
-  [[], 'All', 'The phone gets the question and its options only while the PC switches for message text and for phone answers are on (part 1 design). Approvals and plan approval come later.'],
+  [[], 'All', 'The phone gets the question and its options only while the PC switches for message text and for phone answers are on. Approvals, plan approval, group members, and Windows come later.'],
 ];
 
 const STATES = ['Working', 'Waiting', 'Idle', 'Unknown', 'Error (new)', 'Failed', 'Stopped', 'Hidden', 'No change'];
@@ -565,10 +565,11 @@ allReasons.addEventListener('change', () => FEATURES.forEach((_, i) => openWhy(i
 addEventListener('beforeprint', () => FEATURES.forEach((_, i) => openWhy(i, true, '')));
 document.getElementById('also').innerHTML = `${esc(ALSO)} ${esc(REMOTE)}`;
 
-// A not-built feature: one row per app group, with the owner of its support cell.
+// A not-built feature: one row per app group, with the owner of its support cell (a built cell says Works).
 const planRows = (list, feature) => list.map(([support, name, note]) => {
-  const owner = support.length ? parseCell(SUPPORT.find(([app]) => app === support[0])[FEATURES.indexOf(feature) + 1]).owner : '';
-  return `<tr><th scope="row">${support.length ? appName(support[0]).replace(esc(support[0]), esc(name)) : esc(name)}</th><td class="who">${owner ? ownerIcon(owner) + owner : '<span class="dim">All apps</span>'}</td><td>${code(note)}</td></tr>`;
+  const cell = support.length ? parseCell(SUPPORT.find(([app]) => app === support[0])[FEATURES.indexOf(feature) + 1]) : null;
+  const owner = cell?.owner || '';
+  return `<tr><th scope="row">${support.length ? appName(support[0]).replace(esc(support[0]), esc(name)) : esc(name)}</th><td class="who">${owner ? ownerIcon(owner) + owner : `<span class="dim">${cell?.ok ? 'Works' : 'All apps'}</span>`}</td><td>${code(note)}</td></tr>`;
 }).join('');
 document.getElementById('rename-checked').innerHTML = esc(RENAME_CHECKED);
 document.getElementById('rename-list').innerHTML = planRows(RENAME, 'Rename');
