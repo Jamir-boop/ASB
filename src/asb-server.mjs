@@ -10,7 +10,7 @@ import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, par
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
 import { CLAUDE_QUESTION, MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
-import { MAX_WAIT_MS } from './claude-questions.mjs';
+import { answersFor, MAX_WAIT_MS } from './claude-questions.mjs';
 
 const gzipAsync = promisify(gzip);
 
@@ -224,9 +224,10 @@ export function createAsbServer({
     const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
     const claudeWaitRoute = Boolean(claudeQuestions) && url.pathname === '/api/agent/claude-wait';
     const claudePoll = claudeQuestions ? url.pathname.match(/^\/api\/agent\/claude-wait\/([0-9a-f]{32})$/) : null;
+    const answerMatch = claudeQuestions ? url.pathname.match(/^\/api\/threads\/([^/]+)\/answer$/) : null;
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
-      || claudeWaitRoute || Boolean(claudePoll)
+      || claudeWaitRoute || Boolean(claudePoll) || Boolean(answerMatch)
       || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute) || usageImportRoute || Boolean(usageBackupAction);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -633,9 +634,11 @@ export function createAsbServer({
         else {
           const body = await readBody(request);
           const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
-          // sendText (the message text switch) is optional: without it the saved value stays.
-          const settingsFields = url.pathname === '/api/phone/settings' && (fields === 'bindAddresses,enabled,port'
-            || fields === 'bindAddresses,enabled,port,sendText' && typeof body.sendText === 'boolean');
+          // sendText (the message text switch) and answer (the answer switch) are optional: without them the saved values stay.
+          const settingsFields = url.pathname === '/api/phone/settings'
+            && ['bindAddresses,enabled,port', 'answer,bindAddresses,enabled,port', 'bindAddresses,enabled,port,sendText',
+              'answer,bindAddresses,enabled,port,sendText'].includes(fields)
+            && ['sendText', 'answer'].every((name) => body[name] === undefined || typeof body[name] === 'boolean');
           if (url.pathname === '/api/phone/settings' ? !settingsFields : fields !== '') {
             sendJson(response, 400, { error: 'Invalid phone action.' });
             return;
@@ -900,6 +903,32 @@ export function createAsbServer({
           detail: error instanceof Error ? error.message : String(error),
         });
       }
+      return;
+    }
+
+    if (answerMatch) {
+      response.setHeader('Cache-Control', 'no-store');
+      let body;
+      try { body = await readBody(request, 64 * 1024); } catch (error) {
+        sendJson(response, error.statusCode === 413 ? 413 : 400, { error: 'Invalid answer.' });
+        return;
+      }
+      let threadId = null;
+      try { threadId = decodeURIComponent(answerMatch[1]); } catch {}
+      if (threadId === null || !exactKeys(body, ['requestId', 'answers']) || typeof body.requestId !== 'string') {
+        sendJson(response, 400, { error: 'Invalid answer.' });
+        return;
+      }
+      try {
+        const thread = await findThreadForAction(threadId);
+        if (!thread) { threadNotFound(response); return; }
+        const question = answerEnabled() ? thread[CLAUDE_QUESTION] : null;
+        if (question?.requestId !== body.requestId) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
+        const answers = answersFor(question.questions, body.answers);
+        if (!answers) { sendJson(response, 400, { error: 'Invalid answer.' }); return; }
+        if (!claudeQuestions.answer(body.requestId, answers)) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
+        sendJson(response, 200, { answered: true });
+      } catch { sendJson(response, 500, { error: 'Cannot save the answer.' }); }
       return;
     }
 

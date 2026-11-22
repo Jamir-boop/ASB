@@ -4,11 +4,13 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { appendFile, chmod, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createClaudeQuestions } from '../src/claude-questions.mjs';
+import { answersFor, createClaudeQuestions } from '../src/claude-questions.mjs';
+import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { exportLocalSessions } from '../src/machine-peers.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { createSwitchboardServer, loadSwitchboardDashboard, QUESTION_SESSIONS } from '../src/switchboard.mjs';
@@ -412,4 +414,185 @@ test('no question or answer text stays at rest after an open and an answer', asy
     const content = await readFile(file, 'utf8');
     assert.equal(content.includes(SECRET_QUESTION) || content.includes(SECRET_ANSWER), false, file);
   }
+});
+
+// The hook client against a test engine: it opens a request for `questions` and gives its stdout when it ends.
+async function hookOn(e, questions) {
+  await mkdir(path.join(e.home, 'runtime', 'asb'), { recursive: true, mode: 0o700 });
+  await chmod(path.join(e.home, 'runtime', 'asb'), 0o700);
+  await writeFile(path.join(e.home, 'runtime', 'asb', 'service.json'), JSON.stringify({ schema: 1, pid: process.pid, port: e.port, sourceToken: TOKEN }), { mode: 0o600 });
+  const child = spawn(process.execPath, [agentScript, 'claude-wait'], { stdio: ['pipe', 'pipe', 'pipe'],
+    env: { HOME: e.home, XDG_RUNTIME_DIR: path.join(e.home, 'runtime'), XDG_STATE_HOME: path.join(e.home, 'state'), XDG_CONFIG_HOME: path.join(e.home, 'config'),
+      XDG_CACHE_HOME: path.join(e.home, 'cache'), PATH: '/usr/bin:/bin' } });
+  let stdout = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stdin.end(JSON.stringify(hookInput(questions, { session_id: e.sessionId })));
+  return { done: once(child, 'close').then(([code]) => ({ code, stdout })) };
+}
+
+const untilOpen = async (store, sessionId) => {
+  const deadline = Date.now() + 5_000;
+  while (!store.forSession(sessionId) && Date.now() < deadline) await delay(20);
+  return store.forSession(sessionId);
+};
+
+test('the answer route checks the answer against the stored questions and builds the Claude answers', async (t) => {
+  const store = createClaudeQuestions();
+  let gate = true;
+  const e = await engine(t, { store, answerEnabled: () => gate });
+  const row = `/api/threads/${encodeURIComponent(`cli:${e.sessionId}`)}/answer`;
+  const color = one({ question: 'Color?', options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }], multiSelect: true });
+  const size = one({ question: 'Size?', options: [{ label: 'Small' }, { label: 'Large' }] });
+  const open = async (questions) => (await (await e.post('/api/agent/claude-wait', { sessionId: e.sessionId, questions })).json()).requestId;
+  const answer = (requestId, answers, options) => e.post(row, { requestId, answers }, options);
+  // The store keeps the answers object without a prototype; the hook gets it as JSON.
+  const result = async (requestId) => JSON.parse(JSON.stringify((await store.wait(requestId, 0)).answers));
+  // One question, two with a multi-select, typed text alone, labels and typed text.
+  let id = await open([one()]);
+  const reply = await answer(id, [{ selected: ['B'] }]);
+  assert.deepEqual([reply.status, reply.headers.get('cache-control'), await reply.json()], [200, 'no-store', { answered: true }]);
+  assert.deepEqual(await result(id), { 'Synthetic question?': 'B' });
+  id = await open([color, size]);
+  assert.equal((await answer(id, [{ selected: ['A', 'B'] }, { selected: ['Large'] }])).status, 200);
+  assert.deepEqual(await result(id), { 'Color?': 'A, B', 'Size?': 'Large' });
+  id = await open([color, size]);
+  assert.equal((await answer(id, [{ selected: [], other: 'Teal\tand\nnavy' }, { selected: [], other: 'Medium' }])).status, 200);
+  assert.deepEqual(await result(id), { 'Color?': 'Teal\tand\nnavy', 'Size?': 'Medium' });
+  id = await open([color]);
+  assert.equal((await answer(id, [{ selected: ['C', 'A'], other: 'and teal' }])).status, 200);
+  assert.deepEqual(await result(id), { 'Color?': 'C, A, and teal' });
+  // 400: each item must fit its question; the request stays open.
+  id = await open([color, size]);
+  for (const answers of [[{ selected: ['A'] }], [{ selected: ['A'] }, { selected: ['Huge'] }], [{ selected: ['A', 'A'] }, { selected: ['Large'] }],
+    [{ selected: ['A'] }, { selected: ['Small', 'Large'] }], [{ selected: ['A'] }, { selected: ['Large'], other: 'x' }], [{ selected: ['A'] }, { selected: [] }],
+    [{ selected: [] }, { selected: ['Large'] }], [{ selected: ['A'], extra: 1 }, { selected: ['Large'] }], [{ selected: ['A'] }, { selected: [], other: '' }],
+    [{ selected: ['A'] }, { selected: [], other: 'x'.repeat(2001) }], [{ selected: ['A'] }, { selected: [], other: 'Bell\x07' }],
+    [{ selected: ['A'] }, { other: 'x' }], [{ selected: ['A'] }, null], [{ selected: ['A'] }, { selected: ['Large'] }, { selected: ['Large'] }], {}, 'x']) {
+    const bad = await answer(id, answers);
+    assert.deepEqual([bad.status, await bad.json()], [400, { error: 'Invalid answer.' }], JSON.stringify(answers));
+  }
+  for (const body of [{ requestId: id }, { answers: [] }, { requestId: id, answers: [], extra: 1 }, { requestId: 1, answers: [] }]) {
+    assert.equal((await e.post(row, body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await e.post(row, undefined, { raw: '{bad' })).status, 400);
+  assert.equal((await e.post(row, undefined, { raw: 'x'.repeat(64 * 1024 + 1) })).status, 413);
+  assert.equal(store.forSession(e.sessionId).requestId, id);
+  // 403 from another origin, 404 for an unknown row, 409 for a wrong ID, the gate off, an answered, and a closed request.
+  assert.equal((await answer(id, [{ selected: ['A'] }, { selected: ['Large'] }], { headers: { origin: 'http://evil.example' } })).status, 403);
+  assert.equal((await answer(id, [{ selected: ['A'] }, { selected: ['Large'] }], { headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+  assert.equal((await e.post('/api/threads/cli%3Anone/answer', { requestId: id, answers: [] })).status, 404);
+  const closed = async (requestId) => {
+    const response = await answer(requestId, [{ selected: ['A'] }, { selected: ['Large'] }]);
+    assert.deepEqual([response.status, await response.json()], [409, { error: 'This question is closed.' }]);
+  };
+  await closed('0'.repeat(32));
+  gate = false;
+  await closed(id);
+  gate = true;
+  assert.equal((await answer(id, [{ selected: ['A'] }, { selected: ['Large'] }])).status, 200);
+  await closed(id);
+  id = await open([color, size]);
+  store.close(id);
+  await closed(id);
+  // The upper limits: four answers with 2,000 non-ASCII characters of typed text each.
+  const four = Array.from({ length: 4 }, (_, index) => one({ question: `Question ${index}?` }));
+  id = await open(four);
+  assert.equal((await answer(id, four.map(() => ({ selected: [], other: 'é'.repeat(2000) })))).status, 200);
+  assert.deepEqual(await result(id), Object.fromEntries(four.map((item) => [item.question, 'é'.repeat(2000)])));
+  assert.equal((await fetch(`${e.base}${row}`)).status, 405);
+});
+
+test('the hook prints the decision with the answers that the answer route built', async (t) => {
+  const store = createClaudeQuestions();
+  const e = await engine(t, { store });
+  const questions = [one({ question: 'Colors?', multiSelect: true }), one({ question: 'Size?' })];
+  const hooked = await hookOn(e, questions);
+  const record = await untilOpen(store, e.sessionId);
+  assert.ok(record);
+  const reply = await e.post(`/api/threads/${encodeURIComponent(`cli:${e.sessionId}`)}/answer`,
+    { requestId: record.requestId, answers: [{ selected: ['A', 'B'] }, { selected: [], other: 'Large, typed' }] });
+  assert.equal(reply.status, 200);
+  const { code, stdout } = await hooked.done;
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(stdout), { hookSpecificOutput: { hookEventName: 'PermissionRequest',
+    decision: { behavior: 'allow', updatedInput: { questions, answers: { 'Colors?': 'A, B', 'Size?': 'Large, typed' } } } } });
+});
+
+// The engine wiring (scripts/asb-engine.mjs) with a real phone gateway on loopback, as the gateway tests use it.
+async function phoneEngine(t) {
+  const store = createClaudeQuestions();
+  let gateway = null;
+  const e = await engine(t, { store, answerEnabled: () => gateway?.answerReady() === true });
+  gateway = createPhoneGateway({ localPort: e.port, asbVersion: '0.0.0', settingsPath: path.join(e.home, 'config', 'asb', 'phone.json'),
+    tlsDir: path.join(e.home, 'config', 'asb', 'phone-tls'), listAddresses: () => [{ address: '127.0.0.1', interface: 'lo', kind: 'lan' }],
+    onAnswer: (on) => { if (!on) store.closeAll(); } });
+  t.after(() => gateway.stop());
+  await gateway.start();
+  const free = async () => {
+    const probe = http.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const { port } = probe.address();
+    await new Promise((resolve) => probe.close(resolve));
+    return port;
+  };
+  const settings = { enabled: true, bindAddresses: ['127.0.0.1'], port: await free(), sendText: true, answer: true };
+  // An undefined value leaves its key out of the body (the saved value stays).
+  const save = (change) => { Object.assign(settings, change); return gateway.updateSettings(JSON.parse(JSON.stringify(settings))); };
+  assert.equal((await save({})).running, true);
+  const phone = (route, body, token) => new Promise((resolve, reject) => {
+    const client = https.request({ host: '127.0.0.1', port: settings.port, path: route, method: 'POST', rejectUnauthorized: false, agent: false,
+      headers: token ? { authorization: `Bearer ${token}` } : {} }, (response) => {
+      let text = '';
+      response.on('data', (chunk) => { text += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, json: JSON.parse(text) }));
+    });
+    client.on('error', reject);
+    client.end(JSON.stringify(body));
+  });
+  const code = new URL((await gateway.createPairing()).uri).searchParams.get('c');
+  const { token } = (await phone('/phone/v1/pair', { code, deviceName: 'Synthetic phone' })).json;
+  const answer = (requestId, answers) => phone(`/phone/v1/threads/${encodeURIComponent(`cli:${e.sessionId}`)}/answer`, { requestId, answers }, token);
+  return { e, store, gateway, save, free, answer };
+}
+
+test('a saved switch change closes the open questions; a listener restart keeps them for the phone, with no text at rest', async (t) => {
+  const { e, store, gateway, save, free, answer } = await phoneEngine(t);
+  const questions = [one({ question: SECRET_QUESTION, options: [{ label: SECRET_ANSWER }, { label: 'Other synthetic gadget' }], multiSelect: true })];
+  // A listener restart (a new port) keeps the open record; the phone answers it after the restart.
+  let hooked = await hookOn(e, questions);
+  let record = await untilOpen(store, e.sessionId);
+  assert.ok(record);
+  assert.equal((await save({ port: await free() })).running, true);
+  assert.equal(store.forSession(e.sessionId)?.requestId, record.requestId);
+  const typed = 'Synthetic typed gadget note';
+  const reply = await answer(record.requestId, [{ selected: [SECRET_ANSWER], other: typed }]);
+  assert.deepEqual([reply.status, reply.json], [200, { answered: true }]);
+  const done = await hooked.done;
+  assert.deepEqual(JSON.parse(done.stdout).hookSpecificOutput.decision.updatedInput.answers, { [SECRET_QUESTION]: `${SECRET_ANSWER}, ${typed}` });
+  // No question or answer text at rest in the temp HOME.
+  for (const file of await filesUnder(e.home)) {
+    const content = await readFile(file, 'latin1');
+    assert.equal([SECRET_QUESTION, SECRET_ANSWER, typed].some((value) => content.includes(value)), false, file);
+  }
+  // Each saved off (answer, message text, phone access) closes the open record: the hook gets closed and prints nothing.
+  for (const change of [{ answer: false }, { sendText: false, answer: undefined }, { enabled: false }]) {
+    await save({ enabled: true, sendText: true, answer: true });
+    assert.equal(gateway.answerReady(), true);
+    hooked = await hookOn(e, questions);
+    record = await untilOpen(store, e.sessionId);
+    assert.ok(record, JSON.stringify(change));
+    await save(change);
+    assert.equal(store.forSession(e.sessionId), null, JSON.stringify(change));
+    assert.deepEqual(await hooked.done, { code: 0, stdout: '' }, JSON.stringify(change));
+    // A new question does not wait while the switch is off.
+    assert.deepEqual(await (await e.post('/api/agent/claude-wait', { sessionId: e.sessionId, questions })).json(), { wait: false });
+  }
+});
+
+test('a question text that is an object key name keeps its answer', () => {
+  const questions = [{ question: '__proto__', options: [{ label: 'A' }], multiSelect: false }];
+  const answers = answersFor(questions, [{ selected: ['A'] }]);
+  assert.equal(answers.__proto__, 'A');
+  assert.deepEqual(JSON.parse(JSON.stringify(answers)), JSON.parse('{"__proto__":"A"}'));
+  assert.ok(Object.hasOwn(JSON.parse(JSON.stringify(answers)), '__proto__'));
 });

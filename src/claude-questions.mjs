@@ -34,6 +34,25 @@ export function checkedQuestions(questions) {
   return copy;
 }
 
+// The Claude `answers` object (question text to the labels, then the typed text, joined with `, `) for the phone's answer items, one per
+// stored question in order, or null when an item does not fit its question.
+export function answersFor(questions, items) {
+  if (!Array.isArray(items) || items.length !== questions.length) return null;
+  // No prototype: a question text such as `__proto__` stays an own key.
+  const answers = Object.create(null);
+  for (const [index, question] of questions.entries()) {
+    const item = items[index];
+    if (!object(item) || !Object.keys(item).every((key) => ['selected', 'other'].includes(key)) || !Array.isArray(item.selected)
+      || new Set(item.selected).size !== item.selected.length
+      || !item.selected.every((label) => question.options.some((option) => option.label === label))
+      || (item.other !== undefined && !text(item.other, 1, 2_000, true))) return null;
+    const count = item.selected.length + (item.other !== undefined ? 1 : 0);
+    if (question.multiSelect ? count < 1 : count !== 1) return null;
+    answers[question.question] = [...item.selected, ...(item.other !== undefined ? [item.other] : [])].join(', ');
+  }
+  return answers;
+}
+
 export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRandomBytes } = {}) {
   const records = new Map();
   const waiters = new Map();

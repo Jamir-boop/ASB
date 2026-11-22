@@ -121,9 +121,9 @@ const validAddresses = (value) => Array.isArray(value) && value.length <= 8
 
 function validSettings(value) {
   return (value?.schema === 1 ? fields(value, ['schema', 'enabled', 'bindAddress', 'port', 'devices']) && typeof value.bindAddress === 'string'
-    // sendText is saved only when it is true, so an older ASB keeps reading a file saved with the switch off.
-    : (fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices'])
-      || fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices', 'sendText']) && typeof value.sendText === 'boolean')
+    // sendText and answer are saved only when they are true, so an older ASB keeps reading a file saved with the switches off.
+    : fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices', ...['sendText', 'answer'].filter((name) => Object.hasOwn(Object(value), name))])
+      && ['sendText', 'answer'].every((name) => value[name] === undefined || typeof value[name] === 'boolean')
       && value.schema === 2 && validAddresses(value.bindAddresses))
     && typeof value.enabled === 'boolean' && validPort(value.port)
     && Array.isArray(value.devices) && value.devices.length <= 8 && value.devices.every((device) =>
@@ -138,6 +138,13 @@ function validSettings(value) {
 }
 
 export { acceptsGzip };
+
+// The shape of an answer body; the engine checks the labels against the question.
+const validAnswer = (value) => fields(value, ['requestId', 'answers']) && typeof value.requestId === 'string' && /^[0-9a-f]{32}$/.test(value.requestId)
+  && Array.isArray(value.answers) && value.answers.length >= 1 && value.answers.length <= 4
+  && value.answers.every((item) => (fields(item, ['selected']) || fields(item, ['selected', 'other']) && typeof item.other === 'string')
+    && Array.isArray(item.selected) && item.selected.length <= 8
+    && item.selected.every((label) => typeof label === 'string' && label.length >= 1 && label.length <= 200));
 
 function readBody(request, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
@@ -158,7 +165,7 @@ function readBody(request, limit = 64 * 1024) {
 
 export function createPhoneGateway({ localPort, asbVersion, settingsPath = phoneSettingsPath(), tlsDir = phoneTlsDir(),
   now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = listPhoneAddresses,
-  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {}, onSendText = () => {}, platform = process.platform, env = process.env,
+  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {}, onSendText = () => {}, onAnswer = () => {}, platform = process.platform, env = process.env,
   execFile: run = execFileAsync }) {
   if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw invalid('Invalid ASB port.');
   let settings = defaults();
@@ -176,6 +183,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
   const failures = new Map();
   const sockets = new Set();
   const upstreams = new Set();
+  // The saved answer switch as `onAnswer` last got it.
+  let answerSaved = false;
+  const answerChanged = () => {
+    const on = settings.enabled && settings.sendText === true && settings.answer === true;
+    if (on !== answerSaved) { answerSaved = on; onAnswer(on); }
+  };
   const serialize = (action) => {
     const result = work.catch(() => {}).then(action);
     work = result;
@@ -201,6 +214,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     }
     loaded = true;
     onSendText(settings.sendText === true);
+    answerChanged();
   }
 
   async function save(next = settings) {
@@ -208,13 +222,15 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     await fs.mkdir(path.dirname(settingsPath), { recursive: true, mode: 0o700 });
     await fs.rm(temporary, { force: true });
     try {
-      const { sendText, ...rest } = next;
-      await fs.writeFile(temporary, JSON.stringify(sendText === true ? next : rest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      const { sendText, answer, ...rest } = next;
+      await fs.writeFile(temporary, JSON.stringify({ ...rest, ...(sendText === true ? { sendText } : {}), ...(answer === true ? { answer } : {}) }, null, 2) + '\n',
+        { flag: 'wx', mode: 0o600 });
       await fs.rename(temporary, settingsPath);
     } finally { await fs.rm(temporary, { force: true }); }
     settings = next;
     dirty = false;
     onSendText(settings.sendText === true);
+    answerChanged();
   }
 
   function activePairing() {
@@ -227,10 +243,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     .filter((address) => listed.some((item) => item.address === address)).join(',');
 
   const listening = () => listeners.filter((item) => item.server.listening).map(({ kind, address }) => ({ kind, address }));
+  // A phone can answer now: the switches are on and a listener runs.
+  const answerReady = () => settings.enabled && settings.sendText === true && settings.answer === true && listening().length > 0;
 
   function status() {
     return { enabled: settings.enabled, bindAddresses: [...settings.bindAddresses], port: settings.port, sendText: settings.sendText === true,
-      addresses: listAddresses().map(({ address, interface: name, kind }) => ({ address, interface: name, kind })),
+      answer: settings.answer === true, addresses: listAddresses().map(({ address, interface: name, kind }) => ({ address, interface: name, kind })),
       listening: listening(), running: listening().length > 0, error, warning, fingerprint,
       devices: settings.devices.map(({ id, name, createdAtMs, lastSeenAtMs }) => ({ id, name, createdAtMs, lastSeenAtMs })),
       pairing: { expiresAtMs: activePairing()?.expiresAtMs || 0 } };
@@ -502,14 +520,14 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       await handlePeer(request, response, group, `v2/${exactRoute}`, reject);
       return;
     }
-    const match = url.pathname.match(/^\/phone\/v1\/threads\/([^/]{1,512})\/(open|mark-read|mark-unread|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out|mute|unmute)$/);
+    const match = url.pathname.match(/^\/phone\/v1\/threads\/([^/]{1,512})\/(open|mark-read|mark-unread|pin|unpin|move-pin|discard-result|keep-result|drawer-in|drawer-out|mute|unmute|answer)$/);
     const hello = url.pathname === '/phone/v1/hello';
     const dashboard = url.pathname === '/phone/v1/dashboard';
     const unread = url.pathname === '/phone/v1/settings/unread';
     // Contract 3: the two activity reads always, and the thread only when the PC owner turns on message text.
     const activity = url.pathname.match(settings.sendText === true ? /^\/phone\/v1\/activity\/(messages|usage|thread)$/
       : /^\/phone\/v1\/activity\/(messages|usage)$/)?.[1];
-    if (!pairRoute && !hello && !dashboard && !unread && !match && !activity) { reject(404, 'Route is not available.'); return; }
+    if (!pairRoute && !hello && !dashboard && !unread && !(match && (match[2] !== 'answer' || answerReady())) && !activity) { reject(404, 'Route is not available.'); return; }
     const method = hello || dashboard || activity ? 'GET' : 'POST';
     if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
     try {
@@ -568,7 +586,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         sendJson(response, 200, { api: PHONE_API_VERSION, asbVersion, deviceId: device.id, serverName: hostName,
           addresses: listening(), port: settings.port, machineId,
           engines: (peer?.engines() || []).map((engine) => engine.machineId === machineId
-            ? { ...engine, addresses: listening(), port: settings.port } : engine), sendText: settings.sendText === true });
+            ? { ...engine, addresses: listening(), port: settings.port } : engine), sendText: settings.sendText === true,
+          answer: settings.answer === true });
       } else if (activity === 'thread') {
         // The switch can go off while the phone waits for its token check.
         if (settings.sendText !== true) { reject(404, 'Route is not available.'); return; }
@@ -587,6 +606,13 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           if (!fields(value, []) && !(match[2] === 'mute' && fields(value, ['durationMs']) && MUTE_DURATIONS_MS.includes(value.durationMs))) {
             reject(400, 'Invalid ASB session action.'); return;
           }
+        }
+        if (match?.[2] === 'answer') {
+          // The switch can go off while the phone waits for its token check.
+          if (!answerReady()) { reject(404, 'Route is not available.'); return; }
+          let value;
+          try { value = JSON.parse(body.toString('utf8')); } catch {}
+          if (!validAnswer(value)) { reject(400, 'Invalid answer.'); return; }
         }
         // Only with the text switch on does the dashboard carry the question text of a waiting Claude session.
         const query = [url.searchParams.get('force') === '1' ? 'force=1' : '', settings.sendText === true ? 'text=1' : ''].filter(Boolean).join('&');
@@ -620,6 +646,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       if (dirty) await save();
     }),
     status: () => serialize(async () => { await load(); return status(); }),
+    // Sync: the engine asks it for each new question and each answer.
+    answerReady,
     // The certificate is the machine identity, also while phone access is off: the ID is its first 16 fingerprint characters.
     identity: () => serialize(async () => {
       try { await certificate(); } catch { return ''; }
@@ -641,11 +669,14 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     }),
     updateSettings: (value) => serialize(async () => {
       await load();
-      // sendText is optional; without it the saved value stays.
-      const withText = fields(value, ['enabled', 'bindAddresses', 'port', 'sendText']);
-      if (!(fields(value, ['enabled', 'bindAddresses', 'port']) || withText && typeof value.sendText === 'boolean') || typeof value.enabled !== 'boolean' || !validAddresses(value.bindAddresses)) {
+      // sendText and answer are optional; without them the saved values stay.
+      const optional = ['sendText', 'answer'].filter((name) => Object.hasOwn(Object(value), name));
+      if (!fields(value, ['enabled', 'bindAddresses', 'port', ...optional]) || optional.some((name) => typeof value[name] !== 'boolean')
+        || typeof value.enabled !== 'boolean' || !validAddresses(value.bindAddresses)) {
         throw invalid('Invalid phone settings.');
       }
+      const sendText = value.sendText ?? settings.sendText === true;
+      if (value.answer === true && !sendText) throw invalid('Turn on message text first.');
       if (!validPort(value.port) || value.port === localPort) throw invalid('The phone port must be from 1024 to 65535 and different from the ASB port.');
       const listed = listAddresses();
       if ((value.enabled && !value.bindAddresses.length)
@@ -654,10 +685,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         throw invalid('Choose a phone address on this PC.');
       }
       const before = settings;
-      await save({ ...settings, ...value, bindAddresses: [...value.bindAddresses] });
-      // Only the text switch changed: the routes read it per request, so the listeners and their sockets stay.
-      const textOnly = (settings.sendText === true) !== (before.sendText === true) && settings.enabled === before.enabled && settings.port === before.port
-        && settings.bindAddresses.join() === before.bindAddresses.join();
+      await save({ ...settings, ...value, bindAddresses: [...value.bindAddresses], ...(sendText ? {} : { answer: false }) });
+      // Only a switch changed: the routes read them per request, so the listeners and their sockets stay.
+      const textOnly = ((settings.sendText === true) !== (before.sendText === true) || (settings.answer === true) !== (before.answer === true))
+        && settings.enabled === before.enabled && settings.port === before.port && settings.bindAddresses.join() === before.bindAddresses.join();
       if (!textOnly) await restart();
       return status();
     }),

@@ -2014,11 +2014,11 @@ def phone_address_rows(addresses, selected=()):
 
 
 def phone_form_values(loaded, form, status):
-    """The (enabled, port, checked addresses, send text) to show after a status read. A form that differs from the
+    """The (enabled, port, checked addresses, send text, answer) to show after a status read. A form that differs from the
     last loaded values has unsaved edits, so it stays; otherwise the form follows the server."""
     server = (status.get("enabled", False), status.get("port", 4630), list(status.get("bindAddresses", [])),
-              status.get("sendText", False))
-    if loaded is None or form is None or (form[0], form[1], set(form[2]), form[3]) == (loaded[0], loaded[1], set(loaded[2]), loaded[3]):
+              status.get("sendText", False), status.get("answer", False))
+    if loaded is None or form is None or (form[0], form[1], set(form[2]), *form[3:]) == (loaded[0], loaded[1], set(loaded[2]), *loaded[3:]):
         return server
     return form
 
@@ -5975,7 +5975,12 @@ class PhoneEditor(Gtk.Box):
             "Paired phones can read what your agents say to each other, also on the other machines of the group, "
             "and the question of a waiting session. Off by default.")
         self.send_text.set_subtitle_lines(0)
-        for row in (self.enabled, self.port, self.send_text):
+        self.answer = Adw.SwitchRow(title="Answer questions from phones", subtitle=
+            "Questions of Claude Code sessions wait for an answer from a paired phone. "
+            "Needs the Claude Code hook (asb agent claude-hook install).", sensitive=False)
+        self.answer.set_subtitle_lines(0)
+        self.send_text.connect("notify::active", self.send_text_changed)
+        for row in (self.enabled, self.port, self.send_text, self.answer):
             self.settings.append(row)
         self.append(self.settings)
         self.append(label("Addresses", "heading"))
@@ -6049,6 +6054,12 @@ class PhoneEditor(Gtk.Box):
             self.loaded = False
             self.request_phone()
 
+    def send_text_changed(self, *_args):
+        # The answer switch works only with the message text switch on.
+        if not self.send_text.get_active():
+            self.answer.set_active(False)
+        self.answer.set_sensitive(self.send_text.get_active())
+
     def update_controls(self):
         ready = self.loaded and not self.loading and not self.closed
         self.settings.set_sensitive(ready)
@@ -6065,12 +6076,14 @@ class PhoneEditor(Gtk.Box):
         self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
         if sync_form:
             form = None if self.form_loaded is None else (self.enabled.get_active(), int(self.port.get_value()),
-                    [address for address, check in self.address_checks.items() if check.get_active()], self.send_text.get_active())
-            enabled, port, selected, send_text = phone_form_values(self.form_loaded, form, status)
+                    [address for address, check in self.address_checks.items() if check.get_active()], self.send_text.get_active(),
+                    self.answer.get_active())
+            enabled, port, selected, send_text, answer = phone_form_values(self.form_loaded, form, status)
             self.form_loaded = (status.get("enabled", False), status.get("port", 4630), list(status.get("bindAddresses", [])),
-                                status.get("sendText", False))
+                                status.get("sendText", False), status.get("answer", False))
             self.enabled.set_active(enabled)
             self.send_text.set_active(send_text)
+            self.answer.set_active(answer and send_text)
             child = self.address_list.get_first_child()
             while child:
                 self.address_list.remove(child)
@@ -6178,7 +6191,8 @@ class PhoneEditor(Gtk.Box):
             return
         body = {"enabled": self.enabled.get_active(),
                 "bindAddresses": [address for address, check in self.address_checks.items() if check.get_active()],
-                "port": int(self.port.get_value()), "sendText": self.send_text.get_active()}
+                "port": int(self.port.get_value()), "sendText": self.send_text.get_active(),
+                "answer": self.answer.get_active()}
         self.stop_pairing()
         self.request_phone("/api/phone/settings", "POST", body)
 

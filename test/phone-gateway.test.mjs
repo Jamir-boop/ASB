@@ -114,7 +114,7 @@ test('phone defaults keep the listener off and paths use HOME when XDG_CONFIG_HO
   assert.equal(phoneSettingsPath({ HOME: store.home, XDG_CONFIG_HOME: '' }), path.join(store.home, '.config/asb/phone.json'));
   assert.equal(phoneTlsDir({ HOME: store.home }), path.join(store.home, '.config/asb/phone-tls'));
   assert.equal(PHONE_API_VERSION, 1);
-  assert.deepEqual(await gateway.start(), { enabled: false, bindAddresses: [], port: 4630, sendText: false, addresses: [], listening: [], running: false,
+  assert.deepEqual(await gateway.start(), { enabled: false, bindAddresses: [], port: 4630, sendText: false, answer: false, addresses: [], listening: [], running: false,
     error: '', warning: '', fingerprint: '', devices: [], pairing: { expiresAtMs: 0 } });
   await assert.rejects(gateway.createPairing(), { statusCode: 400, message: 'Turn on phone access first.' });
   await assert.rejects(stat(store.settingsPath), { code: 'ENOENT' });
@@ -221,7 +221,7 @@ gatewayTest('bearer authentication needs the exact token and hello reports the p
   const machineId = (await gateway.status()).fingerprint.slice(0, 16);
   assert.match(machineId, /^[0-9a-f]{16}$/);
   assert.deepEqual(response.json, { api: 1, asbVersion: '1.8.1', deviceId: paired.deviceId, serverName: 'Test PC & lab',
-    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [], sendText: false });
+    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [], sendText: false, answer: false });
 });
 
 gatewayTest('hello lists the group engines with the live values of this engine, also for a phone paired on another member', async (t) => {
@@ -237,7 +237,7 @@ gatewayTest('hello lists the group engines with the live values of this engine, 
   const engines = [{ ...self, addresses: [{ kind: 'lan', address: '127.0.0.1' }], port }, other];
   const paired = (await pair()).json;
   const own = await request('/phone/v1/hello', { token: paired.token });
-  assert.deepEqual(Object.keys(own.json), ['api', 'asbVersion', 'deviceId', 'serverName', 'addresses', 'port', 'machineId', 'engines', 'sendText']);
+  assert.deepEqual(Object.keys(own.json), ['api', 'asbVersion', 'deviceId', 'serverName', 'addresses', 'port', 'machineId', 'engines', 'sendText', 'answer']);
   assert.deepEqual([own.json.machineId, own.json.engines], [fingerprint.slice(0, 16), engines]);
   const shared = await request('/phone/v1/hello', { token: sharedToken });
   assert.equal(shared.status, 200);
@@ -465,6 +465,96 @@ gatewayTest('mute and unmute go to the PC route only with the allowed bodies', a
   }
   assert.equal((await request('/phone/v1/threads/x/mute', { method: 'GET', token })).status, 405);
   assert.deepEqual(records, []);
+});
+
+gatewayTest('the answer switch saves only while true, needs message text, and gates its route', async (t) => {
+  const changes = [];
+  const { gateway, request, pair, records, port, settingsPath } = await fixture(t, { gateway: { onAnswer: (on) => changes.push(on) } });
+  const token = (await pair()).json.token;
+  const base = { enabled: true, bindAddresses: ['127.0.0.1'], port };
+  const requestId = 'a'.repeat(32);
+  const answer = { requestId, answers: [{ selected: ['A'] }] };
+  const post = (body) => request('/phone/v1/threads/x/answer', { method: 'POST', token, body });
+  assert.deepEqual([(await gateway.status()).answer, (await request('/phone/v1/hello', { token })).json.answer, gateway.answerReady()], [false, false, false]);
+  // Off: no route, nothing proxied.
+  assert.deepEqual([(await post(answer)).status, (await post(answer)).json], [404, { error: 'Route is not available.' }]);
+  // On only with message text, saved or sent.
+  await assert.rejects(gateway.updateSettings({ ...base, answer: true }), { statusCode: 400, message: 'Turn on message text first.' });
+  await assert.rejects(gateway.updateSettings({ ...base, sendText: false, answer: true }), { statusCode: 400, message: 'Turn on message text first.' });
+  await assert.rejects(gateway.updateSettings({ ...base, answer: 1 }), { statusCode: 400, message: 'Invalid phone settings.' });
+  assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).answer, undefined);
+  await gateway.updateSettings({ ...base, sendText: true });
+  assert.equal(gateway.answerReady(), false);
+  const on = await gateway.updateSettings({ ...base, answer: true });
+  assert.deepEqual([on.answer, on.sendText, on.running, gateway.answerReady()], [true, true, true, true]);
+  assert.deepEqual(changes, [true]);
+  assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).answer, true);
+  assert.equal((await request('/phone/v1/hello', { token })).json.answer, true);
+  assert.equal((await post(answer)).status, 200);
+  assert.deepEqual(records.map((record) => [record.url, record.body]), [['/api/threads/x/answer', JSON.stringify(answer)]]);
+  records.length = 0;
+  // The body shape is checked here.
+  const label = (length) => 'l'.repeat(length);
+  for (const body of [{}, { requestId }, { answers: answer.answers }, { ...answer, extra: 1 }, { ...answer, requestId: 'A'.repeat(32) },
+    { ...answer, requestId: 'a'.repeat(31) }, { ...answer, requestId: 1 }, { requestId, answers: [] }, { requestId, answers: Array(5).fill({ selected: [] }) },
+    { requestId, answers: {} }, { requestId, answers: [null] }, { requestId, answers: [{}] }, { requestId, answers: [{ selected: 'A' }] },
+    { requestId, answers: [{ selected: ['A'], extra: 1 }] }, { requestId, answers: [{ selected: ['A'], other: 1 }] },
+    { requestId, answers: [{ selected: Array(9).fill('A') }] }, { requestId, answers: [{ selected: [''] }] }, { requestId, answers: [{ selected: [label(201)] }] },
+    { requestId, answers: [{ selected: [1] }] }, [], 'null', '{']) {
+    assert.deepEqual([(await post(body)).status, (await post(body)).json], [400, { error: 'Invalid answer.' }], JSON.stringify(body));
+  }
+  assert.equal((await post('x'.repeat(64 * 1024 + 1))).status, 413);
+  assert.equal((await request('/phone/v1/threads/x/answer', { method: 'GET', token })).status, 405);
+  assert.deepEqual(records, []);
+  // The upper limits pass: four answers, each with eight labels and 2,000 non-ASCII characters of typed text.
+  const big = { requestId, answers: Array.from({ length: 4 }, () => ({ selected: Array.from({ length: 8 }, () => label(200)), other: 'é'.repeat(2000) })) };
+  assert.equal((await post(big)).status, 200);
+  assert.deepEqual(JSON.parse(records[0].body), big);
+  // The claude-wait routes are never reachable, like every /api/agent route.
+  for (const route of ['/phone/v1/agent/claude-wait', '/api/agent/claude-wait', `/api/agent/claude-wait/${requestId}`, '/phone/v1/threads/x/claude-wait']) {
+    assert.equal((await request(route, { method: 'POST', token, body: {} })).status, 404, route);
+  }
+  // An unchanged save fires nothing; sendText false clears the answer switch.
+  await gateway.updateSettings({ ...base, sendText: true, answer: true });
+  assert.deepEqual(changes, [true]);
+  const off = await gateway.updateSettings({ ...base, sendText: false });
+  assert.deepEqual([off.answer, off.sendText, gateway.answerReady()], [false, false, false]);
+  assert.deepEqual(changes, [true, false]);
+  assert.equal('answer' in JSON.parse(await readFile(settingsPath, 'utf8')), false);
+  assert.equal((await post(answer)).status, 404);
+  // Each saved condition: answer off, then phone access off.
+  await gateway.updateSettings({ ...base, sendText: true, answer: true });
+  await gateway.updateSettings({ ...base, answer: false });
+  assert.deepEqual([gateway.answerReady(), changes], [false, [true, false, true, false]]);
+  await gateway.updateSettings({ ...base, answer: true });
+  await gateway.updateSettings({ ...base, enabled: false });
+  assert.deepEqual([gateway.answerReady(), changes], [false, [true, false, true, false, true, false]]);
+  // Saved on, but no listener (no selected address on this PC): not ready, and no saved change.
+  await gateway.updateSettings({ ...base, enabled: true });
+  assert.equal(gateway.answerReady(), true);
+  await gateway.stop();
+  assert.equal(gateway.answerReady(), false);
+  assert.deepEqual(changes, [true, false, true, false, true, false, true]);
+});
+
+gatewayTest('a phone.json with answer loads it, and onAnswer fires only for a saved on', async (t) => {
+  const store = await storage(t);
+  await mkdir(path.dirname(store.settingsPath), { recursive: true });
+  for (const [saved, answer, fired] of [[settings({ sendText: true, answer: true }), true, []], [settings({ enabled: true, sendText: true, answer: true }), true, [true]],
+    [settings({ answer: false }), false, []]]) {
+    await writeFile(store.settingsPath, JSON.stringify(saved), { mode: 0o600 });
+    const changes = [];
+    const gateway = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [], onAnswer: (on) => changes.push(on) });
+    const status = await gateway.status();
+    assert.deepEqual([status.warning, status.answer, changes], ['', answer, fired], JSON.stringify(saved));
+    // Saved on but no listener runs.
+    assert.equal(gateway.answerReady(), false);
+    await gateway.stop();
+  }
+  await writeFile(store.settingsPath, JSON.stringify(settings({ answer: 'yes' })), { mode: 0o600 });
+  const gateway = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+  assert.match((await gateway.status()).warning, /phone\.json\.bad/);
+  await gateway.stop();
 });
 
 gatewayTest('a sendText change keeps the listener and its open connections; a port or address change restarts it', async (t) => {

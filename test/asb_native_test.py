@@ -589,7 +589,8 @@ class WidgetCheck(unittest.TestCase):
         while row:
             rows.append(row)
             row = row.get_next_sibling()
-        self.assertEqual([row.get_title() for row in rows], ["Allow phone access", "Port", "Send message text to phones"])
+        self.assertEqual([row.get_title() for row in rows], ["Allow phone access", "Port", "Send message text to phones",
+                                                             "Answer questions from phones"])
         self.assertIs(rows[2], editor.send_text)
         self.assertIn("also on the other machines of the group", editor.send_text.get_subtitle())
         status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
@@ -601,6 +602,38 @@ class WidgetCheck(unittest.TestCase):
         editor.form_loaded = None
         editor.render_status({**status, "sendText": True}, True)
         self.assertTrue(editor.send_text.get_active())
+
+    def test_phone_answer_switch_needs_the_text_switch_and_saves_with_the_form(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        self.assertIs(editor.send_text.get_next_sibling(), editor.answer)
+        self.assertIn("asb agent claude-hook install", editor.answer.get_subtitle())
+        status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
+        editor.render_status(status, True)
+        self.assertFalse(editor.answer.get_active())
+        self.assertFalse(editor.answer.get_sensitive())
+        editor.send_text.set_active(True)
+        self.assertTrue(editor.answer.get_sensitive())
+        editor.answer.set_active(True)
+        # An unsaved edit stays; turning the text switch off clears it.
+        editor.render_status(copy.deepcopy(status), True)
+        self.assertTrue(editor.answer.get_active())
+        editor.send_text.set_active(False)
+        self.assertFalse(editor.answer.get_active())
+        self.assertFalse(editor.answer.get_sensitive())
+        # The server values load with an unedited form.
+        editor.form_loaded = None
+        editor.render_status({**status, "sendText": True, "answer": True}, True)
+        self.assertTrue(editor.answer.get_active())
+        self.assertTrue(editor.answer.get_sensitive())
+        editor.loaded, editor.active = True, True
+        editor.request_phone = Mock()
+        editor.apply_settings()
+        self.assertEqual(editor.request_phone.call_args.args[2],
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "answer": True})
 
     def test_reconnect_keeps_the_board_and_preferences_and_uses_the_new_engine(self):
         received = [[], []]

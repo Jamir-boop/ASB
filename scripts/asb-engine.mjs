@@ -10,6 +10,7 @@ import { createSwitchboardServer, switchboardPort } from '../src/switchboard.mjs
 import { createMachineGroup } from '../src/machine-group.mjs';
 import { createRelaySupervisor } from '../src/machine-relay.mjs';
 import { useClaudeQuestionText } from '../src/claude-data.mjs';
+import { createClaudeQuestions } from '../src/claude-questions.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { createSoundPlayer } from '../src/asb-sounds.mjs';
 import { boardCheck } from '../src/linux-system.mjs';
@@ -144,6 +145,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   const sourceToken = randomBytes(32).toString('hex');
   let quitRequested = false;
   const asbVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const claudeQuestions = createClaudeQuestions();
   // Decision B: the group reads the gateway and the server lazily, so it is made first.
   const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion, ...readAsbBuild(),
     onChange: () => { server.invalidateDashboard('peer-sessions', { hard: false }); relay.check(); } });
@@ -154,11 +156,13 @@ export async function runEngine({ env = process.env, platform = process.platform
       bridge: () => server.bridgeReport() },
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked,
     // The question text lives in the reader only while the text switch is on; a change rebuilds the rows.
-    onSendText: (on) => { if (useClaudeQuestionText(on)) server.invalidateDashboard('phone-text'); } });
+    onSendText: (on) => { if (useClaudeQuestionText(on)) server.invalidateDashboard('phone-text'); },
+    // Only a saved change closes the open phone questions; a listener restart keeps them for the phone.
+    onAnswer: (on) => { if (!on) claudeQuestions.closeAll(); } });
   const positions = createReaderPositions({ file: readerPositionsPath(env, platform), key: () => gateway.readerPositionsKey(), platform });
   let machineId = '';
   let referenceScopes = null;
-  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
+  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, claudeQuestions, answerEnabled: () => gateway.answerReady() === true, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
     readerPositions: positions, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform), usageBackupFile: usageBackupPath(env, platform),
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
