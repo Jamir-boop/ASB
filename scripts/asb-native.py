@@ -5998,6 +5998,7 @@ class PhoneEditor(Gtk.Box):
             "Needs the Claude Code hook (asb agent claude-hook install).", sensitive=False)
         self.answer.set_subtitle_lines(0)
         self.send_text.connect("notify::active", self.send_text_changed)
+        self.answer.connect("notify::active", self.update_hook_status)
         for row in (self.enabled, self.port, self.send_text, self.answer):
             self.settings.append(row)
         self.append(self.settings)
@@ -6077,6 +6078,10 @@ class PhoneEditor(Gtk.Box):
             self.loaded = False
             self.request_phone()
 
+    def update_hook_status(self, *_args):
+        # The hook lines matter only while the answer switch is on.
+        self.hook_status.set_visible(bool(self.hook_status.get_label()) and self.answer.get_active())
+
     def send_text_changed(self, *_args):
         # The answer switch works only with the message text switch on.
         if not self.send_text.get_active():
@@ -6099,7 +6104,7 @@ class PhoneEditor(Gtk.Box):
         self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
         hook_text = claude_hook_text(status.get("claudeHook"))
         self.hook_status.set_label(hook_text)
-        self.hook_status.set_visible(bool(hook_text))
+        self.update_hook_status()
         if sync_form:
             form = None if self.form_loaded is None else (self.enabled.get_active(), int(self.port.get_value()),
                     [address for address, check in self.address_checks.items() if check.get_active()], self.send_text.get_active(),

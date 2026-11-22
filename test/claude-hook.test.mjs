@@ -310,6 +310,38 @@ test('under umask 022 the temporary file, the final file, and the backup keep mo
   assert.equal((await stat(path.join(config, 'settings.json'))).mode & 0o777, 0o600);
   assert.equal((await stat(path.join(config, 'settings.json.asb-backup'))).mode & 0o777, 0o600);
   assert.deepEqual((await readdir(config)).sort(), ['settings.json', 'settings.json.asb-backup']);
+  // A group-writable file keeps its mode, also under the umask.
+  const shared = await target(dir, 'shared', { model: 'made-up' });
+  await chmod(path.join(shared, 'settings.json'), 0o664);
+  assert.equal((await local(env, ['install', '--config-dir', shared])).code, 0);
+  assert.equal((await stat(path.join(shared, 'settings.json'))).mode & 0o777, 0o664);
+  assert.equal((await stat(path.join(shared, 'settings.json.asb-backup'))).mode & 0o777, 0o664);
+});
+
+test('the written command runs the launcher for every install path, also with shell characters', async (t) => {
+  const { dir, env } = await home(t);
+  for (const name of ['a$HOME', 'r&d', 'semi;colon', 'paren(x)', 'back`tick', 'pipe|x', 'gt>x', "it's", 'sp ace', 'star*', 'hash#', 'tilde~']) {
+    const bin = path.join(dir, 'bin', name);
+    await mkdir(bin, { recursive: true });
+    const launcher = path.join(bin, 'asb');
+    await writeFile(launcher, '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+    const config = await target(dir, `c-${Buffer.from(name).toString('hex')}`, { model: 'made-up' });
+    const withLauncher = { ...env, ASB_INSTALLED_LAUNCHER: launcher };
+    assert.equal((await local(withLauncher, ['install', '--config-dir', config])).code, 0, name);
+    const { command } = (await read(config)).hooks.PermissionRequest[0].hooks[0];
+    const work = await mkdtemp(path.join(dir, 'work-'));
+    const run = await new Promise((resolve, reject) => {
+      const child = spawn('/bin/sh', ['-c', command], { cwd: work, env: { PATH: '/usr/bin:/bin' } });
+      let stdout = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code, stdout }));
+    });
+    assert.deepEqual(run, { code: 0, stdout: 'agent\nclaude-wait\n' }, name);
+    assert.deepEqual(await readdir(work), [], name);
+    const status = await local(withLauncher, ['status', '--config-dir', config, '--json']);
+    assert.equal(JSON.parse(status.stdout).targets[0].state, 'installed', name);
+  }
 });
 
 test('a write between the read and the rename changes nothing and asks for a new run', async (t) => {

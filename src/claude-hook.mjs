@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { AppSourceRegistry } from './app-sources.mjs';
-import { shellText } from './linux-system.mjs';
 
 // The Claude Code question hook (`asb agent claude-hook`): a PermissionRequest hook of AskUserQuestion that runs `asb agent claude-wait`.
 // This is the only ASB code that writes a Claude config file. It never prints, logs, or returns settings content.
@@ -16,7 +15,9 @@ export const installedLauncher = (env) => typeof env.ASB_INSTALLED_LAUNCHER === 
   ? env.ASB_INSTALLED_LAUNCHER : '';
 // A dir under the home folder in `~` form, for text output.
 export const homeForm = (dir, home = os.homedir()) => dir === home ? '~' : dir.startsWith(`${home}${path.sep}`) ? `~${dir.slice(home.length)}` : dir;
-export const hookCommand = (launcher) => shellText([launcher, 'agent', 'claude-wait']);
+// Claude Code runs the hook through `/bin/sh -c`: a launcher with any other character than these is single-quoted.
+const shellQuote = (word) => /^[A-Za-z0-9_@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+export const hookCommand = (launcher) => `${shellQuote(launcher)} agent claude-wait`;
 
 // The config dir of each enabled Claude profile that ASB reads: the parent of its `projects` folder. The engine and the command use this list.
 export const hookTargets = (sources) => [...new Set(sources.filter((source) => source.enabled === true && source.provider === 'claude-desktop-code'
@@ -120,6 +121,8 @@ async function writeTarget(target, value, { beforeRename = async () => {} } = {}
       catch (error) { if (error.code !== 'EEXIST') throw error; }
     }
     await fs.writeFile(temporary, text, { flag: 'wx', mode });
+    // The umask can take bits away at open; the file is never more open than the target before this.
+    await fs.chmod(temporary, mode);
     await beforeRename(temporary);
     if (!target.info) {
       try { await fs.link(temporary, target.file); } catch (error) { throw error.code === 'EEXIST' ? CHANGED : error; }

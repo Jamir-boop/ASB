@@ -660,6 +660,8 @@ class WidgetCheck(unittest.TestCase):
         editor.render_status(status, True)
         self.assertFalse(editor.hook_status.get_visible())
         editor.render_status({**status, "claudeHook": items[:2]}, True)
+        self.assertFalse(editor.hook_status.get_visible())
+        editor.render_status({**status, "sendText": True, "answer": True, "claudeHook": items[:2]}, True)
         self.assertTrue(editor.hook_status.get_visible())
         self.assertEqual(editor.hook_status.get_label(), asb.claude_hook_text(items[:2]))
 
