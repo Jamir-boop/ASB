@@ -9,7 +9,8 @@ import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic,
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
-import { MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
+import { CLAUDE_QUESTION, MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
+import { MAX_WAIT_MS } from './claude-questions.mjs';
 
 const gzipAsync = promisify(gzip);
 
@@ -53,17 +54,21 @@ function listEntry(text, palette, content, tagPrefix = '') {
   return { text, palette, list, etag: `"${createHash('sha256').update(tagPrefix + list).digest('base64url')}"` };
 }
 
-// A hash of the kept question texts of the rows with their row IDs (a hash, so the entry holds no second copy), or '' when no row has one.
+// A hash of the kept question texts and the open phone question IDs of the rows with their row IDs (a hash, so the entry holds no
+// second copy), or '' when no row has one. A request ID stands for its questions, which never change.
 function questionTexts(dashboard) {
-  const rows = (dashboard.threads || []).filter((row) => row[QUESTION_TEXT]);
-  return rows.length ? createHash('sha256').update(JSON.stringify(rows.map((row) => [row.id, row[QUESTION_TEXT]]))).digest('base64url') : '';
+  const rows = (dashboard.threads || []).map((row) => [row.id, row[QUESTION_TEXT] || '', row[CLAUDE_QUESTION]?.requestId || ''])
+    .filter(([, text, requestId]) => text || requestId);
+  return rows.length ? createHash('sha256').update(JSON.stringify(rows)).digest('base64url') : '';
 }
 
-// The list text with `questionText` on each row that has a kept question text.
+// The list text with `questionText` on each row that has a kept question text, and `question` on each row with an open phone question.
 function questionListText(dashboard, text) {
   const { generatedAtMs: _, performance: __, ...rest } = dashboard;
-  return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => row[QUESTION_TEXT] ? { ...row, questionText: row[QUESTION_TEXT] } : row),
-    summary: { ...(rest.summary || {}) } });
+  return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => {
+    const question = row[CLAUDE_QUESTION];
+    return row[QUESTION_TEXT] || question ? { ...row, ...(row[QUESTION_TEXT] ? { questionText: row[QUESTION_TEXT] } : {}), ...(question ? { question } : {}) } : row;
+  }), summary: { ...(rest.summary || {}) } });
 }
 
 export function panelSummary(dashboard, machines) {
@@ -106,7 +111,10 @@ export function createAsbServer({
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
   machineRelay = null, bridgeCoverage = null, activityMessages = null, activityUsage = null, panelMachines = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
   appVersion = '', rootDir = '', sourcesPath = '', maxUsageImportBytes = 64 * 1024 * 1024, readSourcesRevision = async () => null,
-  palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now, ...snapshotOptions
+  palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now,
+  // The open phone questions (src/claude-questions.mjs); the answer switch and the paired phones decide if a hook waits.
+  claudeQuestions = null, answerEnabled = () => false, phonePaired = async () => false,
+  claudeWaitMs = MAX_WAIT_MS, claudeQuestionTickMs = 5_000, claudeQuestionReloadMs = 30_000, ...snapshotOptions
 } = {}) {
   // The top-bar reply, and its short tag in each `dashboard` event: the tag changes exactly when the reply would change.
   const panelReply = (dashboard, machines) => ({ ...panelSummary(dashboard, machines), accent: palette?.colors.accent || '' });
@@ -154,6 +162,24 @@ export function createAsbServer({
   };
   const { dashboardForRequest, loadSharedDashboard, invalidateDashboard, performanceSnapshot,
     openThreadOnce } = snapshot;
+  // While a record exists: the sweep each tick, and a dashboard load each `claudeQuestionReloadMs` while a question is open, so the
+  // close check needs no client. With no record there is no timer.
+  let questionTimer = null;
+  let questionLoadAtMs = 0;
+  const questionTick = () => {
+    claudeQuestions.sweep();
+    if (!claudeQuestions.hasRecords()) { clearInterval(questionTimer); questionTimer = null; return; }
+    if (claudeQuestions.openRecords().length && now() - questionLoadAtMs >= claudeQuestionReloadMs) {
+      questionLoadAtMs = now();
+      loadSharedDashboard({ force: true }).catch(() => {});
+    }
+  };
+  const startQuestionTimer = () => {
+    if (questionTimer) return;
+    questionLoadAtMs = now();
+    questionTimer = setInterval(questionTick, claudeQuestionTickMs);
+    questionTimer.unref?.();
+  };
   const findThreadForAction = async (threadId, force = false) => (await dashboardForRequest({ force })).threads?.find((thread) => thread.id === threadId) || null;
   const server = http.createServer(async (request, response) => {
     let url;
@@ -196,8 +222,11 @@ export function createAsbServer({
     const resolveBoundRoute = Boolean(resolveBound) && url.pathname === '/api/agent/resolve-bound';
     const sendMemberRoute = Boolean(sendMember) && url.pathname === '/api/agent/send-member';
     const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
+    const claudeWaitRoute = Boolean(claudeQuestions) && url.pathname === '/api/agent/claude-wait';
+    const claudePoll = claudeQuestions ? url.pathname.match(/^\/api\/agent\/claude-wait\/([0-9a-f]{32})$/) : null;
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
+      || claudeWaitRoute || Boolean(claudePoll)
       || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute) || usageImportRoute || Boolean(usageBackupAction);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -459,6 +488,43 @@ export function createAsbServer({
           configDir: body.caller.configDir }, mode: body.mode, message: body.message, remainingMs: Math.max(0, body.remainingMs - (now() - startedAtMs)) }, dashboard));
       }
       catch { sendJson(response, 500, { error: 'Cannot send the message.' }); }
+      return;
+    }
+    if (claudeWaitRoute || claudePoll) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!expectedSourceToken.length || !sourceTokenAllowed(request)) {
+        sendJson(response, 403, { error: 'Use the current ASB source token for agent access.' });
+        return;
+      }
+      let body;
+      try { body = await readBody(request, claudePoll ? 1024 : 256 * 1024); } catch (error) {
+        sendJson(response, error.statusCode === 413 ? 413 : 400, { error: claudePoll ? 'Invalid request.' : 'Invalid question.' });
+        return;
+      }
+      if (claudePoll) {
+        if (!exactKeys(body, [])) { sendJson(response, 400, { error: 'Invalid request.' }); return; }
+        // A client that leaves early ends its held wait.
+        const left = new AbortController();
+        response.once('close', () => left.abort());
+        const reply = claudeQuestions.wait(claudePoll[1], claudeWaitMs, left.signal);
+        if (!reply) { sendJson(response, 404, { error: 'Unknown question.' }); return; }
+        const result = await reply;
+        if (!response.destroyed) sendJson(response, 200, result);
+        return;
+      }
+      if (!exactKeys(body, ['questions', 'sessionId']) || typeof body.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.sessionId)) {
+        sendJson(response, 400, { error: 'Invalid question.' });
+        return;
+      }
+      try {
+        if (!answerEnabled() || !await phonePaired()) { sendJson(response, 200, { wait: false }); return; }
+        const { requestId } = claudeQuestions.open({ cliSessionId: body.sessionId, questions: body.questions });
+        startQuestionTimer();
+        sendJson(response, 200, { wait: true, requestId });
+      } catch (error) {
+        sendJson(response, [400, 503].includes(error.statusCode) ? error.statusCode : 500,
+          { error: [400, 503].includes(error.statusCode) ? error.message : 'Cannot hold the question.' });
+      }
       return;
     }
     if (resolveRoute || resolveBoundRoute || listReferencesRoute) {
@@ -860,6 +926,7 @@ export function createAsbServer({
     await serveStatic(request, response, publicDir);
   });
   snapshot.attach(server);
+  server.once('close', () => { clearInterval(questionTimer); questionTimer = null; });
   server.boardOpen = () => { expireUiClients(); return uiClients.size > 0; };
   // The newest board plays the engine's sound (the same client choice as show-window).
   server.playBoardSound = (file) => {

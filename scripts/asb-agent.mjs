@@ -12,7 +12,7 @@ const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projec
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
-const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json]';
+const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait';
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 function parseArgs(args) {
@@ -304,7 +304,42 @@ function human(result) {
   return `App sources ${result.changed ? 'saved' : 'unchanged'}.\nSaved: ${result.verification.saved.status}. Backend: ${result.verification.backend.status}. UI: ${result.verification.ui.status}.${result.verification.error ? `\n${result.verification.error.message}` : ''}`;
 }
 
+// The Claude Code PermissionRequest hook of AskUserQuestion: it waits for a phone answer. It prints the decision only on an answer,
+// and nothing in every other case, so the question card on the PC stays as it is. It never prints or saves question or answer text.
+async function claudeWait(stdin = process.stdin, write = (line) => process.stdout.write(line)) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of stdin) {
+    size += chunk.length;
+    if (size > 256 * 1024) return;
+    chunks.push(chunk);
+  }
+  let hook;
+  try { hook = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return; }
+  if (!object(hook) || hook.hook_event_name !== 'PermissionRequest' || hook.tool_name !== 'AskUserQuestion'
+    || typeof hook.session_id !== 'string' || !hook.session_id || !Array.isArray(hook.tool_input?.questions)) return;
+  const { questions } = hook.tool_input;
+  const runtime = await readServiceRuntime();
+  if (!runtime) return;
+  try {
+    const opened = await requestInstance(runtime, '/api/agent/claude-wait', { method: 'POST', body: { sessionId: hook.session_id, questions }, maxBytes: 4096 });
+    if (opened.statusCode !== 200 || opened.body?.wait !== true || typeof opened.body.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(opened.body.requestId)) return;
+    for (;;) {
+      const reply = await requestInstance(runtime, `/api/agent/claude-wait/${opened.body.requestId}`, { method: 'POST', timeoutMs: 30_000, maxBytes: 1024 * 1024 });
+      if (reply.statusCode !== 200 || reply.body?.state === 'closed') return;
+      if (reply.body?.state === 'answered') {
+        if (!object(reply.body.answers)) return;
+        write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest',
+          decision: { behavior: 'allow', updatedInput: { questions, answers: reply.body.answers } } } })}\n`);
+        return;
+      }
+      if (reply.body?.state !== 'open') return;
+    }
+  } catch {}
+}
+
 export async function main(args = process.argv.slice(2)) {
+  if (args.length === 1 && args[0] === 'claude-wait') { await claudeWait(); return 0; }
   let runtime;
   let result;
   try { result = await run(args, (value) => { runtime = value; }); }
