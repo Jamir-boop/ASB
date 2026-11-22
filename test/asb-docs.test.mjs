@@ -100,6 +100,7 @@ test('the install guide blocks are the commands that asb doctor prints on a syst
       exists: async () => false,
       execFile: async () => { throw new Error('not found'); },
       find: async () => null,
+      claudeHook: async () => [],
     });
     const lines = blocks.get(name);
     if (family.packages === null) {

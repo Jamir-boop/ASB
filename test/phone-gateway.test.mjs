@@ -222,6 +222,8 @@ gatewayTest('bearer authentication needs the exact token and hello reports the p
   assert.match(machineId, /^[0-9a-f]{16}$/);
   assert.deepEqual(response.json, { api: 1, asbVersion: '1.8.1', deviceId: paired.deviceId, serverName: 'Test PC & lab',
     addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [], sendText: false, answer: false });
+  // The Claude Code hook state (with its dirs) is only in the loopback GET /api/phone, which the gateway never forwards.
+  assert.ok(!response.text.includes('claudeHook') && !response.text.includes(os.homedir()) && !response.text.includes(os.tmpdir()));
 });
 
 gatewayTest('hello lists the group engines with the live values of this engine, also for a phone paired on another member', async (t) => {

@@ -2002,6 +2002,24 @@ def phone_status_text(status):
     return "Phone access is not running. Apply the settings to try again."
 
 
+CLAUDE_HOOK_STATES = ("installed", "not installed", "other launcher", "invalid settings", "not found")
+
+
+def claude_hook_text(items, home=None):
+    """One line per Claude profile from the claudeHook field of /api/phone, with the dir in ~ form."""
+    home = home or os.path.expanduser("~")
+    lines = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("dir"), str) or item.get("state") not in CLAUDE_HOOK_STATES:
+            continue
+        folder = item["dir"]
+        if folder == home or folder.startswith(home + os.sep):
+            folder = "~" + folder[len(home):]
+        hint = " (run asb agent claude-hook install)" if item["state"] in ("not installed", "other launcher") else ""
+        lines.append(f"Claude Code hook ({folder}): {item['state']}{hint}")
+    return "\n".join(lines)
+
+
 def phone_address_rows(addresses, selected=()):
     rows = [{"address": item["address"], "title": PHONE_KINDS[item["kind"]],
              "subtitle": item["address"] + ("" if item["kind"] == "lan" else " · Works away from home")}
@@ -5983,6 +6001,11 @@ class PhoneEditor(Gtk.Box):
         for row in (self.enabled, self.port, self.send_text, self.answer):
             self.settings.append(row)
         self.append(self.settings)
+        self.hook_status = label("", "caption")
+        self.hook_status.set_wrap(True)
+        self.hook_status.set_max_width_chars(64)
+        self.hook_status.set_visible(False)
+        self.append(self.hook_status)
         self.append(label("Addresses", "heading"))
         self.address_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.address_list.add_css_class("boxed-list")
@@ -6074,6 +6097,9 @@ class PhoneEditor(Gtk.Box):
         self.status, self.loaded = status, True
         self.status_label.set_label(phone_status_text(status))
         self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
+        hook_text = claude_hook_text(status.get("claudeHook"))
+        self.hook_status.set_label(hook_text)
+        self.hook_status.set_visible(bool(hook_text))
         if sync_form:
             form = None if self.form_loaded is None else (self.enabled.get_active(), int(self.port.get_value()),
                     [address for address, check in self.address_checks.items() if check.get_active()], self.send_text.get_active(),

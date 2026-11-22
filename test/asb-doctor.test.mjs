@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { collect, engineReady, firewallState, format, linuxFirewallLines, main, shellText } from '../scripts/asb-doctor.mjs';
@@ -35,7 +35,7 @@ const XDG_MIME = ['codex', 'claude'].map((scheme) => ['xdg-mime', 'query', 'defa
 // The firewall fakes: `phone` is the /api/phone reply of the running engine (null: no engine), `firewalld` the --state output
 // (null: firewall-cmd is missing), and `zones` the zone of each interface.
 async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {}, phone = null,
-  firewalld = null, zones = {}, links = LINKS }) {
+  firewalld = null, zones = {}, links = LINKS, claudeHook = async () => [] }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, 'bin');
@@ -45,7 +45,9 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
   const reads = [];
   const requests = [];
   const runtime = { pid: 1234, port: 4629 };
+  // The Claude Code hook fake: no doctor test reads a real Claude config dir. `claudeHook: null` uses the real reader (temp HOME only).
   const deps = {
+    ...(claudeHook ? { claudeHook } : {}),
     find: async () => (phone ? runtime : null),
     api: async (record, route) => {
       requests.push([record, route]);
@@ -466,7 +468,7 @@ async function fakeWindows(t, { bins = ['bun.exe'], values = {}, node = WIN_NODE
   const calls = [];
   const reads = [];
   const deps = {
-    platform: 'win32', node, env: { PATH: directory, ...(python && { ASB_PYTHON: python }) },
+    platform: 'win32', node, env: { PATH: directory, ...(python && { ASB_PYTHON: python }) }, claudeHook: async () => [],
     exists: async (file) => { reads.push(file); return file === pacman && msys2; },
     // Windows reads no os-release and asks no engine for the firewall.
     read: async (file) => { throw new Error(`Unexpected read: ${file}`); },
@@ -617,4 +619,51 @@ test('the Linux checks stay as they are, and the platform option picks the Windo
   assert.ok(linux.checks.some((check) => check.id === 'openssl'));
   assert.deepEqual(Object.keys(linux.commands), ['required', 'optional', 'node', 'firewall']);
   assert.ok(system.calls.every(([file]) => file !== 'reg'));
+});
+
+test('the Claude Code hook states map to ok, info, and warn, and not installed is a warning only with the answer switch on', async (t) => {
+  const home = os.homedir();
+  const states = ['installed', 'not installed', 'other launcher', 'invalid settings', 'not found'];
+  const claudeHook = async () => states.map((state, index) => ({ dir: path.join(home, `profile-${index}`), state }));
+  for (const [answer, notInstalled] of [[false, 'info'], [true, 'warn']]) {
+    const phone = { enabled: false, bindAddresses: [], addresses: [], port: 4630, answer };
+    const system = await fakeSystem(t, { release: 'debian13', phone, claudeHook });
+    const data = await collect(system.deps);
+    assert.deepEqual(data.checks.filter((check) => check.group === 'Phone answers'), states.map((state, index) => ({ id: 'claude-hook', group: 'Phone answers',
+      status: { installed: 'ok', 'not installed': notInstalled, 'other launcher': 'warn', 'invalid settings': 'warn', 'not found': 'info' }[state],
+      detail: `Claude Code hook (~/profile-${index}): ${state}` })));
+    const lines = format(data);
+    const at = lines.indexOf('Phone answers');
+    assert.deepEqual(lines.slice(at, at + 3), ['Phone answers', '  ok       Claude Code hook (~/profile-0): installed', `  ${notInstalled.padEnd(9)}Claude Code hook (~/profile-1): not installed`]);
+    assert.deepEqual(lines.slice(-2), ['Install the Claude Code question hook:', '  asb agent claude-hook install']);
+    assert.equal(engineReady(data), true);
+  }
+  const quiet = await fakeSystem(t, { release: 'debian13', claudeHook: async () => [{ dir: path.join(home, 'p'), state: 'installed' }] });
+  assert.ok(!(await quiet.lines()).includes('  asb agent claude-hook install'));
+  const failing = await fakeSystem(t, { release: 'debian13', claudeHook: async () => { throw new Error('made-up'); } });
+  assert.ok(!(await failing.lines()).includes('Phone answers'));
+});
+
+test('doctor reads the hook state of the ASB Claude profiles and writes nothing', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-hook-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const config = path.join(home, 'claude-profile');
+  await mkdir(config);
+  await writeFile(path.join(config, 'settings.json'), '{"env":{"MADE_UP":"made-up-secret"}}', { mode: 0o600 });
+  await mkdir(path.join(home, 'config', 'asb'), { recursive: true });
+  await writeFile(path.join(home, 'config', 'asb', 'sources.json'), JSON.stringify({ version: 1, sources: [
+    { id: 'codex', provider: 'codex', label: 'Codex', dataDir: path.join(home, '.codex'), launcher: '', enabled: true },
+    { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude', dataDir: path.join(home, 'claude-app'),
+      projectsDir: path.join(config, 'projects'), launcher: '', enabled: true }] }));
+  const snapshot = async () => Promise.all((await readdir(home, { recursive: true })).sort().map(async (name) => {
+    const info = await stat(path.join(home, name));
+    return [name, info.mtimeMs, info.size, info.mode];
+  }));
+  const before = await snapshot();
+  const system = await fakeSystem(t, { release: 'debian13', claudeHook: null, env: { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config') } });
+  const data = await collect(system.deps);
+  assert.deepEqual(data.checks.filter((check) => check.group === 'Phone answers').map(({ status, detail }) => [status, detail]),
+    [['info', `Claude Code hook (${config}): not installed`]]);
+  assert.ok(!JSON.stringify(data).includes('made-up-secret'));
+  assert.deepEqual(await snapshot(), before);
 });

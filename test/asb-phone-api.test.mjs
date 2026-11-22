@@ -63,7 +63,9 @@ test('phone status, settings, pairing, revoke, and service routes return the gat
   const status = await request('/api/phone');
   assert.equal(status.status, 200);
   assert.equal(status.headers.get('cache-control'), 'no-store');
-  const initial = await status.json();
+  // Only the GET reply has the Claude Code hook states; this server reads no app sources, so it lists none.
+  const { claudeHook, ...initial } = await status.json();
+  assert.deepEqual(claudeHook, []);
   assert.equal(initial.devices[0].id, deviceId);
   assert.equal(initial.changed, undefined);
   const changed = await request('/api/phone/settings', { method: 'POST', body: configuration });

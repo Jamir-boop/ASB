@@ -8,6 +8,11 @@ import { cacheDir, findExecutable } from './platform-paths.mjs';
 
 // The tools that ASB needs on Linux (plan L1, L3). Every PATH search uses findExecutable.
 const execFileAsync = promisify(execFileCallback);
+// A word with a space or a quote gets single quotes, after its `--name=` part.
+const shellWord = (word) => /[\s'"]/.test(word)
+  ? word.replace(/^(--[A-Za-z-]+=)?([^]*)$/, (match, flag = '', rest) => `${flag}'${rest.replaceAll("'", "'\\''")}'`) : word;
+export const shellText = (words) => words.map(shellWord).join(' ');
+
 export const SYSTEM_PYTHON = '/usr/bin/python3';
 // The default MSYS2 UCRT64 install; it has GTK 4 and Libadwaita for the board.
 export const MSYS2_PYTHON = 'C:\\msys64\\ucrt64\\bin\\python.exe';

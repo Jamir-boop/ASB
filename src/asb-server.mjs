@@ -113,7 +113,7 @@ export function createAsbServer({
   appVersion = '', rootDir = '', sourcesPath = '', maxUsageImportBytes = 64 * 1024 * 1024, readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now,
   // The open phone questions (src/claude-questions.mjs); the answer switch and the paired phones decide if a hook waits.
-  claudeQuestions = null, answerEnabled = () => false, phonePaired = async () => false,
+  claudeQuestions = null, answerEnabled = () => false, phonePaired = async () => false, claudeHookStatus = null,
   claudeWaitMs = MAX_WAIT_MS, claudeQuestionTickMs = 5_000, claudeQuestionReloadMs = 30_000, ...snapshotOptions
 } = {}) {
   // The top-bar reply, and its short tag in each `dashboard` event: the tag changes exactly when the reply would change.
@@ -630,7 +630,9 @@ export function createAsbServer({
       }
       try {
         let result;
-        if (phoneReadRoute) result = url.pathname === '/api/service' ? { service: Boolean(serviceMode), pid: process.pid } : await phoneGateway.status();
+        if (phoneReadRoute && url.pathname === '/api/service') result = { service: Boolean(serviceMode), pid: process.pid };
+        // The hook state of each Claude profile, for Preferences. The gateway never forwards this route.
+        else if (phoneReadRoute) result = { ...await phoneGateway.status(), ...(claudeHookStatus ? { claudeHook: await claudeHookStatus().catch(() => []) } : {}) };
         else {
           const body = await readBody(request);
           const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';

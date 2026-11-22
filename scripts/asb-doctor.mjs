@@ -6,8 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { PLAYERS } from '../src/asb-sounds.mjs';
+import { claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
-import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shortVersion } from '../src/linux-system.mjs';
+import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shellText, shortVersion } from '../src/linux-system.mjs';
 import { bunOnPath, findBun, findExecutable, runtimeDir } from '../src/platform-paths.mjs';
 import { RUN_KEY } from './asb-engine.mjs';
 import { api as groupApi } from './asb-group.mjs';
@@ -17,7 +18,7 @@ import { autostartMarker, autostartPath, unitMarker, unitPath } from './asb-serv
 // asb doctor (plan L5): it checks the system and prints the install commands. It never runs them.
 export const execFileAsync = promisify(execFileCallback);
 const USAGE = 'Usage: asb doctor [--json]';
-const GROUPS = ['Engine', 'Window', 'Options'];
+const GROUPS = ['Engine', 'Window', 'Options', 'Phone answers'];
 // The needs in words, for systems without an install command.
 const LABELS = { node: 'Node.js 20 or later', sqlite: 'sqlite3', openssl: 'openssl', xdg: 'xdg-utils', gi: 'PyGObject', gtk: 'GTK 4.12 or later',
   adw: 'Libadwaita 1.4 or later', gicairo: 'PyGObject cairo support', qrcode: 'Python qrcode', sound: PLAYERS.map(([name]) => name).join(' or ') };
@@ -45,10 +46,7 @@ async function exists(file) {
 // The root command for the printed commands: doas only when doas is found and sudo is not.
 export const rootCommand = async (env = process.env) => await findExecutable('doas', { env }) && !await findExecutable('sudo', { env }) ? 'doas' : 'sudo';
 
-// A word with a space or a quote gets single quotes, after its `--name=` part.
-const shellWord = (word) => /[\s'"]/.test(word)
-  ? word.replace(/^(--[A-Za-z-]+=)?([^]*)$/, (match, flag = '', rest) => `${flag}'${rest.replaceAll("'", "'\\''")}'`) : word;
-export const shellText = (words) => words.map(shellWord).join(' ');
+export { shellText };
 
 // Plan 13 step 1: the active firewall. A missing program or file means "not this firewall".
 export async function firewallState({ execFile = execFileAsync, readFile = readText, env = process.env } = {}) {
@@ -87,6 +85,20 @@ export async function linuxFirewallLines(state, addresses, port, { execFile = ex
   return { commands, lines };
 }
 
+// The Claude Code question hook of each Claude profile (read only). Not installed is a warning only while phones may answer.
+const HOOK_STATUS = { installed: 'ok', 'not found': 'info', 'other launcher': 'warn', 'invalid settings': 'warn' };
+const readClaudeHook = async (env, platform) => claudeHookStatus(await readHookTargets(env, platform), { launcher: installedLauncher(env) });
+async function hookChecks(add, advice, claudeHook, answer) {
+  let targets = [];
+  try { targets = await claudeHook(); } catch {}
+  for (const { dir, state } of targets) {
+    add('claude-hook', 'Phone answers', HOOK_STATUS[state] || (answer ? 'warn' : 'info'), `Claude Code hook (${homeForm(dir)}): ${state}`);
+  }
+  if (targets.some(({ state }) => state === 'not installed' || state === 'other launcher')) {
+    advice.push('Install the Claude Code question hook:', '  asb agent claude-hook install');
+  }
+}
+
 // The engine can run when every Engine check is ok.
 export const engineReady = (data) => data.checks.filter((check) => check.group === 'Engine').every((check) => check.status === 'ok');
 
@@ -121,7 +133,7 @@ async function bunCheck(add, env, platform) {
 }
 
 // Windows needs Node.js with built-in SQLite for the engine, and MSYS2 Python with PyGObject, GTK, and Libadwaita for the window.
-async function collectWindows({ env, execFile, exists: present, node, platform }) {
+async function collectWindows({ env, execFile, exists: present, node, platform, claudeHook }) {
   const system = { name: os.version() || 'Windows', id: null, versionId: os.release(), family: 'windows', mode: 'normal' };
   const checks = [];
   const add = (id, group, status, detail) => checks.push({ id, group, status, detail });
@@ -155,13 +167,15 @@ async function collectWindows({ env, execFile, exists: present, node, platform }
     if (!await present(pacman)) commands.msys2 = WINGET_MSYS2;
     advice.push(commands.msys2 ? 'Install MSYS2 and the board packages:' : 'Install the board packages:', ...[commands.msys2, commands.required].filter(Boolean).map((words) => `  ${words.join(' ')}`));
   }
+  await hookChecks(add, advice, claudeHook, false);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 
 // `firewall: false` leaves out the firewall part (asb setup step 0).
 export async function collect({ env = process.env, execFile = execFileAsync, read = readText, exists: present = exists, node,
-  find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform } = {}) {
-  if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform });
+  find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform,
+  claudeHook = () => readClaudeHook(env, platform) } = {}) {
+  if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform, claudeHook });
   const release = parseOsRelease(await read('/etc/os-release'));
   const { family, mode } = detectFamily(release, { ostreeBooted: await present('/run/ostree-booted') });
   const system = { name: release.PRETTY_NAME || release.NAME || 'Linux', id: release.ID || null, versionId: release.VERSION_ID || null, family, mode };
@@ -274,6 +288,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
       advice.push(...lines);
     }
   }
+  await hookChecks(add, advice, claudeHook, phone?.answer === true);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 

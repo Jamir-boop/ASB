@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { storeIdentity } from '../src/app-sources.mjs';
+import { CHANGED_MESSAGE, changeClaudeHook, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { processStart, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
 import { readServiceRuntime, requestInstance } from './asb-instance.mjs';
 
@@ -12,7 +13,7 @@ const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projec
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
-const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait';
+const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait | claude-hook install|remove|status [--config-dir <dir>] [--json]';
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 function parseArgs(args) {
@@ -338,8 +339,36 @@ async function claudeWait(stdin = process.stdin, write = (line) => process.stdou
   } catch {}
 }
 
+const REFUSED = ['invalid settings', 'settings changed', 'cannot write'];
+
+// asb agent claude-hook install|remove|status [--config-dir <dir>] [--json]. Without --config-dir: the Claude profiles of the ASB app sources.
+export async function claudeHook(args, { env = process.env, platform = process.platform, log = console.log, error = console.error, beforeRename } = {}) {
+  const json = args.includes('--json');
+  const rest = args.filter((arg) => arg !== '--json');
+  const [action, flag, dir] = rest;
+  if (args.length - rest.length > 1 || !['install', 'remove', 'status'].includes(action) || !(rest.length === 1 || (rest.length === 3 && flag === '--config-dir'))) {
+    error(usage);
+    return 2;
+  }
+  if (rest.length === 3 && (!path.isAbsolute(dir) || /[\x00-\x1f\x7f]/.test(dir))) { error('ASB agent: --config-dir needs an absolute path.'); return 2; }
+  const launcher = installedLauncher(env);
+  if (action === 'install' && platform === 'win32') { error('The Claude Code question hook works on Linux only for now.'); return 1; }
+  if (action === 'install' && !launcher) { error('Run claude-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).'); return 1; }
+  const dirs = dir ? [path.resolve(dir)] : await readHookTargets(env, platform);
+  if (action === 'status') {
+    const targets = await claudeHookStatus(dirs, { launcher });
+    log(json ? JSON.stringify({ targets }) : targets.map((target) => `Claude ${printable(homeForm(target.dir))}: ${target.state}`).join('\n') || 'No Claude profiles.');
+    return 0;
+  }
+  const targets = await changeClaudeHook(action, dirs, { launcher, beforeRename });
+  log(json ? JSON.stringify({ targets }) : targets.map((target) => `Claude ${printable(homeForm(target.dir))}: ${target.result}`).join('\n') || 'No Claude profiles.');
+  if (targets.some((target) => target.result === 'settings changed')) error(CHANGED_MESSAGE);
+  return targets.some((target) => REFUSED.includes(target.result)) ? 1 : 0;
+}
+
 export async function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === 'claude-wait') { await claudeWait(); return 0; }
+  if (args[0] === 'claude-hook') return claudeHook(args.slice(1));
   let runtime;
   let result;
   try { result = await run(args, (value) => { runtime = value; }); }

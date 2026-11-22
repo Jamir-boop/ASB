@@ -1976,7 +1976,7 @@ class PhoneChecks(unittest.TestCase):
         editor.devices_shown = None
         editor.pairing_uri, editor.expires_at, editor.pair_device_ids, editor.matrix = "", 0, set(), None
         for name in ("settings", "apply", "pair", "retry", "message", "status_label", "fingerprint", "enabled",
-                     "address_list", "address_note", "port", "send_text", "answer", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
+                     "address_list", "address_note", "port", "send_text", "answer", "hook_status", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
             setattr(editor, name, Mock())
         editor.send_text.get_active.return_value = False
         editor.answer.get_active.return_value = False

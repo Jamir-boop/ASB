@@ -635,6 +635,34 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(editor.request_phone.call_args.args[2],
                          {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "answer": True})
 
+    def test_phone_claude_hook_status_lines_under_the_answer_switch(self):
+        home = os.path.expanduser("~")
+        items = [{"dir": os.path.join(home, ".claude-a"), "state": "installed"},
+                 {"dir": os.path.join(home, "b"), "state": "not installed"},
+                 {"dir": "/srv/claude-c", "state": "other launcher"},
+                 {"dir": os.path.join(home, "d"), "state": "invalid settings"},
+                 {"dir": os.path.join(home, "e"), "state": "not found"},
+                 {"dir": os.path.join(home, "f"), "state": "made-up"}, "bad"]
+        self.assertEqual(asb.claude_hook_text(items).split("\n"), [
+            "Claude Code hook (~/.claude-a): installed",
+            "Claude Code hook (~/b): not installed (run asb agent claude-hook install)",
+            "Claude Code hook (/srv/claude-c): other launcher (run asb agent claude-hook install)",
+            "Claude Code hook (~/d): invalid settings",
+            "Claude Code hook (~/e): not found"])
+        self.assertEqual(asb.claude_hook_text(None), "")
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        self.assertIs(editor.settings.get_next_sibling(), editor.hook_status)
+        status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
+        editor.render_status(status, True)
+        self.assertFalse(editor.hook_status.get_visible())
+        editor.render_status({**status, "claudeHook": items[:2]}, True)
+        self.assertTrue(editor.hook_status.get_visible())
+        self.assertEqual(editor.hook_status.get_label(), asb.claude_hook_text(items[:2]))
+
     def test_reconnect_keeps_the_board_and_preferences_and_uses_the_new_engine(self):
         received = [[], []]
         servers = []
