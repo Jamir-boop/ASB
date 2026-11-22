@@ -200,6 +200,8 @@ class SessionsViewModel(
                     if (state.value.revoked) return@withLock
                     val reply = api.answer(id, requestId, answers, state.value.engine)
                     currentCoroutineContext().ensureActive()
+                    // The next read drops the answered question and its card, so the banner keeps the result in view.
+                    answerBanner(reply)?.let { banner -> mutableState.update { it.copy(banner = banner) } }
                     mutableState.update { it.copy(actionErrors = it.actionErrors - id,
                         lastError = it.lastError.takeIf { e -> e != it.actionErrors[id] }) }
                     replied = true
@@ -282,4 +284,11 @@ class SessionsViewModel(
                 lastError = cause.message)
         }
     }
+}
+
+/** The banner after an answer that ends the card: Sent and Closed close the inspector, the others keep it. */
+fun answerBanner(reply: AnswerReply): String? = when (reply) {
+    AnswerReply.Sent -> "Answer sent"
+    AnswerReply.Closed -> "Answered on the PC"
+    AnswerReply.Off, AnswerReply.Refused -> null
 }

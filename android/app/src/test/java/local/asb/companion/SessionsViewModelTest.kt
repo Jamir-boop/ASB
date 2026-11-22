@@ -793,4 +793,30 @@ class SessionsViewModelTest {
             assertFalse(value.toString().contains("Oldest first"))
         }
     }
+
+    @Test fun anAnswerThatEndsTheCardLeavesABanner() = runBlocking {
+        val question = PhoneQuestion("b".repeat(32), listOf(QuestionItem("Pick one?", "", listOf(QuestionOption("A")))))
+        val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", question = question)))
+        val cases = listOf(
+            MockResponse().setBody("""{"answered":true}""") to "Answer sent",
+            MockResponse().setResponseCode(409).setBody("""{"error":"This question is closed."}""") to "Answered on the PC",
+            MockResponse().setResponseCode(404).setBody("""{"error":"Route is not available."}""") to null,
+            MockResponse().setResponseCode(400).setBody("""{"error":"Invalid answer."}""") to null,
+            MockResponse().setResponseCode(500).setBody("""{"error":"Made-up failure."}""") to null,
+        )
+        for ((reply, banner) in cases) {
+            val model = model()
+            load(model, dashboard)
+            model.dismissBanner()
+            server.enqueue(reply)
+            // A mapped reply reads the dashboard again; a 500 is an error and reads nothing.
+            val refetch = reply.status.split(" ")[1] != "500"
+            if (refetch) server.enqueue(response(dashboard))
+            model.answer("one", question.requestId, listOf(PhoneAnswer(listOf("A")))) { }
+            await { "one" !in model.state.value.busyIds }
+            assertEquals(banner, model.state.value.banner?.takeIf { it == "Answer sent" || it == "Answered on the PC" })
+            server.takeRequest()
+            if (refetch) server.takeRequest()
+        }
+    }
 }

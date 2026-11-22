@@ -1731,7 +1731,7 @@ private fun SessionInspector(
                     .semantics { paneTitle = title },
             ) {
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(12.dp)) {
-                    row.question?.let { QuestionCardPanel(row.id, it, offline, lastUpdateMs, viewModel, text, muted, group) }
+                    row.question?.let { QuestionCardPanel(row.id, it, offline, lastUpdateMs, viewModel, text, muted, group, onDismiss) }
                     Column(
                         Modifier.padding(start = 2.dp, end = 2.dp, bottom = 12.dp).semantics(mergeDescendants = true) { },
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -1906,7 +1906,7 @@ private fun SessionInspector(
 @Composable
 private fun QuestionCardPanel(
     rowId: String, question: PhoneQuestion, offline: Boolean, lastUpdateMs: Long, viewModel: SessionsViewModel,
-    text: Color, muted: Color, group: String,
+    text: Color, muted: Color, group: String, onDone: () -> Unit,
 ) {
     var card by remember(rowId, question.requestId) { mutableStateOf(QuestionCard(question)) }
     if (!card.shownFor(question, lastUpdateMs)) return
@@ -1968,6 +1968,8 @@ private fun QuestionCardPanel(
                     card = card.sending()
                     viewModel.answer(rowId, card.requestId, answers) { reply ->
                         card = card.replied(reply, viewModel.state.value.lastUpdateMs)
+                        // The banner says the result; the card goes at the next read anyway.
+                        if (reply != null && answerBanner(reply) != null) onDone()
                     }
                 }
             },
