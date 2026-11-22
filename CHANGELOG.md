@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.16.0 - 2026-11-22
+
 - Android: while Offline a selected pill keeps its count in the label color, as on the PC, and the dimmed counts of the other pills are easier to read. The Usage share columns show `100.0%` in full at any text size. A page scroll closes the Usage chart tooltip. The Live notification shows a `Pending: …` and a `Working: …` group (each with `+N more`), and its title leaves out a zero count (`13 pending`). The active filter chip and the pair thread head are each one TalkBack stop. The Messages thread head stays at the top of the screen while its thread is open.
 - Android: Copy reference in the inspector says `Copied` with a check on the button (no pill), the mute chips show the time over its end (`until 09:01`, and `until Thu` for 1 day), the Card marks legend uses the PC words with one `Unread` row, the Filters button says `Filters, N on`, a pinned Compact row shows a small pin, the inspector keeps its top edge after Mute or Unmute, and while Offline the pill counts are dimmed and a Working word is in the caption tone.
 - Android: Busiest pairs rows are at least 48 dp high. The Usage machine chips are on their own row under Cost/Tokens. A machine state breaks only between whole facts and goes under the bar. The pair thread head is one line (`→ 115  ← 115`). A thread opens at its newest message, and `Show earlier` keeps the message in view in its place. The status list has a `Show meanings` / `Hide meanings` button.
@@ -38,6 +40,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Add Name as a third board copy kind, with the whole session title, a matching icon, and a Copy name panel row. Remote cards cycle Absolute and Name.
 - Cards can show how many commands and subagents a session runs in the background now (Claude Desktop Code, Claude Code CLI, and OpenCode 2): the Background counts option (Preferences > Appearance and Android Settings, off by default) adds a filled command glyph (a window with the prompt cut out) and a filled agent glyph (a robot head with the eyes cut out) with their counts after the state, in both views, with the sentence in the tooltip, the accessible description, and the row panel. Group members and the phone get the two counts (`backgroundCommands`, `backgroundAgents`). Counts only, never a command text.
 - Fixed a Claude chat that stayed Unknown, and so sorted after all Idle cards, after it stopped a background workflow or agent with TaskStop: a stopped workflow sends no task notification, and ASB kept it as open work. A successful TaskStop result now ends that task.
+
+See [ASB 1.16.0 release notes](docs/releases/v1.16.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.15.0 - 2026-11-10
 
