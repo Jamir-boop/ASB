@@ -77,15 +77,18 @@ test('ten quiet minutes give Unknown unless the transcript changed or a backgrou
   await put(1, { stateAtMs: old });
   await put(2, { stateAtMs: old, transcriptMtimePath: transcript });
   await put(3, { stateAtMs: old, background: true });
-  await put(4, { state: 'question', stateAtMs: old });
+  await put(4, { state: 'question', stateAtMs: now - 11 * minute });
   const byId = new Map((await rows()).map((row) => [row.externalId, row]));
-  for (const n of [1, 4]) assert.deepEqual([byId.get(id(n)).state, byId.get(id(n)).reason], ['unknown', 'No news from the agy session for 10 minutes.']);
+  assert.deepEqual([byId.get(id(1)).state, byId.get(id(1)).reason], ['unknown', 'No news from the agy session for 10 minutes.']);
+  assert.equal(byId.get(id(4)).state, 'waiting');
+  assert.equal(byId.get(id(4)).questionPending, true);
+  assert.equal((await rows({ nowMs: now + 7 * 60 * minute })).find((row) => row.externalId === id(4)).state, 'waiting');
   assert.equal(byId.get(id(2)).state, 'working');
   assert.equal(byId.get(id(3)).state, 'working');
   const early = now - 58_000;
   const threads = (await load({ nowMs: early })).threads;
   assert.deepEqual(threads.map((thread) => [thread.externalId, thread.cliProcessCheckAtMs]),
-    [[id(1), old + 10 * minute], [id(2), now - 30_000], [id(3), now - 30_000], [id(4), old + 10 * minute]]);
+    [[id(1), old + 10 * minute], [id(2), now - 30_000], [id(3), now - 30_000], [id(4), now - 30_000]]);
   assert.equal(buildSwitchboardDashboard(threads, [], early).nextStatusCheckAtMs, old + 10 * minute + 1);
 });
 
@@ -123,6 +126,8 @@ test('Antigravity CLI is a default source with fixed folder, no launcher, the ei
   const registry = new AppSourceRegistry({ homeDir, env, platform: 'linux', configPath, discoverPersonal: false });
   const sources = await registry.read();
   const agy = sources.find((item) => item.id === 'antigravity');
+  assert.equal(agy.color, '#ae9c78');
+  assert.notEqual(agy.color, sources.find((item) => item.id === 'codex').color);
   assert.deepEqual([agy.provider, agy.label, agy.dataDir, agy.launcher, agy.enabled, agy.builtin],
     ['antigravity', 'Antigravity CLI', path.join(homeDir, 'state', 'asb', 'agy'), '', true, true]);
   await assert.rejects(registry.update({ ...agy, dataDir: path.join(homeDir, 'other') }), { message: 'The Antigravity CLI data folder cannot change.' });

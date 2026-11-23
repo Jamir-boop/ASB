@@ -22,6 +22,7 @@ function defaultSourceColor(id) {
   if (id === 'codex-personal') return SOURCE_COLORS[1];
   if (id === 'claude-desktop-code') return SOURCE_COLORS[2];
   if (id === 'opencode') return SOURCE_COLORS[3];
+  if (id === 'antigravity') return '#ae9c78';
   return SOURCE_COLORS[createHash('sha256').update(id).digest()[0] % SOURCE_COLORS.length];
 }
 

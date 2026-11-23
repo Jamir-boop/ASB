@@ -597,7 +597,7 @@ test('source APIs enforce exact bodies and local actions, refresh rows, and upda
   const initialResponse = await fetch(`${server.base}/api/sources`);
   assert.equal(initialResponse.status, 200);
   const initialSources = (await initialResponse.json()).sources;
-  assert.deepEqual(initialSources.map((item) => item.color), ['#8296b4', '#a28caa', '#899e91', '#8296b4']);
+  assert.deepEqual(initialSources.map((item) => item.color), ['#8296b4', '#a28caa', '#899e91', '#ae9c78']);
   assert.ok(initialSources.every((item) => item.showMarker === true));
   const otherOrigin = await server.post('/api/sources', { source: source(extraDir) }, { origin: 'http://example.test' });
   assert.equal(otherOrigin.status, 403);

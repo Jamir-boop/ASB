@@ -51,7 +51,7 @@ APP_NAMES = {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code", "op
 REMOTE_CLAUDE = (("auto", "Automatic", "Claude in this profile reaches Claude sessions on other machines through ASB, unless both machines use Claude Remote Control."),
                  ("bridge", "Through ASB", "Claude in this profile always reaches Claude sessions on other machines through ASB."),
                  ("native", "Claude Remote Control only", "ASB does not add Claude sessions of other machines to this profile. Codex tasks of other machines stay."))
-SOURCE_COLOR_PRESETS = (("Slate blue", "#8296b4"), ("Clay", "#b28f80"), ("Plum", "#a28caa"), ("Sage", "#899e91"))
+SOURCE_COLOR_PRESETS = (("Slate blue", "#8296b4"), ("Clay", "#b28f80"), ("Plum", "#a28caa"), ("Sage", "#899e91"), ("Ochre", "#ae9c78"))
 
 
 BRIDGE_STATES = {

@@ -80,9 +80,10 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
       : { state: 'idle', reason: 'The agy process ended.' };
     return thread;
   }
-  // Esc fires no event: a turn with no event and no transcript change for 10 minutes is Unknown. A background command keeps Working.
+  if (state === 'question') thread.agyStatus = { state: 'waiting', reason: 'The current tool is waiting for an answer.' };
+  // Esc fires no event: working with no event or transcript change for 10 minutes is Unknown. Questions stay Waiting; background commands keep Working.
   const newsAtMs = Math.max(stateAtMs, transcriptAtMs);
-  const quiet = thread.lifecycleRunning && !record.background;
+  const quiet = state === 'working' && !record.background;
   if (quiet && nowMs - newsAtMs > NO_NEWS_MS) thread.agyStatus = { state: 'unknown', reason: 'No news from the agy session for 10 minutes.' };
   const nextCheck = (Math.floor(nowMs / LIVE_CHECK_MS) + 1) * LIVE_CHECK_MS;
   thread.cliProcessCheckAtMs = quiet && !thread.agyStatus ? Math.min(nextCheck, newsAtMs + NO_NEWS_MS) : nextCheck;
