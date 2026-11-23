@@ -167,7 +167,7 @@ test('Antigravity CLI is a default source with fixed folder, no launcher, the ei
   assert.deepEqual([row.sourceId, row.providerLabel, row.canOpen], ['antigravity', 'Antigravity CLI', false]);
   const spec = switchboardWatchPaths({ homeDir, agyDir: agy.dataDir }).find((item) => item.source === 'antigravity');
   assert.deepEqual([spec.path, spec.optional], [agy.dataDir, true]);
-  assert.deepEqual([`${id(1)}.json`, `${id(1)}.json.${id(2)}.tmp`, 'notes.json', ''].map((name) => spec.acceptEvent(name)), [true, false, false, true]);
+  assert.deepEqual([`${id(1)}.json`, `${id(1)}.title`, `${id(1)}.json.${id(2)}.tmp`, `${id(1)}.title.${id(2)}.tmp`, 'notes.json', ''].map((name) => spec.acceptEvent(name)), [true, true, false, false, false, true]);
 });
 
 test('loader uses valid .title, falls back on bad mode/symlink/size/content, ignores orphan .title, and removes .title with old records', async (t) => {

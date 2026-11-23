@@ -113,7 +113,7 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
     { path: openCodeDir, source: 'opencode', optional: true,
       acceptEvent: (filename) => !filename || /^opencode\.db(?:-wal)?$/.test(filename) },
     { path: agyDir, source: 'antigravity', optional: true,
-      acceptEvent: (filename) => !filename || /^[0-9a-f-]{36}\.json$/i.test(filename) },
+      acceptEvent: (filename) => !filename || /^[0-9a-f-]{36}\.(?:json|title)$/i.test(filename) },
   ];
 }
 
