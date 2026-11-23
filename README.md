@@ -39,7 +39,7 @@ The GNOME top bar and the Android app show the same counts, and Read on the phon
 
 ## Answer questions from the phone
 
-The Android app can answer questions from the Codex app, Codex CLI, Claude Desktop Code, Claude Code CLI, Antigravity CLI (agy), and OpenCode 2 on the paired PC. Claude, agy, and OpenCode phone answers need Linux. On main, not in a release yet.
+The Android app can answer questions from the Codex app, Codex CLI, Claude Desktop Code, Claude Code CLI, Antigravity CLI (agy), and OpenCode 2 on the paired PC. Antigravity CLI phone answers need Linux and kitty remote control. Not tested end to end on Windows. On main, not in a release yet.
 
 1. In Preferences > Phone, turn on **Send message text to phones**, then **Answer questions from phones** (off by default). Phone access must be on, with a paired phone.
 2. Run `asb agent claude-hook install` for Claude, `asb agent agy-hook install` for agy, or `asb bridge install --opencode` for OpenCode 2. The Claude install adds one hook to the Claude settings of each Claude profile that ASB reads, and keeps the old file as `settings.json.asb-backup`. `asb agent claude-hook status` shows the state, and `asb agent claude-hook remove` takes the hook out.
@@ -55,7 +55,7 @@ For the Codex app and CLI, use ASB Bridge with a session on the shared Codex app
 
 ## Approve Claude Code requests from the phone
 
-On Linux, a paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. On main, not in a release yet. In Preferences > Phone, turn on **Approve requests from phones** (off by default, under **Answer questions from phones**). It needs phone access on, **Send message text to phones** on, **Answer questions from phones** on, and a paired phone. Run `asb agent claude-hook install` again: it now writes one `PermissionRequest` entry with matcher `*` (it replaces the older `AskUserQuestion` entry), and keeps `settings.json.asb-backup`. Until you run it again, `asb agent claude-hook status`, the Phone page, and `asb doctor` say `questions only`.
+On Linux and Windows, a paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. On main, not in a release yet. In Preferences > Phone, turn on **Approve requests from phones** (off by default, under **Answer questions from phones**). It needs phone access on, **Send message text to phones** on, **Answer questions from phones** on, and a paired phone. Run `asb agent claude-hook install` again: it now writes one `PermissionRequest` entry with matcher `*` (it replaces the older `AskUserQuestion` entry), and keeps `settings.json.asb-backup`. Until you run it again, `asb agent claude-hook status`, the Phone page, and `asb doctor` say `questions only`.
 
 The card shows the tool name and a few display lines (for Bash the command and its description, for Write or Edit the file, for an MCP tool the server name and only the input key names, never the values, and for each other tool its input key names). A plan card shows the plan text and `After approval: Bypass permissions mode, if this session allows it`. The note field says `Note for the agent (sent with Deny)` on a tool card and `Note for the agent (sent with Keep planning)` on a plan card. Allow runs the tool and closes the PC dialog. Deny does not run the tool, closes the PC dialog, and sends `Denied from the phone.` or `Denied from the phone: <note>`. `Approve plan` allows the plan and asks Claude Code to set bypassPermissions mode for the session; `Keep planning` sends `Keep planning.` or `Keep planning: <note>` and stays in plan mode.
 
@@ -70,13 +70,13 @@ Limits:
 - One card for each session: a newer request replaces the older one on the phone; the older one stays on the PC only.
 - The alert and the `Waiting` state come from the row's attention marks, not the card data. The card can appear before Waiting and before a phone alert. A permission dialog shows Waiting and can cause a Needs input sound and a phone alert only after it stays open 10 s. A request you answer at once does not alert. The phone alert was measured once: about 14 s after the dialog opened (the 10 s rule plus one phone read), with the app in the background. The app posts no alert while it is open on the screen. With no working row and no new request in the last 60 s, the phone reads the PC each 30 s, so the first card can be up to 30 s late; the time with the screen off is not proven.
 - Checked with Claude Code 2.1.330 on Linux: a CLI session end to end with a real Android phone (2026-11-23), and a desktop Code tab session for one tool allow and one tool deny (2026-11-22). The desktop Code tab is not checked for plans.
-- An older ASB build reads the `*` entry as `other launcher`. Not yet: Windows (the hook install refuses it), group members, and Antigravity CLI.
+- An older ASB build reads the `*` entry as `other launcher`. Not yet: group members and Antigravity CLI. Not tested end to end on Windows.
 - Each permission dialog waits about 70 ms for the hook, also with the switch off.
 - Claude Code sessions that already run keep the old hook entry until they start again (by the Claude Code docs; not tested).
 
 ## Approve OpenCode requests from the phone
 
-On main, not in a release yet. Use ASB Bridge `0.10.0` with OpenCode 2 on Linux.
+On main, not in a release yet. Use ASB Bridge `0.10.0` with OpenCode 2 on Linux or Windows.
 
 1. Run `asb bridge install --opencode`. OpenCode loads the plugin by itself. In one observation (OpenCode 2.4.0) a session that ran took the new plugin with no restart. If a session shows no card, start OpenCode again.
 2. In Preferences > Phone, turn on **Allow phone access**, **Send message text to phones**, **Answer questions from phones**, and **Approve requests from phones**. Pair a phone.
@@ -86,15 +86,15 @@ On main, not in a release yet. Use ASB Bridge `0.10.0` with OpenCode 2 on Linux.
 - `Allow once` lets OpenCode run the tool once, not always. `Deny` rejects the request and sends `Denied from the phone.` or `Denied from the phone: <note>` to OpenCode.
 - With no paired phone, a switch off, or the engine down, use the PC dialog. If you answer there first, the plugin stops its phone wait. Only one card can be open on the phone for each session. A newer request replaces the older card.
 - A card comes only when OpenCode itself asks for permission. A rule that allows the tool (for example a global `allow` for all) gives no dialog and no card.
-- The phone can act only on local sessions. Windows is not covered. Not tested end to end on a phone with a real OpenCode session.
+- The phone can act only on local sessions. Not tested end to end on Windows or on a phone with a real OpenCode session.
 
 ## Approve Codex commands from the phone
 
-On Linux, run `asb agent codex-hook install` to add the optional hook for the Codex CLI and the Codex app's app-server. It is not installed by default. In the CLI, at `Hooks need review`, use `Review hooks` to find the ASB `PermissionRequest` hook. Select `Trust all and continue` only if you trust all the hooks shown. If you select `Continue without trusting`, Codex skips the hook and uses its normal approval path. The `^Bash$` matcher limits the hook to `Bash` approvals. Run `asb agent codex-hook remove` to remove it. Run `asb agent codex-hook status` to check each enabled Codex home. ASB cannot see if Codex trusts the hook: the state `installed` does not mean that Codex runs it.
+On Linux and Windows, run `asb agent codex-hook install` to add the optional hook for the Codex CLI and the Codex app's app-server. It is not installed by default. In the CLI, at `Hooks need review`, use `Review hooks` to find the ASB `PermissionRequest` hook. Select `Trust all and continue` only if you trust all the hooks shown. If you select `Continue without trusting`, Codex skips the hook and uses its normal approval path. The `^Bash$` matcher limits the hook to `Bash` approvals. Run `asb agent codex-hook remove` to remove it. Run `asb agent codex-hook status` to check each enabled Codex home. ASB cannot see if Codex trusts the hook: the state `installed` does not mean that Codex runs it.
 
 While **Approve requests from phones** is on and a paired phone was seen in the last 60 s, each Codex Bash command that asks for approval goes to the phone before the Codex reviewer. If you allow the command on the phone, Codex skips the reviewer. If you deny the command, Codex blocks it. Codex sends the denial and any note to the model in the tool result. The phone card stays open for 28 s (`CODEX_FIRST_MS` in `src/claude-questions.mjs`). During that time the PC shows `Running hook` with no approval buttons (the hook client stops waiting at 30 s). If the phone does not answer, Codex decides with its own settings: with `approvals_reviewer = "auto_review"`, the Codex automatic reviewer decides and can allow the command with no dialog on the PC; else Codex shows its PC dialog. Codex 0.171 asks for approval only for an escalation request (for example with `-a on-request`). A command that fails in the sandbox gives no request and no card. Each held command plays the Needs input sound on the PC and can alert on the phone, even if the automatic reviewer would allow it.
 
-The first command of a new session can get no card. The first command after a time with no working session can reach the phone up to 30 s late, or not at all. Unlisted threads and subagent threads get no card. If two requests from one session overlap, only the newer one stays on the phone. The older one goes to the normal approval path. Until the phone app update that alerts again for a new request, a second card can come with no alert. The time with the screen off is not proven. The hook adds about 190 ms per Bash approval when it does not hold the command. A command over 4,000 characters gets no card. Codex app: the hook ran in the app's own build (`0.171.0-alpha.13`) with a loopback model fixture. The live app UI was not tested.
+The first command of a new session can get no card. The first command after a time with no working session can reach the phone up to 30 s late, or not at all. Unlisted threads and subagent threads get no card. If two requests from one session overlap, only the newer one stays on the phone. The older one goes to the normal approval path. Until the phone app update that alerts again for a new request, a second card can come with no alert. The time with the screen off is not proven. The hook adds about 190 ms per Bash approval when it does not hold the command. A command over 4,000 characters gets no card. Codex app: the hook ran in the app's own build (`0.171.0-alpha.13`) with a loopback model fixture. The live app UI was not tested. Not tested end to end on Windows.
 
 ## Antigravity CLI
 
@@ -140,9 +140,9 @@ Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Codex app | ✓ | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge and the shared Codex app-server | ✓ | ✓ | ✓ subagents only | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Codex CLI | ✓ | ✓ | ✓ | ✓ with ASB Bridge, daemon tasks only | ✓ with ASB Bridge and the shared Codex app-server | ✗ ASB work: terminal tab | ✓ daemon tasks only | ✓ subagents only | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
-| Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
-| OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ Linux, with ASB Bridge | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
+| Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
+| Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
+| OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
@@ -169,6 +169,8 @@ The [full install guide](docs/INSTALL.md) has the system checks, the distributio
 ## Install on Windows
 
 Use the same npm commands with Node.js `22.13` or later. The board window needs MSYS2 Python with PyGObject, GTK `>=4.12`, and Libadwaita `>=1.4`. See [Windows setup](docs/INSTALL.md#install-on-windows).
+
+For phone answers or approvals, run `asb.cmd agent claude-hook install` or `asb.cmd agent codex-hook install` in a terminal under the same Windows account as the ASB engine. The Codex hook is for command approvals. Codex questions and OpenCode 2 forms use ASB Bridge. The installers use `%APPDATA%\npm\asb.cmd` or find `asb.cmd` on `PATH`. Start new Claude Code sessions after installing the hook. Use the Phone switches in Preferences as on Linux. Run the corresponding `remove` commands before uninstalling ASB. Not tested end to end on Windows.
 
 ## Optional parts
 

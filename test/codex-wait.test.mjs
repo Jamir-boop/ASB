@@ -23,7 +23,9 @@ async function fixture(t, server = null) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-codex-wait-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_DATA_HOME: path.join(home, 'data'),
-    XDG_STATE_HOME: path.join(home, 'state'), XDG_RUNTIME_DIR: path.join(home, 'run'), PATH: '/usr/bin:/bin' };
+    XDG_STATE_HOME: path.join(home, 'state'), XDG_RUNTIME_DIR: path.join(home, 'run'),
+    USERPROFILE: home, APPDATA: path.join(home, 'roaming'), LOCALAPPDATA: path.join(home, 'local'),
+    ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {}) };
   const runtime = { schema: 1, pid: process.pid, sourceToken: token };
   if (server) {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -33,8 +35,8 @@ async function fixture(t, server = null) {
     await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     await writeFile(file, JSON.stringify(runtime), { mode: 0o600 });
   }
-  const run = (hook = input, codexWaitMs) => new Promise((resolve, reject) => {
-    const args = codexWaitMs === undefined ? [fileURLToPath(client), 'codex-wait'] : ['--input-type=module', '-e',
+  const run = (hook = input, codexWaitMs, provider = 'codex') => new Promise((resolve, reject) => {
+    const args = codexWaitMs === undefined ? [fileURLToPath(client), `${provider}-wait`] : ['--input-type=module', '-e',
       `import { claudeWait } from ${JSON.stringify(client.href)}; await claudeWait('codex', { codexWaitMs: ${codexWaitMs} });`];
     const child = execFile(process.execPath, ['--disable-warning=ExperimentalWarning', ...args], { env, timeout: 7000 }, (error, stdout, stderr) => {
       if (error && !Number.isInteger(error.code)) reject(error);
@@ -129,4 +131,15 @@ test('one total deadline cuts a second held poll short, with no decision output'
   assert.deepEqual(await run(input, 350), EMPTY);
   assert.deepEqual(requests.map(([, route]) => route), ['/api/agent/wait', `/api/agent/wait/${requestId}`, `/api/agent/wait/${requestId}`]);
   await closed;
+});
+
+test('the Claude question hook opens and polls the same engine route as the Codex client', async (t) => {
+  const questions = [{ question: 'Which item?', header: 'Item', options: [{ label: 'One', description: 'First item' }], multiSelect: false }];
+  const answers = { 'Which item?': 'One' };
+  const { run, requests } = await stub(t, (_url, json, count) => json(count === 1 ? { wait: true, requestId } : { state: 'answered', answers }));
+  assert.deepEqual(await run({ ...input, tool_name: 'AskUserQuestion', tool_input: { questions } }, undefined, 'claude'),
+    { code: 0, stderr: '', stdout: `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest',
+      decision: { behavior: 'allow', updatedInput: { questions, answers } } } })}\n` });
+  assert.deepEqual(requests, [['POST', '/api/agent/wait', token, { provider: 'claude', sessionKey: input.session_id, question: { questions } }],
+    ['POST', `/api/agent/wait/${requestId}`, token, null]]);
 });

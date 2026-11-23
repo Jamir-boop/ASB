@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { AppSourceRegistry } from './app-sources.mjs';
+import { findExecutable } from './platform-paths.mjs';
 
 // The hook installers never print, log, or return settings content.
 export const HOOK_TIMEOUT = 21600;
@@ -12,6 +13,24 @@ export const object = (value) => Boolean(value) && typeof value === 'object' && 
 
 export const installedLauncher = (env) => typeof env.ASB_INSTALLED_LAUNCHER === 'string' && path.isAbsolute(env.ASB_INSTALLED_LAUNCHER)
   ? env.ASB_INSTALLED_LAUNCHER : '';
+
+function hookHome(env, platform) {
+  const home = env[platform === 'win32' ? 'USERPROFILE' : 'HOME'];
+  return typeof home === 'string' && path.isAbsolute(home) ? home : os.homedir();
+}
+
+export async function phoneHookLauncher(env, platform) {
+  if (platform !== 'win32') return installedLauncher(env);
+  const configured = env.ASB_INSTALLED_LAUNCHER;
+  if (typeof configured === 'string' && path.win32.isAbsolute(configured) && /\.(?:cmd|bat|exe)$/i.test(configured)) return configured;
+  const roaming = typeof env.APPDATA === 'string' && path.isAbsolute(env.APPDATA)
+    ? env.APPDATA : path.join(hookHome(env, platform), 'AppData', 'Roaming');
+  // The tray engine can start with a shorter PATH than the terminal. Try the npm user prefix first.
+  const shim = path.join(roaming, 'npm', 'asb.cmd');
+  if ((await fs.stat(shim).catch(() => null))?.isFile()) return shim;
+  const searchPath = (env.PATH || '').split(';').filter((dir) => path.isAbsolute(dir)).join(';');
+  return searchPath ? findExecutable('asb', { platform, env: { PATHEXT: '.CMD' }, searchPath }) : '';
+}
 // A dir under the home folder in `~` form, for text output.
 export const homeForm = (dir, home = os.homedir()) => dir === home ? '~' : dir.startsWith(`${home}${path.sep}`) ? `~${dir.slice(home.length)}` : dir;
 // The hook command runs through a shell, so a launcher path with shell characters must be quoted.
@@ -22,9 +41,9 @@ export const hookTargets = (sources) => [...new Set(sources.filter((source) => s
   && typeof source.projectsDir === 'string' && path.isAbsolute(source.projectsDir) && path.basename(source.projectsDir) === 'projects')
   .map((source) => path.dirname(path.resolve(source.projectsDir))))];
 
-// The targets of the saved ASB app sources, read only (no ChatGPT Personal discovery). HOME is the home folder of the engine too.
-export const readHookTargets = async (env, platform, targets = hookTargets) => targets(await new AppSourceRegistry({ env, platform, discoverPersonal: false,
-  homeDir: typeof env.HOME === 'string' && path.isAbsolute(env.HOME) ? env.HOME : os.homedir() }).read());
+// The targets of the saved ASB app sources, read only (no ChatGPT Personal discovery).
+export const readHookTargets = async (env, platform, targets = hookTargets) =>
+  targets(await new AppSourceRegistry({ env, platform, discoverPersonal: false, homeDir: hookHome(env, platform) }).read());
 
 // One target: { dir, state } for a target that cannot change, else the real file, its stat, and the parsed value (null: no file).
 async function readTarget(dir, fileName) {
@@ -81,12 +100,18 @@ export async function writeTarget(target, value, { beforeRename = async () => {}
   } finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
 }
 
-export function permissionRequestHook({ fileName, matcher, timeout, suffix, questionsMatcher }) {
-  const hookCommand = (launcher) => `${shellQuote(launcher)}${suffix}`;
+export function permissionRequestHook({ fileName, matcher, timeout, suffix, questionsMatcher, windowsShell }) {
+  const hookFields = (platform) => platform === 'win32' && windowsShell === 'powershell' ? { shell: windowsShell, onFailure: 'continue' } : {};
+  const hookCommand = (launcher, platform = process.platform) => {
+    if (platform !== 'win32') return `${shellQuote(launcher)}${suffix}`;
+    // Claude's shell-form hooks support PowerShell. The upstream Codex runner wraps the cmd.exe /C line in outer quotes.
+    const command = windowsShell === 'powershell' ? `& '${launcher.replace(/['‘’‚‛]/g, '$&$&')}'` : `"${launcher}"`;
+    return `${command}${suffix}`;
+  };
   const ours = (hook) => object(hook) && hook.type === 'command' && typeof hook.command === 'string' && hook.command.endsWith(suffix);
   const hasOurs = (item) => object(item) && Array.isArray(item.hooks) && item.hooks.some(ours);
 
-  function hookState(value, command) {
+  function hookState(value, command, platform = process.platform) {
     const found = [];
     for (const item of value?.hooks?.PermissionRequest || []) {
       if (hasOurs(item)) for (const hook of item.hooks.filter(ours)) found.push({ hook, matcher: item.matcher });
@@ -94,7 +119,9 @@ export function permissionRequestHook({ fileName, matcher, timeout, suffix, ques
     if (!found.length) return 'not installed';
     const [entry] = found;
     if (found.length !== 1 || entry.hook.timeout !== timeout
-      || (command && entry.hook.command !== command)) return 'other launcher';
+      || (command && entry.hook.command !== command)
+      || (platform === 'win32' && windowsShell === 'powershell' && (entry.hook.args !== undefined
+        || Object.entries(hookFields(platform)).some(([key, expected]) => entry.hook[key] !== expected)))) return 'other launcher';
     return entry.matcher === matcher ? 'installed' : questionsMatcher && entry.matcher === questionsMatcher ? QUESTIONS_ONLY : 'other launcher';
   }
 
@@ -113,8 +140,8 @@ export function permissionRequestHook({ fileName, matcher, timeout, suffix, ques
     return { list: next, at };
   }
 
-  function installedValue(value, command) {
-    const entry = { matcher, hooks: [{ type: 'command', command, timeout }] };
+  function installedValue(value, command, platform = process.platform) {
+    const entry = { matcher, hooks: [{ type: 'command', command, timeout, ...hookFields(platform) }] };
     if (value === null) return { hooks: { PermissionRequest: [entry] } };
     const { list, at } = withoutOurs(value) || { list: [...(value.hooks?.PermissionRequest || [])], at: -1 };
     list.splice(at < 0 ? list.length : at, 0, entry);
@@ -131,17 +158,17 @@ export function permissionRequestHook({ fileName, matcher, timeout, suffix, ques
     return next;
   }
 
-  async function status(dirs, { launcher = '' } = {}) {
-    const command = launcher ? hookCommand(launcher) : '';
+  async function status(dirs, { launcher = '', platform = process.platform } = {}) {
+    const command = launcher ? hookCommand(launcher, platform) : '';
     return Promise.all(dirs.map(async (dir) => {
       const target = await readTarget(dir, fileName);
-      return { dir, state: target.state || hookState(target.value, command) };
+      return { dir, state: target.state || hookState(target.value, command, platform) };
     }));
   }
 
   // Targets that share one real file get one write and the same result.
-  async function change(action, dirs, { launcher = '', beforeRename } = {}) {
-    const command = hookCommand(launcher);
+  async function change(action, dirs, { launcher = '', platform = process.platform, beforeRename } = {}) {
+    const command = hookCommand(launcher, platform);
     const targets = await Promise.all(dirs.map((dir) => readTarget(dir, fileName)));
     const done = new Map();
     const results = [];
@@ -149,8 +176,8 @@ export function permissionRequestHook({ fileName, matcher, timeout, suffix, ques
       if (target.state) { results.push({ dir: target.dir, result: target.state }); continue; }
       if (!done.has(target.key)) {
         done.set(target.key, (async () => {
-          if (action === 'install' && hookState(target.value, command) === 'installed') return 'unchanged';
-          const next = action === 'install' ? installedValue(target.value, command) : removedValue(target.value);
+          if (action === 'install' && hookState(target.value, command, platform) === 'installed') return 'unchanged';
+          const next = action === 'install' ? installedValue(target.value, command, platform) : removedValue(target.value);
           if (!next) return 'not installed';
           // A failed write gives only its result, never the error text.
           try { await writeTarget(target, next, { beforeRename }); } catch (error) { return error === CHANGED ? 'settings changed' : 'cannot write'; }
@@ -167,7 +194,7 @@ export function permissionRequestHook({ fileName, matcher, timeout, suffix, ques
 
 // The entry from before phone approvals still answers questions, so install replaces it in place.
 export const { hookCommand, hookState, installedValue, removedValue, status: claudeHookStatus, change: changeClaudeHook } = permissionRequestHook({
-  fileName: 'settings.json', matcher: '*', timeout: HOOK_TIMEOUT, suffix: ' agent claude-wait', questionsMatcher: 'AskUserQuestion',
+  fileName: 'settings.json', matcher: '*', timeout: HOOK_TIMEOUT, suffix: ' agent claude-wait', questionsMatcher: 'AskUserQuestion', windowsShell: 'powershell',
 });
 
 export const CHANGED_MESSAGE = CHANGED.message;

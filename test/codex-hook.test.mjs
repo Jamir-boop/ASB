@@ -161,10 +161,9 @@ test('shell characters are quoted; a single quote or a control in the launcher p
   assert.deepEqual(await readdir(refused.dir), []);
 });
 
-test('install refuses Windows, no launcher and a missing home; bad options change nothing', async (t) => {
+test('install refuses no launcher and a missing home; bad options change nothing', async (t) => {
   const { home, target, local, env } = await fixture(t);
   const { dir } = await target('refusals');
-  assert.deepEqual(await local('install', dir, { platform: 'win32' }), { code: 1, stdout: '', stderr: 'The Codex hook works on Linux only for now.' });
   for (const launcher of ['', 'relative/asb']) {
     const result = await local('install', dir, { env: { ...env, ASB_INSTALLED_LAUNCHER: launcher } });
     assert.deepEqual(result, { code: 1, stdout: '', stderr: 'Run codex-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).' });

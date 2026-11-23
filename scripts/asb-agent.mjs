@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { storeIdentity } from '../src/app-sources.mjs';
-import { CHANGED_MESSAGE, QUESTIONS_ONLY, changeClaudeHook, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
+import { CHANGED_MESSAGE, QUESTIONS_ONLY, changeClaudeHook, claudeHookStatus, homeForm, installedLauncher, phoneHookLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { processStart, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
 import { changeCodexHook, codexHookStatus, readCodexHookTargets } from '../src/codex-hook.mjs';
 import { readServiceRuntime, requestInstance } from './asb-instance.mjs';
@@ -365,7 +365,8 @@ function codexApproval(hook) {
 }
 
 // No output on a failed or expired wait lets the app use its normal approval path.
-export async function claudeWait(provider, { stdin = process.stdin, write = (line) => process.stdout.write(line), codexWaitMs = 30_000 } = {}) {
+export async function claudeWait(provider, { stdin = process.stdin, write = (line) => process.stdout.write(line), codexWaitMs = 30_000,
+  env = process.env, platform = process.platform } = {}) {
   const codex = provider === 'codex';
   const deadline = codex ? performance.now() + codexWaitMs : Infinity;
   const remaining = () => Math.ceil(deadline - performance.now());
@@ -387,7 +388,7 @@ export async function claudeWait(provider, { stdin = process.stdin, write = (lin
     if (!question && !approval) return;
     const { questions } = question ? hook.tool_input : {};
     const plan = !codex && hook.tool_name === 'ExitPlanMode';
-    const runtime = await readServiceRuntime();
+    const runtime = await readServiceRuntime(env, platform);
     const openMs = Math.min(2000, remaining());
     if (!runtime || openMs <= 0) return;
     const opened = await requestInstance(runtime, '/api/agent/wait', { method: 'POST', maxBytes: 4096, timeoutMs: openMs,
@@ -432,16 +433,24 @@ async function hookSetup(provider, args, { env = process.env, platform = process
     return 2;
   }
   if (rest.length === 3 && (!path.isAbsolute(dir) || /[\x00-\x1f\x7f]/.test(dir))) { error(`ASB agent: ${option} needs an absolute path.`); return 2; }
-  const launcher = installedLauncher(env);
-  if (action === 'install' && platform === 'win32') { error(`The ${codex ? 'Codex' : 'Claude Code'} hook works on Linux only for now.`); return 1; }
-  if (action === 'install' && !launcher) { error(`Run ${provider}-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).`); return 1; }
-  if (codex && action === 'install' && /['\x00-\x1f\x7f-\x9f]/.test(launcher)) {
+  const launcher = action === 'remove' ? '' : await phoneHookLauncher(env, platform);
+  if (action === 'install' && !launcher) {
+    error(platform === 'win32' ? 'ASB cannot find asb.cmd. Install ASB with npm and put its launcher on PATH.'
+      : `Run ${provider}-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).`);
+    return 1;
+  }
+  // A .cmd launcher is still parsed by cmd.exe when Claude starts it through PowerShell.
+  if (platform === 'win32' && action === 'install' && /["%^&|<>!\x00-\x1f\x7f-\x9f]/.test(launcher)) {
+    error('The installed launcher path has a shell or control character. The hook cannot use it.');
+    return 1;
+  }
+  if (platform !== 'win32' && codex && action === 'install' && /['\x00-\x1f\x7f-\x9f]/.test(launcher)) {
     error('The installed launcher path has a quote or a control character. The Codex hook cannot use it.');
     return 1;
   }
   const dirs = dir ? [path.resolve(dir)] : await (codex ? readCodexHookTargets : readHookTargets)(env, platform);
-  const targets = action === 'status' ? await (codex ? codexHookStatus : claudeHookStatus)(dirs, { launcher })
-    : await (codex ? changeCodexHook : changeClaudeHook)(action, dirs, { launcher, beforeRename });
+  const targets = action === 'status' ? await (codex ? codexHookStatus : claudeHookStatus)(dirs, { launcher, platform })
+    : await (codex ? changeCodexHook : changeClaudeHook)(action, dirs, { launcher, platform, beforeRename });
   const folder = (value) => printable(homeForm(value));
   log(json ? JSON.stringify({ targets }) : targets.map((target) => {
     const state = target.state === QUESTIONS_ONLY ? 'questions only (run asb agent claude-hook install for approvals)' : target.state ?? target.result;

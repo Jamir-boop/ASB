@@ -150,7 +150,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion, ...readAsbBuild(),
     onChange: () => { server.invalidateDashboard('peer-sessions', { hard: false }); relay.check(); } });
   const relay = createRelaySupervisor({ group, port, sourceToken, env, platform, bindTarget: (request) => server.bindMemberTarget(request) });
-  const gateway = createPhoneGateway({ localPort: port, asbVersion,
+  const gateway = createPhoneGateway({ localPort: port, asbVersion, platform, env, execFile,
     peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint),
       resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint),
       bridge: () => server.bridgeReport() },
@@ -164,7 +164,7 @@ export async function runEngine({ env = process.env, platform = process.platform
   let machineId = '';
   let referenceScopes = null;
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, claudeQuestions, answerEnabled: () => gateway.answerReady() === true,
-    approveEnabled: () => gateway.approveReady() === true, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
+    approveEnabled: () => gateway.approveReady() === true, machineGroup: group, machineRelay: relay, serviceMode: true, platform, env,
     readerPositions: positions, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform), usageBackupFile: usageBackupPath(env, platform),
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
