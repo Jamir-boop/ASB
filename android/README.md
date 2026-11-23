@@ -320,6 +320,34 @@ inspector closes, so the controls below it do not move. The card is checked
 on a real phone (a test copy of the app) and end to end with a desktop Code
 session; TalkBack is not checked on a device.
 
+When the PC has an open Claude Code approval for the row (the PC switches
+**Send message text to phones**, **Answer questions from phones**, and
+**Approve requests from phones** on, and the hook from `asb agent claude-hook
+install`), the inspector shows an approval card. The card shows the title
+(`Allow <tool>?`, or `Approve this plan?` for a plan) and the display lines that
+the PC sends: for a tool the command, file, URL, or query, or for an MCP tool the
+server name and the input key names; for a plan the plan text and `After
+approval: Bypass permissions mode, if this session allows it`. Two buttons: the
+outlined deny button (`Deny`, or `Keep planning` for a plan) and the filled allow
+button (`Allow once`, or `Approve plan`). The note field says `Note for the agent
+(sent with Deny)` on a tool card and `Note for the agent (sent with Keep
+planning)` on a plan card; the note goes only with a deny. The buttons arm one
+second after the card opens, so a new request does not replace a control under
+the finger. After a decision, `Sending`, then `Sent` or `Answered on the PC`
+shows; `Approvals are off on the PC.` and `The PC did not take this answer.` stay
+on the card. The card and the decision stay in memory only.
+
+The PC wins: when you answer on the PC, the card closes in place at the next
+phone read with the line `This request is closed.` and both buttons off (at most
+30 s). `Answered on the PC` shows only when you tap a button after the PC
+answered (the engine then answers 409). If the engine stops during a wait, the
+card shows `Offline` with the buttons off until the phone reaches the PC again,
+then it closes with `This request is closed.`. The alert and the `Waiting` state
+come from the row's attention marks (`notify/Events.kt`), not the card data, so
+the card can be in the row before the app shows Waiting and before it alerts; a
+permission dialog alerts only after it stays open 10 s, and with no working row
+and no new request in the last 60 s the first card can be up to 30 s late.
+
 Settings > Card marks explains each card mark.
 
 The app turns with the phone. A window narrower than 600 dp shows one list. A

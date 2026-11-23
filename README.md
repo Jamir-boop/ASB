@@ -51,6 +51,24 @@ The card stays on the PC too, and the first answer wins. A long wait works (chec
 - Run `asb agent claude-hook remove` before `asb uninstall`.
 - This question-answer feature is for local Claude sessions on Linux. It does not apply to OpenCode, group members, or Windows.
 
+## Approve Claude Code requests from the phone
+
+On Linux, a paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. On main, not in a release yet. In Preferences > Phone, turn on **Approve requests from phones** (off by default, under **Answer questions from phones**). It needs phone access on, **Send message text to phones** on, **Answer questions from phones** on, and a paired phone. Run `asb agent claude-hook install` again: it now writes one `PermissionRequest` entry with matcher `*` (it replaces the older `AskUserQuestion` entry), and keeps `settings.json.asb-backup`. Until you run it again, `asb agent claude-hook status`, the Phone page, and `asb doctor` say `questions only`.
+
+The card shows the tool name and a few display lines (for Bash the command, for Write or Edit the file, for an MCP tool the server name and only the input key names, never the values). A plan card shows the plan text and `After approval: Bypass permissions mode, if this session allows it`. The note field says `Note for the agent (sent with Deny)` on a tool card and `Note for the agent (sent with Keep planning)` on a plan card. Allow runs the tool and closes the PC dialog. Deny does not run the tool, closes the PC dialog, and sends `Denied from the phone.` or `Denied from the phone: <note>`. `Approve plan` allows the plan and asks Claude Code to set bypassPermissions mode for the session; `Keep planning` sends `Keep planning.` or `Keep planning: <note>` and stays in plan mode.
+
+After `Approve plan` from a phone, a session that allows bypass mode runs its next tools with no dialog and no card, so a paired phone can start work that nobody approves step by step; this is the main risk of the feature.
+
+Limits:
+- A card comes only when Claude Code itself shows a permission dialog. In auto, dontAsk, and bypassPermissions mode no dialog shows, so no card.
+- `Approve plan` sets bypass mode only if the session was started with bypass mode available; else the session stays in Manual mode and each next tool asks again. A plan over 16,000 characters, or a plan request from a subagent, gets no card. A session started in bypass mode can end plan mode with no `ExitPlanMode`, so with no card.
+- The PC wins. When you answer on the PC, the open phone card closes in place at the next phone read (`This request is closed.`, both buttons off; at most 30 s). `Answered on the PC` shows only if you tap a button after the PC answered. A phone answer after a PC answer changes nothing for the tool.
+- If the engine stops during a wait, the hook ends with no output and the PC dialog stays and works. The phone shows `Offline` with the buttons off until it reaches the PC again, then the card closes.
+- One card for each session: a newer request replaces the older one on the phone; the older one stays on the PC only.
+- The alert and the `Waiting` state come from the row's attention marks, not the card data, so the card can be in the row before ASB shows Waiting and before the phone alerts. A permission dialog shows Waiting, the Needs input sound, and the phone alert only after it stays open 10 s, so a request you answer at once does not alert (measured once: still Working 8.3 s after the request, Waiting by 30.8 s; the alert time itself is not measured). With no working row and no new request in the last 60 s, the phone reads the PC each 30 s, so the first card can be up to 30 s late; the time with the screen off is not proven.
+- Checked with Claude Code 2.1.330 on Linux: a CLI session end to end with a real Android phone (2026-11-23), and a desktop Code tab session for one tool allow and one tool deny (2026-11-22). The desktop Code tab is not checked for plans.
+- An older ASB build reads the `*` entry as `other launcher`. Not yet: Windows (the hook install refuses it), group members, and Antigravity CLI.
+
 ## Approve Codex commands from the phone
 
 On Linux, run `asb agent codex-hook install` to add the optional hook for the Codex CLI and the Codex app's app-server. It is not installed by default. In the CLI, at `Hooks need review`, use `Review hooks` to find the ASB `PermissionRequest` hook. Select `Trust all and continue` only if you trust all the hooks shown. If you select `Continue without trusting`, Codex skips the hook and uses its normal approval path. The `^Bash$` matcher limits the hook to `Bash` approvals. Run `asb agent codex-hook remove` to remove it. Run `asb agent codex-hook status` to check each enabled Codex home. ASB cannot see if Codex trusts the hook: the state `installed` does not mean that Codex runs it.
