@@ -7,7 +7,7 @@ import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData,
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
-import { loadAntigravityDashboard } from './antigravity-data.mjs';
+import { agyRecordsDir, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
@@ -284,6 +284,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         : thread.surface === 'cli' ? 'cli' : 'app';
       // A CLI session or a session on another machine shows as a card but never opens from ASB.
       const viewOnly = surface === 'cli' || thread.remote === true;
+      const focusable = thread.provider === 'antigravity' && thread.canFocus === true && thread.remote !== true;
       const status = switchboardStatus(thread, nowMs);
       const startedAtMs = Number(thread.lifecycleRunning === true ? thread.agentStartedAtMs
         : thread.provider === 'claude-desktop-code' ? thread.latestUserMessageAtMs : 0);
@@ -334,7 +335,9 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         completionAtMs: lastOutcome === 'limit' ? 0 : thread.groupCompletionAtMs ?? (['turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed'].includes(thread.latestLifecycleKind) ? 0
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
             Number(thread.latestAgentFinalAtMs || 0))),
-        canOpen: !viewOnly && Boolean(appDeepLink) && thread.sourceCanOpen !== false,
+        // A live agy row whose kitty passed rule 2 opens by a focus of its kitty window; the kitty data stays in the record.
+        canOpen: focusable || !viewOnly && Boolean(appDeepLink) && thread.sourceCanOpen !== false,
+        ...(focusable ? { canFocus: true } : {}),
         appDeepLink: viewOnly ? '' : appDeepLink,
       };
       // A usage limit stopped the session, and its reset is still in the future.
@@ -618,6 +621,9 @@ export async function loadSwitchboardDashboard({
 
 export async function openSwitchboardThread(thread, options = {}) {
   if (thread.provider === 'opencode') throw new Error('OpenCode cannot open one session from a link.');
+  if (thread.provider === 'antigravity' && thread.canFocus === true && thread.remote !== true) {
+    return focusAgyInKitty({ dataDir: thread[SOURCE_DIR] || agyRecordsDir(), id: thread.externalId, procDir: options.procDir, startOf: options.startOf });
+  }
   if (thread.surface === 'cli' || thread.remote === true) throw new Error('This session cannot open from ASB.');
   const externalId = thread.externalId || thread.id;
   const valid = (thread.provider === 'codex' && UUID.test(externalId)

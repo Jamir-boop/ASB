@@ -35,7 +35,7 @@ const XDG_MIME = ['codex', 'claude'].map((scheme) => ['xdg-mime', 'query', 'defa
 // The firewall fakes: `phone` is the /api/phone reply of the running engine (null: no engine), `firewalld` the --state output
 // (null: firewall-cmd is missing), and `zones` the zone of each interface.
 async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {}, phone = null,
-  firewalld = null, zones = {}, links = LINKS, claudeHook = async () => [] }) {
+  firewalld = null, zones = {}, links = LINKS, claudeHook = async () => [], kitty = async () => {} }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, 'bin');
@@ -48,6 +48,8 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
   // The Claude Code hook fake: no doctor test reads a real Claude config dir. `claudeHook: null` uses the real reader (temp HOME only).
   const deps = {
     ...(claudeHook ? { claudeHook } : {}),
+    // The kitty check fake: `kitty: null` uses the real check (a temp HOME and the fake read only).
+    ...(kitty ? { kitty } : {}),
     find: async () => (phone ? runtime : null),
     api: async (record, route) => {
       requests.push([record, route]);
@@ -687,4 +689,34 @@ test('doctor reads the hook state of the ASB Claude profiles and writes nothing'
     [['info', `Claude Code hook (${config}): not installed`]]);
   assert.ok(!JSON.stringify(data).includes('made-up-secret'));
   assert.deepEqual(await snapshot(), before);
+});
+
+test('kitty remote control: reachable with kitty on PATH and the two kitty.conf keys, else not set up with the advice; no line without kitty; no other line printed', async (t) => {
+  const home = '/home/made-up';
+  const conf = `${home}/.config/kitty/kitty.conf`;
+  const ready = 'font_family made-up-font-marker\nallow_remote_control socket-only\n# made-up comment marker\nlisten_on unix:@kitty-{kitty_pid}\n';
+  const check = async (bins, text) => {
+    const system = await fakeSystem(t, { release: 'debian13', kitty: null, bins, env: { HOME: home }, files: { [conf]: text } });
+    const lines = await system.lines();
+    assert.ok(system.reads.includes(conf));
+    assert.ok(!lines.join('\n').includes('marker'));
+    return lines;
+  };
+  const kittyBins = [...ALL_BINS, 'kitty'];
+  const advice = ['In kitty.conf:', '  allow_remote_control socket-only', '  listen_on unix:@kitty-{kitty_pid}'];
+  for (const [bins, text, ok] of [[kittyBins, ready, true], [kittyBins, ready.replace('socket-only', 'yes'), true],
+    [kittyBins, ready.replace('socket-only', 'socket'), true],
+    [kittyBins, ready.replace('socket-only', 'no'), false], [kittyBins, ready.replace('unix:@', 'tcp:'), false],
+    [kittyBins, 'allow_remote_control socket-only\n', false], [kittyBins, '', false],
+    [kittyBins, `${ready}allow_remote_control no\n`, false]]) {
+    const lines = await check(bins, text);
+    assert.ok(lines.includes(`  ${ok ? 'ok       ' : 'info     '}kitty remote control: ${ok ? 'reachable' : 'not set up'}`), text);
+    assert.equal(advice.every((line) => lines.includes(line)), !ok, text);
+  }
+  // No kitty on PATH: no line and no advice, and kitty.conf is not read.
+  const none = await fakeSystem(t, { release: 'debian13', kitty: null, env: { HOME: home }, files: { [conf]: ready } });
+  const data = await collect(none.deps);
+  assert.equal(data.checks.some((item) => item.id === 'kitty-remote'), false);
+  assert.equal(data.advice.some((line) => line.includes('kitty')), false);
+  assert.equal(none.reads.includes(conf), false);
 });

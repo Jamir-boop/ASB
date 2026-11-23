@@ -2991,6 +2991,8 @@ class DataChecks(unittest.TestCase):
         cli = {"surface": "cli", "machineName": "This PC"}
         for row, view_only, where in ((remote, True, ("asb-machine-symbolic", "homeLP")),
                                       (cli, True, ("asb-terminal-symbolic", "CLI")),
+                                      ({**cli, "provider": "antigravity", "canFocus": True}, False, ("asb-terminal-symbolic", "CLI")),
+                                      ({**remote, "canFocus": True}, True, ("asb-machine-symbolic", "homeLP")),
                                       ({**remote, "surface": "cli"}, True, ("asb-machine-symbolic", "homeLP")),
                                       ({**remote, "machineName": ""}, True, ("asb-machine-symbolic", "another machine")),
                                       ({"surface": "app", "remote": False}, False, (None, "")),
@@ -6676,6 +6678,11 @@ class NativeLogicChecks(unittest.TestCase):
                          ("OpenCode", "Pinned · No direct link. ASB cannot open OpenCode sessions. Open it in OpenCode."))
         self.assertIn("ASB cannot open OpenCode sessions. Open it in OpenCode.", description(value))
         # A view-only row says where it runs in place of "No direct link".
+        # A focusable agy row opens its kitty window; a plain agy row keeps the CLI text.
+        focus = {**base, "provider": "antigravity", "providerLabel": "Antigravity CLI", "surface": "cli", "canOpen": True, "canFocus": True}
+        self.assertEqual(model(focus, 223_000, "/home/test")["flags"], "CLI session. Opens its kitty window.")
+        self.assertEqual(model({**focus, "canOpen": False, "canFocus": None}, 223_000, "/home/test")["flags"],
+                         "CLI session. Runs in a terminal. ASB does not open CLI sessions.")
         for extra, flags in (({"surface": "cli", "pinned": True}, "Pinned · CLI session. Runs in a terminal. ASB does not open CLI sessions."),
                              ({"remote": True, "machineName": "homeLP"}, "On homeLP. Open it on homeLP."),
                              ({"remote": True, "machineName": "homeLP", "surface": "cli"}, "On homeLP · CLI session. Open it on homeLP."),

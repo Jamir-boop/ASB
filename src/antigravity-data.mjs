@@ -1,10 +1,12 @@
 // Antigravity CLI (agy) sessions from the records of the ASB agy hook (scripts/asb-agy-hook.mjs): IDs, paths, times, and states only.
-// The rows are view only. ASB never reads agy's own stores, its login, or its transcript text (the transcript is only stat'ed).
+// The rows are view only, except that a live row in a kitty with remote control focuses its kitty window.
+// ASB never reads agy's own stores, its login, or its transcript text (the transcript is only stat'ed).
+import { execFile } from 'node:child_process';
 import { constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { processStart } from './claude-registry.mjs';
-import { stateDir } from './platform-paths.mjs';
+import { findExecutable, stateDir } from './platform-paths.mjs';
 
 export const AGY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const AGY_LISTEN_ON = /^unix:(?:\/|@)[^\x00-\x1f\x7f]+$/;
@@ -18,6 +20,8 @@ const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const NO_NEWS_MS = 10 * 60 * 1000;
 // agy fires no event when it ends, so a live row is checked again at the next 30 s mark.
 const LIVE_CHECK_MS = 30_000;
+const KITTY_LEVELS = 8;
+export const AGY_FOCUS_ERROR = 'ASB could not focus this agy session in kitty.';
 
 export const agyAbsolutePath = (value) => typeof value === 'string' && PATH_TEXT.test(value) && path.isAbsolute(value) ? path.resolve(value) : '';
 export const agyRecordsDir = (env = process.env, homeDir = os.homedir()) => path.join(stateDir(env, 'linux', homeDir), 'agy');
@@ -43,6 +47,64 @@ export function validAgyRecord(record, id, homeDir = os.homedir()) {
     && (transcriptMtimePath === undefined || agyTranscriptPath(transcriptMtimePath, homeDir) === transcriptMtimePath);
 }
 
+// A process of this user that is not a zombie: its comm and parent PID, from `<procDir>/<pid>/stat`.
+async function procInfo(pid, procDir) {
+  try {
+    if ((await fs.stat(path.join(procDir, String(pid)))).uid !== process.getuid()) return null;
+    const text = await fs.readFile(path.join(procDir, String(pid), 'stat'), 'utf8');
+    const close = text.lastIndexOf(')');
+    const [state, ppid] = text.slice(close + 2).split(' ');
+    return state === 'Z' ? null : { comm: text.slice(text.indexOf('(') + 1, close), ppid: Number(ppid) };
+  } catch { return null; }
+}
+
+// Rule 2 of plan P3 for a live record: a kitty window ID, a live kitty of this user that is an ancestor of the agy PID (the record has no kitty
+// start ticks, so the ancestry is the reused-PID check), and a listen-on socket that this user owns or an abstract name with the kitty PID.
+export async function agyFocusTarget(record, { procDir = '/proc' } = {}) {
+  const { agyPid, kittyWindowId, kittyPid, kittyListenOn } = record;
+  if (!Number.isInteger(agyPid) || !digits(kittyWindowId, 10) || !digits(kittyPid, 10) || typeof kittyListenOn !== 'string'
+    || kittyListenOn.length > 300 || !AGY_LISTEN_ON.test(kittyListenOn)) return null;
+  const kitty = Number(kittyPid);
+  if ((await procInfo(kitty, procDir))?.comm !== 'kitty') return null;
+  let pid = agyPid;
+  for (let level = 0; level < KITTY_LEVELS && pid !== kitty; level++) pid = (await procInfo(pid, procDir))?.ppid || 0;
+  if (pid !== kitty) return null;
+  const name = kittyListenOn.slice('unix:'.length);
+  if (name.startsWith('@')) return new RegExp(`kitty-${kitty}(?![0-9])`).test(name) ? { listenOn: kittyListenOn, windowId: kittyWindowId } : null;
+  const info = await fs.lstat(name).catch(() => null);
+  return info?.isSocket() && info.uid === process.getuid() ? { listenOn: kittyListenOn, windowId: kittyWindowId } : null;
+}
+
+// The open of a focusable row: the record is read and rule 2 checked again now; any failure is the one open error.
+export async function focusAgyInKitty({ dataDir, id, procDir = '/proc', startOf = processStart, homeDir = os.homedir() }) {
+  const fail = () => { throw new Error(AGY_FOCUS_ERROR); };
+  if (typeof id !== 'string' || !AGY_UUID.test(id) || !dataDir) fail();
+  const record = await readRecord(path.join(dataDir, `${id}.json`));
+  if (!validAgyRecord(record, id, homeDir) || record.agyPid === undefined || await startOf(record.agyPid) !== record.agyStartTicks) fail();
+  const target = await agyFocusTarget(record, { procDir });
+  if (!target) fail();
+  await new Promise((resolve, reject) => execFile('kitty', ['@', '--to', target.listenOn, 'focus-window', '--match', `id:${target.windowId}`],
+    { timeout: 3000 }, (error) => (error ? reject(error) : resolve()))).catch(fail);
+  return { opened: true, method: 'antigravity-kitty-focus' };
+}
+
+// asb doctor, only with kitty on PATH: the two remote control keys of kitty.conf (read only; no other line of the file is used).
+export async function agyKittyDoctor(add, advice, { env = process.env, read } = {}) {
+  // A PC without kitty gets no line and no kitty.conf advice.
+  if (!await findExecutable('kitty', { env })) return;
+  const conf = await read(path.join(env.HOME || os.homedir(), '.config', 'kitty', 'kitty.conf')).catch(() => '');
+  let allow = '';
+  let listen = false;
+  for (const line of conf.split('\n')) {
+    const [key, value = ''] = line.trim().split(/\s+/);
+    if (key === 'allow_remote_control') allow = value;
+    if (key === 'listen_on') listen = value.startsWith('unix:');
+  }
+  const ready = ['socket-only', 'socket', 'yes'].includes(allow) && listen;
+  add('kitty-remote', 'Options', ready ? 'ok' : 'info', `kitty remote control: ${ready ? 'reachable' : 'not set up'}`);
+  if (!ready) advice.push('In kitty.conf:', '  allow_remote_control socket-only', '  listen_on unix:@kitty-{kitty_pid}');
+}
+
 async function readRecord(file) {
   let handle;
   try {
@@ -60,7 +122,7 @@ async function transcriptMtime(file) {
   return info?.isFile() ? info.mtimeMs : 0;
 }
 
-export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now() }) {
+export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now(), canFocus = false }) {
   const { conversationId: id, workspace, state, stateAtMs } = record;
   const thread = {
     id: `agy:${id}`, externalId: id, provider: 'antigravity', providerLabel: 'Antigravity CLI', source: 'agy-cli', surface: 'cli',
@@ -68,6 +130,7 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
     createdAtMs: record.createdAtMs, updatedAtMs: stateAtMs, canOpen: false, transcriptActivityAtMs: stateAtMs,
   };
   if (state === 'idle') thread.cliNoTranscript = true;
+  if (live && canFocus) thread.canFocus = true;
   if (state === 'working' || state === 'question') {
     Object.assign(thread, { lifecycleRunning: true, agentActivityAtMs: Math.max(stateAtMs, transcriptAtMs), latestLifecycleAtMs: stateAtMs });
     if (state === 'question') Object.assign(thread, { userQuestionBlocking: true, latestBlockingQuestionAtMs: stateAtMs,
@@ -91,7 +154,7 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
 }
 
 // Reads the hook records (at most 500 files of 16 KiB each); a bad file is skipped. Removes its own records that are not live and older than 7 days.
-export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), homeDir = os.homedir(), startOf = processStart } = {}) {
+export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), homeDir = os.homedir(), startOf = processStart, procDir = '/proc' } = {}) {
   const names = await fs.readdir(dataDir).catch((error) => {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -108,7 +171,8 @@ export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), ho
       await fs.rm(file, { force: true }).catch(() => {});
       return null;
     }
-    return agyThread(record, { live, nowMs, transcriptAtMs: live ? await transcriptMtime(record.transcriptMtimePath) : 0 });
+    return agyThread(record, { live, nowMs, transcriptAtMs: live ? await transcriptMtime(record.transcriptMtimePath) : 0,
+      canFocus: live && Boolean(await agyFocusTarget(record, { procDir })) });
   }))).filter(Boolean);
   return { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
 }

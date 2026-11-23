@@ -113,7 +113,7 @@ function sessionRow(thread) {
   const viewOnly = (thread.remote ? ` On ${where}.` : '') + (thread.surface === 'cli' ? ' CLI session.' : '') + (where ? ' View only.' : '');
   row.disabled = entry.opening || !thread.canOpen;
   row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${stateText}.${viewOnly} ${attention} ${outcome}`.trim());
-  row.title = thread.remote ? `On ${where}. Open it on ${where}.` : where ? 'CLI session. ASB does not open CLI sessions.'
+  row.title = thread.remote ? `On ${where}. Open it on ${where}.` : where ? `CLI session. ${thread.canFocus ? 'Opens its kitty window.' : 'ASB does not open CLI sessions.'}`
     : thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
   if (attention) row.title += ` ${attention}`;
   if (outcome) row.title += ` ${outcome}`;

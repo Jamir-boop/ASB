@@ -484,3 +484,13 @@ test('CLI and remote rows say where they run, say why they do not open, and send
   await h.refresh(response(initial));
   assert.equal(meta(h.row('synthetic-1')).length, 3);
 });
+
+test('a focusable agy row says it opens its kitty window and is not disabled', async () => {
+  const initial = board(3);
+  Object.assign(initial.threads[1], { surface: 'cli', providerLabel: 'Antigravity CLI', canOpen: true, canFocus: true, appDeepLink: '' });
+  const h = harness(initial);
+  await settle();
+  const row = h.row('synthetic-1');
+  assert.equal(row.title, 'CLI session. Opens its kitty window.');
+  assert.equal(row.disabled, false);
+});

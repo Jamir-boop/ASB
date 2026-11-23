@@ -9893,6 +9893,24 @@ class WidgetCheck(unittest.TestCase):
         window.context_menu.popdown(); self.drain(.1)
         window.opening.discard("opens")
 
+    def test_focusable_agy_row_opens_and_says_it_opens_its_kitty_window(self):
+        agy = {"provider": "antigravity", "providerLabel": "Antigravity CLI", "surface": "cli"}
+        rows = [self.card_row("focus", canFocus=True, **agy), self.card_row("plain", canOpen=False, **agy)]
+        window = self.card_board(rows)
+        expected = {"focus": ("Open in Antigravity CLI", "CLI session. Opens its kitty window.", True, False),
+                    "plain": ("Runs in a terminal", "ASB does not open CLI sessions.", False, True)}
+        for identity, (text, caption, sensitive, where) in expected.items():
+            with self.subTest(row=identity):
+                card = window.card_for(identity)
+                self.assertEqual(card.get_activatable(), sensitive)
+                self.assertEqual(card.asb_accessible_label.endswith(" CLI session. Opens its kitty window."), sensitive)
+                self.assertEqual(card.asb_accessible_label.endswith(" CLI session. View only."), not sensitive)
+                window.show_context(card); self.drain(.2)
+                button = window.context_menu.asb_open
+                self.assertEqual((button.asb_label.get_label(), button.asb_caption.get_label()), (text, caption))
+                self.assertEqual((button.get_sensitive(), button.has_css_class("asb-panel-where")), (sensitive, where))
+                window.context_menu.popdown(); self.drain(.1)
+
     @staticmethod
     def opencode_panel_tone(window, palette, opens):
         """The OpenCode Open row icon: 60% of the row icon tone over the panel, with 3:1 on the panel (and its hover tint)."""

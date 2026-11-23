@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { agyKittyDoctor } from '../src/antigravity-data.mjs';
 import { PLAYERS } from '../src/asb-sounds.mjs';
 import { QUESTIONS_ONLY, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
@@ -178,7 +179,7 @@ async function collectWindows({ env, execFile, exists: present, node, platform, 
 // `firewall: false` leaves out the firewall part (asb setup step 0).
 export async function collect({ env = process.env, execFile = execFileAsync, read = readText, exists: present = exists, node,
   find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform,
-  claudeHook = () => readClaudeHook(env, platform) } = {}) {
+  claudeHook = () => readClaudeHook(env, platform), kitty = (add, advice) => agyKittyDoctor(add, advice, { env, read }) } = {}) {
   if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform, claudeHook });
   const release = parseOsRelease(await read('/etc/os-release'));
   const { family, mode } = detectFamily(release, { ostreeBooted: await present('/run/ostree-booted') });
@@ -293,6 +294,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
     }
   }
   await hookChecks(add, advice, claudeHook, phone?.answer === true, phone?.approve === true);
+  await kitty(add, advice);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 
