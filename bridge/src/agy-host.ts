@@ -15,6 +15,7 @@ const CLAIM_MS = 10_000;
 // agy 1.5.15 showed full text up to 8 lines / 589 characters at 71 columns. The limit depends on width; the post-paste check is the real guard.
 const AGY_KITTY_MAX_LINES = 8;
 const AGY_KITTY_MAX_CHARS = 500;
+const IGNORED = /[\s│┃>›❯]/g;
 export const agyReceiverError = 'This agy conversation has no active ASB receiver or another receiver already registered it.';
 
 export function agyRuntime(record: AgyRecord | undefined): Runtime {
@@ -136,9 +137,9 @@ export function createAgyHost({ id, pid, mailbox, read, kittyDelivery, focus = a
     try {
       await command(gate, 'send-text', ['--bracketed-paste=enable', '--', item.text], async () => attempted = await unchanged());
       await wait(150);
-      const pasted = promptZone(await screen())?.join('').replace(/\s/g, '');
-      const frame = item.text.split('\n')[0]!.replace(/\s/g, '');
-      if (!frame || !pasted?.startsWith(frame) || !pasted.includes(item.text.replace(/\s/g, ''))) {
+      const pasted = promptZone(await screen())?.join('').replace(IGNORED, '');
+      const frame = item.text.split('\n')[0]!.replace(IGNORED, '');
+      if (!frame || !pasted?.startsWith(frame) || !pasted.includes(item.text.replace(IGNORED, ''))) {
         throw new Error('agy paste could not be verified');
       }
       await command(gate, 'send-key', ['enter'], async () => {

@@ -250,10 +250,12 @@ for (const [lines, chars, paste] of [[8, 499, true], [9, 499, false], [8, 500, t
 
 const wrappedStart = '[ASB Bridge peer message from Fixture, sessionId';
 const wrappedId = '11111111-2222-4333-8444-555555555555';
-const wrappedBody = `${wrappedStart} ${wrappedId}. Reply with asb-bridge send_message.]\nNext line`;
-for (const [kind, lines, verified] of [
+const wrappedFrame = `${wrappedStart} ${wrappedId}. Reply with asb-bridge send_message.]`;
+for (const [kind, lines, verified, messageBody = 'Next line'] of [
   ['word wrap', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]', 'Next line'], true],
   ['wrap inside a word', [`${wrappedStart} ${wrappedId.slice(0, 17)}`, `${wrappedId.slice(17)}. Reply with asb-bridge`, 'send_message.]', 'Next line'], true],
+  ['leading quote mark', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]', '> quoted'], true, '> quoted'],
+  ['trailing box mark', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]', 'Next line│'], true, 'Next line│'],
   ['different text', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'list_sessions.]', 'Next line'], false],
   ['missing body', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]'], false],
   ['different body', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]', 'Other line'], false],
@@ -265,7 +267,7 @@ for (const [kind, lines, verified] of [
     const zone = lines.map((line, i) => `│${(i ? `  ${line}` : `> ${line}`).padEnd(71)}│`).join('\n');
     f.afterPaste(() => f.setScreen(`case output\n╭${border}╮\n${zone}\n╰${border}╯\n`));
     const id = randomUUID();
-    await f.host.deliver(id, wrappedBody, true);
+    await f.host.deliver(id, `${wrappedFrame}\n${messageBody}`, true);
     await f.poll();
     expect(f.calls.map(args => args[3])).toEqual(verified ? ['get-text', 'send-text', 'get-text', 'send-key'] : ['get-text', 'send-text', 'get-text']);
     if (verified) {
