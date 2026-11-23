@@ -38,6 +38,8 @@ const run = (file, args, { env = {}, input = '' } = {}) => new Promise((resolve,
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.on('error', reject);
   child.on('close', (code) => resolve({ code, stdout, ms: Date.now() - started }));
+  // The child may exit before it reads stdin.
+  child.stdin.on('error', () => {});
   child.stdin.end(input);
 });
 const line = (shell, launcher, event, options = {}) => run(shell, ['-c', agyHookLine(launcher, event)], { env: { PATH: '/usr/bin:/bin' }, ...options });
