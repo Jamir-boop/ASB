@@ -90,7 +90,7 @@ linux('binds only the newest matching hook record, changes conversation, and cle
   } finally { await binding.close(); f.close(); }
 });
 
-linux('no matching record for 30 seconds leaves tools available with a clear error', async () => {
+linux('no matching record for 30 seconds changes the error without stopping receiver discovery', async () => {
   const f = fixture(false);
   let rows: AgyRecord[] = [];
   const binding = bindAgy({ identity, home: f.root, env: f.env, kittyDelivery: false, read: async () => rows,
@@ -101,9 +101,11 @@ linux('no matching record for 30 seconds leaves tools available with a clear err
     f.advance(30_001);
     await binding.tick();
     expect(() => binding.current(meta(f.id))).toThrow('no agy hook record');
-    rows = [f.update({})];
-    await binding.tick();
     expect(peers(f.env.CLAUDE_CONFIG_DIR)).toEqual([]);
+    rows = [f.update({ stateAtMs: f.now() })];
+    await binding.tick();
+    expect(binding.current(meta(f.id)).status()).toMatchObject({ threadId: f.id, transport: 'agy', replyAddress: expect.any(String) });
+    expect(peers(f.env.CLAUDE_CONFIG_DIR).map(peer => peer.sessionId)).toEqual([f.id]);
   } finally { await binding.close(); f.close(); }
 });
 

@@ -12,9 +12,9 @@ import { peers, privateDirectory } from './claude';
 import { brief, listSessions, listSessionsInput, sendMessage, sendMessageInput, statusBrief } from './tools';
 import { version } from './version';
 
-// off until the live kitty proof: MCP start timing, ancestry, empty-prompt rule, and @ or / paste menus are not proven
+// Off until a live kitty check proves the empty-prompt rule and paste behavior with @ and /.
 const AGY_KITTY_DELIVERY = false;
-const NO_RECORD = 'ASB has no agy hook record for this process. Install the ASB agy hook and start a new agy session.';
+const NO_RECORD = 'ASB has no agy hook record for this process. The ASB agy hook writes its first record on the first turn.';
 const META_KEY = 'antigravity.google/root_conversation_id';
 
 export function checkAgyCaller(meta: Record<string, unknown> | undefined, id: string) {
@@ -74,13 +74,10 @@ export function bindAgy({ identity, env, home, kittyDelivery, pid = process.pid,
       await release();
       return false;
     }
-    if (!sawRecord && now() >= deadline) {
-      receiverError = NO_RECORD;
-      return true;
-    }
     const records = await read();
     const record = newest(records, identity);
     if (!record) {
+      if (!sawRecord && now() >= deadline) receiverError = NO_RECORD;
       await receiver?.host.poll(undefined);
       await receiver?.bridge.updateRuntime(agyRuntime(undefined));
       return true;
