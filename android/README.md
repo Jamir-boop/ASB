@@ -107,7 +107,11 @@ screen is open, the screen updates the notification and the service sends no
 requests. On the other screens of the app, the service reads the dashboard but
 shows no alerts. In the background, while the phone is awake, the service reads
 the dashboard every 5 seconds while a session is working, and every 30 seconds
-when not or when the PC is offline. It shows Done, Failed, and Needs input
+when not or when the PC is offline. For 60 seconds after a row gets a new open
+question or approval (a new request ID), it reads every 5 seconds. A new
+request on a row that already needs input posts the Needs input alert again.
+The saved baseline holds the open request ID of each row (32 hex characters),
+never request text. It shows Done, Failed, and Needs input
 alerts after the read that finds them. When the screen is off, Android can put
 the phone to sleep and delay these reads and alerts, sometimes by many minutes,
 until the phone wakes again. When the service is off, the 15-minute background
