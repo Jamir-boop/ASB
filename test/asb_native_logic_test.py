@@ -9357,12 +9357,21 @@ class NativeLogicChecks(unittest.TestCase):
         self.assertEqual(asb.session_reference(codex), "codex/123e4567-e89b-12d3-a456-426614174000")
         self.assertEqual(asb.session_reference({"id": "x:cse_remote", "externalId": "cse_remote", "provider": "claude-desktop-code"}),
                          "claude-desktop-code/cse_remote")
+        agy = {"id": "agy:123e4567-e89b-12d3-a456-426614174000", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "antigravity"}
+        self.assertEqual(asb.session_reference(agy), "antigravity/123e4567-e89b-12d3-a456-426614174000")
+        self.assertEqual(asb.session_reference({**agy, "sourceName": "antigravity-cli"}), "antigravity-cli/123e4567-e89b-12d3-a456-426614174000")
 
     def test_copy_values_check_both_references_and_give_each_reason(self):
         full = "asb:1/0123456789abcdef/codex/" + "f" * 32 + "/codex:123e4567-e89b-12d3-a456-426614174000"
         local = {"id": "x", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "codex",
                  "sessionReference": "codex/123e4567-e89b-12d3-a456-426614174000", "reference": full}
         self.assertEqual(asb.copy_values(local), ("codex/123e4567-e89b-12d3-a456-426614174000", None, full, None))
+        agy_full = "asb:1/0123456789abcdef/antigravity/" + "f" * 32 + "/agy:123e4567-e89b-12d3-a456-426614174000"
+        agy_row = {"id": "agy:123e4567-e89b-12d3-a456-426614174000", "externalId": "123e4567-e89b-12d3-a456-426614174000",
+                   "provider": "antigravity", "sessionReference": "antigravity-cli/123e4567-e89b-12d3-a456-426614174000", "reference": agy_full}
+        self.assertEqual(asb.copy_values(agy_row), ("antigravity-cli/123e4567-e89b-12d3-a456-426614174000", None, agy_full, None))
+        agy_old = {"id": "agy:123e4567-e89b-12d3-a456-426614174000", "externalId": "123e4567-e89b-12d3-a456-426614174000", "provider": "antigravity"}
+        self.assertEqual(asb.copy_values(agy_old), ("antigravity/123e4567-e89b-12d3-a456-426614174000", None, None, "The ASB engine is older. Quit ASB and start it again."))
         short = local["sessionReference"]
         def off(code, **extra):
             row = {**local, "referenceUnavailable": code, **extra}

@@ -334,7 +334,7 @@ def row_panel_controls(row, now_ms=None):
 
 def session_reference(row):
     """The app host and the app's own session ID, for example claude-proxy/local_<uuid>; never the ASB row ID."""
-    host = row.get("sourceName") or (row["provider"] if row.get("provider") in ("codex", "opencode") else "claude-desktop-code")
+    host = row.get("sourceName") or (row["provider"] if row.get("provider") in ("codex", "opencode", "antigravity") else "claude-desktop-code")
     return host + "/" + str(row.get("externalId", ""))
 
 

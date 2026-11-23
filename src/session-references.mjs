@@ -16,8 +16,9 @@ const APP_IDS = {
   // The bounded token of claudeRemoteDeepLink() in src/claude-remote-data.mjs.
   'claude-remote': /^(?:cse|session)_[A-Za-z0-9_-]{1,128}$/,
   opencode: /^[A-Za-z0-9_-]{1,128}$/,
+  agy: new RegExp(`^${UUID}$`),
 };
-const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
+const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode', 'antigravity'];
 // Printable ASCII with no space: this also refuses whitespace and line breaks.
 const PRINTABLE = /^[\x21-\x7e]+$/;
 const matches = (pattern, value) => typeof value === 'string' && pattern.test(value);
@@ -65,8 +66,9 @@ export function formatReference({ machineId, sourceId, scopeTag, type, appId } =
 // The type from the checked row fields, or null when the provider, surface, or app ID form does not give one.
 export function referenceType(row) {
   const type = row?.provider === 'codex' ? 'codex' : row?.provider === 'opencode' ? 'opencode'
-    : row?.provider !== 'claude-desktop-code' ? null : row.remoteCache === true ? 'claude-remote'
-      : row.surface === 'cli' ? 'claude-cli' : row.surface === 'app' ? 'claude-local' : null;
+    : row?.provider === 'antigravity' ? 'agy'
+      : row?.provider !== 'claude-desktop-code' ? null : row.remoteCache === true ? 'claude-remote'
+        : row.surface === 'cli' ? 'claude-cli' : row.surface === 'app' ? 'claude-local' : null;
   return type && matches(APP_IDS[type], row.externalId) ? type : null;
 }
 
@@ -94,7 +96,7 @@ export function scopeInput({ provider, dataDir, projectsDir } = {}) {
 // The short text that the board copies today (session_reference() in scripts/asb-native.py), when it is safe.
 export function shortReference(row) {
   if (!referenceType(row)) return null;
-  const host = row.sourceName || (['codex', 'opencode'].includes(row.provider) ? row.provider : 'claude-desktop-code');
+  const host = row.sourceName || (['codex', 'opencode', 'antigravity'].includes(row.provider) ? row.provider : 'claude-desktop-code');
   const text = `${host}/${row.externalId}`;
   return typeof host === 'string' && text.length <= MAX_REFERENCE_BYTES && PRINTABLE.test(text) ? text : null;
 }

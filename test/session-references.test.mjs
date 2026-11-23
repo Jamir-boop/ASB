@@ -42,7 +42,7 @@ async function folder(t) {
 
 test('every type formats and parses back with the app ID kept exactly', () => {
   const cases = [['codex', UUID], ['codex', MIXED], ['claude-local', `local_${UUID}`], ['claude-local', `local_${MIXED}`],
-    ['claude-cli', UUID], ['claude-remote', 'cse_AbC-1_x'], ['claude-remote', 'session_Tok'], ['opencode', 'ses_Abc-09_z']];
+    ['claude-cli', UUID], ['claude-remote', 'cse_AbC-1_x'], ['claude-remote', 'session_Tok'], ['opencode', 'ses_Abc-09_z'], ['agy', UUID], ['agy', MIXED]];
   for (const [type, appId] of cases) {
     const text = full(type, appId);
     assert.equal(text, `asb:1/${MACHINE}/claude-desktop-code/${SCOPE}/${type}:${appId}`);
@@ -65,7 +65,7 @@ test('hostile and malformed full text is refused with a stable code', () => {
     swap(`local_${UUID}`, UUID), swap(`local_${UUID}`, `local_${UUID}x`), full('codex', UUID).replace(UUID, UUID.replaceAll('-', '')),
     full('claude-remote', 'cse_A').replace('cse_A', 'cse_'), full('claude-remote', 'cse_A').replace('cse_A', 'other_A'),
     full('claude-remote', 'cse_A').replace('cse_A', `cse_${'a'.repeat(129)}`), full('opencode', 'a').replace(':a', ':a.b'),
-    full('opencode', 'a').replace(':a', ':'), valid.replace('asb:', 'ASB:'), valid.replace('asb:', 'asb://'), valid.slice(4),
+    full('opencode', 'a').replace(':a', ':'), full('agy', UUID).replace(UUID, 'not-a-uuid'), full('agy', UUID).replace(UUID, `local_${UUID}`), valid.replace('asb:', 'ASB:'), valid.replace('asb:', 'asb://'), valid.slice(4),
     'claude-desktop-code/local_' + UUID, `asb:1/${MACHINE}/x/${SCOPE}/claude-local:local_${UUID}é`,
     swap('/claude-local', '/ claude-local'), swap('/claude-local', '/constructor'), `asb:1/${MACHINE}/x/${SCOPE}/__proto__:a`,
   ]) rejects(text);
@@ -101,7 +101,8 @@ test('the row type comes from the checked provider, surface, cache flag, and ID 
   assert.equal(referenceType(row('claude-desktop-code', UUID, { surface: 'cli' })), 'claude-cli');
   assert.equal(referenceType(row('claude-desktop-code', 'session_Tok', { remoteCache: true })), 'claude-remote');
   assert.equal(referenceType(row('opencode', 'ses_1')), 'opencode');
-  for (const value of [row('codex', 'x'), row('claude-desktop-code', UUID), row('claude-desktop-code', `local_${UUID}`, { surface: 'cli' }),
+  assert.equal(referenceType(row('antigravity', UUID, { surface: 'cli' })), 'agy');
+  for (const value of [row('codex', 'x'), row('antigravity', 'not-a-uuid', { surface: 'cli' }), row('claude-desktop-code', UUID), row('claude-desktop-code', `local_${UUID}`, { surface: 'cli' }),
     row('claude-desktop-code', 'session_Tok'), row('claude-desktop-code', `local_${UUID}`, { remoteCache: true }),
     row('claude-desktop-code', `local_${UUID}`, { surface: 'other' }), row('other', UUID), row('opencode', 'a b'), row('codex', undefined),
     null, {}]) assert.equal(referenceType(value), null, JSON.stringify(value));
@@ -115,6 +116,10 @@ test('a row reference gives the full text or one reason', () => {
   assert.deepEqual(rowReference(row, { ...base, sourceId: undefined }), { referenceUnavailable: 'unknown-source' });
   assert.deepEqual(rowReference(row, { ...base, scopeTag: undefined }, 'old-peer'), { referenceUnavailable: 'old-peer' });
   assert.deepEqual(rowReference({ ...row, externalId: 'x' }, base), { referenceUnavailable: 'invalid-app-id' });
+  assert.deepEqual(rowReference({ provider: 'antigravity', surface: 'cli', externalId: UUID }, { ...base, sourceId: 'antigravity' }),
+    { reference: `asb:1/${MACHINE}/antigravity/${SCOPE}/agy:${UUID}` });
+  assert.deepEqual(rowReference({ provider: 'antigravity', surface: 'cli', externalId: 'bad-id' }, { ...base, sourceId: 'antigravity' }),
+    { referenceUnavailable: 'invalid-app-id' });
   assert.deepEqual(rowReference({ ...row, provider: 'other' }, base), { referenceUnavailable: 'unsupported-type' });
 });
 
@@ -124,6 +129,8 @@ test('the short reference is the text that the board copies, only when it is one
   assert.equal(shortReference({ provider: 'claude-desktop-code', surface: 'app', externalId: `local_${UUID}` }), `claude-desktop-code/local_${UUID}`);
   assert.equal(shortReference({ provider: 'codex', surface: 'cli', externalId: MIXED }), `codex/${MIXED}`);
   assert.equal(shortReference({ provider: 'opencode', surface: 'app', externalId: 'ses_1' }), 'opencode/ses_1');
+  assert.equal(shortReference({ provider: 'antigravity', surface: 'cli', externalId: UUID }), `antigravity/${UUID}`);
+  assert.equal(shortReference({ provider: 'antigravity', surface: 'cli', externalId: UUID, sourceName: 'antigravity-cli' }), `antigravity-cli/${UUID}`);
   assert.equal(shortReference({ provider: 'claude-desktop-code', surface: 'app', remoteCache: true, externalId: 'cse_Tok' }),
     'claude-desktop-code/cse_Tok');
   for (const row of [
@@ -232,6 +239,7 @@ test('the server adds the reference fields to local rows and keeps the row IDs',
     { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude Desktop Code', dataDir: '/synthetic/claude',
       projectsDir: '/synthetic/projects', enabled: true, builtin: true, launcher: '' },
     { id: 'opencode', provider: 'opencode', label: 'OpenCode', dataDir: '/synthetic/opencode', enabled: true, builtin: true, launcher: '' },
+    { id: 'antigravity', provider: 'antigravity', label: 'Antigravity CLI', dataDir: '/synthetic/agy', enabled: true, builtin: true, launcher: '' },
   ];
   const tag = referenceScopeTagger('d'.repeat(64));
   const claude = (id, externalId, extra = {}) => ({ id, externalId, provider: 'claude-desktop-code', surface: 'app', sourceId: 'claude-desktop-code',
@@ -242,6 +250,7 @@ test('the server adds the reference fields to local rows and keeps the row IDs',
     claude(`claude-desktop-code:${UUID}`, UUID, { surface: 'cli' }),
     claude('claude-desktop-code:cse_Tok', 'cse_Tok', { remoteCache: true }),
     { id: 'opencode:ses_1', externalId: 'ses_1', provider: 'opencode', surface: 'app', sourceId: 'opencode', sourceName: 'opencode', state: 'idle' },
+    { id: `agy:${UUID}`, externalId: UUID, provider: 'antigravity', surface: 'cli', sourceId: 'antigravity', sourceName: 'antigravity-cli', state: 'idle' },
     claude('claude-desktop-code:bad', 'bad id'),
     claude('gone:x', `local_${UUID}`, { sourceId: 'gone' }),
     { id: 'other:1', externalId: UUID, provider: 'other', surface: 'app', sourceId: 'codex', state: 'idle' },
@@ -269,6 +278,14 @@ test('the server adds the reference fields to local rows and keeps the row IDs',
   assert.equal(byId.get('claude-desktop-code:cse_Tok').reference,
     `asb:1/${MACHINE}/claude-desktop-code/${scope('claude-desktop-code')}/claude-remote:cse_Tok`);
   assert.equal(byId.get('opencode:ses_1').reference, `asb:1/${MACHINE}/opencode/${scope('opencode')}/opencode:ses_1`);
+  const agyRow = byId.get(`agy:${UUID}`);
+  assert.equal(agyRow.reference, `asb:1/${MACHINE}/antigravity/${scope('antigravity')}/agy:${UUID}`);
+  assert.equal(agyRow.sessionReference, `antigravity-cli/${UUID}`);
+  const tagsMap = new Map(sources.map((source) => [source.id, tag(source)]));
+  const agyShort = resolveSessionReference({ reference: agyRow.sessionReference }, { threads: board.threads, sources, tags: tagsMap, machine: identity });
+  const agyFull = resolveSessionReference({ reference: agyRow.reference }, { threads: board.threads, sources, tags: tagsMap, machine: identity });
+  assert.deepEqual([agyShort.ok, agyShort.availability, agyShort.identity?.reference], [true, 'found', agyRow.reference]);
+  assert.deepEqual([agyFull.ok, agyFull.availability, agyFull.identity?.reference], [true, 'found', agyRow.reference]);
   assert.equal(byId.get(UUID).referenceScope, scope('codex'));
   assert.equal(byId.get(UUID).sessionReference, `codex/${UUID}`);
   assert.equal(byId.get('claude-desktop-code:cse_Tok').sessionReference, 'claude-desktop-code/cse_Tok');

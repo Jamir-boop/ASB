@@ -2535,7 +2535,7 @@ test('sendName T2 engine selects one live unique local or member registry name',
   const self = { machineId: 'a'.repeat(16), name: 'desk' };
   const member = { machineId: 'b'.repeat(16), name: 'homelp', online: true };
   const scope = 'ab'.repeat(16);
-  const sources = ['codex', 'claude-desktop-code', 'opencode'].map((provider) => ({ id: provider, provider, label: provider, enabled: true }));
+  const sources = ['codex', 'claude-desktop-code', 'opencode', 'antigravity'].map((provider) => ({ id: provider, provider, label: provider, enabled: true }));
   let memberOnline = true;
   let memberMode = false;
   let current;
@@ -2567,19 +2567,20 @@ test('sendName T2 engine selects one live unique local or member registry name',
     return reply.json();
   };
   const rows = [
-    ['codex', 'codex', uuid, uuid],
-    ['claude-local', 'claude-desktop-code', `local_${uuid}`, uuid],
-    ['claude-prior', 'claude-desktop-code', `local_${uuid}`, prior],
-    ['claude-cli', 'claude-desktop-code', uuid, uuid],
-    ['opencode', 'opencode', 'ses_asbTestOpenCode01', '18284f68-b2c6-5cca-8fb7-12d5973743f9'],
+    ['codex', 'codex', uuid, uuid, 'cli', 'sample'],
+    ['claude-local', 'claude-desktop-code', `local_${uuid}`, uuid, 'cli', 'sample'],
+    ['claude-prior', 'claude-desktop-code', `local_${uuid}`, prior, 'cli', 'sample'],
+    ['claude-cli', 'claude-desktop-code', uuid, uuid, 'cli', 'sample'],
+    ['opencode', 'opencode', 'ses_asbTestOpenCode01', '18284f68-b2c6-5cca-8fb7-12d5973743f9', 'cli', 'sample'],
+    ['agy', 'antigravity', uuid, uuid, 'agy-asb-bridge', 'agy-asb-af'],
   ];
-  for (const [type, provider, externalId, key] of rows) await t.test(type, async () => {
+  for (const [type, provider, externalId, key, entrypoint, name] of rows) await t.test(type, async () => {
     current = { id: `${type}:${externalId}`, externalId, provider, sourceId: provider, source: provider,
-      surface: type === 'claude-cli' ? 'cli' : 'app', cliSessionId: uuid, priorCliSessionIds: [prior] };
-    await record(key);
+      surface: ['claude-cli', 'agy'].includes(type) ? 'cli' : 'app', cliSessionId: uuid, priorCliSessionIds: [prior] };
+    await record(key, entrypoint, name);
     const found = await resolve();
-    assert.equal(found.sendName, 'sample', JSON.stringify(found));
-    assert.equal((await resolve({ short: true })).sendName, 'sample');
+    assert.equal(found.sendName, name, JSON.stringify(found));
+    assert.equal((await resolve({ short: true })).sendName, name);
   });
   current = { id: uuid, externalId: uuid, provider: 'codex', sourceId: 'codex', surface: 'app' };
   await t.test('member keys and relay-only match', async () => {
