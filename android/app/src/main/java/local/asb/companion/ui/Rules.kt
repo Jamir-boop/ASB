@@ -158,11 +158,12 @@ fun providerQuery(query: String, app: String = "all"): Pair<String, String> {
     return casefold((match?.groupValues?.get(2) ?: query).trim { pythonSpace.matches(it.toString()) }) to selectedApp
 }
 
-val APP_FILTERS = listOf("all" to "All", "codex" to "Codex", "claude-desktop-code" to "Claude", "opencode" to "OpenCode")
+val APP_FILTERS = listOf("all" to "All", "codex" to "Codex", "claude-desktop-code" to "Claude", "opencode" to "OpenCode", "antigravity" to "Antigravity")
 
 fun providerIcon(provider: String): Int = when (provider) {
     "codex" -> R.drawable.ic_provider_openai
     "opencode" -> R.drawable.ic_provider_opencode
+    "antigravity" -> R.drawable.ic_terminal
     else -> R.drawable.ic_provider_claude
 }
 

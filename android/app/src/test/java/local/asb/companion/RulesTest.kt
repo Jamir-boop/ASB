@@ -119,12 +119,25 @@ class RulesTest {
         assertEquals("find" to "codex", providerQuery("cx: FIND", "opencode"))
         assertEquals("ocean" to "all", providerQuery("OCEAN"))
         assertEquals(listOf("opencode:ses_mock"), ids(rows, Filter(app = "opencode", archived = true)))
-        assertEquals(listOf("all", "codex", "claude-desktop-code", "opencode"), APP_FILTERS.map { it.first })
+        assertEquals(listOf("all", "codex", "claude-desktop-code", "opencode", "antigravity"), APP_FILTERS.map { it.first })
         assertEquals("OpenCode", APP_FILTERS.toMap()["opencode"])
+        assertEquals("Antigravity", APP_FILTERS.toMap()["antigravity"])
         assertEquals(R.drawable.ic_provider_openai, providerIcon("codex"))
         assertEquals(R.drawable.ic_provider_opencode, providerIcon("opencode"))
+        assertEquals(R.drawable.ic_terminal, providerIcon("antigravity"))
         assertEquals(R.drawable.ic_provider_claude, providerIcon("claude-desktop-code"))
         assertEquals(R.drawable.ic_provider_claude, providerIcon(""))
+    }
+
+    @Test fun antigravityFilterShowsOnlyItsRowAndAllShowsEveryProvider() {
+        val rows = listOf(
+            Thread(id = "codex:one", provider = "codex", providerLabel = "Codex", state = "idle"),
+            Thread(id = "claude:local_one", provider = "claude-desktop-code", providerLabel = "Claude Desktop Code", state = "idle"),
+            Thread(id = "opencode:ses_one", provider = "opencode", providerLabel = "OpenCode", state = "idle"),
+            Thread(id = "antigravity:one", provider = "antigravity", providerLabel = "Antigravity CLI", state = "idle"),
+        )
+        assertEquals(listOf("antigravity:one"), ids(rows, Filter(app = "antigravity")))
+        assertEquals(setOf("codex:one", "claude:local_one", "opencode:ses_one", "antigravity:one"), ids(rows, Filter()).toSet())
     }
 
     @Test fun pythonWhitespaceAndMultilineQueriesKeepTheirMeaning() {
