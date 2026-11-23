@@ -9,7 +9,7 @@ import local.asb.companion.net.Decision
 /** The engine limit of the deny note, in UTF-16 units (String.length), as the engine counts. */
 const val NOTE_LIMIT = 500
 
-const val NOTE_LABEL = "Note for the agent (sent with Deny)"
+fun noteLabel(approval: PhoneApproval): String = "Note for the agent (sent with ${approvalLabels(approval).deny})"
 const val APPROVAL_CLOSED = "This request is closed."
 
 data class KeptApproval(val approval: PhoneApproval?, val closed: Boolean)

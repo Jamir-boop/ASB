@@ -2042,7 +2042,7 @@ private fun ApprovalCardPanel(
             value = card.note,
             onValueChange = { card = card.type(it) },
             enabled = !closed && !card.locked && !offline,
-            label = { Text(NOTE_LABEL) },
+            label = { Text(noteLabel(approval)) },
             textStyle = MaterialTheme.typography.bodyMedium,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),

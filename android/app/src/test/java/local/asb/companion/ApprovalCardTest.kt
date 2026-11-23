@@ -19,7 +19,7 @@ import local.asb.companion.ui.APPROVAL_CLOSED
 import local.asb.companion.ui.ApprovalCard
 import local.asb.companion.ui.ApprovalLabels
 import local.asb.companion.ui.CardStatus
-import local.asb.companion.ui.NOTE_LABEL
+import local.asb.companion.ui.noteLabel
 import local.asb.companion.ui.NOTE_LIMIT
 import local.asb.companion.ui.answerRowToOpen
 import local.asb.companion.ui.approvalBanner
@@ -101,7 +101,8 @@ class ApprovalCardTest {
         assertEquals(ApprovalLabels("Keep planning", "Approve plan"), approvalLabels(plan))
         assertEquals("Approval request: Bash", approvalHeading(tool))
         assertEquals("Approval request: Approve the plan?", approvalHeading(plan))
-        assertEquals("Note for the agent (sent with Deny)", NOTE_LABEL)
+        assertEquals("Note for the agent (sent with Deny)", noteLabel(tool))
+        assertEquals("Note for the agent (sent with Keep planning)", noteLabel(plan))
         assertEquals("Allow once, this request is closed", ApprovalCard(tool).allowDescription(tool, closed = true))
         assertEquals("Approve plan, this request is closed", ApprovalCard(plan).allowDescription(plan, closed = true))
         assertNull(ApprovalCard(tool).allowDescription(tool, closed = false))
