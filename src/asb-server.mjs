@@ -938,7 +938,8 @@ export function createAsbServer({
         return;
       }
       try {
-        const thread = await findThreadForAction(threadId);
+        // An approval loads fresh: the registry reconcile first closes a record that the PC already answered.
+        const thread = await findThreadForAction(threadId, kind === 'approval');
         if (!thread) { threadNotFound(response); return; }
         const open = (kind === 'question' ? answerEnabled() : approveEnabled()) ? thread[CLAUDE_QUESTION] : null;
         if (open?.kind !== kind || open.requestId !== body.requestId) { sendJson(response, 409, { error: 'This question is closed.' }); return; }

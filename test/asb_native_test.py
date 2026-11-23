@@ -644,7 +644,7 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(editor.answer.get_next_sibling(), editor.approve)
         self.assertEqual(editor.approve.get_title(), "Approve requests from phones")
         self.assertEqual(editor.approve.get_subtitle(),
-                         "A paired phone can allow or deny the tool requests of Claude Code sessions. The request on the PC stays. "
+                         "A paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. The request on the PC stays. "
                          "Claude Code asks only in the Manual and accept-edits modes. Needs question answers on.")
         self.assertEqual(editor.approve.get_subtitle_lines(), 0)
         status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}

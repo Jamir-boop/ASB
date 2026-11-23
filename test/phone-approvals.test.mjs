@@ -184,7 +184,7 @@ test('the socket rule closes a record whose client left and keeps one that polls
 
 // A made-up engine: one Claude Code CLI session (`SESSION`) plus `extraRows` from other apps, and a registry record of this process
 // when `registry` is given.
-async function engine(t, { store = createClaudeQuestions(), extraRows = [], registry, ...serverOptions } = {}) {
+async function engine(t, { store = createClaudeQuestions(), extraRows = [], registry, onLoad, ...serverOptions } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-approvals-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const nowMs = Date.now();
@@ -204,6 +204,7 @@ async function engine(t, { store = createClaudeQuestions(), extraRows = [], regi
   const server = createSwitchboardServer({ sourceToken: TOKEN, pendingStatePath: false, palettePath: '', dashboardWatchPaths: [], sourceRegistry: sources,
     claudeQuestions: store, answerEnabled: () => true, approveEnabled: () => true, phonePaired: async () => true,
     loadDashboard: async (options) => {
+      onLoad?.();
       const board = await loadSwitchboardDashboard({ ...options, loadCodex: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) });
       board.threads.push(...extraRows.map((row) => ({ ...board.threads[0], ...row })));
       return board;
@@ -436,7 +437,7 @@ test('the hook prints the exact allow and deny decisions of the phone', async (t
   assert.deepEqual(quiet(await (await answered({ answers: { q: 'A' } })).run(bash)), none);
 });
 
-test('the hook registers nothing for a request the phone cannot show whole, for ExitPlanMode, and for bad stdin', async (t) => {
+test('the hook registers nothing for a request the phone cannot show whole, for a plan it cannot show or a subagent plan, and for bad stdin', async (t) => {
   const h = await hook(t, () => [200, { wait: true, requestId: 'a'.repeat(32) }]);
   for (const stdin of [permission('Bash', { command: 'x'.repeat(4001) }), permission('Bash', { command: 'echo \x1b[0m' }),
     permission('Write', { file_path: `/${'p'.repeat(4000)}`, content: '' }), permission('Edit', { file_path: '/a\x1bb' }),
@@ -446,7 +447,10 @@ test('the hook registers nothing for a request the phone cannot show whole, for 
     permission('Bash', { command: 'echo \u202egnp.exe' }), permission('Write', { file_path: '/work/\u202etxt.sh', content: '' }),
     permission('WebFetch', { url: 'https://example.com/\u202e' }), permission('Synthetic\u202eTool', {}),
     permission('Bash', { command: 'rm\u200b -rf x' }), permission('Bash', { command: 'echo \u0085' }), permission('Bash', { command: '\ufeffls' }),
-    permission('ExitPlanMode', { plan: 'Synthetic plan', planFilePath: '/p.md' }),
+    permission('ExitPlanMode', { plan: 'p'.repeat(16_001), planFilePath: '/p.md' }), permission('ExitPlanMode', { plan: 'Synthetic \u202eplan' }),
+    permission('ExitPlanMode', { plan: 'Synthetic\u200bplan' }), permission('ExitPlanMode', { plan: '\ufeffSynthetic plan' }),
+    permission('ExitPlanMode', { plan: 5 }), permission('ExitPlanMode', { plan: ['Synthetic plan'] }), permission('ExitPlanMode', { plan: '' }),
+    permission('ExitPlanMode', { planFilePath: '/p.md' }), permission('ExitPlanMode', { plan: 'Synthetic plan' }, { agent_id: 'a-1', agent_type: 'Plan' }),
     permission('Bash', { command: 'ls' }, { hook_event_name: 'PreToolUse' }), permission('Bash', { command: 'ls' }, { session_id: '' }),
     permission('AskUserQuestion', 'x'), '{bad', '[]', 'x'.repeat(256 * 1024 + 1)]) {
     assert.deepEqual(quiet(await h.run(stdin)), none, typeof stdin === 'string' ? stdin.slice(0, 20) : stdin.tool_name);
@@ -459,6 +463,117 @@ test('the hook registers nothing for a request the phone cannot show whole, for 
   const result = await asked.run(permission('AskUserQuestion', { questions }));
   assert.equal(result.stdout, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"questions":${JSON.stringify(questions)},"answers":{"Pick?":"A"}}}}}\n`);
   assert.deepEqual(asked.requests[0].body, { provider: 'claude', sessionKey: SESSION, question: { questions } });
+});
+
+const planOutput = (decision) => `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } })}\n`;
+const [TAB, NL, ESC, RLO, ZWSP, BOM] = [0x09, 0x0a, 0x1b, 0x202e, 0x200b, 0xfeff].map((code) => String.fromCharCode(code));
+const AFTER = { label: 'After approval', text: 'Bypass permissions mode, if this session allows it', mono: false };
+const BYPASS = [{ type: 'setMode', mode: 'bypassPermissions', destination: 'session' }];
+
+test('the Claude display of a plan: the whole plan up to 16,000 characters, never the file path', () => {
+  const plan = `Step 1${TAB}make c.txt${NL}Step 2${TAB}check it`;
+  const built = claudeApproval(permission('ExitPlanMode', { plan, planFilePath: '/work/plans/secret-slug.md' }, { permission_mode: 'plan' }));
+  assert.deepEqual(built, { kind: 'plan', title: 'Approve this plan?', note: true, display: [{ label: 'Plan', text: plan, mono: false }, AFTER] });
+  assert.equal(JSON.stringify(built).includes('secret-slug'), false);
+  const longest = claudeApproval(permission('ExitPlanMode', { plan: 'p'.repeat(16_000) }));
+  assert.equal(longest.display[0].text.length, 16_000);
+  for (const input of [{ plan: 'p'.repeat(16_001) }, { plan: `a${RLO}b` }, { plan: `a${ZWSP}b` }, { plan: `${BOM}a` }, { plan: `a${ESC}b` }, { plan: 1 }, { plan: '' }, {}]) {
+    assert.equal(claudeApproval(permission('ExitPlanMode', input)), null, JSON.stringify(input).slice(0, 40));
+  }
+  // Any agent_id key, also null, keeps a plan on the PC.
+  assert.equal(claudeApproval(permission('ExitPlanMode', { plan }, { agent_id: null })), null);
+  assert.ok(createClaudeQuestions().open({ provider: 'claude', sessionKey: 's', approval: longest }).requestId);
+});
+
+test('the engine takes one Plan text of up to 16,000 characters in a plan record and keeps the tool limits', () => {
+  const store = createClaudeQuestions();
+  let n = 0;
+  const ok = (value) => assert.ok(store.open({ provider: 'claude', sessionKey: `p-${n += 1}`, approval: value }).requestId);
+  const bad = (value) => assert.throws(() => store.open({ provider: 'claude', sessionKey: 'bad', approval: value }), { statusCode: 400, message: 'Invalid approval.' });
+  const plan = (text, more = [AFTER]) => approval({ kind: 'plan', title: 'Approve this plan?', display: [{ label: 'Plan', text, mono: false }, ...more] });
+  const other = (length, label = 'L') => ({ label, text: 'x'.repeat(length), mono: false });
+  ok(plan('p'.repeat(16_000))); bad(plan('p'.repeat(16_001)));
+  // 16,500 together; the other texts keep 4,000 each, and only one Plan text is long.
+  ok(plan('p'.repeat(16_000), [other(500)])); bad(plan('p'.repeat(16_000), [other(501)]));
+  bad(plan('p'.repeat(12_000), [other(4_001)])); bad(plan('p'.repeat(8_000), [other(8_000, 'Plan')]));
+  bad(plan(`p${ESC}`));
+  // A non-object item is refused, not thrown.
+  for (const item of [null, 'Plan', ['Plan'], 1]) {
+    bad(approval({ kind: 'plan', display: [item] })); bad(plan('p', [item]));
+  }
+  // A tool record: 4,000 per text and 8,000 together, also for a text called Plan.
+  ok(approval({ display: [other(4_000, 'Plan')] })); bad(approval({ display: [other(4_001, 'Plan')] }));
+  ok(approval({ display: [other(4_000, 'A'), other(4_000, 'B')] })); bad(approval({ display: [other(4_000, 'A'), other(4_000, 'B'), other(1, 'C')] }));
+});
+
+test('the hook gives a plan allow with the unchanged input and bypass mode, and a plan deny that keeps planning', async (t) => {
+  const answered = (value) => hook(t, (route) => route === '/api/agent/wait' ? [200, { wait: true, requestId: 'e'.repeat(32) }]
+    : [200, { state: 'answered', ...value }]);
+  const input = { plan: `Synthetic plan${NL}with two lines`, planFilePath: '/work/plans/p.md', syntheticUnknown: { nested: [1, 'two', null] }, flag: false };
+  const stdin = permission('ExitPlanMode', input, { permission_mode: 'plan' });
+  const allow = await answered({ decision: 'allow' });
+  const result = await allow.run(stdin);
+  assert.deepEqual(quiet(result), { ...none, stdout: planOutput({ behavior: 'allow', updatedInput: input, updatedPermissions: BYPASS }) });
+  assert.deepEqual(JSON.parse(result.stdout).hookSpecificOutput.decision.updatedInput, input);
+  // The exact registration body, with no file path.
+  assert.deepEqual(allow.requests[0], { route: '/api/agent/wait', body: { provider: 'claude', sessionKey: SESSION,
+    approval: { kind: 'plan', title: 'Approve this plan?', display: [{ label: 'Plan', text: input.plan, mono: false }, AFTER], note: true } } });
+  assert.equal(JSON.stringify(allow.requests).includes('/work/plans'), false);
+  assert.deepEqual(quiet(await (await answered({ decision: 'deny' })).run(stdin)), { ...none, stdout: planOutput({ behavior: 'deny', message: 'Keep planning.' }) });
+  assert.deepEqual(quiet(await (await answered({ decision: 'deny', note: 'Synthetic note.' })).run(stdin)),
+    { ...none, stdout: planOutput({ behavior: 'deny', message: 'Keep planning: Synthetic note.' }) });
+  // Extra fields in the engine reply change nothing, for a plan and for a tool.
+  const extra = { mode: 'acceptEdits', updatedPermissions: [{ type: 'setMode', mode: 'plan', destination: 'userSettings' }], updatedInput: { plan: 'other' }, interrupt: true };
+  assert.equal((await (await answered({ decision: 'allow', ...extra })).run(stdin)).stdout, result.stdout);
+  assert.equal((await (await answered({ decision: 'deny', ...extra })).run(stdin)).stdout, planOutput({ behavior: 'deny', message: 'Keep planning.' }));
+  const bash = permission('Bash', { command: 'echo synthetic' });
+  assert.deepEqual(quiet(await (await answered({ decision: 'allow', ...extra })).run(bash)), { ...none, stdout: allowJson });
+  assert.deepEqual(quiet(await (await answered({ decision: 'deny', ...extra })).run(bash)), { ...none, stdout: denyJson('Denied from the phone.') });
+  // A Bash approval after the change: the A1 output exactly.
+  assert.deepEqual(quiet(await (await answered({ decision: 'allow' })).run(bash)), { ...none, stdout: allowJson });
+  assert.deepEqual(quiet(await (await answered({ decision: 'deny', note: 'n' })).run(bash)), { ...none, stdout: denyJson('Denied from the phone: n') });
+  assert.deepEqual(quiet(await (await answered({ decision: 'maybe' })).run(stdin)), none);
+  // A plan of 16,000 characters registers.
+  const longest = await answered({ decision: 'deny' });
+  await longest.run(permission('ExitPlanMode', { plan: 'p'.repeat(16_000) }));
+  assert.equal(longest.requests[0].body.approval.display[0].text.length, 16_000);
+});
+
+test('an approval answer loads fresh, so a record whose session no longer waits is closed; a question keeps the cached row', async (t) => {
+  let loads = 0;
+  const e = await engine(t, { registry: { status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: Date.now() }, onLoad: () => { loads += 1; } });
+  const plan = approval({ kind: 'plan', title: 'Approve this plan?', display: [{ label: 'Plan', text: 'Synthetic plan', mono: false }, AFTER] });
+  for (const [kind, body] of [['tool', approval()], ['plan', plan]]) {
+    await e.writeRegistry({ status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: Date.now(), extra: `waiting ${kind}` });
+    const { requestId } = await (await e.post('/api/agent/wait', { provider: 'claude', sessionKey: SESSION, approval: body })).json();
+    await e.server.dashboardForRequest({ force: true });
+    assert.equal(e.store.forSession('claude', SESSION).seenPending, true, kind);
+    const poll = e.post(`/api/agent/wait/${requestId}`);
+    // The PC answered: the raw registry no longer waits, but the cached row still has the approval.
+    await delay(20);
+    await e.writeRegistry({ status: 'busy', statusUpdatedAt: Date.now(), extra: `busy, changed size ${kind}` });
+    assert.equal((await e.rows()).find((row) => row.id === e.row).approval?.requestId, requestId, kind);
+    const reply = await e.post(answerRoute(e.row), { requestId, decision: 'allow' });
+    assert.deepEqual([reply.status, await reply.json()], [409, { error: 'This question is closed.' }], kind);
+    assert.deepEqual(await (await poll).json(), { state: 'closed' }, kind);
+  }
+  // A record whose session still waits: the forced load keeps it, and the answer goes through.
+  await e.writeRegistry({ status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: Date.now(), extra: 'waiting again' });
+  const { requestId } = await (await e.post('/api/agent/wait', { provider: 'claude', sessionKey: SESSION, approval: plan })).json();
+  await e.server.dashboardForRequest({ force: true });
+  const poll = e.post(`/api/agent/wait/${requestId}`);
+  await e.rows();
+  loads = 0;
+  assert.equal((await e.post(answerRoute(e.row), { requestId, decision: 'allow' })).status, 200);
+  assert.equal(loads, 1);
+  assert.deepEqual(await (await poll).json(), { state: 'answered', decision: 'allow' });
+  // A question answer uses the cached row: no load.
+  const asked = (await (await e.post('/api/agent/wait', { provider: 'claude', sessionKey: SESSION,
+    question: { questions: [{ question: 'Q?', options: [{ label: 'A' }] }] } })).json()).requestId;
+  await e.rows();
+  loads = 0;
+  assert.equal((await e.post(answerRoute(e.row), { requestId: asked, answers: [{ selected: ['A'] }] })).status, 200);
+  assert.equal(loads, 0);
 });
 
 test('with the engine down, wait false, or a closed request the hook prints nothing at once', async (t) => {

@@ -6007,7 +6007,7 @@ class PhoneEditor(Gtk.Box):
             "Needs the Claude Code hook (asb agent claude-hook install).", sensitive=False)
         self.answer.set_subtitle_lines(0)
         self.approve = Adw.SwitchRow(title="Approve requests from phones", subtitle=
-            "A paired phone can allow or deny the tool requests of Claude Code sessions. The request on the PC stays. "
+            "A paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. The request on the PC stays. "
             "Claude Code asks only in the Manual and accept-edits modes. Needs question answers on.", sensitive=False)
         self.approve.set_subtitle_lines(0)
         self.send_text.connect("notify::active", self.send_text_changed)

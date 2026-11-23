@@ -321,6 +321,12 @@ export function claudeApproval(hook) {
   const input = object(hook.tool_input) ? hook.tool_input : {};
   if (typeof name !== 'string' || !name || HIDDEN.test(name) || /[\t\n]/.test(name)) return null;
   const item = (label, text, mono = false) => ({ label, text, mono });
+  if (name === 'ExitPlanMode') {
+    // A subagent's plan stays on the PC: what its session setMode does is not proven.
+    if ('agent_id' in hook || !input.plan || !whole(input.plan, 16_000)) return null;
+    return { kind: 'plan', title: 'Approve this plan?', note: true,
+      display: [item('Plan', input.plan), item('After approval', 'Bypass permissions mode, if this session allows it')] };
+  }
   const keys = () => item('Input', shown([...Object.keys(input).slice(0, 20), ...(Object.keys(input).length > 20 ? ['…'] : [])].join(', ')));
   let display;
   if (name === 'Bash') {
@@ -348,7 +354,7 @@ export function claudeApproval(hook) {
   return { kind: 'tool', title: cut(`Allow ${name}${hook.agent_id != null ? ' for a subagent' : ''}?`, 300), display, note: true };
 }
 
-// The Claude Code PermissionRequest hook: it holds an AskUserQuestion or a tool request for the phone. It prints the decision only on
+// The Claude Code PermissionRequest hook: it holds an AskUserQuestion, a tool request, or a plan for the phone. It prints the decision only on
 // a phone answer, and nothing in every other case, so the dialog on the PC stays as it is. It never prints or saves request or answer
 // text. A PC answer ends it from outside (a "No" kills it, a "Yes" closes the engine record).
 async function claudeWait(stdin = process.stdin, write = (line) => process.stdout.write(line)) {
@@ -361,14 +367,13 @@ async function claudeWait(stdin = process.stdin, write = (line) => process.stdou
   }
   let hook;
   try { hook = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return; }
-  // ExitPlanMode is a plan approval, not in this part.
-  if (!object(hook) || hook.hook_event_name !== 'PermissionRequest' || typeof hook.session_id !== 'string' || !hook.session_id
-    || hook.tool_name === 'ExitPlanMode') return;
+  if (!object(hook) || hook.hook_event_name !== 'PermissionRequest' || typeof hook.session_id !== 'string' || !hook.session_id) return;
   const question = hook.tool_name === 'AskUserQuestion';
   if (question && !Array.isArray(hook.tool_input?.questions)) return;
   const approval = question ? null : claudeApproval(hook);
   if (!question && !approval) return;
   const { questions } = question ? hook.tool_input : {};
+  const plan = hook.tool_name === 'ExitPlanMode';
   const runtime = await readServiceRuntime();
   if (!runtime) return;
   try {
@@ -384,9 +389,13 @@ async function claudeWait(stdin = process.stdin, write = (line) => process.stdou
         if (question) {
           if (!object(answers)) return;
           output = { behavior: 'allow', updatedInput: { questions, answers } };
-        } else if (decision === 'allow') output = { behavior: 'allow' };
-        else if (decision === 'deny' && (note === undefined || typeof note === 'string')) {
-          output = { behavior: 'deny', message: note === undefined ? 'Denied from the phone.' : `Denied from the phone: ${note}` };
+        } else if (decision === 'allow') {
+          // Claude ignores a plan allow without updatedInput; the mode change is the owner's choice for a phone plan approval.
+          output = plan ? { behavior: 'allow', updatedInput: hook.tool_input,
+            updatedPermissions: [{ type: 'setMode', mode: 'bypassPermissions', destination: 'session' }] } : { behavior: 'allow' };
+        } else if (decision === 'deny' && (note === undefined || typeof note === 'string')) {
+          const words = plan ? 'Keep planning' : 'Denied from the phone';
+          output = { behavior: 'deny', message: note === undefined ? `${words}.` : `${words}: ${note}` };
         } else return;
         write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: output } })}\n`);
         return;

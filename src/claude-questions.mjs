@@ -43,12 +43,16 @@ export function checkedQuestions(questions) {
 export function checkedApproval(approval) {
   if (!exact(approval, ['display', 'kind', 'note', 'title']) || !['tool', 'plan'].includes(approval.kind) || typeof approval.note !== 'boolean'
     || !text(approval.title, 1, 300) || !Array.isArray(approval.display) || approval.display.length > 8) return null;
+  const plan = approval.kind === 'plan';
   const display = [];
   for (const item of approval.display) {
-    if (!exact(item, ['label', 'mono', 'text']) || !text(item.label, 1, 40) || !text(item.text, 0, 4_000, true) || typeof item.mono !== 'boolean') return null;
+    if (!exact(item, ['label', 'mono', 'text'])) return null;
+    // A plan record has one long `Plan` text.
+    const max = plan && item.label === 'Plan' && !display.some((other) => other.label === 'Plan') ? 16_000 : 4_000;
+    if (!text(item.label, 1, 40) || !text(item.text, 0, max, true) || typeof item.mono !== 'boolean') return null;
     display.push({ label: item.label, text: item.text, mono: item.mono });
   }
-  if (display.reduce((sum, item) => sum + item.text.length, 0) > 8_000) return null;
+  if (display.reduce((sum, item) => sum + item.text.length, 0) > (plan ? 16_500 : 8_000)) return null;
   return { kind: approval.kind, title: approval.title, display, note: approval.note };
 }
 
