@@ -251,6 +251,155 @@ export async function answerAgyInKitty({ dataDir, id, questions, items, procDir 
   } catch { return false; }
 }
 
+const AGY_DIALOG_HEADERS = ['Requesting permission for:', 'Allow creation of this file?', 'Accept this file edit?'];
+
+function hasAnyAgyDialog(screen) {
+  const tail = String(screen || '').split('\n').slice(-25).map((line) => line.trim());
+  return tail.some((line) => AGY_DIALOG_HEADERS.includes(line));
+}
+
+function fileLineMatches(line, filePath) {
+  const pathPart = line.replace(/\s+\+\d+(?:\s+-\d+)?\s*$/, '').trim();
+  if (!pathPart) return false;
+  if (pathPart === filePath) return true;
+  const base = path.basename(filePath);
+  if (!base) return false;
+  if (pathPart.includes('...')) return pathPart === base || pathPart.endsWith(`/${base}`);
+  return pathPart === base;
+}
+
+// Pure matcher for the three agy 1.5.15 permission dialogs (command, new file, file edit).
+// Returns the deny option digit (for example '4' or '2') when the last screen lines match in order, else null.
+export function matchAgyApprovalScreen(screen, approval) {
+  if (typeof screen !== 'string' || !approval || typeof approval !== 'object' || !Array.isArray(approval.display)) return null;
+  const lines = screen.split('\n');
+  const title = approval.title;
+  const yesPattern = /^\s*[>›❯]\s*1\.\s*Yes\b/;
+  let promptIdx = -1;
+  let denyPattern = null;
+
+  if (title === 'Allow a shell command?') {
+    const command = approval.display.find((item) => item.label === 'Command')?.text;
+    const cmdCompact = compact(command || '');
+    if (!cmdCompact) return null;
+    let headerIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (lines[i].trim() === 'Requesting permission for:') { headerIdx = i; break; }
+    }
+    if (headerIdx < 0) return null;
+    let endIdx = -1;
+    for (let i = headerIdx + 1; i < lines.length; i -= -1) {
+      if (lines[i].trim() === 'Run this command?' || yesPattern.test(lines[i])) { endIdx = i; break; }
+    }
+    if (endIdx <= headerIdx + 1) return null;
+    const screenCmd = compact(lines.slice(headerIdx + 1, endIdx).join(''));
+    const tail40 = cmdCompact.slice(-40);
+    if (!screenCmd || (!screenCmd.includes(tail40) && !cmdCompact.includes(screenCmd))) return null;
+    promptIdx = endIdx;
+    denyPattern = /^\s*(?:[>›❯]\s*)?([2-9])\.\s*No,\s*cancel$/;
+  } else if (title === 'Allow a new file?' || title === 'Allow a file edit?') {
+    const filePath = approval.display.find((item) => item.label === 'File')?.text;
+    if (!filePath) return null;
+    const questionLine = title === 'Allow a new file?' ? 'Allow creation of this file?' : 'Accept this file edit?';
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (lines[i].trim() === questionLine) { promptIdx = i; break; }
+    }
+    if (promptIdx < 0) return null;
+    const before = lines.slice(Math.max(0, promptIdx - 30), promptIdx);
+    if (!before.some((line) => fileLineMatches(line, filePath))) return null;
+    denyPattern = title === 'Allow a new file?'
+      ? /^\s*(?:[>›❯]\s*)?([2-9])\.\s*No,\s*deny creation$/
+      : /^\s*(?:[>›❯]\s*)?([2-9])\.\s*No,\s*reject this change$/;
+  } else {
+    return null;
+  }
+
+  let yesIdx = -1;
+  for (let i = promptIdx; i < Math.min(lines.length, promptIdx + 6); i += 1) {
+    if (yesPattern.test(lines[i])) { yesIdx = i; break; }
+  }
+  if (yesIdx < 0) return null;
+  let denyIdx = -1;
+  let denyDigit = null;
+  for (let i = yesIdx + 1; i < Math.min(lines.length, yesIdx + 10); i += 1) {
+    const match = denyPattern.exec(lines[i].trimEnd());
+    if (match) { denyIdx = i; denyDigit = match[1]; break; }
+  }
+  if (!denyDigit) return null;
+  const trailing = lines.slice(denyIdx + 1).filter((line) => line.trim().length > 0);
+  return trailing.length <= 5 ? denyDigit : null;
+}
+
+// Polls the agy kitty screen every intervalMs (default 1000 ms) while an agy approval record is open.
+// Calls onMatch once when the dialog appears, and onGone if no match within timeoutMs (10 s) or once the dialog leaves.
+export function watchAgyApproval({ dataDir, id, approval, onMatch, onGone, isOpen = () => true,
+  intervalMs = 1000, timeoutMs = 10_000, procDir = '/proc', startOf = processStart, homeDir = os.homedir(),
+  exec = defaultKitty, now = Date.now }) {
+  let seen = false;
+  let busy = false;
+  let stopped = false;
+  const startedAt = now();
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
+  const check = async () => {
+    if (stopped || busy) return;
+    if (!isOpen()) { stop(); return; }
+    busy = true;
+    let matched = false;
+    try {
+      if (typeof id === 'string' && AGY_UUID.test(id) && dataDir) {
+        const record = await readRecord(path.join(dataDir, `${id}.json`));
+        if (validAgyRecord(record, id, homeDir) && record.agyPid !== undefined && await startOf(record.agyPid) === record.agyStartTicks) {
+          const target = await agyFocusTarget(record, { procDir });
+          if (target) {
+            const screen = await exec(['@', '--to', target.listenOn, 'get-text', '--match', `id:${target.windowId}`, '--extent', 'screen']);
+            matched = Boolean(matchAgyApprovalScreen(screen, approval));
+          }
+        }
+      }
+    } catch { matched = false; } finally { busy = false; }
+    if (stopped || !isOpen()) { stop(); return; }
+    if (!seen) {
+      if (matched) { seen = true; onMatch?.(); }
+      else if (now() - startedAt >= timeoutMs) { stop(); onGone?.(); }
+    } else if (!matched) {
+      stop();
+      onGone?.();
+    }
+  };
+  const timer = setInterval(() => { void check(); }, intervalMs);
+  timer.unref?.();
+  queueMicrotask(() => { void check(); });
+  return stop;
+}
+
+// Verifies the agy permission dialog on the kitty screen, types '1' (allow) or the deny digit (deny), and waits up to 2000 ms for it to close.
+// Returns true when gone after typing, null when the dialog was already gone before typing, or false on mismatch/error/timeout.
+export async function approveAgyInKitty({ dataDir, id, approval, decision, procDir = '/proc', startOf = processStart,
+  homeDir = os.homedir(), exec = defaultKitty, wait = defaultWait, pollMs = 200, timeoutMs = 2000 }) {
+  if (typeof id !== 'string' || !AGY_UUID.test(id) || !dataDir || !['allow', 'deny'].includes(decision)) return false;
+  const record = await readRecord(path.join(dataDir, `${id}.json`));
+  if (!validAgyRecord(record, id, homeDir) || record.agyPid === undefined || await startOf(record.agyPid) !== record.agyStartTicks) return false;
+  const target = await agyFocusTarget(record, { procDir });
+  if (!target) return false;
+  const cmd = (action, args = []) => exec(['@', '--to', target.listenOn, action, '--match', `id:${target.windowId}`, ...args]);
+  const getScreen = () => cmd('get-text', ['--extent', 'screen']);
+  try {
+    const screen = await getScreen();
+    const denyDigit = matchAgyApprovalScreen(screen, approval);
+    if (!denyDigit) return hasAnyAgyDialog(screen) ? false : null;
+    await cmd('send-text', ['--', decision === 'allow' ? '1' : denyDigit]);
+    for (let elapsed = 0; elapsed < timeoutMs; elapsed += pollMs) {
+      await wait(pollMs);
+      if (!matchAgyApprovalScreen(await getScreen(), approval)) return true;
+    }
+    return false;
+  } catch { return false; }
+}
+
 // asb doctor, only with kitty on PATH: the two remote control keys of kitty.conf (read only; no other line of the file is used).
 export async function agyKittyDoctor(add, advice, { env = process.env, read } = {}) {
   // A PC without kitty gets no line and no kitty.conf advice.

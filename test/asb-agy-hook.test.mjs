@@ -448,7 +448,7 @@ test('PreToolUse ask_question posts mapped questions for one and two questions, 
   });
   // Other tools and PostToolUse do not POST
   const countBefore = posted.length;
-  await callHook('PreToolUse', { toolCall: { id: 'c3', name: 'run_command', args: { CommandLine: 'ls' } } });
+  await callHook('PreToolUse', { toolCall: { id: 'c3', name: 'read_file', args: { Path: '/tmp/a' } } });
   await callHook('PostToolUse', { toolCall: { id: 'c1', name: 'ask_question', args: {} } });
   assert.equal(posted.length, countBefore);
   // Failing POST still writes the record, replies neutral, and exits 0
@@ -456,4 +456,31 @@ test('PreToolUse ask_question posts mapped questions for one and two questions, 
     toolCall: { id: 'c4', name: 'ask_question', args: { questions: [{ question: 'Color?', options: ['Red', 'Blue'], is_multi_select: false }] } },
   }, async () => { throw new Error('engine down'); }), { code: 0, output: '{"decision":"ask"}\n' });
   assert.equal((await record()).state, 'question');
+});
+
+test('PreToolUse run_command, write_file, and edit_file post approval cards without content/edit text and skip other tools', async (t) => {
+  const { homeDir, env } = await fixture(t);
+  const posted = [];
+  const callHook = async (toolCall) => {
+    const out = [];
+    const hook = { hookEventName: 'PreToolUse', conversationId: ID.toUpperCase(), workspacePaths: [path.join(homeDir, 'ws')], toolCall };
+    const code = await agyHook(['PreToolUse'], { stdin: Readable.from([Buffer.from(JSON.stringify(hook))]), write: (text) => out.push(text),
+      env, homeDir, nowMs: 2_000, parentPid: 500, read: agyTree(), postWait: async (body) => { posted.push(body); } });
+    return { code, output: out.join('') };
+  };
+  assert.deepEqual(await callHook({ id: 't1', name: 'run_command', args: { CommandLine: 'touch asb-probe.txt', WaitMsBeforeAsync: 5000, toolSummary: 'Touch' } }),
+    { code: 0, output: '{"decision":"ask"}\n' });
+  assert.deepEqual(await callHook({ id: 't2', name: 'write_file', args: { Path: '/tmp/ws/a.txt', Content: 'secret-content-xyz' } }),
+    { code: 0, output: '{"decision":"ask"}\n' });
+  assert.deepEqual(await callHook({ id: 't3', name: 'edit_file', args: { Path: '/tmp/ws/b.txt', Target: 'secret-old', Replacement: 'secret-new' } }),
+    { code: 0, output: '{"decision":"ask"}\n' });
+  await callHook({ id: 't4', name: 'read_file', args: { Path: '/tmp/ws/c.txt' } });
+  await callHook({ id: 't5', name: 'run_command', args: { CommandLine: 'echo \u202ebad' } });
+  assert.deepEqual(posted, [
+    { provider: 'antigravity', sessionKey: ID, approval: { kind: 'tool', title: 'Allow a shell command?', display: [{ label: 'Command', text: 'touch asb-probe.txt', mono: true }], note: false } },
+    { provider: 'antigravity', sessionKey: ID, approval: { kind: 'tool', title: 'Allow a new file?', display: [{ label: 'File', text: '/tmp/ws/a.txt', mono: true }, { label: 'Size', text: '18 characters', mono: false }], note: false } },
+    { provider: 'antigravity', sessionKey: ID, approval: { kind: 'tool', title: 'Allow a file edit?', display: [{ label: 'File', text: '/tmp/ws/b.txt', mono: true }], note: false } },
+  ]);
+  const serialized = JSON.stringify(posted);
+  for (const secret of ['secret-content-xyz', 'secret-old', 'secret-new']) assert.equal(serialized.includes(secret), false, secret);
 });

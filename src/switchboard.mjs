@@ -7,7 +7,7 @@ import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData,
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
-import { agyRecordsDir, answerAgyInKitty, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
+import { agyRecordsDir, answerAgyInKitty, approveAgyInKitty, focusAgyInKitty, loadAntigravityDashboard, watchAgyApproval } from './antigravity-data.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir, OPENCODE_APPROVAL_WAIT, OPENCODE_QUESTION_WAIT } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
@@ -509,7 +509,7 @@ export async function loadSwitchboardDashboard({
   workingStarts,
   rowCache = null,
   loaderCache = null,
-  codexWaits = null,
+  codexWaits = null, agyWaits = null,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
@@ -576,12 +576,15 @@ export async function loadSwitchboardDashboard({
   });
   // Apply the current waits after the cached file reads, without changing any cached thread.
   const waits = codexWaits?.();
+  const agyApprovalWaits = agyWaits?.();
   const threads = results.flatMap((result, index) => {
     if (result.status !== 'fulfilled' || !result.value) return [];
     const source = inputs[index];
     return (result.value.threads || []).map((thread) => {
-      const wait = waits?.size && source.provider === 'codex' && !thread.remote && isSwitchboardRoot(thread)
-        ? waits.get(thread.externalId || thread.id) : null;
+      const wait = !thread.remote && isSwitchboardRoot(thread)
+        ? source.provider === 'codex' && waits?.size ? waits.get(thread.externalId || thread.id)
+          : source.provider === 'antigravity' && agyApprovalWaits?.size ? agyApprovalWaits.get(thread.externalId || thread.id) : null
+        : null;
       if (wait) thread = applyBridgeWaits(thread, { approvals: 1, approvalAtMs: wait.createdAtMs });
       if (!sources) return thread;
       const scope = (id) => id && !source.builtin ? `${source.id}:${id}` : id;
@@ -1160,12 +1163,23 @@ export function createSwitchboardServer(options = {}) {
     dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage, busy, changes });
   const claudeQuestions = options.claudeQuestions || createClaudeQuestions();
   const openCodexApprovals = () => claudeQuestions.openRecords().filter((record) => record.provider === 'codex' && record.kind === 'approval');
+  const openAgyApprovals = () => claudeQuestions.openRecords().filter((record) => record.provider === 'antigravity' && record.kind === 'approval' && record.onScreen === true);
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     claudeQuestions,
     answerAgy: options.answerAgy || ((thread, questions, items) => answerAgyInKitty({
       dataDir: thread[SOURCE_DIR] || agyRecordsDir(), id: thread.externalId, questions, items,
       procDir: options.procDir, startOf: options.startOf,
+    })),
+    approveAgy: options.approveAgy || ((thread, approval, decision) => approveAgyInKitty({
+      dataDir: thread[SOURCE_DIR] || agyRecordsDir(), id: thread.externalId, approval, decision,
+      procDir: options.procDir, startOf: options.startOf,
+    })),
+    watchAgy: options.watchAgy || ((requestId, sessionKey, approval) => watchAgyApproval({
+      dataDir: agyRecordsDir(), id: sessionKey, approval, procDir: options.procDir, startOf: options.startOf,
+      isOpen: () => claudeQuestions.openRecords().some((record) => record.requestId === requestId),
+      onMatch: () => claudeQuestions.setOnScreen(requestId, true),
+      onGone: () => claudeQuestions.close(requestId),
     })),
     phonePaired: async () => ((await options.phoneGateway?.devices?.()) || []).length > 0,
     phoneSeenWithin: async (ms) => {
@@ -1203,7 +1217,8 @@ export function createSwitchboardServer(options = {}) {
       // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
       await options.readerPositions?.ready();
       const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts, rowCache, loaderCache,
-        codexWaits: () => new Map(openCodexApprovals().map((record) => [record.sessionKey, record])) });
+        codexWaits: () => new Map(openCodexApprovals().map((record) => [record.sessionKey, record])),
+        agyWaits: () => new Map(openAgyApprovals().map((record) => [record.sessionKey, record])) });
       const nextRows = new Map((loaded.threads || []).filter((row) => !row.remote)
         .map(({ id, state, updatedAtMs, archived }) => [id, [state, updatedAtMs, archived]]));
       if (nextRows.size !== localRows.size || [...nextRows].some(([id, values]) =>
