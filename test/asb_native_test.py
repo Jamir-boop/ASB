@@ -714,6 +714,27 @@ class WidgetCheck(unittest.TestCase):
         self.assertTrue(editor.hook_status.get_visible())
         self.assertEqual(editor.hook_status.get_label(), asb.claude_hook_text(items[:2]))
 
+    def test_phone_codex_hook_status_lines_follow_claude_lines(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        home = os.path.expanduser("~")
+        status = {"sendText": True, "answer": True, "addresses": [], "devices": [],
+                  "claudeHook": [{"dir": home, "state": "installed"}]}
+        editor.render_status({**status, "codexHook": [{"dir": os.path.join(home, "one"), "state": "installed"},
+            {"dir": os.path.join(home, "two"), "state": "not installed"}, {"dir": "/srv/codex", "state": "other launcher"}]}, True)
+        self.assertTrue(editor.hook_status.get_visible())
+        self.assertEqual(editor.hook_status.get_label().split("\n"), [
+            "Claude Code hook (~): installed",
+            "Codex hook (~/one): phone first (with Approve requests from phones on)",
+            "Codex hook (~/two): not installed (run asb agent codex-hook install)",
+            "Codex hook (/srv/codex): other launcher"])
+        for older in (status, {**status, "codexHook": []}):
+            editor.render_status(older)
+            self.assertEqual(editor.hook_status.get_label(), "Claude Code hook (~): installed")
+
     def test_reconnect_keeps_the_board_and_preferences_and_uses_the_new_engine(self):
         received = [[], []]
         servers = []

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { createAsbServer } from '../src/asb-server.mjs';
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 
@@ -27,9 +33,9 @@ function fakeGateway() {
   return { gateway, calls, pairing };
 }
 
-async function serve(t, { sourceToken = 'window-token', phoneGateway = null, serviceMode = false, switchboard = false } = {}) {
+async function serve(t, { sourceToken = 'window-token', phoneGateway = null, serviceMode = false, switchboard = false, sourceRegistry } = {}) {
   let loads = 0;
-  const server = (switchboard ? createSwitchboardServer : createAsbServer)({ phoneGateway, sourceToken, serviceMode,
+  const server = (switchboard ? createSwitchboardServer : createAsbServer)({ phoneGateway, sourceToken, serviceMode, sourceRegistry,
     pendingStatePath: false, loadDashboard: async () => { loads += 1; return { providers: [], threads: [] }; } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
@@ -63,9 +69,10 @@ test('phone status, settings, pairing, revoke, and service routes return the gat
   const status = await request('/api/phone');
   assert.equal(status.status, 200);
   assert.equal(status.headers.get('cache-control'), 'no-store');
-  // Only the GET reply has the Claude Code hook states; this server reads no app sources, so it lists none.
-  const { claudeHook, ...initial } = await status.json();
+  // This server reads no app sources.
+  const { claudeHook, codexHook, ...initial } = await status.json();
   assert.deepEqual(claudeHook, []);
+  assert.deepEqual(codexHook, []);
   assert.equal(initial.devices[0].id, deviceId);
   assert.equal(initial.changed, undefined);
   const changed = await request('/api/phone/settings', { method: 'POST', body: configuration });
@@ -80,6 +87,34 @@ test('phone status, settings, pairing, revoke, and service routes return the gat
   assert.deepEqual(await (await request('/api/service')).json(), { service: false, pid: process.pid });
   assert.deepEqual(calls, [['status'], ['settings', configuration], ['pairing'], ['revoke', deviceId]]);
   assert.equal(loads(), 0);
+});
+
+test('PC phone status lists the same enabled Codex homes as the hook command, not the disabled ones', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-phone-hooks-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_DATA_HOME: path.join(home, 'data'),
+    XDG_RUNTIME_DIR: path.join(home, 'runtime'), ASB_INSTALLED_LAUNCHER: '/opt/asb-test/bin/asb' };
+  const previous = process.env.ASB_INSTALLED_LAUNCHER;
+  process.env.ASB_INSTALLED_LAUNCHER = env.ASB_INSTALLED_LAUNCHER;
+  t.after(() => { if (previous === undefined) delete process.env.ASB_INSTALLED_LAUNCHER; else process.env.ASB_INSTALLED_LAUNCHER = previous; });
+  const sources = ['codex', 'codex-two', 'codex-off', 'claude-desktop-code'].map((id, i) => ({ id, label: id, launcher: '',
+    provider: i === 3 ? id : 'codex', dataDir: path.join(home, id), enabled: i !== 2 }));
+  for (const source of sources) await mkdir(source.dataDir);
+  await writeFile(path.join(sources[0].dataDir, 'hooks.json'), JSON.stringify({ hooks: { PermissionRequest: [{ matcher: '^Bash$',
+    hooks: [{ type: 'command', command: `${env.ASB_INSTALLED_LAUNCHER} agent codex-wait`, timeout: 45 }] }] } }));
+  const registry = new AppSourceRegistry({ env, homeDir: home, discoverPersonal: false });
+  await mkdir(path.dirname(registry.configPath), { recursive: true });
+  await writeFile(registry.configPath, JSON.stringify({ version: 1, sources }));
+  const agent = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url));
+  const { targets } = JSON.parse(execFileSync(process.execPath, [agent, 'codex-hook', 'status', '--json'], { env, encoding: 'utf8' }));
+  const { gateway } = fakeGateway();
+  const { request } = await serve(t, { phoneGateway: gateway, switchboard: true, sourceRegistry: registry });
+  const reply = await (await request('/api/phone')).json();
+  assert.deepEqual(reply.codexHook, [{ dir: sources[0].dataDir, state: 'installed' }, { dir: sources[1].dataDir, state: 'not installed' }]);
+  assert.deepEqual(reply.codexHook, targets);
+  assert.deepEqual(reply.claudeHook, []);
+  assert.equal((await request('/api/phone', { token: 'wrong' })).status, 403);
+  assert.equal(Object.hasOwn(await (await request('/api/service')).json(), 'codexHook'), false);
 });
 
 test('all phone and service routes are absent without a gateway', async (t) => {

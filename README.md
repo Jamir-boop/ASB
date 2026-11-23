@@ -49,7 +49,15 @@ The card stays on the PC too, and the first answer wins. A long wait works (chec
 
 - An engine restart ends the phone path of an open question: answer it on the PC.
 - Run `asb agent claude-hook remove` before `asb uninstall`.
-- Linux and Claude only: no approvals, Codex, OpenCode, group members, or Windows yet.
+- This question-answer feature is for local Claude sessions on Linux. It does not apply to OpenCode, group members, or Windows.
+
+## Approve Codex commands from the phone
+
+On Linux, run `asb agent codex-hook install` to add the optional hook for the Codex CLI. It is not installed by default. At `Hooks need review`, trust the new hook once. Codex does not run it until you trust it. Run `asb agent codex-hook remove` to remove it. Run `asb agent codex-hook status` to check each enabled Codex home.
+
+While **Approve requests from phones** is on and a paired phone was seen in the last 60 s, each Codex Bash command that asks for approval goes to the phone before the Codex reviewer. If you allow the command on the phone, Codex skips the reviewer. The PC shows `Running hook` with no approval buttons for up to 30 s. If the phone does not answer, Codex uses its normal reviewer or PC dialog. Each held command plays the Needs input sound on the PC and can alert on the phone, even if the automatic reviewer would allow it.
+
+The first command of a new session can get no card. The first command after a time with no working session can reach the phone up to 30 s late, or not at all. Unlisted threads and subagent threads get no card. If two requests from one session overlap, only the newer one stays on the phone. The older one goes to the normal approval path. Until the phone app update that alerts again for a new request, a second card can come with no alert. The time with the screen off is not proven. The hook adds about 190 ms per Bash approval when it does not hold the command. A command over 4,000 characters gets no card. Codex app: not proven with the app's own build.
 
 ## Support by app
 

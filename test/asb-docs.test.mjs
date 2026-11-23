@@ -101,6 +101,7 @@ test('the install guide blocks are the commands that asb doctor prints on a syst
       execFile: async () => { throw new Error('not found'); },
       find: async () => null,
       claudeHook: async () => [],
+      codexHook: async () => [],
     });
     const lines = blocks.get(name);
     if (family.packages === null) {
@@ -150,4 +151,14 @@ test('the Node.js section has the routes of nodeRoute, the search order of the l
   assert.ok(inOrder(section, paths));
   assert.ok(inOrder(launcher, paths.map((name) => name.replace('~', '$HOME'))));
   assert.ok(section.includes('(#packages-for-each-distribution)'));
+});
+
+test('documents the optional Codex hook, trust, and the phone-first limits', async () => {
+  for (const file of ['../README.md', '../SYSTEM_OVERVIEW.md', '../docs/PRIVACY.md', '../CHANGELOG.md']) {
+    const doc = await text(file);
+    for (const fact of ['asb agent codex-hook install', 'asb agent codex-hook remove', 'Hooks need review',
+      'If you allow the command on the phone, Codex skips the reviewer.', 'Running hook', 'The time with the screen off is not proven.',
+      'A command over 4,000 characters gets no card.', 'Codex app: not proven with the app\'s own build.',
+      'a second card can come with no alert', 'up to 30 s late, or not at all']) assert.ok(doc.includes(fact), `${file}: ${fact}`);
+  }
 });

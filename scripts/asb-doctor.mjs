@@ -9,6 +9,7 @@ import { agyHookDoctor } from '../src/agy-hook.mjs';
 import { agyKittyDoctor } from '../src/antigravity-data.mjs';
 import { PLAYERS } from '../src/asb-sounds.mjs';
 import { QUESTIONS_ONLY, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
+import { codexHookStatus, readCodexHookTargets } from '../src/codex-hook.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
 import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shellText, shortVersion } from '../src/linux-system.mjs';
 import { bunOnPath, findBun, findExecutable, runtimeDir } from '../src/platform-paths.mjs';
@@ -91,7 +92,8 @@ export async function linuxFirewallLines(state, addresses, port, { execFile = ex
 // questions-only entry only while phones may approve.
 const HOOK_STATUS = { installed: 'ok', [QUESTIONS_ONLY]: 'warn', 'not found': 'info', 'other launcher': 'warn', 'invalid settings': 'warn' };
 const readClaudeHook = async (env, platform) => claudeHookStatus(await readHookTargets(env, platform), { launcher: installedLauncher(env) });
-async function hookChecks(add, advice, claudeHook, answer, approve) {
+const readCodexHook = async (env, platform) => codexHookStatus(await readCodexHookTargets(env, platform), { launcher: installedLauncher(env) });
+async function hookChecks(add, advice, claudeHook, codexHook, answer, approve) {
   let targets = [];
   try { targets = await claudeHook(); } catch {}
   for (const { dir, state } of targets) {
@@ -103,6 +105,12 @@ async function hookChecks(add, advice, claudeHook, answer, approve) {
   } else if (targets.some(({ state }) => state === QUESTIONS_ONLY)) {
     advice.push('Install the Claude Code hook for approvals:', '  asb agent claude-hook install');
   }
+  targets = [];
+  try { targets = await codexHook(); } catch {}
+  for (const { dir, state } of targets) {
+    add('codex-hook', 'Phone answers', HOOK_STATUS[state] || 'info', `Codex hook (${homeForm(dir)}): ${state}`);
+  }
+  if (targets.some(({ state }) => state === 'other launcher')) advice.push('Install the Codex hook again:', '  asb agent codex-hook install');
 }
 
 // The engine can run when every Engine check is ok.
@@ -139,7 +147,7 @@ async function bunCheck(add, env, platform) {
 }
 
 // Windows needs Node.js with built-in SQLite for the engine, and MSYS2 Python with PyGObject, GTK, and Libadwaita for the window.
-async function collectWindows({ env, execFile, exists: present, node, platform, claudeHook }) {
+async function collectWindows({ env, execFile, exists: present, node, platform, claudeHook, codexHook }) {
   const system = { name: os.version() || 'Windows', id: null, versionId: os.release(), family: 'windows', mode: 'normal' };
   const checks = [];
   const add = (id, group, status, detail) => checks.push({ id, group, status, detail });
@@ -173,16 +181,17 @@ async function collectWindows({ env, execFile, exists: present, node, platform, 
     if (!await present(pacman)) commands.msys2 = WINGET_MSYS2;
     advice.push(commands.msys2 ? 'Install MSYS2 and the board packages:' : 'Install the board packages:', ...[commands.msys2, commands.required].filter(Boolean).map((words) => `  ${words.join(' ')}`));
   }
-  await hookChecks(add, advice, claudeHook, false, false);
+  await hookChecks(add, advice, claudeHook, codexHook, false, false);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 
 // `firewall: false` leaves out the firewall part (asb setup step 0).
 export async function collect({ env = process.env, execFile = execFileAsync, read = readText, exists: present = exists, node,
   find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform,
-  claudeHook = () => readClaudeHook(env, platform), kitty = (add, advice) => agyKittyDoctor(add, advice, { env, read }),
+  claudeHook = () => readClaudeHook(env, platform), codexHook = () => readCodexHook(env, platform),
+  kitty = (add, advice) => agyKittyDoctor(add, advice, { env, read }),
   agy = (add, advice) => agyHookDoctor(add, advice, { env }) } = {}) {
-  if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform, claudeHook });
+  if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform, claudeHook, codexHook });
   const release = parseOsRelease(await read('/etc/os-release'));
   const { family, mode } = detectFamily(release, { ostreeBooted: await present('/run/ostree-booted') });
   const system = { name: release.PRETTY_NAME || release.NAME || 'Linux', id: release.ID || null, versionId: release.VERSION_ID || null, family, mode };
@@ -295,7 +304,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
       advice.push(...lines);
     }
   }
-  await hookChecks(add, advice, claudeHook, phone?.answer === true, phone?.approve === true);
+  await hookChecks(add, advice, claudeHook, codexHook, phone?.answer === true, phone?.approve === true);
   await kitty(add, advice);
   await agy(add, advice);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };

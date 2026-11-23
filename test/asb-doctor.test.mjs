@@ -36,7 +36,7 @@ const XDG_MIME = ['codex', 'claude'].map((scheme) => ['xdg-mime', 'query', 'defa
 // The firewall fakes: `phone` is the /api/phone reply of the running engine (null: no engine), `firewalld` the --state output
 // (null: firewall-cmd is missing), and `zones` the zone of each interface.
 async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {}, phone = null,
-  firewalld = null, zones = {}, links = LINKS, claudeHook = async () => [], kitty = async () => {}, agy = async () => {} }) {
+  firewalld = null, zones = {}, links = LINKS, claudeHook = async () => [], codexHook = async () => [], kitty = async () => {}, agy = async () => {} }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, 'bin');
@@ -49,6 +49,7 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
   // The Claude Code hook fake: no doctor test reads a real Claude config dir. `claudeHook: null` uses the real reader (temp HOME only).
   const deps = {
     ...(claudeHook ? { claudeHook } : {}),
+    ...(codexHook ? { codexHook } : {}),
     // The kitty check fake: `kitty: null` uses the real check (a temp HOME and the fake read only).
     ...(kitty ? { kitty } : {}),
     // The agy check fake: `agy: null` uses the real check (a temp HOME only).
@@ -473,7 +474,7 @@ async function fakeWindows(t, { bins = ['bun.exe'], values = {}, node = WIN_NODE
   const calls = [];
   const reads = [];
   const deps = {
-    platform: 'win32', node, env: { PATH: directory, ...(python && { ASB_PYTHON: python }) }, claudeHook: async () => [],
+    platform: 'win32', node, env: { PATH: directory, ...(python && { ASB_PYTHON: python }) }, claudeHook: async () => [], codexHook: async () => [],
     exists: async (file) => { reads.push(file); return file === pacman && msys2; },
     // Windows reads no os-release and asks no engine for the firewall.
     read: async (file) => { throw new Error(`Unexpected read: ${file}`); },
@@ -692,6 +693,33 @@ test('doctor reads the hook state of the ASB Claude profiles and writes nothing'
     [['info', `Claude Code hook (${config}): not installed`]]);
   assert.ok(!JSON.stringify(data).includes('made-up-secret'));
   assert.deepEqual(await snapshot(), before);
+});
+
+test('doctor shows Codex hook states and advises reinstall only for another launcher', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-codex-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const launcher = '/opt/asb-test/bin/asb';
+  const dir = path.join(home, 'codex-test');
+  const config = path.join(home, 'config');
+  const env = { HOME: home, XDG_CONFIG_HOME: config, ASB_INSTALLED_LAUNCHER: launcher };
+  await mkdir(path.join(config, 'asb'), { recursive: true });
+  await mkdir(dir);
+  await writeFile(path.join(config, 'asb', 'sources.json'), JSON.stringify({ version: 1, sources: [
+    { id: 'codex', provider: 'codex', label: 'Codex', dataDir: dir, launcher: '', enabled: true },
+    { id: 'claude-desktop-code', provider: 'claude-desktop-code', label: 'Claude', dataDir: path.join(home, 'claude'), launcher: '', enabled: true },
+  ] }));
+  const system = await fakeSystem(t, { release: 'debian13', env, phone: { answer: true, approve: true }, codexHook: null });
+  const file = path.join(dir, 'hooks.json');
+  for (const [command, state, status] of [['', 'not installed', 'info'], [launcher, 'installed', 'ok'], ['/other/asb', 'other launcher', 'warn']]) {
+    if (command) await writeFile(file, JSON.stringify({ hooks: { PermissionRequest: [{ matcher: '^Bash$',
+      hooks: [{ type: 'command', command: `${command} agent codex-wait`, timeout: 45 }] }] }, other: 'made-up-secret' }));
+    const data = await collect(system.deps);
+    assert.deepEqual(data.checks.filter((check) => check.group === 'Phone answers'),
+      [{ id: 'codex-hook', group: 'Phone answers', status, detail: `Codex hook (${dir}): ${state}` }]);
+    const advice = data.advice.filter((line) => line.includes('Codex hook') || line.includes('codex-hook'));
+    assert.deepEqual(advice, state === 'other launcher' ? ['Install the Codex hook again:', '  asb agent codex-hook install'] : []);
+    assert.ok(!JSON.stringify(data).includes('made-up-secret'));
+  }
 });
 
 test('kitty remote control: reachable with kitty on PATH and the two kitty.conf keys, else not set up with the advice; no line without kitty; no other line printed', async (t) => {

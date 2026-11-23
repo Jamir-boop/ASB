@@ -7,13 +7,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { storeIdentity } from '../src/app-sources.mjs';
 import { CHANGED_MESSAGE, QUESTIONS_ONLY, changeClaudeHook, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { processStart, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
+import { changeCodexHook, codexHookStatus, readCodexHookTargets } from '../src/codex-hook.mjs';
 import { readServiceRuntime, requestInstance } from './asb-instance.mjs';
 
 const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'remoteClaude', 'color', 'showMarker'];
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
-const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait | agy-hook <event> | agy-hook install|remove|status [--file <path>] [--json] | claude-hook install|remove|status [--config-dir <dir>] [--json]';
+const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait | codex-wait | agy-hook <event> | agy-hook install|remove|status [--file <path>] [--json] | claude-hook install|remove|status [--config-dir <dir>] [--json] | codex-hook install|remove|status [--codex-home <dir>] [--json]';
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 function parseArgs(args) {
@@ -354,35 +355,47 @@ export function claudeApproval(hook) {
   return { kind: 'tool', title: cut(`Allow ${name}${hook.agent_id != null ? ' for a subagent' : ''}?`, 300), display, note: true };
 }
 
-// The Claude Code PermissionRequest hook: it holds an AskUserQuestion, a tool request, or a plan for the phone. It prints the decision only on
-// a phone answer, and nothing in every other case, so the dialog on the PC stays as it is. It never prints or saves request or answer
-// text. A PC answer ends it from outside (a "No" kills it, a "Yes" closes the engine record).
-async function claudeWait(stdin = process.stdin, write = (line) => process.stdout.write(line)) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of stdin) {
-    size += chunk.length;
-    if (size > 256 * 1024) return;
-    chunks.push(chunk);
-  }
-  let hook;
-  try { hook = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return; }
-  if (!object(hook) || hook.hook_event_name !== 'PermissionRequest' || typeof hook.session_id !== 'string' || !hook.session_id) return;
-  const question = hook.tool_name === 'AskUserQuestion';
-  if (question && !Array.isArray(hook.tool_input?.questions)) return;
-  const approval = question ? null : claudeApproval(hook);
-  if (!question && !approval) return;
-  const { questions } = question ? hook.tool_input : {};
-  const plan = hook.tool_name === 'ExitPlanMode';
-  const runtime = await readServiceRuntime();
-  if (!runtime) return;
+function codexApproval(hook) {
+  const command = hook.tool_input?.command;
+  const cwd = hook.cwd;
+  if (hook.tool_name !== 'Bash' || !whole(command) || !whole(cwd)) return null;
+  return { kind: 'tool', title: 'Allow a shell command?', display: [
+    { label: 'Command', text: command, mono: true }, { label: 'Folder', text: cwd, mono: true },
+  ], note: true };
+}
+
+// No output on a failed or expired wait lets the app use its normal approval path.
+export async function claudeWait(provider, { stdin = process.stdin, write = (line) => process.stdout.write(line), codexWaitMs = 30_000 } = {}) {
+  const codex = provider === 'codex';
+  const deadline = codex ? performance.now() + codexWaitMs : Infinity;
+  const remaining = () => Math.ceil(deadline - performance.now());
+  const inputTimer = codex ? setTimeout(() => stdin.destroy(), codexWaitMs).unref() : null;
   try {
-    const opened = await requestInstance(runtime, '/api/agent/wait', { method: 'POST', maxBytes: 4096,
-      body: { provider: 'claude', sessionKey: hook.session_id, ...(question ? { question: { questions } } : { approval }) } });
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of stdin) {
+      size += chunk.length;
+      if (size > 256 * 1024) return;
+      chunks.push(chunk);
+    }
+    clearTimeout(inputTimer);
+    const hook = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!object(hook) || hook.hook_event_name !== 'PermissionRequest' || typeof hook.session_id !== 'string' || !hook.session_id) return;
+    const question = !codex && hook.tool_name === 'AskUserQuestion';
+    if (question && !Array.isArray(hook.tool_input?.questions)) return;
+    const approval = question ? null : codex ? codexApproval(hook) : claudeApproval(hook);
+    if (!question && !approval) return;
+    const { questions } = question ? hook.tool_input : {};
+    const plan = !codex && hook.tool_name === 'ExitPlanMode';
+    const runtime = await readServiceRuntime();
+    const openMs = Math.min(2000, remaining());
+    if (!runtime || openMs <= 0) return;
+    const opened = await requestInstance(runtime, '/api/agent/wait', { method: 'POST', maxBytes: 4096, timeoutMs: openMs,
+      body: { provider, sessionKey: hook.session_id, ...(question ? { question: { questions } } : { approval }) } });
     if (opened.statusCode !== 200 || opened.body?.wait !== true || typeof opened.body.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(opened.body.requestId)) return;
-    for (;;) {
-      const reply = await requestInstance(runtime, `/api/agent/wait/${opened.body.requestId}`, { method: 'POST', timeoutMs: 30_000, maxBytes: 1024 * 1024 });
-      if (reply.statusCode !== 200 || reply.body?.state === 'closed') return;
+    for (let timeoutMs; (timeoutMs = Math.min(30_000, remaining())) > 0;) {
+      const reply = await requestInstance(runtime, `/api/agent/wait/${opened.body.requestId}`, { method: 'POST', timeoutMs, maxBytes: 1024 * 1024 });
+      if (remaining() <= 0 || reply.statusCode !== 200 || reply.body?.state === 'closed') return;
       if (reply.body?.state === 'answered') {
         const { answers, decision, note } = reply.body;
         let output;
@@ -402,36 +415,47 @@ async function claudeWait(stdin = process.stdin, write = (line) => process.stdou
       }
       if (reply.body?.state !== 'open') return;
     }
-  } catch {}
+  } catch {} finally { clearTimeout(inputTimer); }
 }
 
 const REFUSED = ['invalid settings', 'settings changed', 'cannot write'];
 
-// asb agent claude-hook install|remove|status [--config-dir <dir>] [--json]. Without --config-dir: the Claude profiles of the ASB app sources.
-export async function claudeHook(args, { env = process.env, platform = process.platform, log = console.log, error = console.error, beforeRename } = {}) {
+async function hookSetup(provider, args, { env = process.env, platform = process.platform, log = console.log, error = console.error, beforeRename } = {}) {
+  const codex = provider === 'codex';
+  const option = codex ? '--codex-home' : '--config-dir';
+  const name = codex ? 'Codex' : 'Claude';
   const json = args.includes('--json');
   const rest = args.filter((arg) => arg !== '--json');
   const [action, flag, dir] = rest;
-  if (args.length - rest.length > 1 || !['install', 'remove', 'status'].includes(action) || !(rest.length === 1 || (rest.length === 3 && flag === '--config-dir'))) {
+  if (args.length - rest.length > 1 || !['install', 'remove', 'status'].includes(action) || !(rest.length === 1 || (rest.length === 3 && flag === option))) {
     error(usage);
     return 2;
   }
-  if (rest.length === 3 && (!path.isAbsolute(dir) || /[\x00-\x1f\x7f]/.test(dir))) { error('ASB agent: --config-dir needs an absolute path.'); return 2; }
+  if (rest.length === 3 && (!path.isAbsolute(dir) || /[\x00-\x1f\x7f]/.test(dir))) { error(`ASB agent: ${option} needs an absolute path.`); return 2; }
   const launcher = installedLauncher(env);
-  if (action === 'install' && platform === 'win32') { error('The Claude Code hook works on Linux only for now.'); return 1; }
-  if (action === 'install' && !launcher) { error('Run claude-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).'); return 1; }
-  const dirs = dir ? [path.resolve(dir)] : await readHookTargets(env, platform);
-  if (action === 'status') {
-    const targets = await claudeHookStatus(dirs, { launcher });
-    log(json ? JSON.stringify({ targets }) : targets.map((target) => `Claude ${printable(homeForm(target.dir))}: ${target.state === QUESTIONS_ONLY
-      ? 'questions only (run asb agent claude-hook install for approvals)' : target.state}`).join('\n') || 'No Claude profiles.');
-    return 0;
+  if (action === 'install' && platform === 'win32') { error(`The ${codex ? 'Codex' : 'Claude Code'} hook works on Linux only for now.`); return 1; }
+  if (action === 'install' && !launcher) { error(`Run ${provider}-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).`); return 1; }
+  if (codex && action === 'install' && /['\x00-\x1f\x7f-\x9f]/.test(launcher)) {
+    error('The installed launcher path has a quote or a control character. The Codex hook cannot use it.');
+    return 1;
   }
-  const targets = await changeClaudeHook(action, dirs, { launcher, beforeRename });
-  log(json ? JSON.stringify({ targets }) : targets.map((target) => `Claude ${printable(homeForm(target.dir))}: ${target.result}`).join('\n') || 'No Claude profiles.');
+  const dirs = dir ? [path.resolve(dir)] : await (codex ? readCodexHookTargets : readHookTargets)(env, platform);
+  const targets = action === 'status' ? await (codex ? codexHookStatus : claudeHookStatus)(dirs, { launcher })
+    : await (codex ? changeCodexHook : changeClaudeHook)(action, dirs, { launcher, beforeRename });
+  const folder = (value) => printable(homeForm(value));
+  log(json ? JSON.stringify({ targets }) : targets.map((target) => {
+    const state = target.state === QUESTIONS_ONLY ? 'questions only (run asb agent claude-hook install for approvals)' : target.state ?? target.result;
+    return `${name} ${folder(target.dir)}: ${state}`;
+  }).join('\n') || (codex ? 'No Codex homes.' : 'No Claude profiles.'));
+  if (action === 'status') return 0;
+  const missing = codex && action === 'install' ? targets.filter(({ result }) => result === 'not found') : [];
+  for (const target of missing) error(`Codex has not run here (no ${folder(target.dir)}).`);
   if (targets.some((target) => target.result === 'settings changed')) error(CHANGED_MESSAGE);
-  return targets.some((target) => REFUSED.includes(target.result)) ? 1 : 0;
+  return missing.length || targets.some((target) => REFUSED.includes(target.result)) ? 1 : 0;
 }
+
+export const claudeHook = (args, options) => hookSetup('claude', args, options);
+export const codexHook = (args, options) => hookSetup('codex', args, options);
 
 // asb agent agy-hook install|remove|status [--file <path>] [--json]. Without --file: ~/.gemini/config/hooks.json.
 export async function agyHookSetup(args, { env = process.env, platform = process.platform, log = console.log, error = console.error, beforeRename } = {}) {
@@ -465,10 +489,12 @@ export async function agyHookSetup(args, { env = process.env, platform = process
 }
 
 export async function main(args = process.argv.slice(2)) {
-  if (args.length === 1 && args[0] === 'claude-wait') { await claudeWait(); return 0; }
+  if (args.length === 1 && args[0] === 'claude-wait') { await claudeWait('claude'); return 0; }
+  if (args.length === 1 && args[0] === 'codex-wait') { await claudeWait('codex'); return 0; }
   if (args[0] === 'agy-hook' && ['install', 'remove', 'status'].includes(args[1])) return agyHookSetup(args.slice(1));
   if (args[0] === 'agy-hook') return (await import('./asb-agy-hook.mjs')).agyHook(args.slice(1));
   if (args[0] === 'claude-hook') return claudeHook(args.slice(1));
+  if (args[0] === 'codex-hook') return codexHook(args.slice(1));
   let runtime;
   let result;
   try { result = await run(args, (value) => { runtime = value; }); }

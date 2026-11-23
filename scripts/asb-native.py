@@ -2006,6 +2006,10 @@ def phone_status_text(status):
 CLAUDE_HOOK_STATES = ("installed", "installed (questions only)", "not installed", "other launcher", "invalid settings", "not found")
 
 
+def hook_folder_form(folder, home):
+    return "~" + folder[len(home):] if folder == home or folder.startswith(home + os.sep) else folder
+
+
 def claude_hook_text(items, home=None):
     """One line per Claude profile from the claudeHook field of /api/phone, with the dir in ~ form."""
     home = home or os.path.expanduser("~")
@@ -2013,14 +2017,31 @@ def claude_hook_text(items, home=None):
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict) or not isinstance(item.get("dir"), str) or item.get("state") not in CLAUDE_HOOK_STATES:
             continue
-        folder = item["dir"]
-        if folder == home or folder.startswith(home + os.sep):
-            folder = "~" + folder[len(home):]
+        folder = hook_folder_form(item["dir"], home)
         if item["state"] == "installed (questions only)":
             lines.append(f"Claude Code hook ({folder}): questions only (run asb agent claude-hook install for approvals)")
             continue
         hint = " (run asb agent claude-hook install)" if item["state"] in ("not installed", "other launcher") else ""
         lines.append(f"Claude Code hook ({folder}): {item['state']}{hint}")
+    return "\n".join(lines)
+
+
+def codex_hook_text(items, home=None):
+    home = home or os.path.expanduser("~")
+    captions = {
+        "installed": "phone first (with Approve requests from phones on)",
+        "not installed": "not installed (run asb agent codex-hook install)",
+        "other launcher": "other launcher",
+        "invalid settings": "invalid settings",
+        "not found": "not found",
+    }
+    lines = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("dir"), str) or not isinstance(item.get("state"), str):
+            continue
+        caption = captions.get(item["state"])
+        if caption:
+            lines.append(f"Codex hook ({hook_folder_form(item['dir'], home)}): {caption}")
     return "\n".join(lines)
 
 
@@ -6122,8 +6143,8 @@ class PhoneEditor(Gtk.Box):
         self.status, self.loaded = status, True
         self.status_label.set_label(phone_status_text(status))
         self.fingerprint.set_label(group_fingerprint(status.get("fingerprint", "")))
-        hook_text = claude_hook_text(status.get("claudeHook"))
-        self.hook_status.set_label(hook_text)
+        hook_lines = (claude_hook_text(status.get("claudeHook")), codex_hook_text(status.get("codexHook")))
+        self.hook_status.set_label("\n".join(filter(None, hook_lines)))
         self.update_hook_status()
         if sync_form:
             form = None if self.form_loaded is None else (self.enabled.get_active(), int(self.port.get_value()),

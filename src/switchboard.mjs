@@ -11,6 +11,7 @@ import { agyRecordsDir, focusAgyInKitty, loadAntigravityDashboard } from './anti
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
+import { codexHookStatus, codexHookTargets } from './codex-hook.mjs';
 import { createClaudeQuestions } from './claude-questions.mjs';
 import { createBridgeCoverage } from './bridge-coverage.mjs';
 import { createActivityMessages } from './activity-messages.mjs';
@@ -1169,6 +1170,7 @@ export function createSwitchboardServer(options = {}) {
     readSourcesRevision: async () => appSourcesRevision(await registry.read()),
     readSources: async () => registeredLoad ? registry.read() : [],
     claudeHookStatus: async () => claudeHookStatus(hookTargets(registeredLoad ? await registry.read() : []), { launcher: installedLauncher(process.env) }),
+    codexHookStatus: async () => codexHookStatus(codexHookTargets(registeredLoad ? await registry.read() : []), { launcher: installedLauncher(process.env) }),
     palettePath: path.join(stateDir(), 'palette.json'),
     dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {

@@ -2259,6 +2259,18 @@ class PhoneChecks(unittest.TestCase):
             "Claude Code hook (~/.claude): questions only (run asb agent claude-hook install for approvals)",
             "Claude Code hook (~/b): installed"])
 
+    def test_codex_hook_text_names_each_home_and_omits_absent_items(self):
+        home = "/home/made-up"
+        items = [{"dir": home + "/codex", "state": "installed"}, {"dir": home, "state": "not installed"},
+                 {"dir": "/srv/codex", "state": "other launcher"}, {"dir": home + "/bad", "state": []},
+                 {"dir": "bad", "state": "made-up"}, None]
+        self.assertEqual(asb.codex_hook_text(items, home).split("\n"), [
+            "Codex hook (~/codex): phone first (with Approve requests from phones on)",
+            "Codex hook (~): not installed (run asb agent codex-hook install)",
+            "Codex hook (/srv/codex): other launcher"])
+        self.assertEqual(asb.codex_hook_text(None), "")
+        self.assertEqual(asb.codex_hook_text([]), "")
+
     def test_phone_pane_reopen_keeps_edits_shows_new_addresses_unchecked_and_follows_an_unedited_form(self):
         editor = self.editor()
         lan = {"address": "192.168.50.4", "interface": "enp0s1", "kind": "lan"}
