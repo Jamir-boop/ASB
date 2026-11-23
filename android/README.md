@@ -344,9 +344,12 @@ answered (the engine then answers 409). If the engine stops during a wait, the
 card shows `Offline` with the buttons off until the phone reaches the PC again,
 then it closes with `This request is closed.`. The alert and the `Waiting` state
 come from the row's attention marks (`notify/Events.kt`), not the card data, so
-the card can be in the row before the app shows Waiting and before it alerts; a
-permission dialog alerts only after it stays open 10 s, and with no working row
-and no new request in the last 60 s the first card can be up to 30 s late.
+the card can be in the row before the app shows Waiting and before it alerts. A
+Claude Code permission dialog can cause an alert only after it stays open 10 s.
+The phone alert was measured once: about 14 s after the dialog opened (the 10 s
+rule plus one phone read), with the app in the background.
+The app posts no alert while it is open on the screen. With no working row and
+no new request in the last 60 s, the first card can be up to 30 s late.
 
 Settings > Card marks explains each card mark.
 

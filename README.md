@@ -66,10 +66,24 @@ Limits:
 - The PC wins. When you answer on the PC, the open phone card closes in place at the next phone read (`This request is closed.`, both buttons off; at most 30 s). `Answered on the PC` shows only if you tap a button after the PC answered. A phone answer after a PC answer changes nothing for the tool.
 - If the engine stops during a wait, the hook ends with no output and the PC dialog stays and works. The phone shows `Offline` with the buttons off until it reaches the PC again, then the card closes.
 - One card for each session: a newer request replaces the older one on the phone; the older one stays on the PC only.
-- The alert and the `Waiting` state come from the row's attention marks, not the card data, so the card can be in the row before ASB shows Waiting and before the phone alerts. A permission dialog shows Waiting, the Needs input sound, and the phone alert only after it stays open 10 s, so a request you answer at once does not alert (the alert time itself is not measured). With no working row and no new request in the last 60 s, the phone reads the PC each 30 s, so the first card can be up to 30 s late; the time with the screen off is not proven.
+- The alert and the `Waiting` state come from the row's attention marks, not the card data. The card can appear before Waiting and before a phone alert. A permission dialog shows Waiting and can cause a Needs input sound and a phone alert only after it stays open 10 s. A request you answer at once does not alert. The phone alert was measured once: about 14 s after the dialog opened (the 10 s rule plus one phone read), with the app in the background. The app posts no alert while it is open on the screen. With no working row and no new request in the last 60 s, the phone reads the PC each 30 s, so the first card can be up to 30 s late; the time with the screen off is not proven.
 - Checked with Claude Code 2.1.330 on Linux: a CLI session end to end with a real Android phone (2026-11-23), and a desktop Code tab session for one tool allow and one tool deny (2026-11-22). The desktop Code tab is not checked for plans.
 - An older ASB build reads the `*` entry as `other launcher`. Not yet: Windows (the hook install refuses it), group members, and Antigravity CLI.
 - Each permission dialog waits about 70 ms for the hook, also with the switch off.
+- Claude Code sessions that already run keep the old hook entry until they start again (by the Claude Code docs; not tested).
+
+## Approve OpenCode requests from the phone
+
+On main, not in a release yet. Use ASB Bridge `0.10.0` with OpenCode 2 on Linux.
+
+1. Run `asb bridge install --opencode`. Restart OpenCode to load the new plugin.
+2. In Preferences > Phone, turn on **Allow phone access**, **Send message text to phones**, **Answer questions from phones**, and **Approve requests from phones**. Pair a phone.
+
+- A shell permission request can show `Command` and `Folder`. A `write` or `edit` permission request for one file can show `File` (the resolved path) and `Size` (the content length or the old and new text lengths). A subagent request shows `for a subagent` in the title on the root session's card.
+- Questions and other types of permission request get no card. A permission request stays on the PC if the plugin cannot match it to its tool input, or if a command, folder, or path is over 4,000 characters or has control or hidden characters (tabs and newlines are allowed).
+- `Allow once` lets OpenCode run the tool once, not always. `Deny` rejects the request and sends `Denied from the phone.` or `Denied from the phone: <note>` to OpenCode.
+- With no paired phone, a switch off, or the engine down, use the PC dialog. If you answer there first, the plugin stops its phone wait. Only one card can be open on the phone for each session. A newer request replaces the older card.
+- The phone can act only on local sessions. Windows is not covered. Not tested end to end on a phone with a real OpenCode session.
 
 ## Approve Codex commands from the phone
 
