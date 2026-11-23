@@ -102,7 +102,7 @@ export async function agyKittyDoctor(add, advice, { env = process.env, read } = 
   }
   const ready = ['socket-only', 'socket', 'yes'].includes(allow) && listen;
   add('kitty-remote', 'Options', ready ? 'ok' : 'info', `kitty remote control: ${ready ? 'reachable' : 'not set up'}`);
-  if (!ready) advice.push('In kitty.conf:', '  allow_remote_control socket-only', '  listen_on unix:@kitty-{kitty_pid}');
+  if (!ready) advice.push('In kitty.conf:', '  allow_remote_control socket-only', '  listen_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}');
 }
 
 async function readRecord(file) {

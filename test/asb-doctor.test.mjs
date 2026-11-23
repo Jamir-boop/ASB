@@ -697,7 +697,7 @@ test('doctor reads the hook state of the ASB Claude profiles and writes nothing'
 test('kitty remote control: reachable with kitty on PATH and the two kitty.conf keys, else not set up with the advice; no line without kitty; no other line printed', async (t) => {
   const home = '/home/made-up';
   const conf = `${home}/.config/kitty/kitty.conf`;
-  const ready = 'font_family made-up-font-marker\nallow_remote_control socket-only\n# made-up comment marker\nlisten_on unix:@kitty-{kitty_pid}\n';
+  const ready = 'font_family made-up-font-marker\nallow_remote_control socket-only\n# made-up comment marker\nlisten_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}\n';
   const check = async (bins, text) => {
     const system = await fakeSystem(t, { release: 'debian13', kitty: null, bins, env: { HOME: home }, files: { [conf]: text } });
     const lines = await system.lines();
@@ -706,10 +706,10 @@ test('kitty remote control: reachable with kitty on PATH and the two kitty.conf 
     return lines;
   };
   const kittyBins = [...ALL_BINS, 'kitty'];
-  const advice = ['In kitty.conf:', '  allow_remote_control socket-only', '  listen_on unix:@kitty-{kitty_pid}'];
+  const advice = ['In kitty.conf:', '  allow_remote_control socket-only', '  listen_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}'];
   for (const [bins, text, ok] of [[kittyBins, ready, true], [kittyBins, ready.replace('socket-only', 'yes'), true],
-    [kittyBins, ready.replace('socket-only', 'socket'), true],
-    [kittyBins, ready.replace('socket-only', 'no'), false], [kittyBins, ready.replace('unix:@', 'tcp:'), false],
+    [kittyBins, ready.replace('socket-only', 'socket'), true], [kittyBins, ready.replace('unix:${XDG_RUNTIME_DIR}/', 'unix:@'), true],
+    [kittyBins, ready.replace('socket-only', 'no'), false], [kittyBins, ready.replace('unix:', 'tcp:'), false],
     [kittyBins, 'allow_remote_control socket-only\n', false], [kittyBins, '', false],
     [kittyBins, `${ready}allow_remote_control no\n`, false]]) {
     const lines = await check(bins, text);
