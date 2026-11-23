@@ -224,6 +224,30 @@ linux('only a named input pastes, verifies the screen, and proves Return from a 
   } finally { await f.host.close(); f.close(); }
 });
 
+for (const [lines, chars, paste] of [[8, 499, true], [9, 499, false], [8, 500, true], [8, 501, false]] as const) {
+  linux(`routes a framed agy message of ${lines} lines and ${chars} characters`, async () => {
+    const f = fixture();
+    try {
+      const head = [body.split('\n')[0], ...Array<string>(lines - 2).fill('x'.repeat(64)), ''].join('\n');
+      const text = head + 'y'.repeat(chars - head.length);
+      expect(text.split('\n')).toHaveLength(lines);
+      expect(text.length).toBe(chars);
+      f.afterPaste(() => f.setScreen(screen(text)));
+      await f.host.deliver(randomUUID(), text, true);
+      await f.poll();
+      if (paste) {
+        expect(f.calls.map(args => args[3])).toEqual(['get-text', 'send-text', 'get-text', 'send-key']);
+        expect(f.calls[3]?.slice(6)).toEqual(['enter']);
+        expect(await f.runStop()).toBeNull();
+      } else {
+        expect(f.calls).toEqual([]);
+        expect(f.checks()).toBe(0);
+        expect(await f.runStop()).toBe(text);
+      }
+    } finally { await f.host.close(); f.close(); }
+  });
+}
+
 const wrappedStart = '[ASB Bridge peer message from Fixture, sessionId';
 const wrappedId = '11111111-2222-4333-8444-555555555555';
 const wrappedBody = `${wrappedStart} ${wrappedId}. Reply with asb-bridge send_message.]\nNext line`;

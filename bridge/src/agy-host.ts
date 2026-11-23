@@ -12,6 +12,9 @@ import { DeliveryRefused } from './delivery';
 
 const PROOF_MS = 5_000;
 const CLAIM_MS = 10_000;
+// agy 1.5.15 showed full text up to 8 lines / 589 characters at 71 columns. The limit depends on width; the post-paste check is the real guard.
+const AGY_KITTY_MAX_LINES = 8;
+const AGY_KITTY_MAX_CHARS = 500;
 export const agyReceiverError = 'This agy conversation has no active ASB receiver or another receiver already registered it.';
 
 export function agyRuntime(record: AgyRecord | undefined): Runtime {
@@ -114,7 +117,8 @@ export function createAgyHost({ id, pid, mailbox, read, kittyDelivery, focus = a
   }
 
   async function paste(item: Waiting, gate: AgyRecord): Promise<boolean> {
-    if (!kittyDelivery || !item.named || !oldEnough(gate, now())) return false;
+    if (!kittyDelivery || !item.named || !oldEnough(gate, now())
+      || item.text.length > AGY_KITTY_MAX_CHARS || item.text.split('\n').length > AGY_KITTY_MAX_LINES) return false;
     const screen = () => command(gate, 'get-text', ['--extent', 'screen']);
     const unchanged = async () => {
       const current = await read();
