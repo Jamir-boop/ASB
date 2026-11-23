@@ -59,6 +59,21 @@ While **Approve requests from phones** is on and a paired phone was seen in the 
 
 The first command of a new session can get no card. The first command after a time with no working session can reach the phone up to 30 s late, or not at all. Unlisted threads and subagent threads get no card. If two requests from one session overlap, only the newer one stays on the phone. The older one goes to the normal approval path. Until the phone app update that alerts again for a new request, a second card can come with no alert. The time with the screen off is not proven. The hook adds about 190 ms per Bash approval when it does not hold the command. A command over 4,000 characters gets no card. Codex app: the hook ran in the app's own build (`0.171.0-alpha.13`) with a loopback model fixture. The live app UI was not tested.
 
+## Antigravity CLI
+
+ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and shows their state. On main, not in a release yet. A live row in a kitty with remote control opens by focusing its kitty window.
+
+Run `asb agent agy-hook install` to add the hook. It writes one `asb` key into `~/.gemini/config/hooks.json`, keeps the old file as `hooks.json.asb-backup`, and leaves other hooks as they are. `asb agent agy-hook status` shows the state, and `asb agent agy-hook remove` takes the hook out. Linux only.
+
+Focus needs kitty remote control (`allow_remote_control` and `listen_on`) in your `kitty.conf`. `asb doctor` checks it.
+
+Limits:
+- Checked with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked.
+- agy has no hook event for a command approval, so ASB shows Working, not Waiting, while agy waits for one.
+- Esc fires no hook event. After 10 minutes with no event and no transcript change, a Working row shows Unknown.
+- `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
+- Not yet: phone answers and approvals, bridge messages, Windows, and the Antigravity app and IDE.
+
 ## Support by app
 
 | App | Cards | Status | Questions | Approvals | Phone answers | Open | Messages | Background | Usage | Rename | Archive | Windows |
@@ -68,6 +83,7 @@ The first command of a new session can get no card. The first command after a ti
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
 | OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: docs only | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
+| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✗ Not checked | ✓ live kitty sessions, with remote control | ✗ ASB work | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.

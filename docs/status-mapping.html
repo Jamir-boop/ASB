@@ -213,10 +213,11 @@
 
   <h2 id="support">Support by app</h2>
   <p class="lead" id="support-sum"></p>
+  <p class="dim" id="agy-checked"></p>
   <div class="legend" id="legend"></div>
   <div class="tools no-print"><label class="toggle"><input type="checkbox" id="all-reasons" autocomplete="off"> Show all reasons</label><span class="dim">Select a feature or a mark to read why.</span></div>
   <div class="scroll"><table class="mx" id="mx"><caption class="sr">Support of each feature, per app. Select a feature to read the reasons.</caption>
-    <colgroup><col class="feat"><col span="6"></colgroup>
+    <colgroup><col class="feat"><col span="7"></colgroup>
     <thead id="mx-head"></thead><tbody id="mx-body"></tbody></table></div>
   <p class="also" id="also"></p>
 
@@ -252,15 +253,18 @@ const SUPPORT = [
   ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓ Linux, with the hook', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
   ['Claude Code CLI', '✓', '✓', '✓', '✓', '✓ Linux, with the hook', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
   ['OpenCode 2', '✓', '✓', '✓ with ASB Bridge', '✓ with ASB Bridge', '✗ ASB work: docs only', '✗ ASB work: terminal tab', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
+  ['Antigravity CLI', '✓ with the hook', '✓ with the hook', '✓ with the hook', '✗ Google: no event', '✗ Not checked', '✓ live kitty sessions, with remote control', '✗ ASB work', '✗ Not checked', '✓', '✗ Not checked', '✗ Not checked', '✗ ASB work'],
   ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✗ Not planned: login', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
 ];
-const APP_ICONS = { 'Codex app': ['openai'], 'Codex CLI': ['openai', 'terminal'], 'Claude Desktop Code': ['claude'], 'Claude Code CLI': ['claude', 'terminal'], 'OpenCode 2': ['opencode'], 'Claude Code on the web': ['claude', 'globe'] };
+const APP_ICONS = { 'Codex app': ['openai'], 'Codex CLI': ['openai', 'terminal'], 'Claude Desktop Code': ['claude'], 'Claude Code CLI': ['claude', 'terminal'], 'OpenCode 2': ['opencode'], 'Antigravity CLI': ['terminal'], 'Claude Code on the web': ['claude', 'globe'] };
 // What a gap waits on, in the order of the summaries.
 const OWNERS = [
   ['ASB work', 'ASB work', 'Only ASB code is missing.'],
   ['Anthropic', 'Anthropic', 'Claude apps save or offer nothing that ASB can use.'],
   ['Codex', 'Codex', 'Codex saves nothing that ASB can use.'],
   ['OpenCode', 'OpenCode', 'OpenCode saves nothing that ASB can use.'],
+  ['Google', 'Google', 'agy saves or sends nothing that ASB can use.'],
+  ['Not checked', 'Not checked', 'Nobody has checked yet whether the app offers a way.'],
   ['Not planned', 'Not planned', 'ASB will not do it.'],
 ];
 const FEATURE_NOTES = {
@@ -274,6 +278,7 @@ const FEATURE_NOTES = {
 const ALSO = 'All apps also have Read and Unread, pins, the drawer, Mute for a time (30 min to Always), Discard, Copy (relative reference, absolute reference, or name), sounds, the GNOME top bar, and the phone.';
 const REMOTE = 'Cards of other machines do not open, have no Discard, and copy only the absolute reference or the name.';
 
+const AGY_CHECKED = 'Built for the Antigravity CLI on Linux, on main, not in a release yet. Checked on 2026-11-22 and 2026-11-23 with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked.';
 const RENAME_CHECKED = 'Checked on 2026-10-26: Codex 0.164.0, OpenCode 2.1.4, Claude Code 2.1.310. On 2026-11-16, Codex 0.169.0 still has thread/name/set and adds codex archive; OpenCode 2.3.0 and Claude Code 2.1.325 are not checked again.';
 // [support app names, what the note says]
 const RENAME = [
@@ -343,7 +348,7 @@ const use = (id, cls = 'ico') => `<svg class="${cls}" aria-hidden="true"><use hr
 const appIcons = (app) => (APP_ICONS[app] || []).map((id) => use(id, ['terminal', 'globe'].includes(id) ? 'ico cli' : 'ico')).join('');
 const appName = (app) => `<span class="app">${appIcons(app)}${esc(app)}</span>`;
 // The mark of each owner is a shape, not only a color: the app icon of the party that must act, a crossed box for ASB.
-const OWNER_ICON = { 'ASB work': 'asb', Anthropic: 'claude', Codex: 'openai', OpenCode: 'opencode', 'Not planned': 'none' };
+const OWNER_ICON = { 'ASB work': 'asb', Anthropic: 'claude', Codex: 'openai', OpenCode: 'opencode', Google: 'none', 'Not checked': 'none', 'Not planned': 'none' };
 const ownerKey = (owner) => owner.toLowerCase().replace(/\s+/g, '-');
 
 function parseCell(text) {
@@ -526,9 +531,9 @@ const ownerIcon = (owner) => `<span class="owner ${ownerKey(owner)}">${use(OWNER
 const all = everywhere();
 document.getElementById('support-sum').textContent = `${all.join(' and ')} work for all ${apps.length} apps. Each app has ${FEATURES.length} features; the first row counts what works.`;
 document.getElementById('legend').innerHTML = `<span class="item"><span class="cell-ok">${use('check', 'ico')}</span> Works</span><span class="item"><span class="cell-ok noted-key">${use('check', 'ico')}</span> Works, with a note</span>`
-  + [...gapsByOwner()].map(([owner, list]) => `<span class="item">${ownerIcon(owner)}${owner === 'Not planned' ? owner : 'Waits on ' + owner} <span class="n">${list.length}</span></span>`).join('');
+  + [...gapsByOwner()].map(([owner, list]) => `<span class="item">${ownerIcon(owner)}${owner === 'Not planned' || owner === 'Not checked' ? owner : 'Waits on ' + owner} <span class="n">${list.length}</span></span>`).join('');
 
-const shortName = { 'Codex app': 'Codex app', 'Codex CLI': 'Codex CLI', 'Claude Desktop Code': 'Claude Desktop', 'Claude Code CLI': 'Claude CLI', 'OpenCode 2': 'OpenCode 2', 'Claude Code on the web': 'Claude web' };
+const shortName = { 'Codex app': 'Codex app', 'Codex CLI': 'Codex CLI', 'Claude Desktop Code': 'Claude Desktop', 'Claude Code CLI': 'Claude CLI', 'OpenCode 2': 'OpenCode 2', 'Antigravity CLI': 'Antigravity', 'Claude Code on the web': 'Claude web' };
 document.getElementById('mx-head').innerHTML = `<tr><th scope="col">Feature</th>${apps.map(({ app }) => `<th scope="col" title="${esc(app)}"><span class="app"><span class="icons">${appIcons(app)}</span><span class="name">${shortName[app]}<span class="sr"> (${esc(app)})</span></span></span></th>`).join('')}</tr>`;
 const works = `<tr class="works"><th scope="row">Works</th>${apps.map((row) => { const { works: n, total } = coverage(row); return `<td>${n}<span class="of">/${total}</span><span class="vbar" aria-hidden="true"><i style="width:${Math.round(n / total * 100)}%"></i></span></td>`; }).join('')}</tr>`;
 document.getElementById('mx-body').innerHTML = works + FEATURES.map((feature, i) => {
@@ -571,6 +576,7 @@ const planRows = (list, feature) => list.map(([support, name, note]) => {
   const owner = cell?.owner || '';
   return `<tr><th scope="row">${support.length ? appName(support[0]).replace(esc(support[0]), esc(name)) : esc(name)}</th><td class="who">${owner ? ownerIcon(owner) + owner : `<span class="dim">${cell?.ok ? 'Works' : 'All apps'}</span>`}</td><td>${code(note)}</td></tr>`;
 }).join('');
+document.getElementById('agy-checked').innerHTML = esc(AGY_CHECKED);
 document.getElementById('rename-checked').innerHTML = esc(RENAME_CHECKED);
 document.getElementById('rename-list').innerHTML = planRows(RENAME, 'Rename');
 document.getElementById('phone-answers-checked').innerHTML = esc(PHONE_ANSWERS_CHECKED);
