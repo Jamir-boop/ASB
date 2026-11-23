@@ -350,11 +350,11 @@ Inbound text waits in order. If there is no delivery after 60 min, the receiver 
 
 The kitty path is off until a live proof. It checks the idle hook record and prompt screen, pastes a draft, checks the screen and hook record again, then sends Return. The agy ancestor walk, MCP launch before the first turn, prompt rule, and effects of `@` and `/` at paste are not proven on agy 1.5.15. The tests use fakes. To register, use `asb bridge install --agy` after the agy hook install. The installer calls `agy mcp add`, keeps one private config backup, and prints only key names and digests. `asb bridge uninstall --agy` uses `agy mcp remove` and removes the installed bundle and the runtime mailbox. Bridge coverage shows agy on the local machine only. The v1 member report keeps its earlier provider list so older machines can still read it.
 
-Late delivery outcomes (`bridge/src/agy-host.ts:143-168`, `bridge/src/bridge.ts:321-336`; immediate refusal at `bridge/src/bridge.ts:795-798`):
+Late delivery outcomes (`bridge/src/agy-host.ts:143-168`, `bridge/src/bridge.ts:322-347`; immediate refusal at `bridge/src/bridge.ts:807-810`):
 
 | Proof | Receiver row | Receipt |
 | --- | --- | --- |
-| A verified Return or matching `.taken` marker, then `PreInvocation` within 5 s | `consumed`: `accepted`, no longer awaiting input | None. The sender sees its own `socket-written`. |
+| A verified Return or matching `.taken` marker, then `PreInvocation` within 5 s | `consumed`: `accepted`, no longer awaiting input | `delivered` once if released from hold. Otherwise none; the sender sees its own `socket-written`. |
 | No proof after a possible delivery | `unknown`, no longer awaiting input | None. Do not retry. |
 | The host withdrew or refused the input | `dropped`, `delivery-refused`, no longer awaiting input | One `delivery-refused` receipt. |
 

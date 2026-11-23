@@ -121,6 +121,7 @@ export class Bridge {
       drop_reason: 'ALTER TABLE messages ADD COLUMN drop_reason TEXT',
       status_reason: 'ALTER TABLE messages ADD COLUMN status_reason TEXT',
       awaiting_input: 'ALTER TABLE messages ADD COLUMN awaiting_input INTEGER NOT NULL DEFAULT 0',
+      released_from_hold: 'ALTER TABLE messages ADD COLUMN released_from_hold INTEGER NOT NULL DEFAULT 0',
       native_input_id: 'ALTER TABLE messages ADD COLUMN native_input_id TEXT',
     })) {
       if (!columns.some(column => column.name === name)) this.db.exec(sql);
@@ -323,16 +324,26 @@ export class Bridge {
       "SELECT desktop_input_id FROM messages WHERE direction='in' AND awaiting_input=1").all()
       .flatMap(message => message.desktop_input_id ? [message.desktop_input_id] : []);
     const inputs = await this.host.inputs(awaiting);
+    const delivered: Message[] = [];
     const withdrawn = this.db.transaction(() => {
-      for (const input of inputs.consumed) this.db.run(
-        "UPDATE messages SET awaiting_input=0,native_input_id=? WHERE direction='in' AND (desktop_input_id=? OR native_input_id=?) AND status IN ('submitting','started','steered','accepted','unknown')",
-        [input.id, input.clientId, input.id]);
+      for (const input of inputs.consumed) {
+        if (this.host.transport === 'agy') {
+          const released = this.db.query<Message, [string | null]>(
+            "SELECT * FROM messages WHERE direction='in' AND desktop_input_id=? AND status='accepted' AND released_from_hold=1 AND awaiting_input=1",
+          ).get(input.clientId);
+          if (released) delivered.push(released);
+        }
+        this.db.run(
+          "UPDATE messages SET awaiting_input=0,native_input_id=? WHERE direction='in' AND (desktop_input_id=? OR native_input_id=?) AND status IN ('submitting','started','steered','accepted','unknown')",
+          [input.id, input.clientId, input.id]);
+      }
       for (const input of inputs.lost ?? []) this.db.run(
         "UPDATE messages SET status='unknown',awaiting_input=0 WHERE direction='in' AND desktop_input_id=? AND status='accepted'", [input.clientId]);
       return (inputs.withdrawn ?? []).flatMap(input => this.db.query<Message, [string | null]>(
         "UPDATE messages SET status='dropped',drop_reason='delivery-refused',awaiting_input=0 WHERE direction='in' AND desktop_input_id=? AND status='accepted' RETURNING *",
       ).all(input.clientId));
     })();
+    for (const message of delivered) await this.receipt(message, 'delivered');
     for (const message of withdrawn) await this.receipt(message, 'dropped', 'delivery-refused');
     return inputs;
   }
@@ -770,8 +781,9 @@ export class Bridge {
     const inputId = randomUUID();
     const claim = this.db.transaction(() => {
       const full = message.kind === 'message' && this.unreadCount() >= 50;
-      const result = this.db.run("UPDATE messages SET status=?,awaiting_input=?,drop_reason=?,desktop_input_id=? WHERE id=? AND status IN ('pending','held')",
-        [full ? 'dropped' : 'submitting', !full && message.kind === 'message' ? 1 : 0, full ? 'queue-full' : null, full ? null : inputId, message.id]);
+      const result = this.db.run("UPDATE messages SET status=?,awaiting_input=?,drop_reason=?,desktop_input_id=?,released_from_hold=? WHERE id=? AND status IN ('pending','held')",
+        [full ? 'dropped' : 'submitting', !full && message.kind === 'message' ? 1 : 0, full ? 'queue-full' : null, full ? null : inputId,
+          this.host.transport === 'agy' && message.status === 'held' ? 1 : 0, message.id]);
       return result.changes ? full ? 'full' : 'claimed' : 'unchanged';
     }).immediate();
     if (claim === 'unchanged') return;

@@ -277,7 +277,7 @@ linux('a file missing without a taken marker becomes lost only after ten seconds
   } finally { await f.host.close(); f.close(); }
 });
 
-linux('updates accepted rows for lost and withdrawn inputs and sends only the withdrawal receipt', async () => {
+linux('sends a delivered receipt only for proven input released from hold, and a drop receipt for withdrawal', async () => {
   const f = fixture(false);
   const config = f.env.CLAUDE_CONFIG_DIR;
   const socket = join(f.root, 'sender.sock');
@@ -297,15 +297,15 @@ linux('updates accepted rows for lost and withdrawn inputs and sends only the wi
     await binding.tick();
     const bridge = binding.current(meta(f.id));
     const address = bridge.status().replyAddress!;
-    const transmit = async (text: string) => {
+    const transmit = async (text: string, expected = 'accepted') => {
       const id = randomUUID();
       const conn = net.createConnection(address.slice(4));
       await once(conn, 'connect');
       conn.end(`${JSON.stringify({ msgV: 1, type: 'user', msg_id: id, from: `uds:${socket}`, session_id: f.id, message: { role: 'user', content: text } })}\n`);
       await once(conn, 'close');
       const stop = Date.now() + 2000;
-      while (!bridge.status().messages.some(row => row.id === id && row.status === 'accepted') && Date.now() < stop) await Bun.sleep(5);
-      expect(bridge.status().messages.find(row => row.id === id)?.status).toBe('accepted');
+      while (!bridge.status().messages.some(row => row.id === id && row.status === expected) && Date.now() < stop) await Bun.sleep(5);
+      expect(bridge.status().messages.find(row => row.id === id)?.status).toBe(expected);
       return id;
     };
     const proven = await transmit('first');
@@ -329,9 +329,22 @@ linux('updates accepted rows for lost and withdrawn inputs and sends only the wi
     expect(bridge.status().unreadCount).toBe(0);
     const status = new Map(bridge.status().messages.map(row => [row.id, row.status]));
     expect([status.get(proven), status.get(unclear), status.get(refused)]).toEqual(['accepted', 'unknown', 'dropped']);
-    const receipt = received.join('').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-    expect(receipt).toHaveLength(1);
-    expect(receipt[0]).toMatchObject({ action: 'peer_message_status', orig_msg_id: refused, status: 'dropped', drop_reason: 'delivery-refused' });
+    const receipts = () => received.join('').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    expect(receipts()).toHaveLength(1);
+    expect(receipts()[0]).toMatchObject({ action: 'peer_message_status', orig_msg_id: refused, status: 'dropped', drop_reason: 'delivery-refused' });
+
+    await bridge.setPolicy('hold');
+    const held = await transmit('fourth', 'held');
+    await bridge.setPolicy('accept');
+    expect(bridge.status().messages.find(row => row.id === held)?.status).toBe('accepted');
+    expect(receipts().map(r => [r.orig_msg_id, r.status])).toEqual([[refused, 'dropped'], [held, 'held']]);
+    await binding.tick();
+    expect(await f.runStop()).toContain('fourth');
+    record = f.update({ event: 'PreInvocation', state: 'working', stateAtMs: Math.ceil(statSync(`${f.base}.taken`).mtimeMs + 1) });
+    await binding.tick();
+    await binding.tick();
+    expect(bridge.status().unreadCount).toBe(0);
+    expect(receipts().map(r => [r.orig_msg_id, r.status])).toEqual([[refused, 'dropped'], [held, 'held'], [held, 'delivered']]);
   } finally { await binding.close(); await new Promise<void>(resolve => peer.close(() => resolve())); f.close(); }
 });
 
