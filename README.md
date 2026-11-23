@@ -100,6 +100,8 @@ ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and sho
 
 Run `asb agent agy-hook install` to add the hook. It writes one `asb` key into `~/.gemini/config/hooks.json`, keeps the old file as `hooks.json.asb-backup`, and leaves other hooks as they are. `asb agent agy-hook status` shows the state, and `asb agent agy-hook remove` takes the hook out. Linux only.
 
+`asb agent agy-hook install` also sets agy's window title command (`title` in `~/.gemini/antigravity-cli/settings.json`) to `asb agent agy-title`, unless you have your own `title` setting. After you name a conversation with `/rename`, the board shows that name as the row title, and the kitty window title shows it too (`agy · <folder>` before a rename). `remove` takes the setting out.
+
 Focus needs kitty remote control in your `kitty.conf`. Use these two lines (`asb doctor` prints them):
 
 ```

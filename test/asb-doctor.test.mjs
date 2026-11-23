@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { agyHookEntry } from '../src/agy-hook.mjs';
+import { agyHookEntry, agyTitleEntry } from '../src/agy-hook.mjs';
 import { collect, engineReady, firewallState, format, linuxFirewallLines, main, shellText } from '../scripts/asb-doctor.mjs';
 import { PYTHON_PROBE } from '../src/linux-system.mjs';
 
@@ -756,12 +756,16 @@ test('agy lines: found or not found and the hook state, the advice, no line with
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-agy-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const file = path.join(home, '.gemini', 'config', 'hooks.json');
+  const settingsFile = path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
   await mkdir(path.dirname(file), { recursive: true });
+  await mkdir(path.dirname(settingsFile), { recursive: true });
   const launcher = '/opt/asb-test/bin/asb';
   const advice = ['Install the agy hook:', '  asb agent agy-hook install'];
-  const check = async (bins, value) => {
+  const check = async (bins, value, settings = null) => {
     await rm(file, { force: true });
+    await rm(settingsFile, { force: true });
     if (value) await writeFile(file, JSON.stringify({ made: 'up-marker', ...value }));
+    if (settings !== null) await writeFile(settingsFile, typeof settings === 'string' ? settings : JSON.stringify(settings));
     const system = await fakeSystem(t, { release: 'debian13', agy: null, bins, env: { HOME: home, ASB_INSTALLED_LAUNCHER: launcher } });
     const lines = await system.lines();
     assert.ok(!lines.join('\n').includes('marker'));
@@ -770,16 +774,21 @@ test('agy lines: found or not found and the hook state, the advice, no line with
   const agyBins = [...ALL_BINS, 'agy'];
   const installed = { asb: agyHookEntry(launcher) };
   const changed = { asb: agyHookEntry('/other/asb') };
-  assert.deepEqual(await check(agyBins, null), ['  ok       agy: found', '  info     agy hook: not installed', ...advice]);
-  assert.deepEqual(await check(agyBins, {}), ['  ok       agy: found', '  info     agy hook: not installed', ...advice]);
-  assert.deepEqual(await check(agyBins, installed), ['  ok       agy: found', '  ok       agy hook: installed']);
-  assert.deepEqual(await check(agyBins, changed), ['  ok       agy: found', '  warn     agy hook: changed']);
-  assert.deepEqual(await check(ALL_BINS, installed), ['  info     agy: not found', '  ok       agy hook: installed']);
-  assert.deepEqual(await check(ALL_BINS, changed), ['  info     agy: not found', '  warn     agy hook: changed']);
+  const titleInstalled = { title: agyTitleEntry(launcher) };
+  const titleOther = { title: { type: 'command', command: 'echo hi', enabled: true } };
+  assert.deepEqual(await check(agyBins, null), ['  ok       agy: found', '  info     agy hook: not installed', '  info     agy title: not installed', ...advice]);
+  assert.deepEqual(await check(agyBins, {}), ['  ok       agy: found', '  info     agy hook: not installed', '  info     agy title: not installed', ...advice]);
+  assert.deepEqual(await check(agyBins, installed), ['  ok       agy: found', '  ok       agy hook: installed', '  info     agy title: not installed']);
+  assert.deepEqual(await check(agyBins, installed, titleInstalled), ['  ok       agy: found', '  ok       agy hook: installed', '  ok       agy title: installed']);
+  assert.deepEqual(await check(agyBins, installed, titleOther), ['  ok       agy: found', '  ok       agy hook: installed', '  info     agy title: other']);
+  assert.deepEqual(await check(agyBins, installed, 'not json'), ['  ok       agy: found', '  ok       agy hook: installed', '  warn     agy title: invalid settings']);
+  assert.deepEqual(await check(agyBins, changed), ['  ok       agy: found', '  warn     agy hook: changed', '  info     agy title: not installed']);
+  assert.deepEqual(await check(ALL_BINS, installed), ['  info     agy: not found', '  ok       agy hook: installed', '  info     agy title: not installed']);
+  assert.deepEqual(await check(ALL_BINS, changed), ['  info     agy: not found', '  warn     agy hook: changed', '  info     agy title: not installed']);
   assert.deepEqual(await check(ALL_BINS, null), []);
   assert.deepEqual(await check(ALL_BINS, {}), []);
   // The agy lines are in the Options group, after the kitty line.
   const system = await fakeSystem(t, { release: 'debian13', agy: null, bins: agyBins, env: { HOME: home } });
   const data = await collect(system.deps);
-  assert.deepEqual(data.checks.filter((item) => item.id.startsWith('agy')).map((item) => [item.id, item.group]), [['agy', 'Options'], ['agy-hook', 'Options']]);
+  assert.deepEqual(data.checks.filter((item) => item.id.startsWith('agy')).map((item) => [item.id, item.group]), [['agy', 'Options'], ['agy-hook', 'Options'], ['agy-title', 'Options']]);
 });

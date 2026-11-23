@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { agyHook, agyProcess } from '../scripts/asb-agy-hook.mjs';
+import { agyHook, agyProcess, agyTitle } from '../scripts/asb-agy-hook.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ID = '9d482c79-a221-41ba-96c9-1c571ac0565b';
@@ -271,4 +271,83 @@ test('PreToolUse replies before stdin is read; a Stop with open stdin prints onc
   child.stdin.write('{');
   assert.deepEqual(await once(child, 'close'), [0, null]);
   assert.equal(stdout, '{}\n');
+});
+
+test('agyTitle writes <id>.title (0600), skips unchanged rewrites, and replaces on rename', async (t) => {
+  const { homeDir, env, dir } = await fixture(t);
+  const titleFile = path.join(dir, `${ID}.title`);
+  const runTitle = async (payload) => {
+    const out = [];
+    const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    const code = await agyTitle({ stdin: Readable.from([Buffer.from(text)]), write: (chunk) => out.push(chunk), env, homeDir });
+    return { code, output: out.join('') };
+  };
+  assert.deepEqual(await runTitle({ conversation_id: ID.toUpperCase(), conversation_title: '  asb-agy-w  ', workspace: path.join(homeDir, 'ws') }),
+    { code: 0, output: 'asb-agy-w' });
+  assert.equal((await stat(dir)).mode & 0o777, 0o700);
+  const first = await stat(titleFile);
+  assert.equal(first.mode & 0o777, 0o600);
+  assert.equal(await readFile(titleFile, 'utf8'), 'asb-agy-w');
+  assert.deepEqual(await runTitle({ conversation_id: ID, conversation_title: 'asb-agy-w', workspace: path.join(homeDir, 'ws') }),
+    { code: 0, output: 'asb-agy-w' });
+  const second = await stat(titleFile);
+  assert.deepEqual([second.ino, second.mtimeMs], [first.ino, first.mtimeMs]);
+  assert.deepEqual(await runTitle({ conversation_id: ID, conversation_title: 'renamed-session', workspace: path.join(homeDir, 'ws') }),
+    { code: 0, output: 'renamed-session' });
+  assert.equal(await readFile(titleFile, 'utf8'), 'renamed-session');
+  // Real process dispatch via asb-agent.mjs agy-title
+  const dispatched = await new Promise((resolve) => {
+    const child = execFile(process.execPath, [path.join(ROOT, 'scripts', 'asb-agent.mjs'), 'agy-title'],
+      { env: { PATH: process.env.PATH, HOME: homeDir, XDG_STATE_HOME: env.XDG_STATE_HOME } },
+      (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr }));
+    child.stdin.end(JSON.stringify({ conversation_id: ID, conversation_title: 'cli-renamed', workspace: path.join(homeDir, 'ws') }));
+  });
+  assert.deepEqual(dispatched, { code: 0, stdout: 'cli-renamed', stderr: '' });
+  assert.equal(await readFile(titleFile, 'utf8'), 'cli-renamed');
+});
+
+test('agyTitle writes no file and prints fallback for missing/invalid titles, bad ID, bad JSON, >64 KiB, and no workspace', async (t) => {
+  const { homeDir, env, dir } = await fixture(t);
+  const ws = path.join(homeDir, 'my-ws');
+  const runTitle = async (payload) => {
+    const out = [];
+    const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    const code = await agyTitle({ stdin: Readable.from([Buffer.from(text)]), write: (chunk) => out.push(chunk), env, homeDir });
+    return { code, output: out.join('') };
+  };
+  for (const [payload, expected] of [
+    [{ conversation_id: ID, workspace: ws }, 'agy · my-ws'],
+    [{ conversation_id: ID, conversation_title: '   ', cwd: ws }, 'agy · my-ws'],
+    [{ conversation_id: ID, conversation_title: 'a'.repeat(201), workspace: ws }, 'agy · my-ws'],
+    [{ conversation_id: ID, conversation_title: 'bell\u0007here', workspace: ws }, 'agy · my-ws'],
+    [{ conversation_id: ID, conversation_title: 'bidi\u202ehere', workspace: ws }, 'agy · my-ws'],
+    [{ conversation_id: '../escape', conversation_title: 'valid-name', workspace: ws }, 'agy · my-ws'],
+    ['not json {', 'agy'],
+    [JSON.stringify({ conversation_id: ID, conversation_title: 'valid-name', workspace: ws, pad: 'x'.repeat(65 * 1024) }), 'agy'],
+    [{ conversation_id: ID, workspace: 'relative-path', cwd: 'also-relative' }, 'agy'],
+    [{ conversation_id: ID }, 'agy'],
+  ]) {
+    assert.deepEqual(await runTitle(payload), { code: 0, output: expected });
+  }
+  await assert.rejects(stat(dir), { code: 'ENOENT' });
+});
+
+test('agyTitle never stores or prints email, quota, or other extra fields', async (t) => {
+  const { homeDir, env, dir } = await fixture(t);
+  const out = [];
+  const secretEmail = 'owner-secret@example.invalid';
+  const secretQuota = 'quota-token-9999';
+  const payload = {
+    conversation_id: ID, conversation_title: 'safe-name', workspace: path.join(homeDir, 'ws'),
+    email: secretEmail, quota: { remaining: secretQuota }, model: 'secret-model-xyz',
+  };
+  const code = await agyTitle({ stdin: Readable.from([Buffer.from(JSON.stringify(payload))]), write: (chunk) => out.push(chunk), env, homeDir });
+  assert.deepEqual({ code, output: out.join('') }, { code: 0, output: 'safe-name' });
+  const files = await readdir(dir);
+  assert.deepEqual(files, [`${ID}.title`]);
+  const text = await readFile(path.join(dir, files[0]), 'utf8');
+  for (const leak of [secretEmail, secretQuota, 'secret-model-xyz']) {
+    assert.equal(text.includes(leak), false, leak);
+    assert.equal(out.join('').includes(leak), false, leak);
+  }
 });

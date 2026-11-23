@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agyHookSetup } from '../scripts/asb-agent.mjs';
-import { agyHookEntry, agyHookLine, agyHookState } from '../src/agy-hook.mjs';
+import { agyHookEntry, agyHookLine, agyHookState, agySettingsFile, agyTitleEntry, agyTitleState, changeAgyTitle } from '../src/agy-hook.mjs';
 
 // Every run has a temp HOME with a made-up `.gemini` folder or a temp `--file`; no test reads or writes the real agy files.
 const agent = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url));
@@ -21,7 +21,7 @@ async function home(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-agy-hook-install-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const env = { HOME: dir, PATH: '/usr/bin:/bin', ASB_INSTALLED_LAUNCHER: LAUNCHER };
-  return { dir, env, gemini: path.join(dir, '.gemini'), file: path.join(dir, '.gemini', 'config', 'hooks.json') };
+  return { dir, env, gemini: path.join(dir, '.gemini'), file: path.join(dir, '.gemini', 'config', 'hooks.json'), titleFile: agySettingsFile(dir) };
 }
 
 async function local(env, args, options = {}) {
@@ -143,25 +143,25 @@ test('install refuses without ~/.gemini and makes nothing', async (t) => {
   const before = await tree(dir);
   assert.deepEqual(await local(env, ['install']), { code: 1, stdout: '', stderr: 'agy has not run for this user (no ~/.gemini).' });
   assert.deepEqual(await tree(dir), before);
-  assert.deepEqual(await local(env, ['status']), { code: 0, stdout: 'agy hook (~/.gemini/config/hooks.json): not installed', stderr: '' });
-  assert.deepEqual(await local(env, ['remove']), { code: 0, stdout: 'agy hook (~/.gemini/config/hooks.json): not installed', stderr: '' });
+  assert.deepEqual(await local(env, ['status']), { code: 0, stdout: 'agy hook (~/.gemini/config/hooks.json): not installed\nagy title (~/.gemini/antigravity-cli/settings.json): not installed', stderr: '' });
+  assert.deepEqual(await local(env, ['remove']), { code: 0, stdout: 'agy hook (~/.gemini/config/hooks.json): not installed\nagy title (~/.gemini/antigravity-cli/settings.json): not installed', stderr: '' });
   assert.deepEqual(await tree(dir), before);
 });
 
 test('install makes the config folder 0700 and the file 0600 with only the asb key; a second install changes nothing; remove leaves {}', async (t) => {
-  const { gemini, file, env } = await home(t);
+  const { gemini, file, titleFile, env } = await home(t);
   await mkdir(gemini, { mode: 0o755 });
   const result = await run(process.execPath, [agent, 'agy-hook', 'install'], { env });
-  assert.deepEqual([result.code, result.stdout], [0, 'agy hook (~/.gemini/config/hooks.json): installed\n']);
+  assert.deepEqual([result.code, result.stdout], [0, 'agy hook (~/.gemini/config/hooks.json): installed\nagy title (~/.gemini/antigravity-cli/settings.json): no agy\n']);
   assert.equal(await readFile(file, 'utf8'), `${JSON.stringify({ asb: agyHookEntry(LAUNCHER) }, null, 2)}\n`);
   assert.equal((await stat(path.dirname(file))).mode & 0o777, 0o700);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.equal((await stat(gemini)).mode & 0o777, 0o755);
   assert.deepEqual(await readdir(path.dirname(file)), ['hooks.json']);
   const before = await tree(gemini);
-  assert.deepEqual(await local(env, ['install', '--json']), { code: 0, stdout: JSON.stringify({ targets: [{ file, result: 'unchanged' }] }), stderr: '' });
+  assert.deepEqual(await local(env, ['install', '--json']), { code: 0, stdout: JSON.stringify({ targets: [{ file, result: 'unchanged', kind: 'hooks' }, { file: titleFile, result: 'no agy', kind: 'title' }] }), stderr: '' });
   assert.deepEqual(await tree(gemini), before);
-  assert.equal((await local(env, ['remove'])).stdout, 'agy hook (~/.gemini/config/hooks.json): removed');
+  assert.equal((await local(env, ['remove'])).stdout, 'agy hook (~/.gemini/config/hooks.json): removed\nagy title (~/.gemini/antigravity-cli/settings.json): not installed');
   assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), {});
 });
 
@@ -172,7 +172,7 @@ test('install keeps the other keys in order, the mode, and a backup made once; r
   const value = { theirs: { Stop: [{ type: 'command', command: '/usr/local/bin/made-up' }] }, asb: { Stop: [] }, last: { made: 'up' } };
   await writeFile(file, JSON.stringify(value));
   await chmod(file, 0o640);
-  assert.equal((await local(env, ['status', '--file', file])).stdout, `agy hook (~${file.slice(dir.length)}): changed`);
+  assert.equal((await local(env, ['status', '--file', file])).stdout, `agy hook (~${file.slice(dir.length)}): changed\nagy title (~/.gemini/antigravity-cli/settings.json): not installed`);
   assert.equal((await local(env, ['install', '--file', file])).code, 0);
   const installed = JSON.parse(await readFile(file, 'utf8'));
   assert.deepEqual(Object.keys(installed), ['theirs', 'asb', 'last']);
@@ -189,13 +189,13 @@ test('install keeps the other keys in order, the mode, and a backup made once; r
 });
 
 test('status reports each state; --json gives one object; the state without a launcher takes the launcher of the entry', async (t) => {
-  const { dir, env } = await home(t);
+  const { dir, titleFile, env } = await home(t);
   const file = path.join(dir, 'c', 'hooks.json');
   const status = async (text) => {
     if (text !== undefined) { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, text); }
     return JSON.parse((await local(env, ['status', '--json', '--file', file])).stdout);
   };
-  assert.deepEqual(await status(), { targets: [{ file, state: 'not installed' }] });
+  assert.deepEqual(await status(), { targets: [{ file, state: 'not installed', kind: 'hooks' }, { file: titleFile, state: 'not installed', kind: 'title' }] });
   assert.equal((await status('{"made":"up"}')).targets[0].state, 'not installed');
   assert.equal((await status(JSON.stringify({ asb: agyHookEntry(LAUNCHER) }))).targets[0].state, 'installed');
   assert.equal((await status(JSON.stringify({ asb: agyHookEntry('/other/asb') }))).targets[0].state, 'changed');
@@ -213,10 +213,10 @@ test('a write between the read and the rename changes nothing and asks for a new
   const { dir, env } = await home(t);
   const file = path.join(dir, 'race', 'hooks.json');
   await mkdir(path.dirname(file));
-  for (const [action, value] of [['install', { made: 'up' }], ['remove', { asb: agyHookEntry(LAUNCHER) }]]) {
+  for (const [action, value, titleOut] of [['install', { made: 'up' }, 'no agy'], ['remove', { asb: agyHookEntry(LAUNCHER) }, 'not installed']]) {
     await writeFile(file, JSON.stringify(value), { mode: 0o600 });
     const result = await local(env, [action, '--file', file], { beforeRename: () => appendFile(file, ' ') });
-    assert.deepEqual(result, { code: 1, stdout: `agy hook (~${file.slice(dir.length)}): settings changed`, stderr: 'Settings changed during the install. Run it again.' });
+    assert.deepEqual(result, { code: 1, stdout: `agy hook (~${file.slice(dir.length)}): settings changed\nagy title (~/.gemini/antigravity-cli/settings.json): ${titleOut}`, stderr: 'Settings changed during the install. Run it again.' });
     assert.equal(await readFile(file, 'utf8'), `${JSON.stringify(value)} `);
     assert.deepEqual(await readdir(path.dirname(file)), ['hooks.json']);
   }
@@ -245,7 +245,7 @@ test('the entry names the real path of the launcher', async (t) => {
   const linked = { ...env, ASB_INSTALLED_LAUNCHER: path.join(dir, 'link-asb') };
   assert.equal((await local(linked, ['install'])).code, 0);
   assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).asb, agyHookEntry(real));
-  assert.equal((await local(linked, ['status'])).stdout, 'agy hook (~/.gemini/config/hooks.json): installed');
+  assert.equal((await local(linked, ['status'])).stdout, 'agy hook (~/.gemini/config/hooks.json): installed\nagy title (~/.gemini/antigravity-cli/settings.json): not installed');
 });
 
 test('a file too big, not an object, not JSON, or a dangling link is refused with no write; a bad command line gives 2', async (t) => {
@@ -256,15 +256,78 @@ test('a file too big, not an object, not JSON, or a dangling link is refused wit
   for (const text of [`{"made":"${'x'.repeat(4 * 1024 * 1024)}"}`, '[]', '"text"', 'null', 'not json {']) {
     await writeFile(file, text);
     const before = await tree(folder);
-    for (const action of ['install', 'remove']) {
-      assert.deepEqual(await local(env, [action, '--file', file]), { code: 1, stdout: `agy hook (~${file.slice(dir.length)}): invalid settings`, stderr: '' }, text.slice(0, 20));
+    for (const [action, titleOut] of [['install', 'no agy'], ['remove', 'not installed']]) {
+      assert.deepEqual(await local(env, [action, '--file', file]), { code: 1, stdout: `agy hook (~${file.slice(dir.length)}): invalid settings\nagy title (~/.gemini/antigravity-cli/settings.json): ${titleOut}`, stderr: '' }, text.slice(0, 20));
     }
     assert.deepEqual(await tree(folder), before);
   }
   await rm(file);
   await symlink(path.join(folder, 'missing.json'), file);
-  assert.equal((await local(env, ['install', '--file', file])).stdout, `agy hook (~${file.slice(dir.length)}): invalid settings`);
+  assert.equal((await local(env, ['install', '--file', file])).stdout, `agy hook (~${file.slice(dir.length)}): invalid settings\nagy title (~/.gemini/antigravity-cli/settings.json): no agy`);
   for (const args of [[], ['wipe'], ['install', '--file'], ['install', '--file', 'relative.json'], ['status', '--json', '--json'], ['install', '--dir', file]]) {
     assert.equal((await local(env, args)).code, 2, args.join(' '));
   }
+});
+
+test('changeAgyTitle handles install, unchanged, owner title, remove, missing file, and missing folder', async (t) => {
+  const { titleFile } = await home(t);
+  const folder = path.dirname(titleFile);
+  assert.equal(await changeAgyTitle('install', titleFile, { launcher: LAUNCHER }), 'no agy');
+  assert.equal(await changeAgyTitle('remove', titleFile, { launcher: LAUNCHER }), 'not installed');
+  await mkdir(folder, { recursive: true });
+  // Missing settings.json in existing folder -> created with only title
+  assert.equal(await changeAgyTitle('install', titleFile, { launcher: LAUNCHER }), 'installed');
+  assert.deepEqual(JSON.parse(await readFile(titleFile, 'utf8')), { title: agyTitleEntry(LAUNCHER) });
+  // Second install -> unchanged
+  assert.equal(await changeAgyTitle('install', titleFile, { launcher: LAUNCHER }), 'unchanged');
+  // Remove ours -> removed, other keys preserved
+  await writeFile(titleFile, JSON.stringify({ theme: 'dark', title: agyTitleEntry(LAUNCHER), extra: 1 }));
+  assert.equal(await changeAgyTitle('remove', titleFile, { launcher: LAUNCHER }), 'removed');
+  assert.deepEqual(JSON.parse(await readFile(titleFile, 'utf8')), { theme: 'dark', extra: 1 });
+  // Owner title of another shape -> other, bytes unchanged on install and remove
+  const ownerRaw = '{"theme":"dark","title":{"type":"command","command":"echo hi","enabled":true}}\n';
+  await writeFile(titleFile, ownerRaw);
+  assert.equal(await changeAgyTitle('install', titleFile, { launcher: LAUNCHER }), 'other');
+  assert.equal(await readFile(titleFile, 'utf8'), ownerRaw);
+  assert.equal(await changeAgyTitle('remove', titleFile, { launcher: LAUNCHER }), 'other');
+  assert.equal(await readFile(titleFile, 'utf8'), ownerRaw);
+  assert.equal(agyTitleState({ title: agyTitleEntry('/other/asb') }, ''), 'installed');
+  assert.equal(agyTitleState({ title: agyTitleEntry('/other/asb') }, LAUNCHER), 'other');
+  assert.equal(agyTitleState({}, LAUNCHER), 'not installed');
+});
+
+test('agyHookSetup reports both targets in text and JSON and exits 1 on refused title write', async (t) => {
+  const { gemini, file, titleFile, env } = await home(t);
+  await mkdir(path.dirname(titleFile), { recursive: true });
+  assert.deepEqual(await local(env, ['install']), {
+    code: 0,
+    stdout: 'agy hook (~/.gemini/config/hooks.json): installed\nagy title (~/.gemini/antigravity-cli/settings.json): installed',
+    stderr: '',
+  });
+  assert.deepEqual(JSON.parse((await local(env, ['install', '--json'])).stdout), {
+    targets: [{ file, result: 'unchanged', kind: 'hooks' }, { file: titleFile, result: 'unchanged', kind: 'title' }],
+  });
+  assert.deepEqual(JSON.parse((await local(env, ['status', '--json'])).stdout), {
+    targets: [{ file, state: 'installed', kind: 'hooks' }, { file: titleFile, state: 'installed', kind: 'title' }],
+  });
+  assert.deepEqual(await local(env, ['remove']), {
+    code: 0,
+    stdout: 'agy hook (~/.gemini/config/hooks.json): removed\nagy title (~/.gemini/antigravity-cli/settings.json): removed',
+    stderr: '',
+  });
+  // Owner title: install exits 0 with other
+  await writeFile(titleFile, JSON.stringify({ title: { type: 'command', command: 'custom', enabled: true } }));
+  assert.deepEqual(await local(env, ['install']), {
+    code: 0,
+    stdout: 'agy hook (~/.gemini/config/hooks.json): installed\nagy title (~/.gemini/antigravity-cli/settings.json): other',
+    stderr: '',
+  });
+  // Invalid settings.json: exit 1
+  await writeFile(titleFile, 'not json');
+  assert.deepEqual(await local(env, ['install']), {
+    code: 1,
+    stdout: 'agy hook (~/.gemini/config/hooks.json): unchanged\nagy title (~/.gemini/antigravity-cli/settings.json): invalid settings',
+    stderr: '',
+  });
+  assert.ok(gemini);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadAntigravityDashboard } from '../src/antigravity-data.mjs';
@@ -168,4 +168,37 @@ test('Antigravity CLI is a default source with fixed folder, no launcher, the ei
   const spec = switchboardWatchPaths({ homeDir, agyDir: agy.dataDir }).find((item) => item.source === 'antigravity');
   assert.deepEqual([spec.path, spec.optional], [agy.dataDir, true]);
   assert.deepEqual([`${id(1)}.json`, `${id(1)}.json.${id(2)}.tmp`, 'notes.json', ''].map((name) => spec.acceptEvent(name)), [true, false, false, true]);
+});
+
+test('loader uses valid .title, falls back on bad mode/symlink/size/content, ignores orphan .title, and removes .title with old records', async (t) => {
+  const { dataDir, put, load } = await fixture(t);
+  await put(1);
+  await writeFile(path.join(dataDir, `${id(1)}.title`), 'asb-agy-w', { mode: 0o600 });
+  await put(2);
+  await writeFile(path.join(dataDir, `${id(2)}.title`), 'wrong-mode', { mode: 0o644 });
+  await chmod(path.join(dataDir, `${id(2)}.title`), 0o644);
+  await put(3);
+  await symlink(path.join(dataDir, `${id(1)}.title`), path.join(dataDir, `${id(3)}.title`));
+  await put(4);
+  await writeFile(path.join(dataDir, `${id(4)}.title`), 'x'.repeat(1025), { mode: 0o600 });
+  await put(5);
+  await writeFile(path.join(dataDir, `${id(5)}.title`), 'bad\u0007title', { mode: 0o600 });
+  // Orphan .title with no record
+  await writeFile(path.join(dataDir, `${id(6)}.title`), 'orphan-title', { mode: 0o600 });
+  // Old non-live record with .title -> both removed
+  await put(7, { agyPid: 401, stateAtMs: now - 8 * day });
+  await writeFile(path.join(dataDir, `${id(7)}.title`), 'old-title', { mode: 0o600 });
+
+  const threads = (await load()).threads;
+  const byId = new Map(threads.map((thread) => [thread.externalId, thread.title]));
+  assert.equal(byId.get(id(1)), 'asb-agy-w');
+  assert.equal(byId.get(id(2)), 'ws · 00000002');
+  assert.equal(byId.get(id(3)), 'ws · 00000003');
+  assert.equal(byId.get(id(4)), 'ws · 00000004');
+  assert.equal(byId.get(id(5)), 'ws · 00000005');
+  assert.equal(byId.has(id(6)), false);
+  assert.equal(byId.has(id(7)), false);
+  const files = await readdir(dataDir);
+  assert.equal(files.includes(`${id(7)}.json`), false);
+  assert.equal(files.includes(`${id(7)}.title`), false);
 });

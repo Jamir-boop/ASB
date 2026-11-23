@@ -11,10 +11,12 @@ export const AGY_HOOK_TIMEOUT = 10;
 export const NO_AGY = 'no agy';
 const QUESTION_MATCHER = '^ask_question$';
 const LINE_LAUNCHER = /^out=\$\(timeout 5 '([^'\x00-\x1f\x7f]+)' agent agy-hook /;
+const TITLE_LAUNCHER = /^'([^'\x00-\x1f\x7f]+)' agent agy-title$/;
 const INVALID = { state: 'invalid settings' };
 
 export const agyHome = (env) => typeof env.HOME === 'string' && path.isAbsolute(env.HOME) ? env.HOME : os.homedir();
 export const agyHooksFile = (homeDir) => path.join(homeDir, '.gemini', 'config', 'hooks.json');
+export const agySettingsFile = (homeDir) => path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json');
 export const usableLauncher = (launcher) => path.isAbsolute(launcher) && !/['\x00-\x1f\x7f]/.test(launcher);
 // The real path of the installed launcher ('' without one); a path that does not exist stays as it is.
 export const agyLauncher = async (env) => {
@@ -33,6 +35,8 @@ export function agyHookEntry(launcher) {
     PreToolUse: [{ matcher: QUESTION_MATCHER, hooks: hooks('PreToolUse') }], PostToolUse: [{ matcher: QUESTION_MATCHER, hooks: hooks('PostToolUse') }] };
 }
 
+export const agyTitleEntry = (launcher) => ({ type: 'command', command: `'${launcher}' agent agy-title`, enabled: true });
+
 // Without a launcher (a doctor outside the installed asb), the launcher of the entry itself counts.
 export function agyHookState(value, launcher = '') {
   if (!object(value) || !Object.hasOwn(value, 'asb')) return 'not installed';
@@ -41,8 +45,15 @@ export function agyHookState(value, launcher = '') {
   return used && JSON.stringify(value.asb) === JSON.stringify(agyHookEntry(used)) ? 'installed' : 'changed';
 }
 
+export function agyTitleState(value, launcher = '') {
+  if (!object(value) || !Object.hasOwn(value, 'title')) return 'not installed';
+  const command = value.title?.command;
+  const used = launcher || (typeof command === 'string' && TITLE_LAUNCHER.exec(command)?.[1]) || '';
+  return used && JSON.stringify(value.title) === JSON.stringify(agyTitleEntry(used)) ? 'installed' : 'other';
+}
+
 // The real file, its stat, and the parsed value (null: no file), or { state } for a file that cannot change.
-async function readHooksFile(file) {
+async function readJsonFile(file) {
   const entry = await fs.lstat(file).catch((error) => error);
   if (entry instanceof Error) return entry.code === 'ENOENT' ? { file, info: null, value: null } : INVALID;
   try {
@@ -57,15 +68,20 @@ async function readHooksFile(file) {
 }
 
 export async function agyHookStatus(file, { launcher = '' } = {}) {
-  const target = await readHooksFile(file);
+  const target = await readJsonFile(file);
   return target.state || agyHookState(target.value, launcher);
+}
+
+export async function agyTitleStatus(file, { launcher = '' } = {}) {
+  const target = await readJsonFile(file);
+  return target.state || agyTitleState(target.value, launcher);
 }
 
 // `action` is 'install' or 'remove'. The folder above the file's folder (`~/.gemini`) must exist: agy made it.
 export async function changeAgyHook(action, file, { launcher = '', beforeRename } = {}) {
   const config = path.dirname(file);
   if (action === 'install' && !(await fs.stat(path.dirname(config)).catch(() => null))?.isDirectory()) return NO_AGY;
-  const target = await readHooksFile(file);
+  const target = await readJsonFile(file);
   if (target.state) return target.state;
   let next;
   if (action === 'install') {
@@ -84,12 +100,40 @@ export async function changeAgyHook(action, file, { launcher = '', beforeRename 
   return action === 'install' ? 'installed' : 'removed';
 }
 
-// asb doctor (read only): a PC without agy and without our key gets no line.
+// `action` is 'install' or 'remove'. The folder (`~/.gemini/antigravity-cli`) must exist; never replaces an owner's own title.
+export async function changeAgyTitle(action, file, { launcher = '', beforeRename } = {}) {
+  const folder = path.dirname(file);
+  if (action === 'install' && !(await fs.stat(folder).catch(() => null))?.isDirectory()) return NO_AGY;
+  const target = await readJsonFile(file);
+  if (target.state) return target.state;
+  let next;
+  if (action === 'install') {
+    const state = agyTitleState(target.value, launcher);
+    if (state === 'installed') return 'unchanged';
+    if (state === 'other') return 'other';
+    next = { ...target.value, title: agyTitleEntry(launcher) };
+  } else {
+    const state = agyTitleState(target.value, '');
+    if (state !== 'installed') return state;
+    next = { ...target.value };
+    delete next.title;
+  }
+  try {
+    await writeTarget(target, next, { beforeRename });
+  } catch (error) { return error === CHANGED ? 'settings changed' : 'cannot write'; }
+  return action === 'install' ? 'installed' : 'removed';
+}
+
+// asb doctor (read only): a PC without agy and without our keys gets no line.
 export async function agyHookDoctor(add, advice, { env = process.env } = {}) {
   const found = Boolean(await findExecutable('agy', { env }));
-  const state = await agyHookStatus(agyHooksFile(agyHome(env)), { launcher: await agyLauncher(env) });
-  if (!found && state === 'not installed') return;
+  const home = agyHome(env);
+  const launcher = await agyLauncher(env);
+  const state = await agyHookStatus(agyHooksFile(home), { launcher });
+  const titleState = await agyTitleStatus(agySettingsFile(home), { launcher });
+  if (!found && state === 'not installed' && titleState === 'not installed') return;
   add('agy', 'Options', found ? 'ok' : 'info', `agy: ${found ? 'found' : 'not found'}`);
   add('agy-hook', 'Options', state === 'installed' ? 'ok' : state === 'not installed' ? 'info' : 'warn', `agy hook: ${state}`);
+  add('agy-title', 'Options', titleState === 'installed' ? 'ok' : titleState === 'not installed' || titleState === 'other' ? 'info' : 'warn', `agy title: ${titleState}`);
   if (found && state === 'not installed') advice.push('Install the agy hook:', '  asb agent agy-hook install');
 }

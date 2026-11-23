@@ -4,12 +4,13 @@ import { constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AGY_LISTEN_ON, AGY_UUID, agyAbsolutePath as absolutePath, agyProcess, agyRecordsDir, agyTranscriptPath } from '../src/antigravity-data.mjs';
+import { AGY_LISTEN_ON, AGY_UUID, agyAbsolutePath as absolutePath, agyProcess, agyRecordsDir, agyTranscriptPath, readAgyTitle, validAgyTitle } from '../src/antigravity-data.mjs';
 
 import { takeAgyMailbox } from '../src/agy-mailbox.mjs';
 export { agyProcess };
 
 const MAX_STDIN = 256 * 1024;
+const MAX_TITLE_STDIN = 64 * 1024;
 const MAX_RECORD = 16 * 1024;
 const QUESTION_TOOL = 'ask_question';
 
@@ -35,12 +36,12 @@ export function agyNextState(hook) {
 
 const HARD_EXIT_MS = 3000;
 
-async function readStdin(stdin) {
+async function readStdin(stdin, limit = MAX_STDIN) {
   const chunks = [];
   let size = 0;
   for await (const chunk of stdin) {
     size += chunk.length;
-    if (size > MAX_STDIN) return null;
+    if (size > limit) return null;
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString('utf8');
@@ -109,5 +110,44 @@ export async function agyHook(args, { stdin = process.stdin, write = (text) => p
       if (continuation !== null) reply(JSON.stringify({ decision: 'continue', reason: continuation }));
     }
   } catch {} finally { clearTimeout(timer); reply(); }
+  return 0;
+}
+
+// `asb agent agy-title`: agy window title command. Reads only conversation_id, conversation_title, workspace, and cwd;
+// saves a valid title to `<id>.title` when changed, and prints the window title with no newline.
+export async function agyTitle({ stdin = process.stdin, write = (t) => process.stdout.write(t), exit = process.exit, env = process.env, homeDir = os.homedir() } = {}) {
+  let wrote = false;
+  const output = (text = 'agy') => {
+    if (wrote) return;
+    wrote = true;
+    try { write(text); } catch {}
+  };
+  const timer = setTimeout(() => { output('agy'); exit(0); }, HARD_EXIT_MS);
+  timer.unref();
+  let label = 'agy';
+  try {
+    const text = await readStdin(stdin, MAX_TITLE_STDIN);
+    if (text === null) return 0;
+    const data = JSON.parse(text);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return 0;
+    const { conversation_id: id, conversation_title: rawTitle, workspace, cwd } = data;
+    const validId = typeof id === 'string' && AGY_UUID.test(id);
+    const title = validId ? validAgyTitle(rawTitle) : '';
+    const folder = absolutePath(workspace) || absolutePath(cwd);
+    const base = folder ? path.basename(folder) : '';
+    label = title || (base ? `agy · ${base}` : 'agy');
+    if (title) {
+      const dir = agyRecordsDir(env, homeDir);
+      const file = path.join(dir, `${id.toLowerCase()}.title`);
+      if (await readAgyTitle(file) !== title) {
+        await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+        const temporary = `${file}.${randomUUID()}.tmp`;
+        try {
+          await fs.writeFile(temporary, title, { flag: 'wx', mode: 0o600 });
+          await fs.rename(temporary, file);
+        } finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
+      }
+    }
+  } catch {} finally { clearTimeout(timer); output(label); }
   return 0;
 }

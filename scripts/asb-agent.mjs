@@ -468,24 +468,30 @@ export async function agyHookSetup(args, { env = process.env, platform = process
   }
   if (rest.length === 3 && (!path.isAbsolute(given) || /[\x00-\x1f\x7f]/.test(given))) { error('ASB agent: --file needs an absolute path.'); return 2; }
   // Loaded here, so the hook client path loads no installer code.
-  const { NO_AGY, agyHome, agyHookStatus, agyHooksFile, agyLauncher, changeAgyHook, usableLauncher } = await import('../src/agy-hook.mjs');
+  const { NO_AGY, agyHome, agyHookStatus, agyHooksFile, agyLauncher, agySettingsFile, agyTitleStatus, changeAgyHook, changeAgyTitle, usableLauncher } = await import('../src/agy-hook.mjs');
   const home = agyHome(env);
   const file = given ? path.resolve(given) : agyHooksFile(home);
+  const titleFile = agySettingsFile(home);
   const launcher = await agyLauncher(env);
   if (action === 'install' && platform === 'win32') { error('The agy hook works on Linux only for now.'); return 1; }
   if (action === 'install' && !launcher) { error('Run agy-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).'); return 1; }
   if (action === 'install' && !usableLauncher(launcher)) { error('The installed launcher path has a quote or a control character. The agy hook cannot use it.'); return 1; }
   const where = `agy hook (${printable(homeForm(file, home))})`;
+  const titleWhere = `agy title (${printable(homeForm(titleFile, home))})`;
   if (action === 'status') {
     const state = await agyHookStatus(file, { launcher });
-    log(json ? JSON.stringify({ targets: [{ file, state }] }) : `${where}: ${state}`);
+    const titleState = await agyTitleStatus(titleFile, { launcher });
+    log(json ? JSON.stringify({ targets: [{ file, state, kind: 'hooks' }, { file: titleFile, state: titleState, kind: 'title' }] })
+      : `${where}: ${state}\n${titleWhere}: ${titleState}`);
     return 0;
   }
   const result = await changeAgyHook(action, file, { launcher, beforeRename });
   if (result === NO_AGY) { error(`agy has not run for this user (no ${printable(homeForm(path.dirname(path.dirname(file)), home))}).`); return 1; }
-  log(json ? JSON.stringify({ targets: [{ file, result }] }) : `${where}: ${result}`);
-  if (result === 'settings changed') error(CHANGED_MESSAGE);
-  return REFUSED.includes(result) ? 1 : 0;
+  const titleResult = await changeAgyTitle(action, titleFile, { launcher, beforeRename });
+  log(json ? JSON.stringify({ targets: [{ file, result, kind: 'hooks' }, { file: titleFile, result: titleResult, kind: 'title' }] })
+    : `${where}: ${result}\n${titleWhere}: ${titleResult}`);
+  if (result === 'settings changed' || titleResult === 'settings changed') error(CHANGED_MESSAGE);
+  return REFUSED.includes(result) || REFUSED.includes(titleResult) ? 1 : 0;
 }
 
 export async function main(args = process.argv.slice(2)) {
@@ -493,6 +499,7 @@ export async function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === 'codex-wait') { await claudeWait('codex'); return 0; }
   if (args[0] === 'agy-hook' && ['install', 'remove', 'status'].includes(args[1])) return agyHookSetup(args.slice(1));
   if (args[0] === 'agy-hook') return (await import('./asb-agy-hook.mjs')).agyHook(args.slice(1));
+  if (args[0] === 'agy-title') return (await import('./asb-agy-hook.mjs')).agyTitle();
   if (args[0] === 'claude-hook') return claudeHook(args.slice(1));
   if (args[0] === 'codex-hook') return codexHook(args.slice(1));
   let runtime;

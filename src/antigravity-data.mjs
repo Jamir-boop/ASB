@@ -17,6 +17,8 @@ const FIELDS = new Set(['conversationId', 'workspace', 'state', 'stateAtMs', 'cr
   'kittyListenOn', 'background', 'transcriptMtimePath', 'event']);
 const MAX_FILES = 500;
 const MAX_RECORD = 16 * 1024;
+const MAX_TITLE = 1024;
+const BAD_TITLE_CHAR = /[\x00-\x1f\x7f-\x9f\p{Cf}\u2028\u2029]/u;
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const NO_NEWS_MS = 10 * 60 * 1000;
 // agy fires no event when it ends, so a live row is checked again at the next 30 s mark.
@@ -26,6 +28,22 @@ export const AGY_FOCUS_ERROR = 'ASB could not focus this agy session in kitty.';
 
 export const agyAbsolutePath = (value) => typeof value === 'string' && PATH_TEXT.test(value) && path.isAbsolute(value) ? path.resolve(value) : '';
 export const agyRecordsDir = (env = process.env, homeDir = os.homedir()) => path.join(stateDir(env, 'linux', homeDir), 'agy');
+
+export function validAgyTitle(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  return trimmed.length >= 1 && trimmed.length <= 200 && !BAD_TITLE_CHAR.test(trimmed) ? trimmed : '';
+}
+
+export async function readAgyTitle(file) {
+  let handle;
+  try {
+    handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = await handle.stat();
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o7777) !== 0o600 || info.size > MAX_TITLE) return '';
+    return validAgyTitle(await handle.readFile('utf8'));
+  } catch { return ''; } finally { await handle?.close().catch(() => {}); }
+}
 // The transcript is kept only as a path to stat, and only under agy's own folder.
 export const agyTranscriptPath = (value, homeDir = os.homedir()) => {
   const file = agyAbsolutePath(value);
@@ -162,11 +180,11 @@ async function transcriptMtime(file) {
   return info?.isFile() ? info.mtimeMs : 0;
 }
 
-export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now(), canFocus = false }) {
+export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now(), canFocus = false, title = '' }) {
   const { conversationId: id, workspace, state, stateAtMs } = record;
   const thread = {
     id: `agy:${id}`, externalId: id, provider: 'antigravity', providerLabel: 'Antigravity CLI', source: 'agy-cli', surface: 'cli',
-    title: `${path.basename(workspace) || workspace} · ${id.slice(0, 8)}`, cwd: workspace, archived: false,
+    title: title || `${path.basename(workspace) || workspace} · ${id.slice(0, 8)}`, cwd: workspace, archived: false,
     createdAtMs: record.createdAtMs, updatedAtMs: stateAtMs, canOpen: false, transcriptActivityAtMs: stateAtMs,
   };
   if (state === 'idle') thread.cliNoTranscript = true;
@@ -207,12 +225,14 @@ export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), ho
     const record = await readRecord(file);
     if (!validAgyRecord(record, id, homeDir)) return null;
     const live = record.agyPid !== undefined && await startOf(record.agyPid) === record.agyStartTicks;
+    const titleFile = path.join(dataDir, `${id}.title`);
     if (!live && nowMs - record.stateAtMs > KEEP_MS) {
       await fs.rm(file, { force: true }).catch(() => {});
+      await fs.rm(titleFile, { force: true }).catch(() => {});
       return null;
     }
     return agyThread(record, { live, nowMs, transcriptAtMs: live ? await transcriptMtime(record.transcriptMtimePath) : 0,
-      canFocus: live && Boolean(await agyFocusTarget(record, { procDir })) });
+      canFocus: live && Boolean(await agyFocusTarget(record, { procDir })), title: await readAgyTitle(titleFile) });
   }))).filter(Boolean);
   return { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
 }
