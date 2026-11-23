@@ -7,7 +7,7 @@ import { runtimeDir } from '../src/platform-paths.mjs';
 
 export const instanceRuntimePath = (env = process.env, platform = process.platform) => {
   const directory = runtimeDir(env, platform);
-  return directory && path.join(directory, 'service.json');
+  return directory && (platform === 'win32' ? path.win32 : path.posix).join(directory, 'service.json');
 };
 // Windows has no POSIX owner or mode bits; there the folder ACL (icacls) limits access, and links are still refused.
 const owned = (info, platform = process.platform) => platform === 'win32' || !process.getuid || info.uid === process.getuid();

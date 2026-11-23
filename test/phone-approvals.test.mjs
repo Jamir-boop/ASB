@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { CODEX_FIRST_MS, createClaudeQuestions, PROVIDERS } from '../src/claude-questions.mjs';
 import { applyBridgeWaits } from '../src/codex-data.mjs';
 import { BIT_INPUT } from '../src/asb-sounds.mjs';
+import { createMachineGroup, saveGroup } from '../src/machine-group.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { CLI_SESSION_IDS } from '../src/session-targets.mjs';
@@ -264,6 +265,136 @@ async function engine(t, { store = createClaudeQuestions(), extraRows = [], code
 const answerRoute = (row) => `/api/threads/${encodeURIComponent(row)}/answer`;
 const codexTool = (sessionKey) => ({ provider: 'codex', sessionKey, approval: approval() });
 const openWait = async (e, body) => (await e.post('/api/agent/wait', body)).json();
+
+test('the phone answers questions and approvals on a group member with no local phone', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-member-answers-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const member = (letter, name) => ({ machineId: letter.repeat(16), name, certFingerprint: letter.repeat(64),
+    addresses: [{ kind: 'lan', address: '192.168.0.1' }], port: 4630, addedBy: 'a'.repeat(16), addedAtMs: 1 });
+  const [phone, host, old] = [member('a', 'phone-pc'), member('b', 'session-pc'), member('c', 'old-pc')];
+  const groups = new Map();
+  const posts = [];
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const request = async ({ member, path, etag, method, body, tls }) => {
+    const remote = groups.get(member.machineId)?.peer;
+    if (path === '/peer/v1/answer' && remote) {
+      posts.push([member.machineId, method, body, tls.fingerprint]);
+      return remote.answer(body);
+    }
+    if (path !== '/peer/v1/sessions') return { status: 503 };
+    if (!remote) return { status: 200, body: { api: 1, machineId: old.machineId, keys: {}, incoming: [], rows: [
+      { id: 'old-row', state: 'waiting', questionPending: true },
+      { id: 'bad-record', state: 'waiting', phoneRequest: { kind: 'question', requestId: 'd'.repeat(32), questions: [] } },
+    ] } };
+    const result = await remote.sessions(etag);
+    return { ...result, body: result.body ? JSON.parse(result.body) : null };
+  };
+  let phoneAnswer = true, phoneRecent = false, hostAnswer = false, hostApprove = false;
+  const typed = [];
+  async function createPeer(self, answer, approve, options) {
+    const file = path.join(home, `${self.name}.json`);
+    await saveGroup(file, { schema: 1, groupId: 'abc'.repeat(5) + 'd', self: { machineId: self.machineId, name: self.name },
+      members: [phone, host, old], removed: [], phones: [{ deviceId: 'a'.repeat(12), name: 'Phone', tokenHash: 'e'.repeat(64),
+        addedBy: phone.machineId, addedAtMs: 1 }], removedPhones: [] });
+    const pending = [];
+    const timers = { setTimeout: (run, ms) => { const handle = { run, ms }; pending.push(handle); return handle; }, clearTimeout: () => {} };
+    const gateway = { credentials: async () => ({ fingerprint: self.certFingerprint }), status: async () => ({ running: false }),
+      answerReady: answer, approveReady: approve };
+    let app;
+    const group = createMachineGroup({ file, gateway: () => gateway, server: () => app.server, request, timers,
+      onChange: () => app.server.invalidateDashboard('peer-sessions', { hard: false }) });
+    groups.set(self.machineId, group);
+    app = await engine(t, { ...options, machineGroup: group, answerEnabled: answer, approveEnabled: approve });
+    t.after(() => group.stop());
+    return { ...app, group, poll: async () => {
+      const rounds = pending.splice(0);
+      for (const { run, ms } of rounds) if (ms < 30_000) run();
+      await settle();
+    } };
+  }
+  const viewer = await createPeer(phone, () => phoneAnswer, () => phoneAnswer, { phoneSeenWithin: async () => phoneRecent });
+  const memberEngine = await createPeer(host, () => hostAnswer, () => hostAnswer && hostApprove, { phonePaired: async () => false,
+    extraRows: [{ id: 'agy-row', provider: 'antigravity', externalId: 'agy-key', state: 'waiting', questionPending: true }],
+    answerAgy: async (row, questions, items) => { typed.push([row.id, questions, items]); return true; } });
+  await Promise.all([viewer.group.start(), memberEngine.group.start()]);
+  await settle();
+  const remoteId = (machine, row) => `m:${machine.machineId}:${row}`;
+  const hostRow = remoteId(host, memberEngine.row);
+  const questions = [{ question: 'Which choice?', options: [{ label: 'A' }], multiSelect: false }];
+  const open = (provider = 'claude', sessionKey = SESSION) => openWait(memberEngine, { provider, sessionKey, question: { questions } });
+  const answer = (requestId, selected = 'A') => ({ requestId, answers: [{ selected: [selected] }] });
+  const row = async (id, query) => (await viewer.rows(query)).find((item) => item.id === id);
+  assert.equal((await row(remoteId(old, 'old-row'))).questionPending, true);
+  assert.equal((await row(remoteId(old, 'old-row'))).question, undefined);
+  assert.equal((await row(remoteId(old, 'bad-record'))).question, undefined);
+  assert.deepEqual(await open(), { wait: false });
+  hostAnswer = true;
+  const asked = await open();
+  assert.equal(asked.wait, true);
+  await viewer.poll();
+  assert.deepEqual((await row(hostRow)).question, { requestId: asked.requestId, questions });
+  assert.equal((await row(hostRow, '')).question, undefined);
+  assert.equal((await row(hostRow, '')).phoneRequest, undefined);
+  phoneAnswer = false;
+  assert.equal((await row(hostRow)).question, undefined);
+  phoneAnswer = true;
+  const invalid = answer(asked.requestId, 'not an option');
+  assert.equal((await viewer.post(answerRoute(hostRow), invalid)).status, 400);
+  assert.deepEqual(await memberEngine.group.peer.answer({ threadId: memberEngine.row, answer: invalid }),
+    { status: 400, body: { error: 'Invalid answer.' } });
+  assert.equal(posts.length, 0);
+  const correct = answer(asked.requestId);
+  assert.equal((await viewer.group.peer.answer({ threadId: hostRow, answer: correct })).status, 409);
+  assert.equal(posts.length, 0);
+  const forwarded = await viewer.post(answerRoute(hostRow), correct);
+  assert.deepEqual([forwarded.status, await forwarded.json()], [200, { answered: true }]);
+  assert.deepEqual(posts.at(-1), [host.machineId, 'POST', { threadId: memberEngine.row, answer: correct }, phone.certFingerprint]);
+  assert.deepEqual(await (await memberEngine.post(`/api/agent/wait/${asked.requestId}`)).json(),
+    { state: 'answered', answers: { 'Which choice?': 'A' }, answerItems: correct.answers });
+  const closed = await viewer.post(answerRoute(hostRow), correct);
+  assert.deepEqual([closed.status, await closed.json()], [409, { error: 'This question is closed.' }]);
+  await viewer.poll();
+  assert.equal((await row(hostRow)).question, undefined);
+
+  const agy = await open('antigravity', 'agy-key');
+  await viewer.poll();
+  assert.equal((await viewer.post(answerRoute(remoteId(host, 'agy-row')), answer(agy.requestId))).status, 200);
+  assert.deepEqual(typed, [['agy-row', questions, answer(agy.requestId).answers]]);
+
+  const openApproval = () => openWait(memberEngine, { provider: 'claude', sessionKey: SESSION, approval: approval() });
+  assert.deepEqual(await openApproval(), { wait: false });
+  hostApprove = true;
+  assert.deepEqual(await openWait(memberEngine, codexTool('codex-key')), { wait: false });
+  phoneRecent = true;
+  await memberEngine.poll();
+  const codex = await openWait(memberEngine, codexTool('codex-key'));
+  assert.equal(codex.wait, true);
+  memberEngine.store.close(codex.requestId);
+  const approved = await openApproval();
+  assert.equal(approved.wait, true);
+  await viewer.poll();
+  assert.deepEqual((await row(hostRow)).approval, { requestId: approved.requestId, ...approval() });
+  const decision = { requestId: approved.requestId, decision: 'deny', note: 'Synthetic reason' };
+  hostApprove = false;
+  assert.equal((await viewer.post(answerRoute(hostRow), decision)).status, 409);
+  await viewer.poll();
+  assert.equal((await row(hostRow)).approval, undefined);
+  hostApprove = true;
+  await viewer.poll();
+  assert.equal((await viewer.post(answerRoute(hostRow), decision)).status, 200);
+  assert.deepEqual(await (await memberEngine.post(`/api/agent/wait/${approved.requestId}`)).json(),
+    { state: 'answered', decision: decision.decision, note: decision.note });
+
+  const waiting = await open();
+  await viewer.poll();
+  assert.equal((await row(hostRow)).question.requestId, waiting.requestId);
+  hostAnswer = false;
+  await viewer.poll();
+  assert.equal((await row(hostRow)).question, undefined);
+  await memberEngine.group.onPhoneRevoked('a'.repeat(12));
+  hostAnswer = true;
+  assert.deepEqual(await open(), { wait: false });
+});
 
 test('Codex questions use the answer switch, reject forbidden Other text and return separate answer items', async (t) => {
   const now = clock(Date.now());

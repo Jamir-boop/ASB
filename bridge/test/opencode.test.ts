@@ -1521,8 +1521,8 @@ test('opencodeQuestion maps choice forms (1-4 fields, 1-8 options) and refuses f
   }
 });
 
-posix('opencodeService and replyForm read service.json for this PID and POST /api/session/:id/form/:id/reply with Basic auth', async () => {
-  const dir = mkdtempSync('/tmp/asb-oc-svc-');
+test('opencodeService and replyForm read service.json for this PID and POST /api/session/:id/form/:id/reply with Basic auth', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asb-oc-svc-'));
   const received: Array<{ path: string; auth: string | null; body: unknown }> = [];
   const srv = Bun.serve({
     hostname: '127.0.0.1', port: 0,
@@ -1538,6 +1538,11 @@ posix('opencodeService and replyForm read service.json for this PID and POST /ap
     writeFileSync(svcFile, JSON.stringify({ id: 's1', version: '2.4.0', url: `http://127.0.0.1:${srv.port}`, pid: process.pid, password: 'secret-token' }));
     const svc = opencodeService({ XDG_STATE_HOME: dir }, process.pid);
     expect(svc).toEqual({ url: `http://127.0.0.1:${srv.port}`, auth: `Basic ${Buffer.from('opencode:secret-token').toString('base64')}` });
+    const winDir = join(dir, '.local', 'state', 'opencode');
+    mkdirSync(winDir, { recursive: true });
+    writeFileSync(join(winDir, 'service.json'), readFileSync(svcFile));
+    expect(opencodeService({ USERPROFILE: dir }, process.pid, 'win32')).toEqual(svc);
+    expect(opencodeService({ USERPROFILE: join(dir, 'no-service'), XDG_STATE_HOME: dir }, process.pid, 'win32')).toEqual(svc);
     expect(await replyForm('ses_root', 'frm_1', { fruit: 'p' }, svc)).toBe(true);
     expect(received).toEqual([{ path: '/api/session/ses_root/form/frm_1/reply', auth: svc!.auth, body: { answer: { fruit: 'p' } } }]);
     expect(opencodeService({ XDG_STATE_HOME: dir }, process.pid + 1)).toBeNull();

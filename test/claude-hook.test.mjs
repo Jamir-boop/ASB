@@ -439,19 +439,6 @@ test('a write between the read and the rename changes nothing and asks for a new
   }
 });
 
-test('on win32 install is refused, and status and remove work', async (t) => {
-  const { dir, env } = await home(t);
-  const config = await target(dir, 'windows', { hooks: { PermissionRequest: [ENTRY] } });
-  const before = await tree(config);
-  assert.deepEqual(await local(env, ['install', '--config-dir', config], { platform: 'win32' }),
-    { code: 1, stdout: '', stderr: 'The Claude Code hook works on Linux only for now.' });
-  assert.deepEqual(await tree(config), before);
-  assert.deepEqual(JSON.parse((await local(env, ['status', '--json', '--config-dir', config], { platform: 'win32' })).stdout),
-    { targets: [{ dir: config, state: 'installed' }] });
-  assert.equal((await local(env, ['remove', '--config-dir', config], { platform: 'win32' })).code, 0);
-  assert.deepEqual(await read(config), {});
-});
-
 test('the written command runs the installed launcher: with bad stdin it exits 0 with no output', { skip: process.platform === 'win32' }, async (t) => {
   const { dir, env } = await home(t);
   const config = await target(dir, 'run');

@@ -1957,7 +1957,7 @@ private fun QuestionCardPanel(
                     }
                 }
             }
-            OutlinedTextField(
+            if (item.allowOther) OutlinedTextField(
                 value = card.other[index],
                 onValueChange = { card = card.type(question, index, it) },
                 enabled = enabled,

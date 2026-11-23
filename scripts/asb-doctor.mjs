@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { agyHookDoctor } from '../src/agy-hook.mjs';
 import { agyKittyDoctor } from '../src/antigravity-data.mjs';
 import { PLAYERS } from '../src/asb-sounds.mjs';
-import { QUESTIONS_ONLY, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
+import { QUESTIONS_ONLY, claudeHookStatus, homeForm, phoneHookLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { codexHookStatus, readCodexHookTargets } from '../src/codex-hook.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
 import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shellText, shortVersion } from '../src/linux-system.mjs';
@@ -91,8 +91,14 @@ export async function linuxFirewallLines(state, addresses, port, { execFile = ex
 // The Claude Code hook of each Claude profile (read only). Not installed is a warning only while phones may answer; the
 // questions-only entry only while phones may approve.
 const HOOK_STATUS = { installed: 'ok', [QUESTIONS_ONLY]: 'warn', 'not found': 'info', 'other launcher': 'warn', 'invalid settings': 'warn' };
-const readClaudeHook = async (env, platform) => claudeHookStatus(await readHookTargets(env, platform), { launcher: installedLauncher(env) });
-const readCodexHook = async (env, platform) => codexHookStatus(await readCodexHookTargets(env, platform), { launcher: installedLauncher(env) });
+const readClaudeHook = async (env, platform) => claudeHookStatus(await readHookTargets(env, platform),
+  { launcher: await phoneHookLauncher(env, platform), platform });
+const readCodexHook = async (env, platform) => codexHookStatus(await readCodexHookTargets(env, platform),
+  { launcher: await phoneHookLauncher(env, platform), platform });
+async function phoneStatus(env, platform, find, api) {
+  try { const runtime = await find(env, platform); return runtime ? await api(runtime, '/api/phone') : null; }
+  catch { return null; }
+}
 async function hookChecks(add, advice, claudeHook, codexHook, answer, approve) {
   let targets = [];
   try { targets = await claudeHook(); } catch {}
@@ -147,7 +153,7 @@ async function bunCheck(add, env, platform) {
 }
 
 // Windows needs Node.js with built-in SQLite for the engine, and MSYS2 Python with PyGObject, GTK, and Libadwaita for the window.
-async function collectWindows({ env, execFile, exists: present, node, platform, claudeHook, codexHook }) {
+async function collectWindows({ env, execFile, exists: present, node, platform, claudeHook, codexHook, find, api, firewall }) {
   const system = { name: os.version() || 'Windows', id: null, versionId: os.release(), family: 'windows', mode: 'normal' };
   const checks = [];
   const add = (id, group, status, detail) => checks.push({ id, group, status, detail });
@@ -181,7 +187,8 @@ async function collectWindows({ env, execFile, exists: present, node, platform, 
     if (!await present(pacman)) commands.msys2 = WINGET_MSYS2;
     advice.push(commands.msys2 ? 'Install MSYS2 and the board packages:' : 'Install the board packages:', ...[commands.msys2, commands.required].filter(Boolean).map((words) => `  ${words.join(' ')}`));
   }
-  await hookChecks(add, advice, claudeHook, codexHook, false, false);
+  const phone = firewall ? await phoneStatus(env, platform, find, api) : null;
+  await hookChecks(add, advice, claudeHook, codexHook, phone?.answer === true, phone?.approve === true);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 
@@ -191,7 +198,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
   claudeHook = () => readClaudeHook(env, platform), codexHook = () => readCodexHook(env, platform),
   kitty = (add, advice) => agyKittyDoctor(add, advice, { env, read }),
   agy = (add, advice) => agyHookDoctor(add, advice, { env }) } = {}) {
-  if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform, claudeHook, codexHook });
+  if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform, claudeHook, codexHook, find, api, firewall });
   const release = parseOsRelease(await read('/etc/os-release'));
   const { family, mode } = detectFamily(release, { ostreeBooted: await present('/run/ostree-booted') });
   const system = { name: release.PRETTY_NAME || release.NAME || 'Linux', id: release.ID || null, versionId: release.VERSION_ID || null, family, mode };
@@ -291,10 +298,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
   if (mode === 'transactional' && anyCommand) advice.push(RESTART_NOTE);
   if (family === 'nixos' && (required.length || optional.length || nodeOld)) advice.push(FLAKE_LINE);
   // Plan 13 step 3: the firewall lines for the selected addresses of the running engine. A failed request gives no lines.
-  let phone = null;
-  if (firewall) {
-    try { const runtime = await find(env); phone = runtime ? await api(runtime, '/api/phone') : null; } catch {}
-  }
+  const phone = firewall ? await phoneStatus(env, platform, find, api) : null;
   if (phone?.enabled === true && Array.isArray(phone.bindAddresses) && Array.isArray(phone.addresses)) {
     const entries = phone.bindAddresses.map((address) => phone.addresses.find((item) => item.address === address)).filter(Boolean);
     if (entries.length) {

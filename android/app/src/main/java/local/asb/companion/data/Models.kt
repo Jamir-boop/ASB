@@ -194,6 +194,7 @@ data class QuestionItem(
     val header: String = "",
     val options: List<QuestionOption>,
     val multiSelect: Boolean = false,
+    val allowOther: Boolean = true,
 )
 
 @Serializable
@@ -216,13 +217,14 @@ internal fun parseQuestion(value: JsonElement): PhoneQuestion? {
         val text = jsonString(item["question"])?.takeIf { it.isNotEmpty() } ?: return null
         val header = item["header"]?.let { jsonString(it) ?: return null } ?: ""
         val multiSelect = item["multiSelect"]?.let { (it as? JsonPrimitive)?.takeIf { p -> !p.isString }?.booleanOrNull ?: return null } ?: false
+        val allowOther = item["allowOther"]?.let { (it as? JsonPrimitive)?.takeIf { p -> !p.isString }?.booleanOrNull ?: return null } ?: true
         val options = (item["options"] as? JsonArray)?.takeIf { it.size in 1..8 }?.map { option ->
             val fields = option as? JsonObject ?: return null
             val label = jsonString(fields["label"])?.takeIf { it.isNotEmpty() } ?: return null
             QuestionOption(label, fields["description"]?.let { jsonString(it) ?: return null } ?: "")
         } ?: return null
         if (options.distinctBy { it.label }.size != options.size) return null
-        QuestionItem(text, header, options, multiSelect)
+        QuestionItem(text, header, options, multiSelect, allowOther)
     }
     return PhoneQuestion(requestId, questions)
 }

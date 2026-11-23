@@ -476,9 +476,9 @@ async function fakeWindows(t, { bins = ['bun.exe'], values = {}, node = WIN_NODE
   const deps = {
     platform: 'win32', node, env: { PATH: directory, ...(python && { ASB_PYTHON: python }) }, claudeHook: async () => [], codexHook: async () => [],
     exists: async (file) => { reads.push(file); return file === pacman && msys2; },
-    // Windows reads no os-release and asks no engine for the firewall.
+    // Windows reads no os-release and prints no firewall commands.
     read: async (file) => { throw new Error(`Unexpected read: ${file}`); },
-    find: async () => { throw new Error('Unexpected engine lookup'); },
+    find: async () => null,
     execFile: async (file, args) => {
       calls.push([file, ...args]);
       if (file === python) return { stdout: `${probe({ python: '3.12.7', qrcode: false, trayHost: null, ...values })}\n` };
@@ -524,6 +524,22 @@ test('Windows with the board ready prints the Windows checks and no commands', a
   const json = await system.run(['--json']);
   assert.equal(json.code, 0);
   assert.deepEqual(Object.keys(JSON.parse(json.out.join('\n'))), ['schema', 'system', 'checks', 'board', 'commands']);
+});
+
+test('Windows doctor reads the answer and approve switches from the running engine', async (t) => {
+  const system = await fakeWindows(t);
+  const runtime = { pid: 123, port: 4567 };
+  let lookups = 0;
+  const deps = { ...system.deps,
+    find: async (env, platform) => { lookups++; assert.equal(env, system.deps.env); assert.equal(platform, 'win32'); return runtime; },
+    api: async (value, route) => { assert.equal(value, runtime); assert.equal(route, '/api/phone'); return { answer: true, approve: true }; },
+    claudeHook: async () => [{ dir: system.directory, state: 'installed (questions only)' }],
+    codexHook: async () => [{ dir: system.directory, state: 'installed' }],
+  };
+  const checks = (data) => data.checks.filter(({ group }) => group === 'Phone answers').map(({ id, status }) => [id, status]);
+  assert.deepEqual(checks(await collect(deps)), [['claude-hook', 'warn'], ['codex-hook', 'ok']]);
+  assert.deepEqual(checks(await collect({ ...deps, firewall: false })), [['claude-hook', 'info'], ['codex-hook', 'ok']]);
+  assert.equal(lookups, 1);
 });
 
 test('Windows without MSYS2 prints the winget line, then the pacman line, and still exits 0', async (t) => {

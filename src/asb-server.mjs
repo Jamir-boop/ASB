@@ -56,18 +56,18 @@ function listEntry(text, palette, content, tagPrefix = '') {
 
 // A hash of the kept question texts and the open phone question IDs of the rows with their row IDs (a hash, so the entry holds no
 // second copy), or '' when no row has one. A request ID stands for its questions, which never change.
-function questionTexts(dashboard) {
-  const rows = (dashboard.threads || []).map((row) => [row.id, row[QUESTION_TEXT] || '', row[CLAUDE_QUESTION]?.requestId || ''])
+function questionTexts(dashboard, phoneRequest) {
+  const rows = (dashboard.threads || []).map((row) => [row.id, row[QUESTION_TEXT] || '', phoneRequest(row)?.requestId || ''])
     .filter(([, text, requestId]) => text || requestId);
   return rows.length ? createHash('sha256').update(JSON.stringify(rows)).digest('base64url') : '';
 }
 
 // The list text with `questionText` on each row that has a kept question text, and `question` or `approval` on each row with an open
 // phone request of that kind.
-function questionListText(dashboard, text) {
+function questionListText(dashboard, phoneRequest) {
   const { generatedAtMs: _, performance: __, ...rest } = dashboard;
   return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => {
-    const request = row[CLAUDE_QUESTION];
+    const request = phoneRequest(row);
     const field = !request ? {} : request.kind === 'question' ? { question: { requestId: request.requestId, questions: request.questions } }
       : { approval: { requestId: request.requestId, ...request.approval } };
     return row[QUESTION_TEXT] || request ? { ...row, ...(row[QUESTION_TEXT] ? { questionText: row[QUESTION_TEXT] } : {}), ...field } : row;
@@ -189,6 +189,49 @@ export function createAsbServer({
     questionTimer.unref?.();
   };
   const findThreadForAction = async (threadId, force = false) => (await dashboardForRequest({ force })).threads?.find((thread) => thread.id === threadId) || null;
+  const answerSwitch = (kind) => kind === 'question' ? answerEnabled() : approveEnabled();
+  const phoneRequest = (row) => {
+    const record = row[CLAUDE_QUESTION];
+    return record && (!row.remote || answerSwitch(record.kind)) ? record : null;
+  };
+  const phoneApprovalRecentlySeen = async () => approveEnabled() && await phoneSeenWithin(60_000);
+  const closedAnswer = { status: 409, body: { error: 'This question is closed.' } };
+  const invalidAnswer = { status: 400, body: { error: 'Invalid answer.' } };
+  const agyUnavailable = { status: 409, body: { error: 'Cannot answer in agy now. Answer on the PC.' } };
+  async function answerThread(threadId, body, localOnly = false) {
+    // A question body `{ requestId, answers }`, or an approval body `{ requestId, decision, note? }`.
+    const kind = exactKeys(body, ['requestId', 'answers']) ? 'question'
+      : exactKeys(body, ['requestId', 'decision'], ['note']) ? 'approval' : '';
+    if (threadId === null || !kind || typeof body.requestId !== 'string') return invalidAnswer;
+    const memberRow = /^m:[a-f0-9]{16}:/.test(threadId);
+    // On the session PC, a fresh scan closes an approval that the PC already answered.
+    const thread = await findThreadForAction(threadId, kind === 'approval' && !memberRow);
+    if (!thread) return localOnly || memberRow ? closedAnswer : { status: 404, body: { error: 'Thread not found' } };
+    if (localOnly && thread.remote) return closedAnswer;
+    const open = answerSwitch(kind) ? thread[CLAUDE_QUESTION] : null;
+    if (open?.kind !== kind || open.requestId !== body.requestId) return closedAnswer;
+    const { requestId, ...decision } = body;
+    const answer = kind === 'question' ? answersFor(open.questions, body.answers) : checkedDecision(open.approval, decision);
+    if (!answer) return invalidAnswer;
+    if (thread.remote) return machineGroup?.answerMember?.(thread, body) ?? closedAnswer;
+    if (thread.provider === 'antigravity') {
+      if (answeringRequests.has(requestId)) return agyUnavailable;
+      answeringRequests.add(requestId);
+      let typed = false;
+      try {
+        typed = kind === 'question'
+          ? (answerAgy ? await answerAgy(thread, open.questions, body.answers) : false)
+          : (approveAgy ? await approveAgy(thread, open.approval, answer.decision) : false);
+      } finally { answeringRequests.delete(requestId); }
+      if (typed !== true) {
+        return typed === null
+          ? (kind === 'approval' ? { status: 409, body: { error: 'This request is closed.' } } : closedAnswer)
+          : agyUnavailable;
+      }
+      stopAgyWatcher(requestId);
+    }
+    return claudeQuestions.answer(requestId, answer) ? { status: 200, body: { answered: true } } : closedAnswer;
+  }
   const server = http.createServer(async (request, response) => {
     let url;
     try { url = new URL(request.url, 'http://127.0.0.1'); }
@@ -535,9 +578,11 @@ export function createAsbServer({
         return;
       }
       try {
-        const ready = wanted.provider === 'codex' && wanted.approval !== undefined ? approveEnabled() && await phoneSeenWithin(60_000)
-          : (wanted.approval === undefined ? answerEnabled() : approveEnabled()) && await phonePaired();
-        if (!ready) { sendJson(response, 200, { wait: false }); return; }
+        const kind = wanted.approval === undefined ? 'question' : 'approval';
+        const codexApproval = wanted.provider === 'codex' && kind === 'approval';
+        const ready = answerSwitch(kind) && ((codexApproval ? await phoneApprovalRecentlySeen() : await phonePaired())
+          || machineGroup?.memberPhoneReady?.(kind, codexApproval));
+        if (!ready || !answerSwitch(kind)) { sendJson(response, 200, { wait: false }); return; }
         const { requestId } = claudeQuestions.open(wanted);
         if (wanted.provider === 'antigravity' && wanted.approval !== undefined && watchAgy) {
           stopAgyWatcher(requestId);
@@ -899,11 +944,11 @@ export function createAsbServer({
         // question text it is the plain list. Without `text=1` the reply is the same as before.
         const text = snapshot.listText(dashboard);
         if (savedList?.text !== text || savedList.palette !== palette) savedList = listEntry(text, palette, text);
-        const questions = url.searchParams.get('text') === '1' ? questionTexts(dashboard) : '';
+        const questions = url.searchParams.get('text') === '1' ? questionTexts(dashboard, phoneRequest) : '';
         // No question is pending now: an answered question does not stay in the saved list and its gzip.
         if (url.searchParams.get('text') === '1' && !questions) savedTextList = null;
         if (questions && (savedTextList?.text !== text || savedTextList.palette !== palette || savedTextList.questions !== questions)) {
-          savedTextList = { ...listEntry(text, palette, questionListText(dashboard, text), 'text=1\0'), questions };
+          savedTextList = { ...listEntry(text, palette, questionListText(dashboard, phoneRequest), 'text=1\0'), questions };
         }
         const entry = questions ? savedTextList : savedList;
         const { list, etag } = entry;
@@ -943,41 +988,9 @@ export function createAsbServer({
       }
       let threadId = null;
       try { threadId = decodeURIComponent(answerMatch[1]); } catch {}
-      // A question body `{ requestId, answers }`, or an approval body `{ requestId, decision, note? }`.
-      const kind = exactKeys(body, ['requestId', 'answers']) ? 'question'
-        : exactKeys(body, ['requestId', 'decision'], ['note']) ? 'approval' : '';
-      if (threadId === null || !kind || typeof body.requestId !== 'string') {
-        sendJson(response, 400, { error: 'Invalid answer.' });
-        return;
-      }
       try {
-        // An approval loads fresh: the registry reconcile first closes a record that the PC already answered.
-        const thread = await findThreadForAction(threadId, kind === 'approval');
-        if (!thread) { threadNotFound(response); return; }
-        const open = (kind === 'question' ? answerEnabled() : approveEnabled()) ? thread[CLAUDE_QUESTION] : null;
-        if (open?.kind !== kind || open.requestId !== body.requestId) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
-        const { requestId, ...decision } = body;
-        const answer = kind === 'question' ? answersFor(open.questions, body.answers) : checkedDecision(open.approval, decision);
-        if (!answer) { sendJson(response, 400, { error: 'Invalid answer.' }); return; }
-        if (thread.provider === 'antigravity') {
-          if (answeringRequests.has(requestId)) { sendJson(response, 409, { error: 'Cannot answer in agy now. Answer on the PC.' }); return; }
-          answeringRequests.add(requestId);
-          let typed = false;
-          try {
-            typed = kind === 'question'
-              ? (answerAgy ? await answerAgy(thread, open.questions, body.answers) : false)
-              : (approveAgy ? await approveAgy(thread, open.approval, answer.decision) : false);
-          } finally { answeringRequests.delete(requestId); }
-          if (typed !== true) {
-            sendJson(response, 409, { error: typed === null
-              ? (kind === 'approval' ? 'This request is closed.' : 'This question is closed.')
-              : 'Cannot answer in agy now. Answer on the PC.' });
-            return;
-          }
-          stopAgyWatcher(requestId);
-        }
-        if (!claudeQuestions.answer(requestId, answer)) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
-        sendJson(response, 200, { answered: true });
+        const result = await answerThread(threadId, body);
+        sendJson(response, result.status, result.body);
       } catch { sendJson(response, 500, { error: 'Cannot save the answer.' }); }
       return;
     }
@@ -1023,6 +1036,9 @@ export function createAsbServer({
   };
   // The machine group reads the dashboard for its export and refreshes it after a member's new rows.
   server.dashboardForRequest = dashboardForRequest;
+  if (claudeQuestions) server.answerLocalThread = (threadId, body) => answerThread(threadId, body, true);
+  server.hasOpenPhoneRequests = () => Boolean(claudeQuestions?.openRecords().length);
+  server.phoneApprovalRecentlySeen = phoneApprovalRecentlySeen;
   // The phone text switch change (`phone-text`, from the engine) drops the saved question text list, so no question text stays after it.
   server.invalidateDashboard = (reason, options) => {
     if (reason === 'phone-text') savedTextList = null;

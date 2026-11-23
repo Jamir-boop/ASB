@@ -1330,6 +1330,29 @@ gatewayTest('the relay member routes need a member certificate, check methods, a
   assert.equal(calls.length, 1);
 });
 
+gatewayTest('the answer member route requires a current member certificate, not a phone token', async (t) => {
+  const calls = [];
+  const { group, peer, joiner, stranger, joinBody, code, pair } = await peerFixture(t, { server: {
+    answerLocalThread: async (threadId, answer) => { calls.push([threadId, answer]); return { status: 200, body: { answered: true } }; },
+  } });
+  const phone = (await pair('Phone')).json;
+  const route = '/peer/v1/answer';
+  const body = { threadId: 'codex:1', answer: { requestId: 'a'.repeat(32), answers: [{ selected: ['A'] }] } };
+  const post = (as, value = body, requestPath = route) => peer(requestPath, { as, method: 'POST', token: phone.token, body: value });
+  assert.equal((await post()).status, 401);
+  assert.equal((await post(stranger)).status, 401);
+  assert.equal((await peer('/peer/v1/join', { method: 'POST', as: joiner, body: joinBody(await code()) })).status, 200);
+  assert.equal((await peer(route, { as: joiner })).status, 405);
+  assert.equal((await post(joiner, { ...body, extra: true })).status, 400);
+  assert.equal((await post(joiner, { ...body, answer: { ...body.answer, requestId: 'bad' } })).status, 400);
+  assert.equal((await post(joiner, body, '/api/threads/codex%3A1/answer')).status, 404);
+  const result = await post(joiner);
+  assert.deepEqual([result.status, result.json, result.headers['cache-control']], [200, { answered: true }, 'no-store']);
+  await group.remove(joiner.fingerprint.slice(0, 16));
+  assert.equal((await post(joiner)).status, 410);
+  assert.deepEqual(calls, [[body.threadId, body.answer]]);
+});
+
 gatewayTest('the exact member routes exist only with their function, use the member checks, and take up to 2 MiB for deliver', async (t) => {
   const calls = [];
   const relay = { resolveExact: async (value, fingerprint) => { calls.push(['resolve', value, fingerprint]); return { status: 200, body: { api: 2, outcome: 'ready' } }; },

@@ -446,7 +446,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
 
   // The member routes of the machine group; only `join` takes a certificate that is not a member's.
   async function handlePeer(request, response, group, route, reject) {
-    const method = ['join', 'leave', 'deliver', 'v2/resolve-session', 'v2/deliver'].includes(route) ? 'POST' : 'GET';
+    const method = ['join', 'leave', 'deliver', 'answer', 'v2/resolve-session', 'v2/deliver'].includes(route) ? 'POST' : 'GET';
     if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
     const raw = request.socket.getPeerCertificate(true)?.raw;
     const caller = raw ? hash(raw) : '';
@@ -471,7 +471,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       } else if (route === 'peers') result = await peer.peers();
       else if (route === 'bridge') result = await peer.bridge();
       else if (route === 'deliver') result = await peer.deliver(value, caller);
-      else if (route === 'v2/resolve-session') result = await peer.resolveExact(value, caller);
+      else if (route === 'answer') {
+        if (!validAnswer(value?.answer)) { reject(400, 'Invalid answer.'); return; }
+        result = await peer.answer(value);
+      } else if (route === 'v2/resolve-session') result = await peer.resolveExact(value, caller);
       else if (route === 'v2/deliver') result = await peer.deliverExact(value, caller);
       else if (route === 'sessions' || route === 'activity') {
         let answer;
@@ -526,6 +529,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
       : /^\/peer\/v1\/(join|hello|group|sessions|leave|peers|deliver|activity)$/);
     // The activity route exists only when the engine gives its function.
     if (peerRoute && (peerRoute[1] !== 'activity' || typeof peer.activity === 'function')) { await handlePeer(request, response, group, peerRoute[1], reject); return; }
+    if (url.pathname === '/peer/v1/answer' && typeof peer?.answer === 'function') {
+      await handlePeer(request, response, group, 'answer', reject);
+      return;
+    }
     // The exact member routes (v2) exist only when the engine gives their function; every other /peer/v2 path is 404.
     const exactRoute = peer && url.pathname.match(/^\/peer\/v2\/(resolve-session|deliver)$/)?.[1];
     if (exactRoute && typeof peer[exactRoute === 'deliver' ? 'deliverExact' : 'resolveExact'] === 'function') {
