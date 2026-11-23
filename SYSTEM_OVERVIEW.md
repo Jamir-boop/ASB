@@ -742,7 +742,7 @@ Security: with the approve switch on, each paired phone can allow or deny a tool
 
 ### Approve OpenCode requests from the phone
 
-On main, not in a release yet. On Linux, install ASB Bridge `0.10.0` with `asb bridge install --opencode` and restart OpenCode to load it. Not tested end to end on a phone with a real OpenCode session.
+On main, not in a release yet. On Linux, install ASB Bridge `0.10.0` with `asb bridge install --opencode`. OpenCode loads the plugin by itself. In one observation (OpenCode 2.4.0) a session that ran took the new plugin with no restart. If a session shows no card, start OpenCode again. Not tested end to end on a phone with a real OpenCode session.
 
 1. Plugin event. `bridge/src/opencode.ts` sees `permission.asked` on the OpenCode event stream. It uses the registered receiver of the root session and the plugin instance of the request folder. After it finds the ASB engine, it uses `data.source` to find the tool input in `session.context`. With the 0.10.0 plugin and a running ASB engine, the plugin does this at each permission request of a session that it follows, also while **Approve requests from phones** is off: it reads the session context inside the OpenCode process, and for a shell command or a one-file change it sends the card lines to the engine on loopback. With the switch off or no paired phone, the engine replies `{ wait: false }` and keeps nothing.
 2. Card. For `shell`, each permission resource must occur in the input command. The card shows the whole `Command` and `Folder` (the tool's `workdir`, or the request folder). For `edit`, the tool must be `write` or `edit` with one resource. Both paths must resolve to the same file against the absolute request folder. The card shows `File` (the resolved path) and `Size` (content length for `write`, old and new lengths for `edit`). For a subagent, the title ends in ` for a subagent?` and the card is on the root session. No card for other actions, questions, missing tool input, or a command, folder, or path over 4,000 characters or with control or hidden characters (tabs and newlines are allowed).
@@ -751,7 +751,7 @@ On main, not in a release yet. On Linux, install ASB Bridge `0.10.0` with `asb b
 
 The PC dialog stays open while the phone can act. A PC reply (`permission.replied`), the end of the turn, archive, deletion, or disposal of the plugin instance stops the plugin wait. The engine closes the record on a phone decision, on a newer request for the same session, on a saved change that turns off approvals, or on engine stop. It also closes after the bridge no longer reports an open approval for that session (after one pending read or a 30 s grace period), after a disconnected poll with no next poll for 5 s, or after more than 60 s without a poll. No paired phone, a switch off, or a missing engine gives no phone decision. Answer on the PC.
 
-Limits: one card for each local root session. No phone answers to OpenCode questions, no approvals for group member sessions, and no Windows coverage. The tests are unit and integration tests only.
+Limits: one card for each local root session. A card comes only when OpenCode itself asks for permission. A rule that allows the tool (for example a global `allow` for all) gives no dialog and no card. No phone answers to OpenCode questions, no approvals for group member sessions, and no Windows coverage. The tests are unit and integration tests only.
 
 ### Approve Codex commands from the phone
 

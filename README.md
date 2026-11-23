@@ -76,13 +76,14 @@ Limits:
 
 On main, not in a release yet. Use ASB Bridge `0.10.0` with OpenCode 2 on Linux.
 
-1. Run `asb bridge install --opencode`. Restart OpenCode to load the new plugin.
+1. Run `asb bridge install --opencode`. OpenCode loads the plugin by itself. In one observation (OpenCode 2.4.0) a session that ran took the new plugin with no restart. If a session shows no card, start OpenCode again.
 2. In Preferences > Phone, turn on **Allow phone access**, **Send message text to phones**, **Answer questions from phones**, and **Approve requests from phones**. Pair a phone.
 
 - A shell permission request can show `Command` and `Folder`. A `write` or `edit` permission request for one file can show `File` (the resolved path) and `Size` (the content length or the old and new text lengths). A subagent request shows `for a subagent` in the title on the root session's card.
 - Questions and other types of permission request get no card. A permission request stays on the PC if the plugin cannot match it to its tool input, or if a command, folder, or path is over 4,000 characters or has control or hidden characters (tabs and newlines are allowed).
 - `Allow once` lets OpenCode run the tool once, not always. `Deny` rejects the request and sends `Denied from the phone.` or `Denied from the phone: <note>` to OpenCode.
 - With no paired phone, a switch off, or the engine down, use the PC dialog. If you answer there first, the plugin stops its phone wait. Only one card can be open on the phone for each session. A newer request replaces the older card.
+- A card comes only when OpenCode itself asks for permission. A rule that allows the tool (for example a global `allow` for all) gives no dialog and no card.
 - The phone can act only on local sessions. Windows is not covered. Not tested end to end on a phone with a real OpenCode session.
 
 ## Approve Codex commands from the phone
