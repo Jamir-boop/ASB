@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { agyProcess, type AgyRecord } from '../../src/antigravity-data.mjs';
 import { takeAgyMailbox } from '../../src/agy-mailbox.mjs';
 import { bindAgy, checkAgyCaller } from '../src/agy';
-import { agyReceiverError, agyRuntime, createAgyHost, promptZone } from '../src/agy-host';
+import { AGY_NUDGE, agyReceiverError, agyRuntime, createAgyHost, promptZone } from '../src/agy-host';
 import { DeliveryRefused } from '../src/delivery';
 import { peers } from '../src/claude';
 
@@ -247,6 +247,167 @@ for (const [lines, chars, paste] of [[8, 499, true], [9, 499, false], [8, 500, t
     } finally { await f.host.close(); f.close(); }
   });
 }
+
+// A framed message of the given lines and characters, as in the routing test above.
+const framed = (lines: number, chars: number) => {
+  const head = [body.split('\n')[0], ...Array<string>(lines - 2).fill('x'.repeat(64)), ''].join('\n');
+  return head + 'y'.repeat(chars - head.length);
+};
+const kinds = (calls: string[][]) => calls.map(args => args[3]);
+const nudgeCalls = (calls: string[][]) => calls.filter(args => args[3] === 'send-text' && args.at(-1) === AGY_NUDGE);
+
+for (const [lines, chars] of [[8, 501], [9, 499]] as const) {
+  linux(`types one fixed nudge line for a long named message of ${lines} lines and ${chars} characters`, async () => {
+    const f = fixture();
+    try {
+      const text = framed(lines, chars);
+      f.afterPaste(() => f.setScreen(screen(AGY_NUDGE)));
+      await f.host.deliver(randomUUID(), text, true);
+      await f.poll();
+      expect(f.calls).toEqual([]);
+      expect(existsSync(`${f.base}.msg`)).toBe(true);
+      await f.poll();
+      expect(kinds(f.calls)).toEqual(['get-text', 'send-text', 'get-text', 'send-key']);
+      expect(f.calls[1]?.slice(-3)).toEqual(['--bracketed-paste=enable', '--', AGY_NUDGE]);
+      expect(f.calls[3]?.slice(6)).toEqual(['enter']);
+      expect(JSON.parse(readFileSync(`${f.base}.msg`, 'utf8')).text).toBe(text);
+      expect(await f.runStop()).toBe(text);
+    } finally { await f.host.close(); f.close(); }
+  });
+}
+
+linux('a message within the size limit never gets a nudge, also when its paste fails', async () => {
+  const f = fixture();
+  try {
+    const text = framed(8, 500);
+    f.afterPaste(() => f.setScreen(screen(text)));
+    await f.host.deliver(randomUUID(), text, true);
+    await f.poll();
+    expect(kinds(f.calls)).toEqual(['get-text', 'send-text', 'get-text', 'send-key']);
+    expect(f.calls[1]?.slice(-1)).toEqual([text]);
+    expect(nudgeCalls(f.calls)).toEqual([]);
+  } finally { await f.host.close(); f.close(); }
+  const g = fixture();
+  try {
+    g.setScreen(screen('draft'));
+    await g.host.deliver(randomUUID(), body, true);
+    for (let i = 0; i < 3; i++) { await g.poll(); g.advance(1001); }
+    expect(kinds(g.calls)).toEqual(['get-text', 'get-text', 'get-text']);
+    g.setScreen(screen());
+    g.afterPaste(() => g.setScreen(screen('other')));
+    await g.poll();
+    await g.poll();
+    expect(nudgeCalls(g.calls)).toEqual([]);
+  } finally { await g.host.close(); g.close(); }
+});
+
+linux('sends one nudge for a message, not another after more polls or a new idle record', async () => {
+  const f = fixture();
+  try {
+    const id = randomUUID();
+    await f.host.deliver(id, framed(8, 501), true);
+    await f.poll();
+    await f.poll();
+    expect(nudgeCalls(f.calls)).toHaveLength(1);
+    f.setScreen(screen());
+    for (const event of ['SessionStart', 'Stop'] as const) {
+      f.update({ event, state: 'idle', stateAtMs: f.now() });
+      f.advance(1001);
+      await f.poll();
+      await f.poll();
+    }
+    expect(nudgeCalls(f.calls)).toHaveLength(1);
+    expect(existsSync(`${f.base}.msg`)).toBe(true);
+  } finally { await f.host.close(); f.close(); }
+});
+
+linux('sends no nudge when the Stop hook took the file after the gate read, and the nudge never settles the row', async () => {
+  const f = fixture();
+  try {
+    const id = randomUUID();
+    await f.host.deliver(id, framed(8, 501), true);
+    await f.poll();
+    f.beforeGetText(async () => { rmSync(`${f.base}.msg`); });
+    await f.poll();
+    expect(kinds(f.calls)).toEqual(['get-text']);
+    expect(await f.host.inputs([id])).toEqual({ latest: null, consumed: [], lost: [], withdrawn: [] });
+    f.beforeGetText(undefined);
+    f.advance(1001);
+    await f.poll();
+    expect(kinds(f.calls)).toEqual(['get-text']);
+  } finally { await f.host.close(); f.close(); }
+});
+
+linux('does not press Return when the nudge line is not on the screen, and leaves the message in the mailbox', async () => {
+  const f = fixture();
+  try {
+    const id = randomUUID(), text = framed(8, 501);
+    await f.host.deliver(id, text, true);
+    await f.poll();
+    await f.poll();
+    expect(kinds(f.calls)).toEqual(['get-text', 'send-text', 'get-text']);
+    expect(nudgeCalls(f.calls)).toHaveLength(1);
+    expect(await f.host.inputs([id])).toEqual({ latest: null, consumed: [], lost: [], withdrawn: [] });
+    expect(JSON.parse(readFileSync(`${f.base}.msg`, 'utf8')).text).toBe(text);
+    f.setScreen(screen());
+    f.advance(1001);
+    await f.poll();
+    expect(nudgeCalls(f.calls)).toHaveLength(1);
+    expect(await f.runStop()).toBe(text);
+  } finally { await f.host.close(); f.close(); }
+});
+
+linux('an unnamed long input and a long input with kitty typing off get no nudge', async () => {
+  for (const [kitty, named] of [[true, false], [false, true]] as const) {
+    const f = fixture(kitty);
+    try {
+      const text = framed(8, 501);
+      await f.host.deliver(randomUUID(), text, named);
+      await f.poll();
+      await f.poll();
+      f.advance(1001);
+      await f.poll();
+      expect(f.calls).toEqual([]);
+      expect(JSON.parse(readFileSync(`${f.base}.msg`, 'utf8')).text).toBe(text);
+    } finally { await f.host.close(); f.close(); }
+  }
+});
+
+linux('two long messages each get one nudge, and the continued guard does not strand the second', async () => {
+  const f = fixture();
+  try {
+    const a = randomUUID(), b = randomUUID();
+    const textA = framed(8, 501), textB = framed(8, 502).replace('x', 'w');
+    f.afterPaste(() => f.setScreen(screen(AGY_NUDGE)));
+    await f.host.deliver(a, textA, true);
+    await f.host.deliver(b, textB, true);
+    await f.poll();
+    await f.poll();
+    expect(nudgeCalls(f.calls)).toHaveLength(1);
+    f.update({ event: 'PreInvocation', state: 'working', stateAtMs: f.advance(100) });
+    await f.poll();
+    f.update({ event: 'Stop', state: 'done', stateAtMs: f.advance(100) });
+    expect(await f.runStop()).toBe(textA);
+    f.update({ event: 'PreInvocation', state: 'working', stateAtMs: Math.ceil(statSync(`${f.base}.taken`).mtimeMs + 1) });
+    await f.poll();
+    expect((await f.host.inputs([a, b])).consumed).toEqual([{ id: a, clientId: a }]);
+    f.setScreen(screen());
+    f.update({ event: 'Stop', state: 'done', stateAtMs: f.advance(200) });
+    expect(await f.runStop()).toBeNull();
+    expect(existsSync(`${f.base}.continued`)).toBe(false);
+    await f.poll();
+    expect(existsSync(`${f.base}.msg`)).toBe(true);
+    expect(nudgeCalls(f.calls)).toHaveLength(1);
+    f.advance(1001);
+    await f.poll();
+    expect(nudgeCalls(f.calls)).toHaveLength(2);
+    expect(await f.runStop()).toBe(textB);
+    f.update({ event: 'PreInvocation', state: 'working', stateAtMs: Math.ceil(statSync(`${f.base}.taken`).mtimeMs + 1) });
+    await f.poll();
+    expect((await f.host.inputs([b])).consumed).toEqual([{ id: b, clientId: b }]);
+    expect(nudgeCalls(f.calls)).toHaveLength(2);
+  } finally { await f.host.close(); f.close(); }
+});
 
 const wrappedStart = '[ASB Bridge peer message from Fixture, sessionId';
 const wrappedId = '11111111-2222-4333-8444-555555555555';

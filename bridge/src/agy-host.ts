@@ -16,6 +16,8 @@ const CLAIM_MS = 10_000;
 const AGY_KITTY_MAX_LINES = 8;
 const AGY_KITTY_MAX_CHARS = 500;
 const IGNORED = /[\s│┃>›❯]/g;
+// One fixed line with no peer data. A long message cannot be typed, so this line starts a short turn whose Stop hook takes the message.
+export const AGY_NUDGE = '[ASB Bridge] A peer message is waiting. It arrives when this turn ends. Reply with only OK.';
 export const agyReceiverError = 'This agy conversation has no active ASB receiver or another receiver already registered it.';
 
 export function agyRuntime(record: AgyRecord | undefined): Runtime {
@@ -39,6 +41,7 @@ const sameTarget = (a: AgyRecord, b: AgyRecord | undefined) => b && a.kittyPid =
 const proof = (record: AgyRecord | undefined, after: number) => record?.event === 'PreInvocation'
   && record.stateAtMs > after && record.stateAtMs <= after + PROOF_MS;
 const remove = (file: string) => unlink(file).catch(() => {});
+const tooLong = (text: string) => text.length > AGY_KITTY_MAX_CHARS || text.split('\n').length > AGY_KITTY_MAX_LINES;
 
 export async function cleanAgyMailbox(dir: string | null, id: string) {
   if (!dir || !await privateAgyMailbox(dir)) return;
@@ -65,7 +68,7 @@ type AgyHostParts = {
   wait?: (ms: number) => Promise<unknown>;
   now?: () => number;
 };
-type Waiting = { id: string; text: string; named: boolean; expires: number; published?: true; goneAt?: number; takenAt?: number; returnedAt?: number };
+type Waiting = { id: string; text: string; named: boolean; expires: number; published?: true; goneAt?: number; takenAt?: number; returnedAt?: number; nudged?: true };
 type Outcome = 'consumed' | 'lost' | 'withdrawn';
 
 export function createAgyHost({ id, pid, mailbox, read, kittyDelivery, focus = agyFocusTarget, exec = kitty,
@@ -117,41 +120,69 @@ export function createAgyHost({ id, pid, mailbox, read, kittyDelivery, focus = a
     return exec(['@', '--to', target.listenOn, action, '--match', `id:${target.windowId}`, ...args]);
   }
 
-  async function paste(item: Waiting, gate: AgyRecord): Promise<boolean> {
-    if (!kittyDelivery || !item.named || !oldEnough(gate, now())
-      || item.text.length > AGY_KITTY_MAX_CHARS || item.text.split('\n').length > AGY_KITTY_MAX_LINES) return false;
+  // The gate read of a kitty prompt: the screen, the unchanged check, and whether the prompt is empty and idle.
+  function prompt(gate: AgyRecord) {
     const screen = () => command(gate, 'get-text', ['--extent', 'screen']);
     const unchanged = async () => {
       const current = await read();
       return sameEvent(gate, current) && Boolean(sameTarget(gate, current)) && Boolean(oldEnough(current, now()));
     };
-    try {
-      const zone = promptZone(await screen());
-      if (!zone || zone.some(Boolean) || !await unchanged()) return false;
-    } catch { return false; }
+    const ready = async () => {
+      try {
+        const zone = promptZone(await screen());
+        return Boolean(zone && !zone.some(Boolean) && await unchanged());
+      } catch { return false; }
+    };
+    return { screen, unchanged, ready };
+  }
+
+  // Types text, checks the screen, then presses Return. It throws when a step fails; `before` tells the caller that the text was typed.
+  async function typeLine(gate: AgyRecord, text: string, p: ReturnType<typeof prompt>, before: () => Promise<boolean>, returned?: () => void) {
+    await command(gate, 'send-text', ['--bracketed-paste=enable', '--', text], before);
+    await wait(150);
+    const pasted = promptZone(await p.screen())?.join('').replace(IGNORED, '');
+    const frame = text.split('\n')[0]!.replace(IGNORED, '');
+    if (!frame || !pasted?.startsWith(frame) || !pasted.includes(text.replace(IGNORED, ''))) {
+      throw new Error('agy paste could not be verified');
+    }
+    await command(gate, 'send-key', ['enter'], async () => {
+      if (!await p.unchanged()) return false;
+      returned?.();
+      return true;
+    });
+  }
+
+  async function paste(item: Waiting, gate: AgyRecord): Promise<boolean> {
+    if (!kittyDelivery || !item.named || !oldEnough(gate, now()) || tooLong(item.text)) return false;
+    const p = prompt(gate);
+    if (!await p.ready()) return false;
     if (item.published) {
       if (!await withdraw()) return false;
       delete item.published;
     }
     let attempted = false;
     try {
-      await command(gate, 'send-text', ['--bracketed-paste=enable', '--', item.text], async () => attempted = await unchanged());
-      await wait(150);
-      const pasted = promptZone(await screen())?.join('').replace(IGNORED, '');
-      const frame = item.text.split('\n')[0]!.replace(IGNORED, '');
-      if (!frame || !pasted?.startsWith(frame) || !pasted.includes(item.text.replace(IGNORED, ''))) {
-        throw new Error('agy paste could not be verified');
-      }
-      await command(gate, 'send-key', ['enter'], async () => {
-        if (!await unchanged()) return false;
-        item.returnedAt = now();
-        return true;
-      });
+      await typeLine(gate, item.text, p, async () => attempted = await p.unchanged(), () => { item.returnedAt = now(); });
     } catch {
       if (!attempted) return false;
       settle(item, 'lost');
     }
     return true;
+  }
+
+  // A long named message waits in the mailbox. One fixed line starts a short turn, and its Stop hook takes the message.
+  // The row never changes here: only followMailbox() proves the receipt.
+  async function nudge(item: Waiting, gate: AgyRecord) {
+    if (!kittyDelivery || !item.named || !tooLong(item.text) || !item.published || item.nudged
+      || item.takenAt !== undefined || item.goneAt !== undefined || item.returnedAt !== undefined || !oldEnough(gate, now())) return;
+    const p = prompt(gate);
+    if (!await p.ready()) return;
+    try {
+      await typeLine(gate, AGY_NUDGE, p, async () => {
+        if (!await p.unchanged() || !await lstat(`${base}.msg`).catch(() => null)) return false;
+        return item.nudged = true;
+      });
+    } catch { /* The message still waits for the next Stop or the 60-minute withdrawal. */ }
   }
 
   async function followMailbox(item: Waiting, record: AgyRecord | undefined) {
@@ -218,6 +249,7 @@ export function createAgyHost({ id, pid, mailbox, read, kittyDelivery, focus = a
       }
       if (!record || await paste(item, record)) return;
       if (!item.published) await publish(item);
+      else await nudge(item, record);
     },
     async close() {
       closed = true;
