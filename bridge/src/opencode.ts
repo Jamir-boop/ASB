@@ -304,7 +304,7 @@ function opencodeApproval(data: Record<string, unknown>, part: ToolPart | null, 
     const path = input.path;
     if (!whole(path) || !path || resources.length !== 1 || !whole(directory) || !isAbsolute(directory)) return null;
     // OpenCode can give a relative permission resource for an absolute tool input.
-    const absolute = (value: string) => isAbsolute(value) ? value : resolve(directory, value);
+    const absolute = (value: string) => resolve(directory, value);
     const file = absolute(path);
     if (!whole(file) || file !== absolute(resources[0])) return null;
     const length = (value: unknown) => typeof value === 'string' ? value.length : 0;

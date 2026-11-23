@@ -1300,6 +1300,14 @@ test('the file card shows the matching absolute path and sizes only', () => {
   ] as const) expect(opencodeApproval(data as never, part as never, folder, false)).toBeNull();
 });
 
+test('the file card normalizes an absolute path with a parent segment', () => {
+  const directory = resolve(FOLDER);
+  const path = `${directory}/sub/../b.txt`;
+  const approval = opencodeApproval(askData({ action: 'edit', resources: [path] }),
+    { name: 'write', input: { path, content: '' } }, directory, false);
+  expect(approval?.display[0]).toEqual({ label: 'File', text: join(directory, 'b.txt'), mono: true });
+});
+
 test('the reply is once for allow and reject with a message for deny, never always', () => {
   expect(permissionReply('ses_a', 'per_1', { decision: 'allow' })).toEqual({ sessionID: 'ses_a', requestID: 'per_1', decision: 'once' });
   expect(permissionReply('ses_a', 'per_1', { decision: 'deny' })).toEqual({ sessionID: 'ses_a', requestID: 'per_1', decision: 'reject', message: 'Denied from the phone.' });
