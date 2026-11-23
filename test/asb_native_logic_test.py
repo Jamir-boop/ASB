@@ -4979,6 +4979,14 @@ class BridgeHelperChecks(unittest.TestCase):
                                  ("opencode", "Update, then restart OpenCode.")):
             self.assertEqual(asb.bridge_detail({"state": "update", "provider": provider}), detail)
 
+    def test_agy_bridge_details_use_agy_setup_text(self):
+        for state, detail in (("hooks", "Run asb agent agy-hook install."),
+                              ("off", "Turn on asb-bridge in agy."),
+                              ("nobun", "Put Bun on PATH, then start a new agy session."),
+                              ("update", "Update. New agy sessions use it.")):
+            with self.subTest(state=state):
+                self.assertEqual(asb.bridge_detail({"state": state, "provider": "antigravity"}), detail)
+
     def test_bridge_validation_rejects_bad_shapes_and_self_uses_first_match(self):
         app = {"sourceId": "a", "label": "Codex", "state": "ready"}
         machine = {"name": "atlas", "isSelf": True, "state": "ok", "apps": [app]}

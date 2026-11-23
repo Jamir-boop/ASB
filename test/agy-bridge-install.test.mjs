@@ -23,6 +23,7 @@ async function fixture(t) {
   const fake = async () => writeFile(path.join(bin, 'agy'), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+if (process.env.AGY_CLI_DISABLE_AUTO_UPDATE !== '1') process.exit(4);
 fs.appendFileSync(process.env.CALLS, JSON.stringify(args) + '\\n');
 const file = process.env.MCP_FILE;
 const text = fs.readFileSync(file, 'utf8');

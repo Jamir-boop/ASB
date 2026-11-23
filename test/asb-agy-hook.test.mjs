@@ -239,10 +239,20 @@ test('Stop skips continuationActive, unsafe files and controls and stays neutral
   await put({ id: INPUT, text: 'bad\x9b' });
   assert.equal((await stop()).output, '{}\n');
   await put();
-  await writeFile(`${base}.taken`, 'previous', { mode: 0o600 });
+  await mkdir(`${base}.taken`, { mode: 0o700 });
   assert.equal((await stop()).output, '{}\n');
   await assert.rejects(stat(`${base}.continued`), { code: 'ENOENT' });
-  assert.equal(await readFile(`${base}.taken`, 'utf8'), 'previous');
+  assert.deepEqual(await readdir(dir), [path.basename(`${base}.taken`)]);
+});
+
+test('Stop replaces a stale taken marker and continues with the new input', async (t) => {
+  const { base, dir, put, stop } = await mailbox(t);
+  await put();
+  await writeFile(`${base}.taken`, 'previous', { mode: 0o600 });
+  assert.deepEqual(JSON.parse((await stop()).output), { decision: 'continue', reason: BODY });
+  assert.equal(await readFile(`${base}.taken`, 'utf8'), INPUT);
+  assert.equal((await stat(`${base}.taken`)).mode & 0o777, 0o600);
+  assert.deepEqual((await readdir(dir)).sort(), [path.basename(`${base}.continued`), path.basename(`${base}.taken`)]);
 });
 
 test('PreToolUse replies before stdin is read; a Stop with open stdin prints once at the hard exit', async (t) => {

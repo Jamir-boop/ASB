@@ -477,7 +477,8 @@ function agyPaths(options) {
   return { env: { ...env, HOME: home }, home, directory, config, bundle: path.join(directory, 'agy.js') };
 }
 function runAgy(agy, env, args) {
-  try { return execFileSync(agy, ['mcp', ...args], { env, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }); }
+  try { return execFileSync(agy, ['mcp', ...args], { env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: '1' },
+    encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch { throw new Error(`agy mcp ${args[0]} failed for ASB Bridge.`); }
 }
 async function agyConfig(file) {

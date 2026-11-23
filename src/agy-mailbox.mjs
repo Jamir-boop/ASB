@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { AGY_UUID } from './antigravity-data.mjs';
@@ -52,7 +53,13 @@ export async function takeAgyMailbox(hook, env = process.env) {
     if (typeof value?.id !== 'string' || !AGY_UUID.test(value.id) || !safeAgyText(value.text)) return null;
   } finally { await fs.unlink(claim); }
   await fs.writeFile(guard, '', { flag: 'wx', mode: 0o600 });
-  try { await fs.writeFile(`${base}.taken`, value.id, { flag: 'wx', mode: 0o600 }); }
-  catch (error) { await fs.unlink(guard).catch(() => {}); throw error; }
+  const temporary = `${base}.msg.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, value.id, { flag: 'wx', mode: 0o600 });
+    await fs.rename(temporary, `${base}.taken`);
+  } catch (error) {
+    await fs.unlink(guard).catch(() => {});
+    throw error;
+  } finally { await fs.unlink(temporary).catch(() => {}); }
   return value.text;
 }

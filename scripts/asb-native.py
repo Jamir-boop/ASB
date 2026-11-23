@@ -117,6 +117,12 @@ def bridge_state_line(app):
 
 
 def bridge_detail(app):
+    if app.get("provider") == "antigravity":
+        agy = {"hooks": "Run asb agent agy-hook install.", "off": "Turn on asb-bridge in agy.",
+               "nobun": "Put Bun on PATH, then start a new agy session.", "update": "Update. New agy sessions use it."}
+        state = app.get("state")
+        if state in agy:
+            return agy[state]
     update = {"codex": "Update, then restart Codex.", "opencode": "Update, then restart OpenCode.",
               "claude-desktop-code": "Update. New Claude sessions use it."}
     return {"ready": None, "update": update.get(app.get("provider")),
