@@ -125,7 +125,7 @@ Use the `asb-bridge` MCP tools to list peers and send to one peer by its session
 
 Checked live once with agy 1.5.15 (2026-11-23): `list_sessions` through MCP, and one message delivered at Stop. Tests use fakes for withdrawal at 60 min, `unknown` outcomes, two receivers, and release from hold.
 
-Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty with remote control on a file socket. ASB reads the prompt screen in memory only and types into that kitty window. In a session started with `--dangerously-skip-permissions`, a message typed this way can run tools with no agy permission prompt. `asb bridge uninstall --agy` turns off kitty typing. The empty-prompt rule and paste behavior with `@` and `/` were checked live once with agy 1.5.15 (2026-11-23). Tests use fakes for other kitty cases.
+Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty with remote control on a file socket. ASB reads the prompt screen in memory only and types into that kitty window. If ASB cannot verify the pasted text, it does not press Return. The text stays in the agy prompt as a draft. The receiver records `unknown` and sends no delivery receipt. In a session started with `--dangerously-skip-permissions`, a message typed this way can run tools with no agy permission prompt. `asb bridge uninstall --agy` turns off kitty typing. The empty-prompt rule and paste behavior with `@` and `/` were checked live once with agy 1.5.15 (2026-11-23). Tests use fakes for other kitty cases.
 
 ## Support by app
 

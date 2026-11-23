@@ -15,7 +15,9 @@ const linux = test.skipIf(process.platform !== 'linux');
 const meta = (id: string) => ({ 'antigravity.google/root_conversation_id': id });
 const identity = { agyPid: 222, agyStartTicks: '333' };
 const body = '[ASB Bridge peer message from Fixture.]\nNext\tline';
-const screen = (line = '', tail = '') => `case output\n╭───────────╮\n│ › ${line}   │\n╰───────────╯\n${tail}`;
+const screen = (text = '', tail = '') => `case output\n╭───────────╮\n${
+  text.split('\n').map((line, index) => `│ ${index ? ' ' : '›'} ${line}   │`).join('\n')
+}\n╰───────────╯\n${tail}`;
 
 function fixture(kittyDelivery = true, listenOn = 'unix:/fake/kitty.sock') {
   const root = mkdtempSync('/tmp/asb-agy-');
@@ -41,7 +43,7 @@ function fixture(kittyDelivery = true, listenOn = 'unix:/fake/kitty.sock') {
       calls.push(args);
       if (args[3] === 'get-text') await afterRead?.();
       return view;
-    }, wait: async ms => { expect(ms).toBe(150); view = screen(body.split('\n')[0]); afterPaste?.(); } });
+    }, wait: async ms => { expect(ms).toBe(150); view = screen(body); afterPaste?.(); } });
   return { root, mailbox, base, id, env, host, update, calls, setScreen, runStop, close: () => rmSync(root, { recursive: true, force: true }),
     checks: () => checks, now: () => time, advance: (ms: number) => time += ms, poll: () => host.poll(record),
     beforeGetText: (fn: typeof afterRead) => { afterRead = fn; }, afterPaste: (fn: typeof afterPaste) => { afterPaste = fn; },
@@ -219,6 +221,37 @@ linux('only a named input pastes, verifies the screen, and proves Return from a 
     await f.poll();
     expect(f.calls).toHaveLength(4);
     expect(existsSync(`${f.base}.msg`)).toBe(true);
+  } finally { await f.host.close(); f.close(); }
+});
+
+const wrappedStart = '[ASB Bridge peer message from Fixture, sessionId';
+const wrappedId = '11111111-2222-4333-8444-555555555555';
+const wrappedBody = `${wrappedStart} ${wrappedId}. Reply with asb-bridge send_message.]\nNext line`;
+for (const [kind, lines, verified] of [
+  ['word wrap', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]', 'Next line'], true],
+  ['wrap inside a word', [`${wrappedStart} ${wrappedId.slice(0, 17)}`, `${wrappedId.slice(17)}. Reply with asb-bridge`, 'send_message.]', 'Next line'], true],
+  ['different text', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'list_sessions.]', 'Next line'], false],
+  ['missing body', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]'], false],
+  ['different body', [wrappedStart, `${wrappedId}. Reply with asb-bridge`, 'send_message.]', 'Other line'], false],
+  ['empty prompt', [''], false],
+] as const) linux(`kitty post-paste check handles ${kind}`, async () => {
+  const f = fixture();
+  try {
+    const border = '─'.repeat(71);
+    const zone = lines.map((line, i) => `│${(i ? `  ${line}` : `> ${line}`).padEnd(71)}│`).join('\n');
+    f.afterPaste(() => f.setScreen(`case output\n╭${border}╮\n${zone}\n╰${border}╯\n`));
+    const id = randomUUID();
+    await f.host.deliver(id, wrappedBody, true);
+    await f.poll();
+    expect(f.calls.map(args => args[3])).toEqual(verified ? ['get-text', 'send-text', 'get-text', 'send-key'] : ['get-text', 'send-text', 'get-text']);
+    if (verified) {
+      expect(f.calls[3]?.slice(6)).toEqual(['enter']);
+      f.update({ event: 'PreInvocation', state: 'working', stateAtMs: f.advance(150) });
+      await f.poll();
+      expect((await f.host.inputs([id])).consumed).toEqual([{ id, clientId: id }]);
+    } else {
+      expect((await f.host.inputs([id])).lost).toEqual([{ id, clientId: id }]);
+    }
   } finally { await f.host.close(); f.close(); }
 });
 

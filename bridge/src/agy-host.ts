@@ -132,8 +132,11 @@ export function createAgyHost({ id, pid, mailbox, read, kittyDelivery, focus = a
     try {
       await command(gate, 'send-text', ['--bracketed-paste=enable', '--', item.text], async () => attempted = await unchanged());
       await wait(150);
-      const zone = promptZone(await screen());
-      if (!zone?.[0]?.startsWith(item.text.split('\n')[0]!)) throw new Error('agy paste could not be verified');
+      const pasted = promptZone(await screen())?.join('').replace(/\s/g, '');
+      const frame = item.text.split('\n')[0]!.replace(/\s/g, '');
+      if (!frame || !pasted?.startsWith(frame) || !pasted.includes(item.text.replace(/\s/g, ''))) {
+        throw new Error('agy paste could not be verified');
+      }
       await command(gate, 'send-key', ['enter'], async () => {
         if (!await unchanged()) return false;
         item.returnedAt = now();
