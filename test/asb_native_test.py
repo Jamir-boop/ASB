@@ -590,7 +590,7 @@ class WidgetCheck(unittest.TestCase):
             rows.append(row)
             row = row.get_next_sibling()
         self.assertEqual([row.get_title() for row in rows], ["Allow phone access", "Port", "Send message text to phones",
-                                                             "Answer questions from phones"])
+                                                             "Answer questions from phones", "Approve requests from phones"])
         self.assertIs(rows[2], editor.send_text)
         self.assertIn("also on the other machines of the group", editor.send_text.get_subtitle())
         status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
@@ -633,7 +633,54 @@ class WidgetCheck(unittest.TestCase):
         editor.request_phone = Mock()
         editor.apply_settings()
         self.assertEqual(editor.request_phone.call_args.args[2],
-                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "answer": True})
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "answer": True, "approve": False})
+
+    def test_phone_approve_switch_needs_the_answer_switch_and_saves_with_the_form(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        self.assertIs(editor.answer.get_next_sibling(), editor.approve)
+        self.assertEqual(editor.approve.get_title(), "Approve requests from phones")
+        self.assertEqual(editor.approve.get_subtitle(),
+                         "A paired phone can allow or deny the tool requests of Claude Code sessions. The request on the PC stays. "
+                         "Claude Code asks only in the Manual and accept-edits modes. Needs question answers on.")
+        self.assertEqual(editor.approve.get_subtitle_lines(), 0)
+        status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
+        editor.render_status(status, True)
+        self.assertFalse(editor.approve.get_active())
+        self.assertFalse(editor.approve.get_sensitive())
+        editor.send_text.set_active(True)
+        self.assertFalse(editor.approve.get_sensitive())
+        editor.answer.set_active(True)
+        self.assertTrue(editor.approve.get_sensitive())
+        editor.approve.set_active(True)
+        # An unsaved edit stays; turning the answer switch off clears it, and so does the text switch.
+        editor.render_status(copy.deepcopy(status), True)
+        self.assertTrue(editor.approve.get_active())
+        editor.answer.set_active(False)
+        self.assertFalse(editor.approve.get_active())
+        self.assertFalse(editor.approve.get_sensitive())
+        editor.answer.set_active(True)
+        editor.approve.set_active(True)
+        editor.send_text.set_active(False)
+        self.assertFalse(editor.answer.get_active())
+        self.assertFalse(editor.approve.get_active())
+        self.assertFalse(editor.approve.get_sensitive())
+        # The server values load with an unedited form; a saved approve without answer stays off.
+        editor.form_loaded = None
+        editor.render_status({**status, "sendText": True, "answer": False, "approve": True}, True)
+        self.assertFalse(editor.approve.get_active())
+        editor.form_loaded = None
+        editor.render_status({**status, "sendText": True, "answer": True, "approve": True}, True)
+        self.assertTrue(editor.approve.get_active())
+        self.assertTrue(editor.approve.get_sensitive())
+        editor.loaded, editor.active = True, True
+        editor.request_phone = Mock()
+        editor.apply_settings()
+        self.assertEqual(editor.request_phone.call_args.args[2],
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "answer": True, "approve": True})
 
     def test_phone_claude_hook_status_lines_under_the_answer_switch(self):
         home = os.path.expanduser("~")
@@ -642,13 +689,15 @@ class WidgetCheck(unittest.TestCase):
                  {"dir": "/srv/claude-c", "state": "other launcher"},
                  {"dir": os.path.join(home, "d"), "state": "invalid settings"},
                  {"dir": os.path.join(home, "e"), "state": "not found"},
-                 {"dir": os.path.join(home, "f"), "state": "made-up"}, "bad"]
+                 {"dir": os.path.join(home, "f"), "state": "made-up"}, "bad",
+                 {"dir": os.path.join(home, "g"), "state": "installed (questions only)"}]
         self.assertEqual(asb.claude_hook_text(items).split("\n"), [
             "Claude Code hook (~/.claude-a): installed",
             "Claude Code hook (~/b): not installed (run asb agent claude-hook install)",
             "Claude Code hook (/srv/claude-c): other launcher (run asb agent claude-hook install)",
             "Claude Code hook (~/d): invalid settings",
-            "Claude Code hook (~/e): not found"])
+            "Claude Code hook (~/e): not found",
+            "Claude Code hook (~/g): questions only (run asb agent claude-hook install for approvals)"])
         self.assertEqual(asb.claude_hook_text(None), "")
         preferences = asb.Adw.Window(application=self.application)
         preferences.closed = False

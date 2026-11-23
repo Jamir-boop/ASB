@@ -4,10 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { AppSourceRegistry } from './app-sources.mjs';
 
-// The Claude Code question hook (`asb agent claude-hook`): a PermissionRequest hook of AskUserQuestion that runs `asb agent claude-wait`.
+// The Claude Code hook (`asb agent claude-hook`): a PermissionRequest hook of every tool that runs `asb agent claude-wait`.
 // This is the only ASB code that writes a Claude config file. It never prints, logs, or returns settings content.
 export const HOOK_TIMEOUT = 21600;
-const MATCHER = 'AskUserQuestion';
+const MATCHER = '*';
+// The matcher of the entry before phone approvals: it still answers questions, so install replaces it in place.
+const QUESTIONS_MATCHER = 'AskUserQuestion';
+export const QUESTIONS_ONLY = 'installed (questions only)';
 const MAX_SETTINGS_BYTES = 4 * 1024 * 1024;
 const object = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -39,7 +42,8 @@ export function hookState(value, command) {
   }
   if (!found.length) return 'not installed';
   const [{ hook, matcher }] = found;
-  return found.length === 1 && matcher === MATCHER && hook.timeout === HOOK_TIMEOUT && (!command || hook.command === command) ? 'installed' : 'other launcher';
+  if (found.length !== 1 || hook.timeout !== HOOK_TIMEOUT || (command && hook.command !== command)) return 'other launcher';
+  return matcher === MATCHER ? 'installed' : matcher === QUESTIONS_MATCHER ? QUESTIONS_ONLY : 'other launcher';
 }
 
 // The settings value without our hook objects; an item goes only when its hooks became empty because of it. `at` is the place of the first one.

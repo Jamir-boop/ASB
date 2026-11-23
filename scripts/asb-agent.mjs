@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { storeIdentity } from '../src/app-sources.mjs';
-import { CHANGED_MESSAGE, changeClaudeHook, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
+import { CHANGED_MESSAGE, QUESTIONS_ONLY, changeClaudeHook, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { processStart, readLiveClaudeRegistry } from '../src/claude-registry.mjs';
 import { readServiceRuntime, requestInstance } from './asb-instance.mjs';
 
@@ -409,12 +409,13 @@ export async function claudeHook(args, { env = process.env, platform = process.p
   }
   if (rest.length === 3 && (!path.isAbsolute(dir) || /[\x00-\x1f\x7f]/.test(dir))) { error('ASB agent: --config-dir needs an absolute path.'); return 2; }
   const launcher = installedLauncher(env);
-  if (action === 'install' && platform === 'win32') { error('The Claude Code question hook works on Linux only for now.'); return 1; }
+  if (action === 'install' && platform === 'win32') { error('The Claude Code hook works on Linux only for now.'); return 1; }
   if (action === 'install' && !launcher) { error('Run claude-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).'); return 1; }
   const dirs = dir ? [path.resolve(dir)] : await readHookTargets(env, platform);
   if (action === 'status') {
     const targets = await claudeHookStatus(dirs, { launcher });
-    log(json ? JSON.stringify({ targets }) : targets.map((target) => `Claude ${printable(homeForm(target.dir))}: ${target.state}`).join('\n') || 'No Claude profiles.');
+    log(json ? JSON.stringify({ targets }) : targets.map((target) => `Claude ${printable(homeForm(target.dir))}: ${target.state === QUESTIONS_ONLY
+      ? 'questions only (run asb agent claude-hook install for approvals)' : target.state}`).join('\n') || 'No Claude profiles.');
     return 0;
   }
   const targets = await changeClaudeHook(action, dirs, { launcher, beforeRename });

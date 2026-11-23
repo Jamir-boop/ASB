@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { claudeHook } from '../scripts/asb-agent.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
-import { HOOK_TIMEOUT } from '../src/claude-hook.mjs';
+import { HOOK_TIMEOUT, hookState, installedValue, removedValue } from '../src/claude-hook.mjs';
 import { createSwitchboardServer } from '../src/switchboard.mjs';
 
 // Every run has a temp HOME, a temp ASB config dir, and temp target dirs with made-up settings files.
@@ -16,7 +16,9 @@ const agent = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url)
 const launcherFile = fileURLToPath(new URL('../scripts/asb', import.meta.url));
 const LAUNCHER = '/opt/asb-test/bin/asb';
 const COMMAND = `${LAUNCHER} agent claude-wait`;
-const ENTRY = { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: COMMAND, timeout: HOOK_TIMEOUT }] };
+const ENTRY = { matcher: '*', hooks: [{ type: 'command', command: COMMAND, timeout: HOOK_TIMEOUT }] };
+// The entry of the last version: questions only.
+const QUESTIONS = { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: COMMAND, timeout: HOOK_TIMEOUT }] };
 const OLD = { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: '/old/place/asb agent claude-wait', timeout: 900 }] };
 const BASH = { matcher: 'Bash', hooks: [{ type: 'command', command: '/usr/local/bin/check-bash' }] };
 const ASK_OTHER = { matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: '/usr/local/bin/notify-question', timeout: 30 }] };
@@ -101,6 +103,85 @@ test('install on an empty object, on other hooks and keys, and on an old entry; 
   assert.deepEqual(again, { code: 0, stdout: 'Claude ~/others: unchanged\n', stderr: '' });
   assert.deepEqual(await tree(others), before);
   assert.deepEqual(JSON.parse(await readFile(path.join(others, 'settings.json.asb-backup'), 'utf8')), other);
+});
+
+test('hookState for the new entry, the questions-only entry, both, and the wrong matcher, timeout, or launcher', () => {
+  const state = (...items) => hookState({ hooks: { PermissionRequest: items } }, COMMAND);
+  const THEIRS = { matcher: '*', hooks: [{ type: 'command', command: '/usr/local/bin/audit-all' }] };
+  assert.equal(state(ENTRY), 'installed');
+  assert.equal(state(QUESTIONS), 'installed (questions only)');
+  assert.equal(state(QUESTIONS, ENTRY), 'other launcher');
+  assert.equal(state({ ...ENTRY, matcher: 'Bash' }), 'other launcher');
+  assert.equal(state({ ...ENTRY, hooks: [{ ...ENTRY.hooks[0], timeout: 900 }] }), 'other launcher');
+  assert.equal(state({ ...QUESTIONS, hooks: [{ ...QUESTIONS.hooks[0], timeout: 900 }] }), 'other launcher');
+  assert.equal(state(OLD), 'other launcher');
+  assert.equal(state({ ...ENTRY, hooks: [{ ...ENTRY.hooks[0], command: '/old/place/asb agent claude-wait' }] }), 'other launcher');
+  assert.equal(state(BASH, THEIRS, ENTRY, ASK_OTHER), 'installed');
+  assert.equal(state(THEIRS, QUESTIONS), 'installed (questions only)');
+  assert.equal(state(THEIRS, BASH), 'not installed');
+  // Without a launcher (the engine) any launcher counts, for both forms.
+  assert.equal(hookState({ hooks: { PermissionRequest: [OLD] } }, ''), 'other launcher');
+  assert.equal(hookState({ hooks: { PermissionRequest: [{ ...QUESTIONS, hooks: [{ ...QUESTIONS.hooks[0], command: '/x/asb agent claude-wait' }] }] } }, ''),
+    'installed (questions only)');
+  // Our hook inside a third-party entry is ours too: install moves it to our entry and keeps theirs; remove keeps theirs.
+  assert.equal(state({ matcher: '*', hooks: [THEIRS.hooks[0], ENTRY.hooks[0]] }), 'installed');
+  const inside = { matcher: 'AskUserQuestion', hooks: [THEIRS.hooks[0], QUESTIONS.hooks[0]] };
+  assert.equal(state(inside), 'installed (questions only)');
+  assert.deepEqual(installedValue({ hooks: { PermissionRequest: [BASH, inside] } }, COMMAND),
+    { hooks: { PermissionRequest: [BASH, ENTRY, { ...inside, hooks: [THEIRS.hooks[0]] }] } });
+  assert.deepEqual(removedValue({ hooks: { PermissionRequest: [BASH, inside, ENTRY] } }),
+    { hooks: { PermissionRequest: [BASH, { ...inside, hooks: [THEIRS.hooks[0]] }] } });
+});
+
+test('install replaces the questions-only entry in place, once, with the backup and the mode; status and remove know both forms', async (t) => {
+  const { dir, env } = await home(t);
+  const THEIRS = { matcher: '*', hooks: [{ type: 'command', command: '/usr/local/bin/audit-all' }] };
+  const value = { model: 'made-up', hooks: { PreToolUse: [BASH], PermissionRequest: [BASH, QUESTIONS, THEIRS, ASK_OTHER] } };
+  const config = await target(dir, 'questions', value);
+  await chmod(path.join(config, 'settings.json'), 0o640);
+  assert.deepEqual(await cli(env, ['status', '--config-dir', config]),
+    { code: 0, stdout: 'Claude ~/questions: questions only (run asb agent claude-hook install for approvals)\n', stderr: '' });
+  assert.deepEqual(JSON.parse((await cli(env, ['status', '--json', '--config-dir', config])).stdout),
+    { targets: [{ dir: config, state: 'installed (questions only)' }] });
+  assert.deepEqual(await cli(env, ['install', '--config-dir', config]), { code: 0, stdout: 'Claude ~/questions: installed\n', stderr: '' });
+  const installed = await read(config);
+  assert.deepEqual(installed, { ...value, hooks: { ...value.hooks, PermissionRequest: [BASH, ENTRY, THEIRS, ASK_OTHER] } });
+  assert.equal(ourCount(installed), 1);
+  assert.deepEqual(JSON.parse(await readFile(path.join(config, 'settings.json.asb-backup'), 'utf8')), value);
+  assert.equal((await stat(path.join(config, 'settings.json'))).mode & 0o777, 0o640);
+  const before = await tree(config);
+  assert.equal((await cli(env, ['install', '--config-dir', config])).stdout, 'Claude ~/questions: unchanged\n');
+  assert.deepEqual(await tree(config), before);
+  assert.equal((await cli(env, ['remove', '--config-dir', config])).stdout, 'Claude ~/questions: removed\n');
+  assert.deepEqual(await read(config), { ...value, hooks: { ...value.hooks, PermissionRequest: [BASH, THEIRS, ASK_OTHER] } });
+  // remove with the old form alone and with both forms.
+  for (const [name, list] of [['old-only', [QUESTIONS, THEIRS]], ['both', [QUESTIONS, THEIRS, ENTRY]]]) {
+    const other = await target(dir, name, { hooks: { PermissionRequest: list } });
+    assert.equal((await cli(env, ['remove', '--config-dir', other])).stdout, `Claude ~/${name}: removed\n`);
+    assert.deepEqual(await read(other), { hooks: { PermissionRequest: [THEIRS] } });
+  }
+  // Both forms: install leaves one entry at the place of the first.
+  const both = await target(dir, 'both-install', { hooks: { PermissionRequest: [BASH, QUESTIONS, THEIRS, ENTRY] } });
+  assert.equal((await cli(env, ['status', '--config-dir', both])).stdout, 'Claude ~/both-install: other launcher\n');
+  assert.equal((await cli(env, ['install', '--config-dir', both])).stdout, 'Claude ~/both-install: installed\n');
+  assert.deepEqual(await read(both), { hooks: { PermissionRequest: [BASH, ENTRY, THEIRS] } });
+  // A third-party `*` entry beside: ours goes in as its own entry, and remove leaves theirs.
+  const beside = await target(dir, 'beside', { hooks: { PermissionRequest: [THEIRS] } });
+  assert.equal((await cli(env, ['install', '--config-dir', beside])).code, 0);
+  assert.deepEqual(await read(beside), { hooks: { PermissionRequest: [THEIRS, ENTRY] } });
+  assert.equal((await cli(env, ['remove', '--config-dir', beside])).code, 0);
+  assert.deepEqual(await read(beside), { hooks: { PermissionRequest: [THEIRS] } });
+});
+
+test('a write between the read and the rename of the questions-only replace changes nothing', async (t) => {
+  const { dir, env } = await home(t);
+  const config = await target(dir, 'race-questions', { hooks: { PermissionRequest: [QUESTIONS] } });
+  const file = path.join(config, 'settings.json');
+  const before = await readFile(file, 'utf8');
+  const result = await local(env, ['install', '--config-dir', config], { beforeRename: () => appendFile(file, ' ') });
+  assert.deepEqual(result, { code: 1, stdout: `Claude ${config}: settings changed`, stderr: 'Settings changed during the install. Run it again.' });
+  assert.equal(await readFile(file, 'utf8'), `${before} `);
+  assert.deepEqual(await readdir(config), ['settings.json']);
 });
 
 test('invalid JSON and wrong types are refused: the file and the dir stay as they are', async (t) => {
@@ -363,7 +444,7 @@ test('on win32 install is refused, and status and remove work', async (t) => {
   const config = await target(dir, 'windows', { hooks: { PermissionRequest: [ENTRY] } });
   const before = await tree(config);
   assert.deepEqual(await local(env, ['install', '--config-dir', config], { platform: 'win32' }),
-    { code: 1, stdout: '', stderr: 'The Claude Code question hook works on Linux only for now.' });
+    { code: 1, stdout: '', stderr: 'The Claude Code hook works on Linux only for now.' });
   assert.deepEqual(await tree(config), before);
   assert.deepEqual(JSON.parse((await local(env, ['status', '--json', '--config-dir', config], { platform: 'win32' })).stdout),
     { targets: [{ dir: config, state: 'installed' }] });

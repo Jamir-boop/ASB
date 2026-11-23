@@ -635,13 +635,34 @@ test('the Claude Code hook states map to ok, info, and warn, and not installed i
     const lines = format(data);
     const at = lines.indexOf('Phone answers');
     assert.deepEqual(lines.slice(at, at + 3), ['Phone answers', '  ok       Claude Code hook (~/profile-0): installed', `  ${notInstalled.padEnd(9)}Claude Code hook (~/profile-1): not installed`]);
-    assert.deepEqual(lines.slice(-2), ['Install the Claude Code question hook:', '  asb agent claude-hook install']);
+    assert.deepEqual(lines.slice(-2), ['Install the Claude Code hook:', '  asb agent claude-hook install']);
     assert.equal(engineReady(data), true);
   }
   const quiet = await fakeSystem(t, { release: 'debian13', claudeHook: async () => [{ dir: path.join(home, 'p'), state: 'installed' }] });
   assert.ok(!(await quiet.lines()).includes('  asb agent claude-hook install'));
   const failing = await fakeSystem(t, { release: 'debian13', claudeHook: async () => { throw new Error('made-up'); } });
   assert.ok(!(await failing.lines()).includes('Phone answers'));
+});
+
+test('the questions-only hook is a warning only with the approve switch on, and its advice asks for the hook for approvals', async (t) => {
+  const home = os.homedir();
+  for (const [approve, status] of [[false, 'info'], [true, 'warn']]) {
+    const phone = { enabled: false, bindAddresses: [], addresses: [], port: 4630, answer: true, approve };
+    const claudeHook = async () => [{ dir: path.join(home, 'q'), state: 'installed (questions only)' }, { dir: path.join(home, 'i'), state: 'installed' }];
+    const data = await collect((await fakeSystem(t, { release: 'debian13', phone, claudeHook })).deps);
+    assert.deepEqual(data.checks.filter((check) => check.group === 'Phone answers').map(({ status: value, detail }) => [value, detail]),
+      [[status, 'Claude Code hook (~/q): installed (questions only)'], ['ok', 'Claude Code hook (~/i): installed']]);
+    assert.deepEqual(format(data).slice(-2), ['Install the Claude Code hook for approvals:', '  asb agent claude-hook install']);
+  }
+  // With a profile that has no hook, the plain advice only, once.
+  const phone = { enabled: false, bindAddresses: [], addresses: [], port: 4630, answer: true, approve: true };
+  const claudeHook = async () => [{ dir: path.join(home, 'q'), state: 'installed (questions only)' }, { dir: path.join(home, 'n'), state: 'not installed' }];
+  const lines = format(await collect((await fakeSystem(t, { release: 'debian13', phone, claudeHook })).deps));
+  assert.deepEqual(lines.slice(-2), ['Install the Claude Code hook:', '  asb agent claude-hook install']);
+  assert.equal(lines.filter((line) => line === '  asb agent claude-hook install').length, 1);
+  // No engine (no phone reply): approve counts as off.
+  const quiet = await collect((await fakeSystem(t, { release: 'debian13', claudeHook: async () => [{ dir: path.join(home, 'q'), state: 'installed (questions only)' }] })).deps);
+  assert.equal(quiet.checks.find((check) => check.id === 'claude-hook').status, 'info');
 });
 
 test('doctor reads the hook state of the ASB Claude profiles and writes nothing', async (t) => {

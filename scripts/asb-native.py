@@ -2002,7 +2002,7 @@ def phone_status_text(status):
     return "Phone access is not running. Apply the settings to try again."
 
 
-CLAUDE_HOOK_STATES = ("installed", "not installed", "other launcher", "invalid settings", "not found")
+CLAUDE_HOOK_STATES = ("installed", "installed (questions only)", "not installed", "other launcher", "invalid settings", "not found")
 
 
 def claude_hook_text(items, home=None):
@@ -2015,6 +2015,9 @@ def claude_hook_text(items, home=None):
         folder = item["dir"]
         if folder == home or folder.startswith(home + os.sep):
             folder = "~" + folder[len(home):]
+        if item["state"] == "installed (questions only)":
+            lines.append(f"Claude Code hook ({folder}): questions only (run asb agent claude-hook install for approvals)")
+            continue
         hint = " (run asb agent claude-hook install)" if item["state"] in ("not installed", "other launcher") else ""
         lines.append(f"Claude Code hook ({folder}): {item['state']}{hint}")
     return "\n".join(lines)
@@ -2032,10 +2035,10 @@ def phone_address_rows(addresses, selected=()):
 
 
 def phone_form_values(loaded, form, status):
-    """The (enabled, port, checked addresses, send text, answer) to show after a status read. A form that differs from the
+    """The (enabled, port, checked addresses, send text, answer, approve) to show after a status read. A form that differs from the
     last loaded values has unsaved edits, so it stays; otherwise the form follows the server."""
     server = (status.get("enabled", False), status.get("port", 4630), list(status.get("bindAddresses", [])),
-              status.get("sendText", False), status.get("answer", False))
+              status.get("sendText", False), status.get("answer", False), status.get("approve", False))
     if loaded is None or form is None or (form[0], form[1], set(form[2]), *form[3:]) == (loaded[0], loaded[1], set(loaded[2]), *loaded[3:]):
         return server
     return form
@@ -6002,9 +6005,14 @@ class PhoneEditor(Gtk.Box):
             "Questions of Claude Code sessions wait for an answer from a paired phone. "
             "Needs the Claude Code hook (asb agent claude-hook install).", sensitive=False)
         self.answer.set_subtitle_lines(0)
+        self.approve = Adw.SwitchRow(title="Approve requests from phones", subtitle=
+            "A paired phone can allow or deny the tool requests of Claude Code sessions. The request on the PC stays. "
+            "Claude Code asks only in the Manual and accept-edits modes. Needs question answers on.", sensitive=False)
+        self.approve.set_subtitle_lines(0)
         self.send_text.connect("notify::active", self.send_text_changed)
         self.answer.connect("notify::active", self.update_hook_status)
-        for row in (self.enabled, self.port, self.send_text, self.answer):
+        self.answer.connect("notify::active", self.answer_changed)
+        for row in (self.enabled, self.port, self.send_text, self.answer, self.approve):
             self.settings.append(row)
         self.append(self.settings)
         self.hook_status = label("", "caption")
@@ -6093,6 +6101,12 @@ class PhoneEditor(Gtk.Box):
             self.answer.set_active(False)
         self.answer.set_sensitive(self.send_text.get_active())
 
+    def answer_changed(self, *_args):
+        # The approve switch works only with the answer switch on.
+        if not self.answer.get_active():
+            self.approve.set_active(False)
+        self.approve.set_sensitive(self.answer.get_active())
+
     def update_controls(self):
         ready = self.loaded and not self.loading and not self.closed
         self.settings.set_sensitive(ready)
@@ -6113,13 +6127,14 @@ class PhoneEditor(Gtk.Box):
         if sync_form:
             form = None if self.form_loaded is None else (self.enabled.get_active(), int(self.port.get_value()),
                     [address for address, check in self.address_checks.items() if check.get_active()], self.send_text.get_active(),
-                    self.answer.get_active())
-            enabled, port, selected, send_text, answer = phone_form_values(self.form_loaded, form, status)
+                    self.answer.get_active(), self.approve.get_active())
+            enabled, port, selected, send_text, answer, approve = phone_form_values(self.form_loaded, form, status)
             self.form_loaded = (status.get("enabled", False), status.get("port", 4630), list(status.get("bindAddresses", [])),
-                                status.get("sendText", False), status.get("answer", False))
+                                status.get("sendText", False), status.get("answer", False), status.get("approve", False))
             self.enabled.set_active(enabled)
             self.send_text.set_active(send_text)
             self.answer.set_active(answer and send_text)
+            self.approve.set_active(approve and answer and send_text)
             child = self.address_list.get_first_child()
             while child:
                 self.address_list.remove(child)
@@ -6228,7 +6243,7 @@ class PhoneEditor(Gtk.Box):
         body = {"enabled": self.enabled.get_active(),
                 "bindAddresses": [address for address, check in self.address_checks.items() if check.get_active()],
                 "port": int(self.port.get_value()), "sendText": self.send_text.get_active(),
-                "answer": self.answer.get_active()}
+                "answer": self.answer.get_active(), "approve": self.approve.get_active()}
         self.stop_pairing()
         self.request_phone("/api/phone/settings", "POST", body)
 

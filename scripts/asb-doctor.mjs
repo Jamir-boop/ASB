@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { PLAYERS } from '../src/asb-sounds.mjs';
-import { claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
+import { QUESTIONS_ONLY, claudeHookStatus, homeForm, installedLauncher, readHookTargets } from '../src/claude-hook.mjs';
 import { detectFamily, FAMILIES, installCommand, nodeRoute, parseOsRelease } from '../src/linux-distros.mjs';
 import { atLeast, BOARD_FLOORS, boardCheck, engineCheck, nodeFacts, pythonCandidates, shellText, shortVersion } from '../src/linux-system.mjs';
 import { bunOnPath, findBun, findExecutable, runtimeDir } from '../src/platform-paths.mjs';
@@ -85,17 +85,21 @@ export async function linuxFirewallLines(state, addresses, port, { execFile = ex
   return { commands, lines };
 }
 
-// The Claude Code question hook of each Claude profile (read only). Not installed is a warning only while phones may answer.
-const HOOK_STATUS = { installed: 'ok', 'not found': 'info', 'other launcher': 'warn', 'invalid settings': 'warn' };
+// The Claude Code hook of each Claude profile (read only). Not installed is a warning only while phones may answer; the
+// questions-only entry only while phones may approve.
+const HOOK_STATUS = { installed: 'ok', [QUESTIONS_ONLY]: 'warn', 'not found': 'info', 'other launcher': 'warn', 'invalid settings': 'warn' };
 const readClaudeHook = async (env, platform) => claudeHookStatus(await readHookTargets(env, platform), { launcher: installedLauncher(env) });
-async function hookChecks(add, advice, claudeHook, answer) {
+async function hookChecks(add, advice, claudeHook, answer, approve) {
   let targets = [];
   try { targets = await claudeHook(); } catch {}
   for (const { dir, state } of targets) {
-    add('claude-hook', 'Phone answers', HOOK_STATUS[state] || (answer ? 'warn' : 'info'), `Claude Code hook (${homeForm(dir)}): ${state}`);
+    const status = state === QUESTIONS_ONLY && !approve ? 'info' : HOOK_STATUS[state] || (answer ? 'warn' : 'info');
+    add('claude-hook', 'Phone answers', status, `Claude Code hook (${homeForm(dir)}): ${state}`);
   }
   if (targets.some(({ state }) => state === 'not installed' || state === 'other launcher')) {
-    advice.push('Install the Claude Code question hook:', '  asb agent claude-hook install');
+    advice.push('Install the Claude Code hook:', '  asb agent claude-hook install');
+  } else if (targets.some(({ state }) => state === QUESTIONS_ONLY)) {
+    advice.push('Install the Claude Code hook for approvals:', '  asb agent claude-hook install');
   }
 }
 
@@ -167,7 +171,7 @@ async function collectWindows({ env, execFile, exists: present, node, platform, 
     if (!await present(pacman)) commands.msys2 = WINGET_MSYS2;
     advice.push(commands.msys2 ? 'Install MSYS2 and the board packages:' : 'Install the board packages:', ...[commands.msys2, commands.required].filter(Boolean).map((words) => `  ${words.join(' ')}`));
   }
-  await hookChecks(add, advice, claudeHook, false);
+  await hookChecks(add, advice, claudeHook, false, false);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 
@@ -288,7 +292,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
       advice.push(...lines);
     }
   }
-  await hookChecks(add, advice, claudeHook, phone?.answer === true);
+  await hookChecks(add, advice, claudeHook, phone?.answer === true, phone?.approve === true);
   return { schema: 1, system, checks, board: { ok: board.ok, reason: board.reason }, commands, advice };
 }
 
