@@ -7,6 +7,7 @@ import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData,
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
+import { loadAntigravityDashboard } from './antigravity-data.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
@@ -85,7 +86,8 @@ export function switchboardRefreshInterval(dashboard) {
 
 export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = defaultClaudeAppDir(),
   codexDir = path.join(homeDir, '.codex'), projectsDir = path.join(homeDir, '.claude', 'projects'),
-  openCodeDir = path.join(process.env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share'), 'opencode') } = {}) {
+  openCodeDir = path.join(process.env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share'), 'opencode'),
+  agyDir = path.join(process.env.XDG_STATE_HOME || path.join(homeDir, '.local', 'state'), 'asb', 'agy') } = {}) {
   const directoryOrFile = (pattern) => (filename, event) => !filename || pattern.test(path.basename(filename))
     || (event === 'rename' && !path.extname(path.basename(filename)));
   return [
@@ -107,6 +109,8 @@ export function switchboardWatchPaths({ homeDir = os.homedir(), appDir = default
       acceptEvent: directoryOrFile(/^[1-9][0-9]*\.json$/) },
     { path: openCodeDir, source: 'opencode', optional: true,
       acceptEvent: (filename) => !filename || /^opencode\.db(?:-wal)?$/.test(filename) },
+    { path: agyDir, source: 'antigravity', optional: true,
+      acceptEvent: (filename) => !filename || /^[0-9a-f-]{36}\.json$/i.test(filename) },
   ];
 }
 
@@ -122,6 +126,7 @@ function pendingToolStale(thread, nowMs) {
 
 export function switchboardStatus(thread, nowMs = Date.now()) {
   if (thread.source === 'claude-remote-cache') return claudeRemoteStatus(thread, nowMs);
+  if (thread.source === 'agy-cli' && thread.agyStatus) return thread.agyStatus;
   const questionAt = Number(thread.latestBlockingQuestionAtMs || 0);
   if (thread.userQuestionBlocking && questionAt >= Number(thread.latestLifecycleAtMs || 0)
     && nowMs - questionAt <= ACTIVITY_WINDOW_MS) {
@@ -296,7 +301,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
           sourceShowMarker: thread.sourceShowMarker } : {}),
         provider: isCodex ? 'codex' : thread.provider,
         providerLabel: isCodex ? (surface === 'cli' ? 'Codex CLI' : 'Codex') : thread.provider === 'opencode' ? 'OpenCode'
-          : surface === 'cli' ? 'Claude Code CLI' : 'Claude Desktop Code',
+          : thread.provider === 'antigravity' ? 'Antigravity CLI' : surface === 'cli' ? 'Claude Code CLI' : 'Claude Desktop Code',
         surface,
         machineId: machine.machineId,
         machineName: machine.machineName,
@@ -536,6 +541,7 @@ export async function loadSwitchboardDashboard({
       providerScan.loaderCache?.set('source-options', sourceOptions);
     }
     if (source.provider === 'opencode') return loadOpenCode({ ...sourceOptions, nowMs, maxCount: 5000 });
+    if (source.provider === 'antigravity') return loadAntigravityDashboard({ dataDir: source.dataDir, nowMs });
     return source.provider === 'codex' ? loadCodex({
       ...codexOptions, ...sourceOptions, nowMs, fileScan: providerScan,
       codexNativeReadEnabled: true,
@@ -1084,8 +1090,8 @@ export function createSwitchboardServer(options = {}) {
         acceptEvent: (filename) => !filename || filename === path.basename(registry.configPath) }] : []),
       ...sources.filter((source) => source.enabled).flatMap((source) => switchboardWatchPaths(
         source.provider === 'codex' ? { codexDir: source.dataDir } : source.provider === 'opencode' ? { openCodeDir: source.dataDir }
-          : { appDir: source.dataDir, projectsDir: source.projectsDir }).filter((spec) =>
-            spec.source === (['codex', 'opencode'].includes(source.provider) ? source.provider : 'claude'))),
+          : source.provider === 'antigravity' ? { agyDir: source.dataDir } : { appDir: source.dataDir, projectsDir: source.projectsDir }).filter((spec) =>
+            spec.source === (['codex', 'opencode', 'antigravity'].includes(source.provider) ? source.provider : 'claude'))),
     ];
   };
   // The check reads the rows of the server made below; it runs only after a request.

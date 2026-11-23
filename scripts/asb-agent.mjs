@@ -13,7 +13,7 @@ const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projec
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
-const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait | claude-hook install|remove|status [--config-dir <dir>] [--json]';
+const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait | agy-hook <event> | claude-hook install|remove|status [--config-dir <dir>] [--json]';
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 function parseArgs(args) {
@@ -425,6 +425,7 @@ export async function claudeHook(args, { env = process.env, platform = process.p
 
 export async function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === 'claude-wait') { await claudeWait(); return 0; }
+  if (args[0] === 'agy-hook') return (await import('./asb-agy-hook.mjs')).agyHook(args.slice(1));
   if (args[0] === 'claude-hook') return claudeHook(args.slice(1));
   let runtime;
   let result;

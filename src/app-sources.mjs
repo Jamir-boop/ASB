@@ -4,11 +4,13 @@ import { constants, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { defaultClaudeAppDir } from './claude-data.mjs';
 import { discoverCodexStateDatabase } from './codex-data.mjs';
-import { configDir } from './platform-paths.mjs';
+import { configDir, stateDir } from './platform-paths.mjs';
 
 export const MAX_APP_SOURCES = 8;
-const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
-const BUILTIN_IDS = ['codex', 'claude-desktop-code', 'opencode'];
+const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode', 'antigravity'];
+const BUILTIN_IDS = ['codex', 'claude-desktop-code', 'opencode', 'antigravity'];
+// The default sources with a fixed folder and no launcher, added in memory to a settings file that lacks them.
+const FIXED_IDS = ['opencode', 'antigravity'];
 const SOURCE_FIELDS = ['id', 'provider', 'label', 'dataDir', 'launcher', 'enabled', 'projectsDir', 'remoteClaude', 'color', 'showMarker'];
 const REMOTE_CLAUDE = ['auto', 'bridge', 'native'];
 const SOURCE_COLORS = ['#8296b4', '#b28f80', '#a28caa', '#899e91'];
@@ -58,6 +60,9 @@ export function defaultAppSources({ homeDir = os.homedir(), env = process.env, p
       launcher: '', enabled: true, builtin: true },
     { id: 'opencode', provider: 'opencode', label: 'OpenCode',
       dataDir: path.join(env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share'), 'opencode'), launcher: '', enabled: true, builtin: true },
+    // The records of the ASB agy hook (scripts/asb-agy-hook.mjs).
+    { id: 'antigravity', provider: 'antigravity', label: 'Antigravity CLI',
+      dataDir: path.join(stateDir(env, platform, homeDir), 'agy'), launcher: '', enabled: true, builtin: true },
   ].map((source) => ({ ...source, color: defaultSourceColor(source.id), showMarker: true }));
 }
 
@@ -98,7 +103,7 @@ export class AppSourceRegistry {
     this.homeDir = homeDir;
     this.configPath = configPath;
     this.sources = defaultAppSources({ homeDir, env, platform });
-    this.openCodeSource = this.sources.find((source) => source.id === 'opencode');
+    this.fixedSources = this.sources.filter((source) => FIXED_IDS.includes(source.id));
     this.discoverPersonal = discoverPersonal;
     this.signature = null;
     this.initialized = false;
@@ -164,11 +169,13 @@ export class AppSourceRegistry {
             const source = sources.find((item) => item.id === builtin);
             if (!source || source.provider !== builtin) throw invalid('Default profiles must stay registered.');
           }
-          const openCode = sources.find((item) => item.id === 'opencode' || item.provider === 'opencode');
-          if (openCode && (openCode.id !== 'opencode' || openCode.provider !== 'opencode')) throw invalid('Invalid profile settings.');
-          // The OpenCode folder is fixed; a file from before OpenCode support gets the default source.
-          if (openCode) Object.assign(openCode, { dataDir: this.openCodeSource.dataDir, launcher: '' });
-          else if (sources.length < MAX_APP_SOURCES) sources.push({ ...this.openCodeSource });
+          for (const fixed of this.fixedSources) {
+            const kept = sources.find((item) => item.id === fixed.id || item.provider === fixed.provider);
+            if (kept && (kept.id !== fixed.id || kept.provider !== fixed.provider)) throw invalid('Invalid profile settings.');
+            // The folder is fixed; a file from before the support of this app gets the default source.
+            if (kept) Object.assign(kept, { dataDir: fixed.dataDir, launcher: '' });
+            else if (sources.length < MAX_APP_SOURCES) sources.push({ ...fixed });
+          }
           for (const source of sources) source.builtin = BUILTIN_IDS.includes(source.id);
           await this.validateStores(sources);
           this.sources = sources;
@@ -219,9 +226,10 @@ export class AppSourceRegistry {
       await this.read();
       this.checkRevision(expectedRevision);
       const existing = typeof source?.id === 'string' ? this.sources.find((item) => item.id === source.id) : null;
-      if (source?.provider === 'opencode' && existing?.id !== 'opencode') throw invalid('Only the default OpenCode profile is supported.');
-      if (existing?.id === 'opencode' && (typeof source.dataDir !== 'string' || path.resolve(source.dataDir) !== existing.dataDir)) throw invalid('The OpenCode data folder cannot change.');
-      if (existing?.id === 'opencode' && source.launcher !== '') throw invalid('The OpenCode profile takes no launcher.');
+      const fixed = this.fixedSources.find((item) => item.provider === source?.provider || item.id === existing?.id);
+      if (fixed && source?.provider === fixed.provider && existing?.id !== fixed.id) throw invalid(`Only the default ${fixed.label} profile is supported.`);
+      if (fixed && existing?.id === fixed.id && (typeof source.dataDir !== 'string' || path.resolve(source.dataDir) !== existing.dataDir)) throw invalid(`The ${fixed.label} data folder cannot change.`);
+      if (fixed && existing?.id === fixed.id && source.launcher !== '') throw invalid(`The ${fixed.label} profile takes no launcher.`);
       const next = await this.validate(source, { checkLauncher: source?.enabled !== false || !existing });
       if (next.id && !existing) throw invalid('This profile is not registered.');
       if (existing?.builtin && next.provider !== existing.provider) throw invalid('The app of a default profile cannot change.');

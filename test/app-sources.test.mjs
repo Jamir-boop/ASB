@@ -77,7 +77,7 @@ test('source names come from labels, stay unique against names and ids, and are 
   await registry.update(source(path.join(homeDir, 'symbols'), { label: '!!!' }));
   const report = await registry.report({});
   const symbols = report.sources.find((item) => item.label === '!!!');
-  assert.deepEqual(report.sources.map((item) => item.name), ['main', 'claude-desktop-code', 'opencode', 'work-profile', symbols.id]);
+  assert.deepEqual(report.sources.map((item) => item.name), ['main', 'claude-desktop-code', 'opencode', 'antigravity-cli', 'work-profile', symbols.id]);
   assert.equal(sourceName({ id: 'x', label: `${'a'.repeat(79)} b` }), 'a'.repeat(79));
   assert.equal(report.revision, appSourcesRevision(await registry.read()));
   assert.ok(JSON.parse(await readFile(registry.configPath, 'utf8')).sources.every((item) => !Object.hasOwn(item, 'name')));
@@ -107,7 +107,7 @@ test('queued source changes check the current revision and stale edits or remova
   await assert.rejects(registry.update({ ...edit, label: 'Stale label' }, current), { statusCode: 409 });
   assert.equal((await registry.read()).at(-1).label, 'External label');
   await registry.remove(edit.id, appSourcesRevision(await registry.read()));
-  assert.equal((await registry.read()).length, 3);
+  assert.equal((await registry.read()).length, 4);
 });
 
 test('source edits validate local app paths, protect defaults, and save only ASB settings with owner access', async (t) => {
@@ -145,7 +145,7 @@ test('source edits validate local app paths, protect defaults, and save only ASB
   await registry.update({ ...builtinEdit, enabled: false });
   assert.equal((await registry.read())[0].enabled, false);
   await registry.remove(added.id);
-  assert.equal((await registry.read()).length, 3);
+  assert.equal((await registry.read()).length, 4);
 });
 
 test('version 1 settings without colors or marker flags gain defaults without changing stored settings or profile IDs', async (t) => {
@@ -232,7 +232,7 @@ test('the registry rejects the same real store and caps source count, including 
   await mkdir(linked);
   await link(path.join(dataDir, 'state_5.sqlite'), path.join(linked, 'state_5.sqlite'));
   await assert.rejects(registry.update(source(linked)), /already registered/);
-  for (let index = 4; index < MAX_APP_SOURCES; index += 1) await registry.update(source(path.join(homeDir, `missing-${index}`)));
+  for (let index = 5; index < MAX_APP_SOURCES; index += 1) await registry.update(source(path.join(homeDir, `missing-${index}`)));
   assert.equal((await registry.read()).length, MAX_APP_SOURCES);
   await assert.rejects(registry.update(source(path.join(homeDir, 'one-too-many'))), /up to 8/);
 });
@@ -277,11 +277,11 @@ test('initial Personal discovery needs its known store and launcher, and never c
   assert.equal(personal.color, '#b28f80');
   assert.notEqual(personal.color, concurrent[0].find((item) => item.id === 'codex').color);
   await registry.remove(personal.id);
-  assert.equal((await new AppSourceRegistry({ homeDir, env: {}, platform: 'linux' }).read()).length, 3);
+  assert.equal((await new AppSourceRegistry({ homeDir, env: {}, platform: 'linux' }).read()).length, 4);
   await rm(registry.configPath);
   await rm(launcher);
   const missingLauncher = new AppSourceRegistry({ homeDir, env: {}, platform: 'linux' });
-  assert.equal((await missingLauncher.read()).length, 3);
+  assert.equal((await missingLauncher.read()).length, 4);
   await assert.rejects(stat(registry.configPath), { code: 'ENOENT' });
 });
 
@@ -312,7 +312,7 @@ test('settings that ASB cannot use are kept as .bad before the next save', async
     assert.equal(registry.warning, '');
     assert.deepEqual(JSON.parse(await readFile(registry.configPath, 'utf8')).sources, await registry.read());
   }
-  await registry.remove((await registry.read())[3].id);
+  await registry.remove((await registry.read())[4].id);
   assert.equal(await readFile(`${registry.configPath}.bad`, 'utf8'), '{"version":1,"sources":[');
 });
 
@@ -402,9 +402,9 @@ test('enabled sources load independently and Claude uses its registered profile 
   assert.equal(dashboard.threads[0].appDeepLink, `claude://code/continue?session=local_${uuid}`);
   assert.equal(dashboard.threads[0].sourceColor, sources.at(-1).color);
   const report = await registry.report(dashboard);
-  assert.deepEqual(report.sources.map((item) => item.status), ['missing', 'missing', 'missing', 'error', 'disabled', 'ready']);
+  assert.deepEqual(report.sources.map((item) => item.status), ['missing', 'missing', 'missing', 'missing', 'error', 'disabled', 'ready']);
   assert.equal(report.sources.at(-1).sessionCount, 1);
-  assert.deepEqual(report.sources.map((item) => [item.sourceNumber, item.sourceCount]), [[1, 3], [1, 2], [1, 1], [2, 3], [3, 3], [2, 2]]);
+  assert.deepEqual(report.sources.map((item) => [item.sourceNumber, item.sourceCount]), [[1, 3], [1, 2], [1, 1], [1, 1], [2, 3], [3, 3], [2, 2]]);
   assert.deepEqual([dashboard.threads[0].sourceNumber, dashboard.threads[0].sourceCount], [2, 2]);
   dashboard.providers.at(-1).status = 'warning';
   assert.equal((await registry.report(dashboard)).sources.at(-1).status, 'warning');
@@ -597,7 +597,7 @@ test('source APIs enforce exact bodies and local actions, refresh rows, and upda
   const initialResponse = await fetch(`${server.base}/api/sources`);
   assert.equal(initialResponse.status, 200);
   const initialSources = (await initialResponse.json()).sources;
-  assert.deepEqual(initialSources.map((item) => item.color), ['#8296b4', '#a28caa', '#899e91']);
+  assert.deepEqual(initialSources.map((item) => item.color), ['#8296b4', '#a28caa', '#899e91', '#8296b4']);
   assert.ok(initialSources.every((item) => item.showMarker === true));
   const otherOrigin = await server.post('/api/sources', { source: source(extraDir) }, { origin: 'http://example.test' });
   assert.equal(otherOrigin.status, 403);
@@ -804,7 +804,7 @@ test('OpenCode is the third default source, old settings gain it in memory, and 
   const { registry, homeDir, source, launcher } = await fixture(t);
   const defaults = await registry.read();
   assert.deepEqual(defaults.map((item) => [item.id, item.provider, item.builtin]),
-    [['codex', 'codex', true], ['claude-desktop-code', 'claude-desktop-code', true], ['opencode', 'opencode', true]]);
+    [['codex', 'codex', true], ['claude-desktop-code', 'claude-desktop-code', true], ['opencode', 'opencode', true], ['antigravity', 'antigravity', true]]);
   const openCode = defaults[2];
   assert.deepEqual(openCode, { id: 'opencode', provider: 'opencode', label: 'OpenCode', dataDir: path.join(homeDir, '.local', 'share', 'opencode'),
     launcher: '', enabled: true, builtin: true, color: '#899e91', showMarker: true });
@@ -821,7 +821,7 @@ test('OpenCode is the third default source, old settings gain it in memory, and 
   const { builtin, ...edit } = openCode;
   await migrated.update({ ...edit, label: 'Open Code', color: '#404040', showMarker: false, enabled: false });
   const saved = JSON.parse(await readFile(registry.configPath, 'utf8')).sources;
-  assert.deepEqual(saved.at(-1), { ...openCode, label: 'Open Code', color: '#404040', showMarker: false, enabled: false });
+  assert.deepEqual(saved.find((item) => item.id === 'opencode'), { ...openCode, label: 'Open Code', color: '#404040', showMarker: false, enabled: false });
 
   await assert.rejects(migrated.update({ ...edit, dataDir: path.join(homeDir, 'other') }),
     { statusCode: 400, message: 'The OpenCode data folder cannot change.' });
@@ -831,8 +831,8 @@ test('OpenCode is the third default source, old settings gain it in memory, and 
     { statusCode: 400, message: 'Only the default OpenCode profile is supported.' });
   await assert.rejects(migrated.remove('opencode'), { statusCode: 400 });
 
-  for (const bad of [{ ...saved.at(-1), provider: 'codex', dataDir: path.join(homeDir, 'store') },
-    { ...saved.at(-1), id: 'opencode-two' }]) {
+  for (const bad of [{ ...saved[2], provider: 'codex', dataDir: path.join(homeDir, 'store') },
+    { ...saved[2], id: 'opencode-two' }]) {
     await writeFile(registry.configPath, JSON.stringify({ version: 1, sources: [...saved.slice(0, 2), bad] }));
     await migrated.read();
     assert.match(migrated.warning, /last valid/);

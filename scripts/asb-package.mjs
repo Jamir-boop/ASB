@@ -20,7 +20,7 @@ const DESKTOP_ENTRY = `[Desktop Entry]\nType=Application\nName=ASB\nGenericName=
 // Keep this list explicit. A source checkout can contain private local files.
 export const RUNTIME_FILES = [
   'LICENSE', 'package.json', 'install.sh', 'uninstall.sh',
-  'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-group.mjs', 'scripts/asb-usage.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-board.py', 'scripts/asb-native.py',
+  'scripts/asb', 'scripts/asb.mjs', 'scripts/asb-setup.mjs', 'scripts/asb-package.mjs', 'scripts/asb-desktop.mjs', 'scripts/asb-service.mjs', 'scripts/asb-engine.mjs', 'scripts/asb-tray.py', 'scripts/asb-agent.mjs', 'scripts/asb-agy-hook.mjs', 'scripts/asb-group.mjs', 'scripts/asb-usage.mjs', 'scripts/asb-instance.mjs', 'scripts/asb-icon.mjs', 'scripts/asb-board.py', 'scripts/asb-native.py',
   'public/switchboard.html', 'public/switchboard.css', 'public/switchboard.js', 'public/icon.svg',
   'assets/icons/local.asb.AgentSwitchBoard.svg', 'assets/icons/asb-claude-symbolic.svg', 'assets/icons/asb-openai-symbolic.svg', 'assets/icons/asb-opencode-symbolic.svg',
   'assets/icons/asb-machine-symbolic.svg', 'assets/icons/asb-terminal-symbolic.svg', 'assets/icons/asb-drawer-symbolic.svg', 'assets/icons/asb-drawer-filled-symbolic.svg',
@@ -35,7 +35,7 @@ export const RUNTIME_FILES = [
   'assets/sounds/opencode-LICENSE.txt',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-cli-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
-  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/machine-relay.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs', 'src/platform-paths.mjs',
+  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/machine-relay.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs', 'src/antigravity-data.mjs', 'src/platform-paths.mjs',
   'src/session-references.mjs', 'src/linux-system.mjs', 'src/linux-distros.mjs', 'scripts/asb-doctor.mjs',
   'src/session-targets.mjs',
   'src/reader-positions.mjs',

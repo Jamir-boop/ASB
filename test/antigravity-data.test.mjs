@@ -1,0 +1,154 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { loadAntigravityDashboard } from '../src/antigravity-data.mjs';
+import { AppSourceRegistry } from '../src/app-sources.mjs';
+import { buildSwitchboardDashboard, loadSwitchboardDashboard, switchboardWatchPaths } from '../src/switchboard.mjs';
+
+const now = Date.parse('2026-11-22T12:00:00Z');
+const minute = 60_000;
+const day = 24 * 60 * minute;
+const id = (n) => `${String(n).padStart(8, '0')}-a221-41ba-96c9-1c571ac0565b`;
+const LIVE = { 400: '4377321' };
+const startOf = async (pid) => LIVE[pid] ?? null;
+
+async function fixture(t) {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'asb-agy-data-'));
+  t.after(() => rm(homeDir, { recursive: true, force: true }));
+  const dataDir = path.join(homeDir, 'state', 'asb', 'agy');
+  await mkdir(dataDir, { recursive: true });
+  const put = async (n, fields = {}) => {
+    const record = { conversationId: id(n), workspace: path.join(homeDir, 'ws'), state: 'working', stateAtMs: now - minute, createdAtMs: now - 5 * minute,
+      agyPid: 400, agyStartTicks: '4377321', kittyWindowId: '1', ...fields };
+    for (const key of Object.keys(record)) if (record[key] === undefined) delete record[key];
+    await writeFile(path.join(dataDir, `${id(n)}.json`), JSON.stringify(record), { mode: 0o600 });
+  };
+  const load = (options = {}) => loadAntigravityDashboard({ dataDir, nowMs: now, homeDir, startOf, ...options });
+  const rows = async (options) => buildSwitchboardDashboard((await load(options)).threads, [], options?.nowMs ?? now).threads;
+  return { homeDir, dataDir, put, load, rows };
+}
+
+test('each live state gives its row status', async (t) => {
+  const { homeDir, put, rows } = await fixture(t);
+  await put(1, { state: 'idle' });
+  await put(2, { state: 'working' });
+  await put(3, { state: 'question' });
+  await put(4, { state: 'done' });
+  await put(5, { state: 'failed' });
+  const byId = new Map((await rows()).map((row) => [row.externalId, row]));
+  const row = byId.get(id(2));
+  assert.deepEqual([row.id, row.provider, row.providerLabel, row.surface, row.title, row.cwd, row.canOpen, row.appDeepLink],
+    [`agy:${id(2)}`, 'antigravity', 'Antigravity CLI', 'cli', 'ws · 00000002', path.join(homeDir, 'ws'), false, '']);
+  assert.deepEqual([byId.get(id(1)).state, byId.get(id(1)).reason], ['idle', 'The CLI session has no task yet.']);
+  assert.equal(row.state, 'working');
+  const question = byId.get(id(3));
+  assert.deepEqual([question.state, question.questionPending, Boolean(question.actionRequired)], ['waiting', true, false]);
+  const done = byId.get(id(4));
+  assert.deepEqual([done.state, done.lastOutcome, done.completionAtMs], ['idle', '', now - minute]);
+  const failed = byId.get(id(5));
+  assert.deepEqual([failed.state, failed.lastOutcome, failed.failedAtMs, failed.completionAtMs], ['idle', 'failed', now - minute, 0]);
+});
+
+test('a record whose agy ended, or whose PID was reused, is not live', async (t) => {
+  const { put, rows } = await fixture(t);
+  await put(1, { state: 'working', agyPid: 401, agyStartTicks: '1' });
+  await put(2, { state: 'question', agyStartTicks: '999' });
+  await put(3, { state: 'idle', agyPid: undefined, agyStartTicks: undefined });
+  await put(4, { state: 'done', agyPid: 401, agyStartTicks: '1' });
+  await put(5, { state: 'failed', agyPid: 401, agyStartTicks: '1' });
+  const byId = new Map((await rows()).map((row) => [row.externalId, row]));
+  for (const n of [1, 2]) {
+    assert.deepEqual([byId.get(id(n)).state, byId.get(id(n)).reason, byId.get(id(n)).processEnded], ['unknown', 'The agy process ended during a task.', true]);
+  }
+  for (const n of [3, 4, 5]) assert.deepEqual([byId.get(id(n)).state, byId.get(id(n)).reason], ['idle', 'The agy process ended.']);
+  assert.deepEqual([byId.get(id(4)).completionAtMs, byId.get(id(5)).lastOutcome], [now - minute, 'failed']);
+});
+
+test('ten quiet minutes give Unknown unless the transcript changed or a background command runs', async (t) => {
+  const { homeDir, put, rows, load } = await fixture(t);
+  const transcript = path.join(homeDir, '.gemini', 'antigravity-cli', 'brain', id(2), 'transcript.jsonl');
+  await mkdir(path.dirname(transcript), { recursive: true });
+  await writeFile(transcript, '');
+  await utimes(transcript, (now - minute) / 1000, (now - minute) / 1000);
+  // Off the 30 s grid, so the 10-minute deadline is the next check.
+  const old = now - 11 * minute + 7_000;
+  await put(1, { stateAtMs: old });
+  await put(2, { stateAtMs: old, transcriptMtimePath: transcript });
+  await put(3, { stateAtMs: old, background: true });
+  await put(4, { state: 'question', stateAtMs: old });
+  const byId = new Map((await rows()).map((row) => [row.externalId, row]));
+  for (const n of [1, 4]) assert.deepEqual([byId.get(id(n)).state, byId.get(id(n)).reason], ['unknown', 'No news from the agy session for 10 minutes.']);
+  assert.equal(byId.get(id(2)).state, 'working');
+  assert.equal(byId.get(id(3)).state, 'working');
+  const early = now - 58_000;
+  const threads = (await load({ nowMs: early })).threads;
+  assert.deepEqual(threads.map((thread) => [thread.externalId, thread.cliProcessCheckAtMs]),
+    [[id(1), old + 10 * minute], [id(2), now - 30_000], [id(3), now - 30_000], [id(4), old + 10 * minute]]);
+  assert.equal(buildSwitchboardDashboard(threads, [], early).nextStatusCheckAtMs, old + 10 * minute + 1);
+});
+
+test('bad files are skipped, at most 500 files are read, and old records that are not live are removed', async (t) => {
+  const { homeDir, dataDir, put, load } = await fixture(t);
+  await put(1);
+  await writeFile(path.join(dataDir, `${id(2)}.json`), 'not json');
+  await put(3, { extra: 'x' });
+  await put(4, { conversationId: id(5) });
+  await put(6, { workspace: 'relative' });
+  await put(7, { state: 'asleep' });
+  await put(8, { kittyListenOn: 'tcp:localhost:1' });
+  await put(9, { transcriptMtimePath: '/etc/passwd' });
+  await writeFile(path.join(dataDir, `${id(10)}.json`), JSON.stringify({ conversationId: id(10), pad: 'x'.repeat(20_000) }));
+  await symlink(path.join(dataDir, `${id(1)}.json`), path.join(dataDir, `${id(11)}.json`));
+  await writeFile(path.join(dataDir, 'notes.json'), '{}');
+  assert.deepEqual((await load()).threads.map((thread) => thread.externalId), [id(1)]);
+  await put(12, { agyPid: 401, stateAtMs: now - 8 * day });
+  await put(13, { stateAtMs: now - 8 * day });
+  await put(14, { agyPid: 401, stateAtMs: now - 6 * day });
+  const kept = (await load()).threads.map((thread) => thread.externalId);
+  assert.deepEqual(kept, [id(1), id(13), id(14)]);
+  assert.equal((await readdir(dataDir)).includes(`${id(12)}.json`), false);
+  await rm(dataDir, { recursive: true });
+  await mkdir(dataDir);
+  for (let n = 1; n <= 501; n += 1) await put(n);
+  assert.equal((await load()).threads.length, 500);
+  assert.deepEqual((await loadAntigravityDashboard({ dataDir: path.join(homeDir, 'none'), nowMs: now })).provider, { installed: false, status: 'missing', message: '' });
+});
+
+test('Antigravity CLI is a default source with fixed folder, no launcher, the eight-source limit, and a watch path', async (t) => {
+  const { homeDir, put } = await fixture(t);
+  const env = { XDG_STATE_HOME: path.join(homeDir, 'state') };
+  const configPath = path.join(homeDir, 'config', 'sources.json');
+  const registry = new AppSourceRegistry({ homeDir, env, platform: 'linux', configPath, discoverPersonal: false });
+  const sources = await registry.read();
+  const agy = sources.find((item) => item.id === 'antigravity');
+  assert.deepEqual([agy.provider, agy.label, agy.dataDir, agy.launcher, agy.enabled, agy.builtin],
+    ['antigravity', 'Antigravity CLI', path.join(homeDir, 'state', 'asb', 'agy'), '', true, true]);
+  await assert.rejects(registry.update({ ...agy, dataDir: path.join(homeDir, 'other') }), { message: 'The Antigravity CLI data folder cannot change.' });
+  await assert.rejects(registry.update({ ...agy, launcher: '/usr/bin/codex' }), { message: 'The Antigravity CLI profile takes no launcher.' });
+  const { id: _id, builtin: _builtin, ...copy } = agy;
+  await assert.rejects(registry.update({ ...copy, dataDir: path.join(homeDir, 'copy') }), { message: 'Only the default Antigravity CLI profile is supported.' });
+  await assert.rejects(registry.remove('antigravity'), { statusCode: 400 });
+  // A file from before the support gains the source in memory; a file with eight sources does not.
+  await mkdir(path.dirname(configPath), { recursive: true });
+  const stored = sources.filter((item) => item.id !== 'antigravity').map(({ builtin: _b, ...item }) => item);
+  await writeFile(configPath, JSON.stringify({ version: 1, sources: stored }));
+  const old = new AppSourceRegistry({ homeDir, env, platform: 'linux', configPath, discoverPersonal: false });
+  assert.equal((await old.read()).at(-1).id, 'antigravity');
+  const full = [...stored, ...[1, 2, 3, 4, 5].map((n) => ({ id: `claude-extra-${n}`, provider: 'claude-desktop-code', label: `Extra ${n}`,
+    dataDir: path.join(homeDir, `extra-${n}`), projectsDir: path.join(homeDir, `extra-${n}`, 'projects'), launcher: '/usr/bin/claude', enabled: false }))];
+  await writeFile(configPath, JSON.stringify({ version: 1, sources: full }));
+  const eight = new AppSourceRegistry({ homeDir, env, platform: 'linux', configPath, discoverPersonal: false });
+  assert.equal((await eight.read()).some((item) => item.provider === 'antigravity'), false);
+  // The loader runs for the source, and the engine watches its folder.
+  await put(1);
+  const board = await loadSwitchboardDashboard({ sources, nowMs: now, loadCodex: async () => ({ threads: [] }),
+    loadClaude: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) });
+  assert.equal(board.providers.find((item) => item.id === 'antigravity').status, 'ready');
+  const row = board.threads.find((item) => item.provider === 'antigravity');
+  assert.deepEqual([row.sourceId, row.providerLabel, row.canOpen], ['antigravity', 'Antigravity CLI', false]);
+  const spec = switchboardWatchPaths({ homeDir, agyDir: agy.dataDir }).find((item) => item.source === 'antigravity');
+  assert.deepEqual([spec.path, spec.optional], [agy.dataDir, true]);
+  assert.deepEqual([`${id(1)}.json`, `${id(1)}.json.${id(2)}.tmp`, 'notes.json', ''].map((name) => spec.acceptEvent(name)), [true, false, false, true]);
+});
