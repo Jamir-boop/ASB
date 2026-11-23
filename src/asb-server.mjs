@@ -533,7 +533,7 @@ export function createAsbServer({
         return;
       }
       try {
-        const ready = wanted.provider === 'codex' ? approveEnabled() && await phoneSeenWithin(60_000)
+        const ready = wanted.provider === 'codex' && wanted.approval !== undefined ? approveEnabled() && await phoneSeenWithin(60_000)
           : (wanted.approval === undefined ? answerEnabled() : approveEnabled()) && await phonePaired();
         if (!ready) { sendJson(response, 200, { wait: false }); return; }
         const { requestId } = claudeQuestions.open(wanted);
@@ -950,8 +950,8 @@ export function createAsbServer({
         const open = (kind === 'question' ? answerEnabled() : approveEnabled()) ? thread[CLAUDE_QUESTION] : null;
         if (open?.kind !== kind || open.requestId !== body.requestId) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
         const { requestId, ...decision } = body;
-        const answers = kind === 'question' ? answersFor(open.questions, body.answers) : checkedDecision(open.approval, decision);
-        if (!answers) { sendJson(response, 400, { error: 'Invalid answer.' }); return; }
+        const answer = kind === 'question' ? answersFor(open.questions, body.answers) : checkedDecision(open.approval, decision);
+        if (!answer) { sendJson(response, 400, { error: 'Invalid answer.' }); return; }
         if (kind === 'question' && thread.provider === 'antigravity') {
           if (answeringRequests.has(requestId)) { sendJson(response, 409, { error: 'Cannot answer in agy now. Answer on the PC.' }); return; }
           answeringRequests.add(requestId);
@@ -963,7 +963,7 @@ export function createAsbServer({
             return;
           }
         }
-        if (!claudeQuestions.answer(requestId, answers)) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
+        if (!claudeQuestions.answer(requestId, answer)) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
         sendJson(response, 200, { answered: true });
       } catch { sendJson(response, 500, { error: 'Cannot save the answer.' }); }
       return;

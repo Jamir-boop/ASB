@@ -2,6 +2,8 @@ import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
+import { waitForQuestion } from './approval';
+import { engineRuntime } from './engine';
 import { privateDirectory } from './claude';
 import { checkSocketFile, CODEX_PIPE, isWindows } from './platform';
 import { deliverToDesktop, readDesktopCwd, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from './desktop';
@@ -45,7 +47,8 @@ export async function watchCodex(target: Target, threadId: string, onState: (sta
   const attach = async () => {
     server = new AppServer(target.path, threadId, error => { if (ready) void recover(error); });
     await server.connect();
-    await server.observe(state => { if (!stopped) onState(state); });
+    await server.observe(state => { if (!stopped) onState(state); },
+      (questions, signal) => waitForQuestion(engineRuntime(), 'codex', threadId, questions, signal));
     if (stopped) server.close();
   };
   const recover = async (error: unknown) => {

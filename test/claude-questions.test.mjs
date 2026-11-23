@@ -41,6 +41,7 @@ test('the store checks each limit', () => {
   ok([one({ options: [{ label: 'A', description: 'Two\nlines' }] })]); bad([one({ options: [{ label: 'A', description: 'Bell\x07' }] })]);
   ok([one({ options: [{ label: 'A', description: 'Tab\there' }] })]); bad([one({ header: 'Tab\there' })]); bad([one({ options: [{ label: 'Tab\there' }] })]);
   ok([one({ multiSelect: true })]); bad([one({ multiSelect: 'yes' })]);
+  ok([one({ allowOther: false })]); bad([one({ allowOther: 'no' })]);
   // Only the known keys, and multiSelect false when missing.
   const { requestId } = store.open({ provider: 'claude', sessionKey: 'copy', questions: [{ ...one({ extra: 'x' }), options: [{ label: 'A', other: 1 }] }] });
   assert.deepEqual(store.forSession('claude', 'copy').questions, [{ question: 'Synthetic question?', header: 'Pick', options: [{ label: 'A' }], multiSelect: false }]);
@@ -67,9 +68,10 @@ test('wait settles at once on an answer and a close, and after its time with ope
   assert.deepEqual(await store.wait(requestId, 30), { state: 'open' });
   assert.ok(Date.now() - started >= 25);
   const held = store.wait(requestId, 20_000);
-  assert.equal(store.answer(requestId, { 'Synthetic question?': 'A' }), true);
-  assert.deepEqual(await held, { state: 'answered', answers: { 'Synthetic question?': 'A' } });
-  assert.deepEqual(await store.wait(requestId, 20_000), { state: 'answered', answers: { 'Synthetic question?': 'A' } });
+  assert.equal(store.answer(requestId, answersFor([one()], [{ selected: ['A'] }])), true);
+  const reply = { state: 'answered', ...answersFor([one()], [{ selected: ['A'] }]) };
+  assert.deepEqual(await held, reply);
+  assert.deepEqual(await store.wait(requestId, 20_000), reply);
   assert.equal(store.answer(requestId, {}), false);
   const other = store.open({ provider: 'claude', sessionKey: 's2', questions: [one()] });
   const closing = store.wait(other.requestId, 20_000);
@@ -124,7 +126,7 @@ test('reconcile, sweep, and the drop follow their times', () => {
   assert.equal(store.forSession('claude', 'swept'), null);
   // An answered record is dropped 60 s after its answer.
   const answered = store.open({ provider: 'claude', sessionKey: 'answered', questions: [one()] }).requestId;
-  store.answer(answered, { q: 'A' });
+  store.answer(answered, answersFor([one()], [{ selected: ['A'] }]));
   now.advance(60_000);
   assert.equal(store.wait(answered, 0), null);
 });
@@ -197,8 +199,8 @@ test('the claude-wait routes check the caller, the body, the gate, and the phone
   assert.equal((await e.post(`/api/agent/claude-wait/${opened.requestId}`, { extra: 1 })).status, 400);
   const answered = e.post(`/api/agent/claude-wait/${opened.requestId}`);
   await delay(10);
-  store.answer(opened.requestId, { 'Synthetic question?': 'A' });
-  assert.deepEqual(await (await answered).json(), { state: 'answered', answers: { 'Synthetic question?': 'A' } });
+  store.answer(opened.requestId, answersFor([one()], [{ selected: ['A'] }]));
+  assert.deepEqual(await (await answered).json(), { state: 'answered', answers: { 'Synthetic question?': 'A' }, answerItems: [{ selected: ['A'] }] });
   const next = await (await e.post('/api/agent/claude-wait', body)).json();
   store.close(next.requestId);
   assert.deepEqual(await (await e.post(`/api/agent/claude-wait/${next.requestId}`)).json(), { state: 'closed' });
@@ -220,7 +222,7 @@ test('a poll whose client leaves early ends its wait', async (t) => {
   await delay(50);
   controller.abort();
   assert.equal(await gone, 'aborted');
-  store.answer(requestId, { 'Synthetic question?': 'B' });
+  store.answer(requestId, answersFor([one()], [{ selected: ['B'] }]));
   await poll;
 });
 
@@ -407,7 +409,7 @@ test('no question or answer text stays at rest after an open and an answer', asy
   while (!store.forSession('claude', e.sessionId) && Date.now() < deadline) await delay(20);
   const record = store.forSession('claude', e.sessionId);
   assert.ok(record);
-  store.answer(record.requestId, { [SECRET_QUESTION]: SECRET_ANSWER });
+  store.answer(record.requestId, answersFor(record.questions, [{ selected: [SECRET_ANSWER] }]));
   const [code] = await once(child, 'close');
   assert.equal(code, 0);
   assert.ok(stdout.includes(SECRET_ANSWER));
@@ -592,7 +594,7 @@ test('a saved switch change closes the open questions; a listener restart keeps 
 
 test('a question text that is an object key name keeps its answer', () => {
   const questions = [{ question: '__proto__', options: [{ label: 'A' }], multiSelect: false }];
-  const answers = answersFor(questions, [{ selected: ['A'] }]);
+  const { answers } = answersFor(questions, [{ selected: ['A'] }]);
   assert.equal(answers.__proto__, 'A');
   assert.deepEqual(JSON.parse(JSON.stringify(answers)), JSON.parse('{"__proto__":"A"}'));
   assert.ok(Object.hasOwn(JSON.parse(JSON.stringify(answers)), '__proto__'));

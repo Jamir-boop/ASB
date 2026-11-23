@@ -1,4 +1,5 @@
-// The phone approval of an agent request: the text rules of scripts/asb-agent.mjs and the engine wait loop (/api/agent/wait).
+// Phone questions and approvals use the same engine wait loop (/api/agent/wait).
+import { z } from 'zod';
 import { engineRequest, type EngineRuntime } from './engine';
 
 // A copy of HIDDEN in scripts/asb-agent.mjs (a test compares the two): the controls but a tab and a newline (C0, DEL, C1), and the
@@ -14,6 +15,11 @@ export type ApprovalItem = { label: string; text: string; mono: boolean };
 export type Approval = { kind: 'tool'; title: string; display: ApprovalItem[]; note: true };
 export type Decision = { decision: 'allow' } | { decision: 'deny'; note?: string };
 
+export type Question = { question: string; header: string; options: { label: string; description: string }[];
+  multiSelect: false; allowOther: boolean };
+const answerItems = z.array(z.object({ selected: z.array(z.string()).max(8), other: z.string().min(1).max(2_000).optional() })).min(1).max(4);
+export type QuestionAnswer = z.infer<typeof answerItems>[number];
+
 const POLL_MS = 30_000;
 const GONE_POLLS = 3;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -24,13 +30,13 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => 
   function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
 });
 
-// Holds the request for the phone and gives the phone decision, or null in every other case (no engine, a refusal, a closed
-// record, a bad reply, the engine gone for 3 polls in a row, or the signal). It never throws.
-export async function waitForDecision(runtime: EngineRuntime | null, provider: string, sessionKey: string, approval: Approval, signal: AbortSignal): Promise<Decision | null> {
+// Gives the answered engine record, or null on refusal, close, abort, or loss of the engine.
+async function waitForAnswer(runtime: EngineRuntime | null, provider: string, sessionKey: string,
+  request: { approval: Approval } | { question: { questions: Question[] } }, signal: AbortSignal) {
   if (!runtime || signal.aborted) return null;
   let requestId: string;
   try {
-    const opened = await engineRequest(runtime, '/api/agent/wait', { method: 'POST', body: { provider, sessionKey, approval }, signal });
+    const opened = await engineRequest(runtime, '/api/agent/wait', { method: 'POST', body: { provider, sessionKey, ...request }, signal });
     if (!object(opened) || opened.wait !== true || typeof opened.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(opened.requestId)) return null;
     requestId = opened.requestId;
   } catch { return null; }
@@ -47,14 +53,22 @@ export async function waitForDecision(runtime: EngineRuntime | null, provider: s
     }
     gone = 0;
     if (!object(reply)) return null;
-    if (reply.state === 'answered') {
-      if (reply.decision === 'allow') return { decision: 'allow' };
-      if (reply.decision === 'deny' && (reply.note === undefined || typeof reply.note === 'string')) {
-        return reply.note === undefined ? { decision: 'deny' } : { decision: 'deny', note: reply.note };
-      }
-      return null;
-    }
+    if (reply.state === 'answered') return signal.aborted ? null : reply;
     if (reply.state !== 'open') return null;
   }
   return null;
+}
+
+export async function waitForDecision(runtime: EngineRuntime | null, provider: string, sessionKey: string, approval: Approval, signal: AbortSignal): Promise<Decision | null> {
+  const reply = await waitForAnswer(runtime, provider, sessionKey, { approval }, signal);
+  if (reply?.decision === 'allow') return { decision: 'allow' };
+  if (reply?.decision === 'deny' && (reply.note === undefined || typeof reply.note === 'string')) {
+    return reply.note === undefined ? { decision: 'deny' } : { decision: 'deny', note: reply.note };
+  }
+  return null;
+}
+
+export async function waitForQuestion(runtime: EngineRuntime | null, provider: string, sessionKey: string, questions: Question[], signal: AbortSignal) {
+  const reply = await waitForAnswer(runtime, provider, sessionKey, { question: { questions } }, signal);
+  return answerItems.safeParse(reply?.answerItems).data ?? null;
 }

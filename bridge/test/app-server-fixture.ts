@@ -27,9 +27,11 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
   let dropAcknowledgement = false;
   let refuseSubmission = false;
   let withholdAcknowledgement = false;
-  const notify = (method: string, params: unknown) => {
-    for (const socket of sockets.clients) socket.send(JSON.stringify({ method, params }));
+  let replay: unknown;
+  const send = (packet: unknown) => {
+    for (const socket of sockets.clients) socket.send(JSON.stringify(packet));
   };
+  const notify = (method: string, params: unknown) => send({ method, params });
   sockets.on('connection', socket => {
     socket.on('error', () => {});
     socket.on('message', data => {
@@ -51,6 +53,7 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
         }
         loaded = true;
         reply({ thread: { ...thread, status: status() }, approvalPolicy: permissions.approvalPolicy, sandbox: permissions.sandboxPolicy });
+        if (replay) socket.send(JSON.stringify(replay));
       } else if (request.method === 'thread/items/list') {
         const start = Number(request.params.cursor ?? 0);
         const limit = request.params.limit ?? 100;
@@ -70,7 +73,8 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
   server.listen(path);
   await once(server, 'listening');
   chmodSync(path, 0o600);
-  return { path, root, threadId, turnId, submissions, requests, responses,
+  return { path, root, threadId, turnId, submissions, requests, responses, send,
+    replayOnResume(packet: unknown) { replay = packet; },
     // Codex 0.169 ThreadStatus: an active thread has activeFlags, for example ['waitingOnApproval'].
     setState(value: 'idle' | 'active', flags: string[] = []) { state = value; activeFlags = flags; notify('thread/status/changed', { threadId, status: status() }); },
     setPermissions(value: Record<string, unknown>) { permissions = value; notify('thread/settings/updated', { threadId, threadSettings: value }); },

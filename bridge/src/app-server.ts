@@ -9,14 +9,21 @@ import { permissionMode, waitingOnApproval, type Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
 import { version } from './version';
 import { DeliveryRefused, headerInputId } from './delivery';
+import type { Question, QuestionAnswer } from './approval';
 
 // Codex 0.169 ThreadStatus: { type: 'active', activeFlags: ('waitingOnApproval' | 'waitingOnUserInput')[] } or another type.
 const statusSchema = z.object({ type: z.string(), activeFlags: z.array(z.string()).optional() });
 const threadSchema = z.object({ id: uuid, status: statusSchema, canAcceptDirectInput: z.boolean().nullable().optional() });
 const permissionsSchema = z.object({ approvalPolicy: z.union([z.string(), z.record(z.string(), z.unknown())]),
   sandboxPolicy: z.object({ type: z.string() }) });
-const packetSchema = z.object({ id: z.union([z.string(), z.number()]).optional(), result: z.unknown().optional(),
+const requestId = z.union([z.string(), z.number()]);
+const packetSchema = z.object({ id: requestId.optional(), result: z.unknown().optional(),
   error: z.object({ code: z.number(), message: z.string() }).optional(), method: z.string().optional(), params: z.unknown().optional() });
+const questionSchema = z.object({ id: z.string().min(1), header: z.string().max(100), question: z.string().min(1).max(2_000),
+  isOther: z.boolean(), isSecret: z.literal(false),
+  options: z.array(z.object({ label: z.string().min(1).max(200), description: z.string().max(1_000) })).min(1).max(8) });
+const questionListSchema = z.object({ questions: z.array(questionSchema).min(1).max(4) });
+type WaitForQuestion = (questions: Question[], signal: AbortSignal) => Promise<QuestionAnswer[] | null>;
 const pageSchema = z.object({ data: z.array(z.object({ item: z.object({ id: z.string(), type: z.string(),
   clientId: z.string().nullable().optional(), name: z.string().optional(), namespace: z.string().nullable().optional(), output: z.unknown().optional() }) })),
   nextCursor: z.string().nullable() });
@@ -48,6 +55,8 @@ export class AppServer {
   private disconnectError?: Error;
   private opened = false;
   private onState?: (state: Runtime) => void;
+  private waitForQuestion?: WaitForQuestion;
+  private questionWaits = new Map<z.infer<typeof requestId>, AbortController | null>();
   private refreshing = false;
   private dirty = false;
 
@@ -76,16 +85,39 @@ export class AppServer {
     });
   }
 
-  private fail(error: Error) { for (const pending of this.pending.values()) pending.reject(error); }
+  private stopQuestions() {
+    this.waitForQuestion = undefined;
+    for (const controller of this.questionWaits.values()) controller?.abort();
+    this.questionWaits.clear();
+  }
+
+  private fail(error: Error) {
+    this.stopQuestions();
+    for (const pending of this.pending.values()) pending.reject(error);
+  }
 
   private disconnect(error: Error) { this.disconnectError = error; this.fail(error); this.socket.terminate(); }
 
   private read(packet: z.infer<typeof packetSchema>) {
     if (packet.method) {
-      // Subscribing also replays approval requests. Only the user's existing UI answers them.
-      if (packet.id !== undefined) return;
       const thread = z.object({ threadId: z.string() }).safeParse(packet.params);
       if (!thread.success || thread.data.threadId !== this.threadId) return;
+      if (packet.id !== undefined) {
+        if (packet.method === 'item/tool/requestUserInput') this.onQuestion(packet.id, packet.params);
+        return;
+      }
+      if (packet.method === 'serverRequest/resolved' && this.waitForQuestion) {
+        const resolved = z.object({ requestId }).safeParse(packet.params);
+        if (resolved.success) {
+          this.questionWaits.get(resolved.data.requestId)?.abort();
+          // A replay snapshot can contain a request that Codex has since resolved.
+          this.questionWaits.set(resolved.data.requestId, null);
+        }
+      }
+      if (packet.method === 'thread/closed') {
+        this.disconnect(new ThreadUnavailable('The thread closed'));
+        return;
+      }
       if (packet.method === 'thread/settings/updated') {
         const settings = z.object({ threadSettings: permissionsSchema }).parse(packet.params);
         this.mode = permissionMode(settings.threadSettings);
@@ -99,6 +131,32 @@ export class AppServer {
     const pending = this.pending.get(String(packet.id));
     if (packet.error) pending?.reject(new DeliveryRefused(`App-server ${packet.error.code}: ${packet.error.message}`));
     else pending?.resolve(packet.result);
+  }
+
+  private onQuestion(id: z.infer<typeof requestId>, params: unknown) {
+    if (!this.waitForQuestion || this.questionWaits.has(id)) return;
+    const parsed = questionListSchema.safeParse(params);
+    if (!parsed.success) return;
+    const { questions } = parsed.data;
+    if (new Set(questions.map(question => question.id)).size !== questions.length) return;
+    const controller = new AbortController();
+    this.questionWaits.set(id, controller);
+    const card = questions.map(({ header, question, options, isOther }) => ({ header, question, options, allowOther: isOther, multiSelect: false as const }));
+    void this.waitForQuestion(card, controller.signal).then(items => {
+      if (controller.signal.aborted || this.socket.readyState !== WebSocket.OPEN || items?.length !== questions.length) return;
+      const answers: Record<string, { answers: string[] }> = Object.create(null);
+      for (const [index, { id: key, isOther, options }] of questions.entries()) {
+        const { selected, other } = items[index]!;
+        if (selected.some(label => !options.some(option => option.label === label)) || (other !== undefined && !isOther)) return;
+        const values = other === undefined ? selected : [...selected, other];
+        if (values.length !== 1) return;
+        answers[key] = { answers: values };
+      }
+      this.socket.send(JSON.stringify({ id, result: { answers } }));
+    }).catch(() => { /* The Codex prompt stays open when the phone path fails. */ }).finally(() => {
+      // Do not wait or reply again before Codex resolves this request ID.
+      if (this.questionWaits.get(id) === controller) this.questionWaits.set(id, null);
+    });
   }
 
   async request(method: string, params: unknown) {
@@ -144,7 +202,9 @@ export class AppServer {
     return thread.cwd;
   }
 
-  async observe(onState: (state: Runtime) => void) {
+  async observe(onState: (state: Runtime) => void, waitForQuestion?: WaitForQuestion) {
+    // Codex can replay an open request as soon as we subscribe.
+    this.waitForQuestion = waitForQuestion;
     const snapshot = z.object({ thread: threadSchema, approvalPolicy: permissionsSchema.shape.approvalPolicy,
       sandbox: permissionsSchema.shape.sandboxPolicy }).parse(
       await this.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
@@ -209,7 +269,7 @@ export class AppServer {
     return { status: 'accepted', turnId: result.turn.id };
   }
 
-  close() { this.stopped = true; this.socket.terminate(); }
+  close() { this.stopped = true; this.stopQuestions(); this.socket.terminate(); }
 }
 
 export async function withAppServer<T>(path: string, threadId: string, operation: (server: AppServer) => Promise<T>) {
