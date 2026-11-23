@@ -428,9 +428,10 @@ function formAnswer(mapped: MappedForm, answers: QuestionAnswers): Record<string
 }
 
 // Reads OpenCode's own service registration file (`$XDG_STATE_HOME/opencode/service.json`) for the server this plugin runs inside.
-function opencodeService(env: NodeJS.ProcessEnv = process.env, pid = process.pid): { url: string; auth: string } | null {
+function opencodeService(env: NodeJS.ProcessEnv = process.env, pid = process.pid, platform = process.platform): { url: string; auth: string } | null {
+  const home = env[isWindows(platform) ? 'USERPROFILE' : 'HOME'];
   const state = env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME)
-    ? env.XDG_STATE_HOME : env.HOME && isAbsolute(env.HOME) ? join(env.HOME, '.local', 'state') : '';
+    ? env.XDG_STATE_HOME : home && isAbsolute(home) ? join(home, '.local', 'state') : '';
   if (!state) return null;
   const file = join(state, 'opencode', 'service.json');
   try {

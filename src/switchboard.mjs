@@ -10,7 +10,7 @@ import { normalizeDashboardThreads } from './insights.mjs';
 import { agyRecordsDir, answerAgyInKitty, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir, OPENCODE_APPROVAL_WAIT, OPENCODE_QUESTION_WAIT } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
-import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
+import { claudeHookStatus, hookTargets, phoneHookLauncher } from './claude-hook.mjs';
 import { codexHookStatus, codexHookTargets } from './codex-hook.mjs';
 import { createClaudeQuestions } from './claude-questions.mjs';
 import { createBridgeCoverage } from './bridge-coverage.mjs';
@@ -1178,8 +1178,10 @@ export function createSwitchboardServer(options = {}) {
     sourcesPath: registry.configPath,
     readSourcesRevision: async () => appSourcesRevision(await registry.read()),
     readSources: async () => registeredLoad ? registry.read() : [],
-    claudeHookStatus: async () => claudeHookStatus(hookTargets(registeredLoad ? await registry.read() : []), { launcher: installedLauncher(process.env) }),
-    codexHookStatus: async () => codexHookStatus(codexHookTargets(registeredLoad ? await registry.read() : []), { launcher: installedLauncher(process.env) }),
+    claudeHookStatus: async () => registeredLoad ? claudeHookStatus(hookTargets(await registry.read()),
+      { launcher: await phoneHookLauncher(options.env ?? process.env, platform), platform }) : [],
+    codexHookStatus: async () => registeredLoad ? codexHookStatus(codexHookTargets(await registry.read()),
+      { launcher: await phoneHookLauncher(options.env ?? process.env, platform), platform }) : [],
     palettePath: path.join(stateDir(), 'palette.json'),
     dashboardWatchPaths: registeredLoad ? sourceWatchPaths : [],
     dashboardSourceChanged: (source, hint) => {

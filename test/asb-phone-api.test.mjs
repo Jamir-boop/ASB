@@ -33,9 +33,9 @@ function fakeGateway() {
   return { gateway, calls, pairing };
 }
 
-async function serve(t, { sourceToken = 'window-token', phoneGateway = null, serviceMode = false, switchboard = false, sourceRegistry } = {}) {
+async function serve(t, { sourceToken = 'window-token', phoneGateway = null, serviceMode = false, switchboard = false, sourceRegistry, env, platform } = {}) {
   let loads = 0;
-  const server = (switchboard ? createSwitchboardServer : createAsbServer)({ phoneGateway, sourceToken, serviceMode, sourceRegistry,
+  const server = (switchboard ? createSwitchboardServer : createAsbServer)({ phoneGateway, sourceToken, serviceMode, sourceRegistry, env, platform,
     pendingStatePath: false, loadDashboard: async () => { loads += 1; return { providers: [], threads: [] }; } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
@@ -92,29 +92,38 @@ test('phone status, settings, pairing, revoke, and service routes return the gat
 test('PC phone status lists the same enabled Codex homes as the hook command, not the disabled ones', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-phone-hooks-'));
   t.after(() => rm(home, { recursive: true, force: true }));
+  const windows = process.platform === 'win32';
+  const launcher = windows ? path.join(home, 'asb.cmd') : '/opt/asb-test/bin/asb';
   const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, 'config'), XDG_DATA_HOME: path.join(home, 'data'),
-    XDG_RUNTIME_DIR: path.join(home, 'runtime'), ASB_INSTALLED_LAUNCHER: '/opt/asb-test/bin/asb' };
-  const previous = process.env.ASB_INSTALLED_LAUNCHER;
-  process.env.ASB_INSTALLED_LAUNCHER = env.ASB_INSTALLED_LAUNCHER;
-  t.after(() => { if (previous === undefined) delete process.env.ASB_INSTALLED_LAUNCHER; else process.env.ASB_INSTALLED_LAUNCHER = previous; });
+    XDG_RUNTIME_DIR: path.join(home, 'runtime'), ASB_INSTALLED_LAUNCHER: launcher,
+    ...(windows ? { USERPROFILE: home, APPDATA: path.join(home, 'roaming'), SystemRoot: process.env.SystemRoot } : {}) };
   const sources = ['codex', 'codex-two', 'codex-off', 'claude-desktop-code'].map((id, i) => ({ id, label: id, launcher: '',
     provider: i === 3 ? id : 'codex', dataDir: path.join(home, id), enabled: i !== 2 }));
   for (const source of sources) await mkdir(source.dataDir);
   await writeFile(path.join(sources[0].dataDir, 'hooks.json'), JSON.stringify({ hooks: { PermissionRequest: [{ matcher: '^Bash$',
-    hooks: [{ type: 'command', command: `${env.ASB_INSTALLED_LAUNCHER} agent codex-wait`, timeout: 45 }] }] } }));
+    hooks: [{ type: 'command', command: `${windows ? `"${launcher}"` : launcher} agent codex-wait`, timeout: 45 }] }] } }));
   const registry = new AppSourceRegistry({ env, homeDir: home, discoverPersonal: false });
   await mkdir(path.dirname(registry.configPath), { recursive: true });
   await writeFile(registry.configPath, JSON.stringify({ version: 1, sources }));
   const agent = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url));
   const { targets } = JSON.parse(execFileSync(process.execPath, [agent, 'codex-hook', 'status', '--json'], { env, encoding: 'utf8' }));
   const { gateway } = fakeGateway();
-  const { request } = await serve(t, { phoneGateway: gateway, switchboard: true, sourceRegistry: registry });
+  const { request } = await serve(t, { phoneGateway: gateway, switchboard: true, sourceRegistry: registry, env });
   const reply = await (await request('/api/phone')).json();
   assert.deepEqual(reply.codexHook, [{ dir: sources[0].dataDir, state: 'installed' }, { dir: sources[1].dataDir, state: 'not installed' }]);
   assert.deepEqual(reply.codexHook, targets);
   assert.deepEqual(reply.claudeHook, []);
   assert.equal((await request('/api/phone', { token: 'wrong' })).status, 403);
   assert.equal(Object.hasOwn(await (await request('/api/service')).json(), 'codexHook'), false);
+});
+
+test('the PC phone settings route accepts both switches with a Windows engine', async (t) => {
+  const { gateway } = fakeGateway();
+  const { request } = await serve(t, { phoneGateway: gateway, switchboard: true, platform: 'win32' });
+  const changed = await request('/api/phone/settings', { method: 'POST', body: { ...configuration, sendText: true, answer: true, approve: true } });
+  assert.equal(changed.status, 200);
+  const { sendText, answer, approve } = await (await request('/api/phone')).json();
+  assert.deepEqual({ sendText, answer, approve }, { sendText: true, answer: true, approve: true });
 });
 
 test('all phone and service routes are absent without a gateway', async (t) => {
