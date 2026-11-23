@@ -51,7 +51,7 @@ For the Codex app and CLI, use ASB Bridge with a session on the shared Codex app
 
 - An engine restart ends the phone path of an open question: answer it on the PC.
 - Run `asb agent claude-hook remove` before `asb uninstall`.
-- For group sessions, update both engines and turn on phone access, message text, and phone answers on both PCs. To allow or deny requests, also turn on **Approve requests from phones** on both PCs. Install the applicable hook or Bridge on the PC that runs the session. Older members still show their session rows but do not send request cards. Not tested end to end between machines.
+- For group sessions, update both engines and turn on phone access, message text, and phone answers on both PCs. To allow or deny requests, also turn on **Approve requests from phones** on both PCs. Install the applicable hook or Bridge on the PC that runs the session. Older members still show their session rows but do not send request cards. Checked end to end on 2026-11-23 between a Linux PC (the phone PC) and a Windows member: a Codex question held on the member reached the phone list in 6 s, the answer reached the member client, and a second answer got 409; approvals between machines are not checked.
 
 ## Approve Claude Code requests from the phone
 
