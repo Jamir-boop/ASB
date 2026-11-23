@@ -1,5 +1,6 @@
 import { spawn as spawnProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { ACTION_AT, QUESTION_AT } from './switchboard.mjs';
 
 // Port of android/.../notify/Events.kt, so the PC plays the same events as the phone.
 export const BIT_DONE = 1;
@@ -23,22 +24,36 @@ export function soundBits(row) {
     | (row.questionAttention || row.actionAttention ? BIT_INPUT : 0);
 }
 
-export function soundEvents(baseline, rows, nowMs = Date.now()) {
+const soundMark = (row) => ({ bits: soundBits(row),
+  questionAt: row.questionPending || row.questionAttention ? row[QUESTION_AT] || 0 : null,
+  actionAt: row.actionRequired || row.actionAttention ? row[ACTION_AT] || 0 : null,
+});
+// Do not replay an older pending request, or treat a late timestamp for the same request as a new one.
+const newerStart = (at, before) => before !== 0 && at > (before ?? 0);
+
+export function soundEvents(baseline, rows) {
   if (!baseline) return [];
   const events = [];
   for (const row of rows) {
-    const old = baseline.get(row.id) || 0;
-    const added = soundBits(row) & ~old;
+    const old = baseline.get(row.id);
+    const mark = soundMark(row);
+    let added = mark.bits & ~(old?.bits || 0);
+    if ((mark.bits & old?.bits & BIT_INPUT) && (row.questionAttention && newerStart(mark.questionAt, old.questionAt)
+      || row.actionAttention && newerStart(mark.actionAt, old.actionAt))) added |= BIT_INPUT;
     for (const kind of [BIT_INPUT, BIT_FAILED, BIT_DONE]) if (added & kind) events.push({ row, kind });
   }
   return events;
 }
 
-// Rows missing from one update keep their bits, so a skipped scan cannot replay an old mark.
-export function soundBaseline(baseline, rows, nowMs = Date.now()) {
+// Rows missing from one update keep their marks, so a skipped scan cannot replay a request.
+export function soundBaseline(baseline, rows) {
   const next = new Map(baseline || []);
   for (const row of rows) {
-    next.set(row.id, soundBits(row));
+    const mark = soundMark(row);
+    const old = baseline?.get(row.id);
+    if (mark.questionAt !== null) mark.questionAt = Math.max(mark.questionAt, old?.questionAt || 0);
+    if (mark.actionAt !== null) mark.actionAt = Math.max(mark.actionAt, old?.actionAt || 0);
+    next.set(row.id, mark);
   }
   return next;
 }
@@ -49,11 +64,11 @@ export function createSoundWatcher(play, canPlay = () => true) {
   let baseline = null;
   // A member's rows can first arrive after the first update; they are its baseline, not new events.
   const machines = new Set();
-  return (dashboard, nowMs = Date.now()) => {
+  return (dashboard) => {
     const rows = dashboard.threads || [];
     const known = rows.filter((row) => !row.remote || machines.has(row.machineId));
-    const kind = Math.max(0, ...soundEvents(baseline, known, nowMs).map((event) => event.kind));
-    baseline = soundBaseline(baseline, rows, nowMs);
+    const kind = Math.max(0, ...soundEvents(baseline, known).map((event) => event.kind));
+    baseline = soundBaseline(baseline, rows);
     for (const row of rows) if (row.remote) machines.add(row.machineId);
     if (kind && canPlay()) play(kind);
   };

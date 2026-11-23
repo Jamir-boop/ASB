@@ -7,7 +7,7 @@ import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData,
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
-import { agyRecordsDir, answerAgyInKitty, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
+import { AGY_QUIET_REASON, agyRecordsDir, answerAgyInKitty, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir, OPENCODE_APPROVAL_WAIT, OPENCODE_QUESTION_WAIT } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
@@ -776,6 +776,8 @@ export class PendingTracker {
       const task = row[DISCARD_TASK] || { atMs: completion, kind: row.lastOutcome === 'failed' || row.processEnded ? 'failed' : completion ? 'task_complete' : '' };
       // A Claude Code process that ended during a task is an Idle row with a failed result for the attention.
       const idle = row.state === 'idle' || row.processEnded === true;
+      // A quiet agy turn can still complete. The reason also identifies this case on a member row.
+      const quietAgy = row.provider === 'antigravity' && row.reason === AGY_QUIET_REASON;
       // A next-task arm is set on an Idle row. Only a task end after the arm ends it, also when a whole task ran between two scans.
       // When the row is Working, it becomes a current-task arm.
       const next = record.discard === 1 && record.discardNext === 1;
@@ -830,7 +832,7 @@ export class PendingTracker {
         }
         this.set(record, 'working', 0);
         if (row.nativeUnread === false && !this.persistentUnread) this.set(record, 'ack', Math.max(record.ack, record.pending));
-      } else if (row.state !== 'waiting' && !row[OFFLINE_MEMBER]) this.set(record, 'working', 0);
+      } else if (row.state !== 'waiting' && !row[OFFLINE_MEMBER] && !quietAgy) this.set(record, 'working', 0);
       this.set(record, 'seen', Math.max(record.seen, completion, discardedSuccess ? task.atMs : 0));
       // A result that the user discarded is not new attention for a drawer card.
       if (discardedSuccess) this.set(record, 'drawerSeen', record.seen);

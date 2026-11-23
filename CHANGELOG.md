@@ -4,6 +4,10 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Antigravity CLI: a foreground Working row shows Unknown after 60 seconds with no hook event or transcript change. agy can omit the Stop hook after Esc or a denied tool request. ASB does not guess a result for a quiet turn.
+- OpenCode: the Bridge checks if the local engine can hold a phone approval before it reads the session context. It skips the read when phone approvals are off or no phone is paired.
+- PC sounds: a new question or approval can play Needs input again while the row still needs input. The same request does not play again on each scan.
+
 - OpenCode 2: paired phones can now answer OpenCode choice forms (1 to 4 single-choice or multi-select fields, 1 to 8 options each) on Linux with ASB Bridge and the phone answer switches on. Forms with a free-text field or other field kinds stay on the PC. Checked end to end on 2026-11-23 with OpenCode 2.4.0 through the phone answer route (the answer reached the model); not yet tapped on a phone.
 - Codex: paired phones can answer `request_user_input` questions in the app and CLI with ASB Bridge and a session on the shared Codex app-server. The question stays on the PC. The first answer wins. Checked end to end on 2026-11-23 with the Codex CLI 0.171.0 on the shared app-server in Plan mode, through the phone answer route (the answer reached the model); the Codex app was not checked.
 - Antigravity CLI: paired phones can now answer agy `ask_question` prompts on Linux when the agy hook, kitty remote control, and the phone answer switches are on. The form stays on the PC; ASB verifies the form on the kitty screen and types the phone answer into it.

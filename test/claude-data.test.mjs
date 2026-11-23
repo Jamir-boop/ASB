@@ -1514,7 +1514,7 @@ test('a live registry permission wait gets the 10 s grace, and a question does n
   assert.deepEqual([question.awaitingPermission, question.awaitingUserInput, question[PERMISSION_WAIT]], [true, true, undefined]);
   assert.equal(applyLiveClaudeStatus(thread, records({ status: 'busy', waitingFor: undefined }), nowMs)[PERMISSION_WAIT], undefined);
   const noTime = applyLiveClaudeStatus(thread, records({ statusUpdatedAt: 0 }), nowMs);
-  assert.deepEqual([noTime.awaitingPermission, noTime.pendingToolAtMs], [true, nowMs]);
+  assert.deepEqual([noTime.awaitingPermission, noTime.pendingToolAtMs], [true, 0]);
 });
 
 test('desktop Claude loads an app approval for an open browser tool', async (t) => {

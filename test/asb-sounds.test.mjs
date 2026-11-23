@@ -6,7 +6,7 @@ import http from 'node:http';
 import { promisify } from 'node:util';
 import { BIT_DONE, BIT_FAILED, BIT_INPUT, SOUND_DIR, WINDOWS_PLAYER_ARGS, createSoundPlayer, createSoundWatcher, soundBaseline, soundBits, soundEvents } from '../src/asb-sounds.mjs';
 import { mergePeerRows } from '../src/machine-peers.mjs';
-import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, PendingTracker, QUESTION_AT } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-10-07T14:00:00Z');
 const row = (fields = {}) => ({ id: 'a', ...fields });
@@ -28,7 +28,7 @@ test('sound bits follow the phone rules', () => {
 test('a row missing from one update keeps its baseline bits', () => {
   const done = [row({ completionAttention: true }), row({ id: 'b' })];
   const skipped = soundBaseline(soundBaseline(null, done, now), [row({ id: 'b' })], now);
-  assert.equal(skipped.get('a'), BIT_DONE);
+  assert.equal(skipped.get('a').bits, BIT_DONE);
   assert.deepEqual(soundEvents(skipped, done, now), []);
 });
 
@@ -40,6 +40,42 @@ test('sound events need a baseline and fire only newly set bits', () => {
   const both = [row({ completionAttention: true, actionAttention: true }), row({ id: 'b', failedAttention: true })];
   assert.deepEqual(kinds(soundEvents(soundBaseline(null, done, now), both, now)), [['a', BIT_INPUT], ['b', BIT_FAILED]]);
   assert.deepEqual(soundEvents(new Map(), [row({ archived: true, completionAttention: true })], now), []);
+});
+
+test('a second question or approval sounds once when the row stays in Needs input', async () => {
+  for (const tool of ['AskUserQuestion', 'Bash']) {
+    const tracker = new PendingTracker(false);
+    const played = [];
+    const watch = createSoundWatcher((kind) => played.push(kind));
+    const scan = async (atMs, scanAtMs) => {
+      const thread = { id: 'a', externalId: 'local_a', provider: 'claude-desktop-code', lifecycleRunning: true, agentActivityAtMs: scanAtMs };
+      if (atMs !== null) Object.assign(thread, { awaitingPermission: true, pendingTools: [{ tool }], pendingToolAtMs: atMs,
+        ...(tool === 'AskUserQuestion' ? { awaitingUserInput: true, latestUserQuestionAtMs: atMs } : {}) });
+      const dashboard = await tracker.observe(buildSwitchboardDashboard([thread], [], scanAtMs));
+      watch(dashboard);
+      return dashboard.threads[0];
+    };
+    await scan(null, now);
+    assert.equal(soundBits(await scan(now + 1, now + 1)), BIT_INPUT);
+    await scan(now + 1, now + 2);
+    assert.deepEqual(played, [BIT_INPUT], tool);
+    assert.equal(soundBits(await scan(now + 3, now + 3)), BIT_INPUT);
+    watch({ threads: [] });
+    await scan(now + 3, now + 4);
+    // A newer request can close before an older one, which must not replay.
+    await scan(now + 1, now + 5);
+    await scan(now + 3, now + 6);
+    assert.deepEqual(played, [BIT_INPUT, BIT_INPUT], tool);
+  }
+});
+
+test('a wait that gets a timestamp late does not replay', () => {
+  const played = [];
+  const watch = createSoundWatcher((kind) => played.push(kind));
+  watch({ threads: [row()] });
+  watch({ threads: [row({ questionPending: true, questionAttention: true })] });
+  watch({ threads: [row({ questionPending: true, questionAttention: true, [QUESTION_AT]: now })] });
+  assert.deepEqual(played, [BIT_INPUT]);
 });
 
 test('a usage-limit stop plays Failed once and the reset plays nothing', () => {

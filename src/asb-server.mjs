@@ -521,11 +521,14 @@ export function createAsbServer({
         return;
       }
       const sessionKey = /^[A-Za-z0-9_-]{1,128}$/;
+      // OpenCode checks first so it does not read the session context for a request that stays on the PC.
+      const checkApproval = url.pathname === '/api/agent/wait' && exactKeys(body, ['checkApproval', 'provider', 'sessionKey'])
+        && body.provider === 'opencode' && body.checkApproval === true;
       const wanted = url.pathname === '/api/agent/claude-wait'
         ? exactKeys(body, ['questions', 'sessionId']) && typeof body.sessionId === 'string' && sessionKey.test(body.sessionId)
           && { provider: 'claude', sessionKey: body.sessionId, questions: body.questions }
         : (exactKeys(body, ['provider', 'question', 'sessionKey']) && exactKeys(body.question, ['questions'])
-          || exactKeys(body, ['approval', 'provider', 'sessionKey'])) && PROVIDERS.includes(body.provider)
+          || exactKeys(body, ['approval', 'provider', 'sessionKey']) || checkApproval) && PROVIDERS.includes(body.provider)
           && typeof body.sessionKey === 'string' && sessionKey.test(body.sessionKey)
           && { provider: body.provider, sessionKey: body.sessionKey, ...(body.question ? { questions: body.question.questions } : { approval: body.approval }) };
       if (!wanted) {
@@ -533,9 +536,11 @@ export function createAsbServer({
         return;
       }
       try {
-        const ready = wanted.provider === 'codex' && wanted.approval !== undefined ? approveEnabled() && await phoneSeenWithin(60_000)
-          : (wanted.approval === undefined ? answerEnabled() : approveEnabled()) && await phonePaired();
+        const approval = checkApproval || wanted.approval !== undefined;
+        const ready = approval && wanted.provider === 'codex' ? approveEnabled() && await phoneSeenWithin(60_000)
+          : (approval ? approveEnabled() : answerEnabled()) && await phonePaired();
         if (!ready) { sendJson(response, 200, { wait: false }); return; }
+        if (checkApproval) { sendJson(response, 200, { wait: claudeQuestions.canOpen(wanted.provider, wanted.sessionKey) }); return; }
         const { requestId } = claudeQuestions.open(wanted);
         startQuestionTimer();
         sendJson(response, 200, { wait: true, requestId });

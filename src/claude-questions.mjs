@@ -115,11 +115,19 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
     return record?.state === 'open';
   };
   const openList = () => [...records.values()].filter(isOpen);
+  const sameSession = (record, provider, sessionKey) => record.provider === provider && record.sessionKey === sessionKey;
+  const hasRoom = (open, provider, sessionKey) => open.length < MAX_OPEN || open.some((record) => sameSession(record, provider, sessionKey));
 
   return {
     onCodexChange(listener) {
       codexListeners.add(listener);
       return () => codexListeners.delete(listener);
+    },
+    // Check admission without opening or closing any request.
+    canOpen(provider, sessionKey) {
+      const atMs = now();
+      const open = [...records.values()].filter((record) => record.state === 'open' && !(record.deadlineAtMs <= atMs));
+      return hasRoom(open, provider, sessionKey);
     },
     // `{ provider, sessionKey, questions }` or `{ provider, sessionKey, approval }`.
     open({ provider, sessionKey, questions, approval }) {
@@ -128,8 +136,9 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
       const kind = approval === undefined ? 'question' : 'approval';
       const payload = kind === 'question' ? checkedQuestions(questions) : questions === undefined ? checkedApproval(approval) : null;
       if (!payload) throw fail(400, kind === 'question' ? 'Invalid question.' : 'Invalid approval.');
-      for (const record of openList()) if (record.provider === provider && record.sessionKey === sessionKey) end(record, 'closed');
-      if (openList().length >= MAX_OPEN) throw fail(503, 'Too many open questions.');
+      const open = openList();
+      if (!hasRoom(open, provider, sessionKey)) throw fail(503, 'Too many open questions.');
+      for (const record of open) if (sameSession(record, provider, sessionKey)) end(record, 'closed');
       let requestId;
       do requestId = randomBytes(16).toString('hex'); while (records.has(requestId));
       const atMs = now();

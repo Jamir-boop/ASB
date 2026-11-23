@@ -20,11 +20,12 @@ const MAX_RECORD = 16 * 1024;
 const MAX_TITLE = 1024;
 const BAD_TITLE_CHAR = /[\x00-\x1f\x7f-\x9f\p{Cf}\u2028\u2029]/u;
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
-const NO_NEWS_MS = 10 * 60 * 1000;
+const NO_NEWS_MS = 60_000;
 // agy fires no event when it ends, so a live row is checked again at the next 30 s mark.
 const LIVE_CHECK_MS = 30_000;
 const KITTY_LEVELS = 8;
 export const AGY_FOCUS_ERROR = 'ASB could not focus this agy session in kitty.';
+export const AGY_QUIET_REASON = 'No news from the agy session for 60 seconds.';
 
 export const agyAbsolutePath = (value) => typeof value === 'string' && PATH_TEXT.test(value) && path.isAbsolute(value) ? path.resolve(value) : '';
 export const agyRecordsDir = (env = process.env, homeDir = os.homedir()) => path.join(stateDir(env, 'linux', homeDir), 'agy');
@@ -322,10 +323,10 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
     return thread;
   }
   if (state === 'question') thread.agyStatus = { state: 'waiting', reason: 'The current tool is waiting for an answer.' };
-  // Esc fires no event: working with no event or transcript change for 10 minutes is Unknown. Questions stay Waiting; background commands keep Working.
+  // shortcut: Quiet foreground work and an interrupt look the same, use a turn-end signal if agy adds one.
   const newsAtMs = Math.max(stateAtMs, transcriptAtMs);
   const quiet = state === 'working' && !record.background;
-  if (quiet && nowMs - newsAtMs > NO_NEWS_MS) thread.agyStatus = { state: 'unknown', reason: 'No news from the agy session for 10 minutes.' };
+  if (quiet && nowMs - newsAtMs > NO_NEWS_MS) thread.agyStatus = { state: 'unknown', reason: AGY_QUIET_REASON };
   const nextCheck = (Math.floor(nowMs / LIVE_CHECK_MS) + 1) * LIVE_CHECK_MS;
   thread.cliProcessCheckAtMs = quiet && !thread.agyStatus ? Math.min(nextCheck, newsAtMs + NO_NEWS_MS) : nextCheck;
   return thread;
