@@ -1,4 +1,4 @@
-// Antigravity CLI (agy) sessions from the records of the ASB agy hook (scripts/asb-agy-hook.mjs): IDs, paths, times, and states only.
+// Antigravity CLI (agy) sessions from the ASB agy hook records: session metadata and states, not conversation text.
 // A live row in a kitty with remote control can focus its kitty window. The Bridge also uses these records to bind.
 // ASB never reads agy's own stores, its login, or its transcript text (the transcript is only stat'ed).
 import { execFile } from 'node:child_process';
@@ -14,7 +14,7 @@ const PATH_TEXT = /^[^\x00-\x1f\x7f]{1,4096}$/;
 const STATES = ['idle', 'working', 'question', 'done', 'failed'];
 const EVENTS = ['SessionStart', 'PreInvocation', 'PostInvocation', 'PreToolUse', 'PostToolUse', 'Stop'];
 const FIELDS = new Set(['conversationId', 'workspace', 'state', 'stateAtMs', 'createdAtMs', 'agyPid', 'agyStartTicks', 'kittyWindowId', 'kittyPid',
-  'kittyListenOn', 'background', 'transcriptMtimePath', 'event']);
+  'kittyListenOn', 'background', 'transcriptMtimePath', 'event', 'parentConversationId', 'agentName']);
 const MAX_FILES = 500;
 const MAX_RECORD = 16 * 1024;
 const MAX_TITLE = 1024;
@@ -53,11 +53,22 @@ export const agyTranscriptPath = (value, homeDir = os.homedir()) => {
 const digits = (value, max) => typeof value === 'string' && new RegExp(`^[0-9]{1,${max}}$`).test(value);
 const time = (value) => Number.isFinite(value) && value > 0;
 
+export function agyParentId(value, id) {
+  if (typeof value !== 'string' || !AGY_UUID.test(value) || typeof id !== 'string') return undefined;
+  const parent = value.toLowerCase();
+  return parent === id.toLowerCase() ? undefined : parent;
+}
+
+export const validAgyAgentName = (value) => typeof value === 'string' && value.length > 0 && value.length <= 80
+  && value === value.trim() && !/[\x00-\x1f\x7f-\x9f\p{Cf}\u2028\u2029]/u.test(value);
+
 export function validAgyRecord(record, id, homeDir = os.homedir()) {
   if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).some((key) => !FIELDS.has(key))) return false;
   const { conversationId, workspace, state, stateAtMs, createdAtMs, agyPid, agyStartTicks, kittyWindowId, kittyPid, kittyListenOn,
-    background, transcriptMtimePath, event } = record;
+    background, transcriptMtimePath, event, parentConversationId, agentName } = record;
   return conversationId === id && agyAbsolutePath(workspace) === workspace && STATES.includes(state) && time(stateAtMs) && time(createdAtMs)
+    && (parentConversationId === undefined || agyParentId(parentConversationId, id) === parentConversationId)
+    && (agentName === undefined || (parentConversationId !== undefined && validAgyAgentName(agentName)))
     && (agyPid === undefined) === (agyStartTicks === undefined)
     && (agyPid === undefined || (Number.isInteger(agyPid) && agyPid > 1 && digits(agyStartTicks, 20)))
     && (kittyWindowId === undefined || digits(kittyWindowId, 10)) && (kittyPid === undefined || digits(kittyPid, 10))
@@ -184,9 +195,11 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
   const { conversationId: id, workspace, state, stateAtMs } = record;
   const thread = {
     id: `agy:${id}`, externalId: id, provider: 'antigravity', providerLabel: 'Antigravity CLI', source: 'agy-cli', surface: 'cli',
-    title: title || `${path.basename(workspace) || workspace} · ${id.slice(0, 8)}`, cwd: workspace, archived: false,
+    title: (record.parentConversationId && record.agentName) || title || `${path.basename(workspace) || workspace} · ${id.slice(0, 8)}`, cwd: workspace, archived: false,
     createdAtMs: record.createdAtMs, updatedAtMs: stateAtMs, canOpen: false, transcriptActivityAtMs: stateAtMs,
   };
+  if (record.parentConversationId) Object.assign(thread, { isSubagent: true, parentThreadId: `agy:${record.parentConversationId}`,
+    agentNickname: record.agentName || '' });
   if (state === 'idle') thread.cliNoTranscript = true;
   if (live && canFocus) thread.canFocus = true;
   if (state === 'working' || state === 'question') {

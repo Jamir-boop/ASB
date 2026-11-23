@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadAntigravityDashboard } from '../src/antigravity-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
-import { buildSwitchboardDashboard, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-11-22T12:00:00Z');
 const minute = 60_000;
@@ -49,6 +49,25 @@ test('each live state gives its row status', async (t) => {
   assert.deepEqual([done.state, done.lastOutcome, done.completionAtMs], ['idle', '', now - minute]);
   const failed = byId.get(id(5));
   assert.deepEqual([failed.state, failed.lastOutcome, failed.failedAtMs, failed.completionAtMs], ['idle', 'failed', now - minute, 0]);
+});
+
+test('an agy subagent counts on its parent without changing the parent state or getting a card', async (t) => {
+  const { put, load, rows } = await fixture(t);
+  await put(1, { state: 'idle' });
+  await put(2, { parentConversationId: id(1), agentName: 'research' });
+  await put(3, { parentConversationId: id(4) });
+  const [, child, orphan] = (await load()).threads;
+  assert.deepEqual([child.isSubagent, child.parentThreadId, child.agentNickname, child.title],
+    [true, `agy:${id(1)}`, 'research', 'research']);
+  assert.deepEqual([orphan.isSubagent, orphan.parentThreadId, orphan.agentNickname, orphan.title],
+    [true, `agy:${id(4)}`, '', 'ws · 00000003']);
+  assert.equal(isSwitchboardRoot(child), false);
+  assert.equal(isSwitchboardRoot(orphan), false);
+  for (const state of ['working', 'failed']) {
+    await put(2, { parentConversationId: id(1), agentName: 'research', state });
+    assert.deepEqual((await rows()).map((row) => [row.externalId, row.subagentCount, row.state, row.lastOutcome]),
+      [[id(1), 1, 'idle', '']], state);
+  }
 });
 
 test('a record whose agy ended, or whose PID was reused, is not live', async (t) => {
@@ -117,6 +136,10 @@ test('bad files are skipped, at most 500 files are read, and old records that ar
   await writeFile(path.join(dataDir, `${id(10)}.json`), JSON.stringify({ conversationId: id(10), pad: 'x'.repeat(20_000) }));
   await symlink(path.join(dataDir, `${id(1)}.json`), path.join(dataDir, `${id(11)}.json`));
   await writeFile(path.join(dataDir, 'notes.json'), '{}');
+  await put(15, { parentConversationId: '../bad-id' });
+  await put(16, { parentConversationId: id(16).toUpperCase() });
+  await put(17, { agentName: 'orphan name' });
+  await put(18, { parentConversationId: id(1), agentName: 'bad\x7fname' });
   assert.deepEqual((await load()).threads.map((thread) => thread.externalId), [id(1)]);
   await put(12, { agyPid: 401, stateAtMs: now - 8 * day });
   await put(13, { stateAtMs: now - 8 * day });

@@ -32,7 +32,7 @@ async function fixture(t) {
     const hook = { hookEventName: event, conversationId: ID, workspacePaths: [path.join(homeDir, 'ws')], cwd: path.join(homeDir, 'ws'),
       transcriptPath: path.join(homeDir, '.gemini', 'antigravity-cli', 'brain', ID, 'transcript.jsonl'),
       artifactDirectoryPath: path.join(homeDir, '.gemini', 'antigravity-cli', 'brain', ID), modelName: 'made-up-model',
-      lastUserInput: `${MARKER} prompt`, stepIdx: 1, invocationNum: 1, initialNumSteps: 0, ...fields };
+      lastUserInput: `${MARKER} prompt`, callerContext: `${MARKER} context`, stepIdx: 1, invocationNum: 1, initialNumSteps: 0, ...fields };
     const code = await agyHook([event], { stdin: Readable.from([Buffer.from(options.stdin ?? JSON.stringify(hook))]), write: (text) => output.push(text),
       env: options.env || env, homeDir, nowMs: options.nowMs ?? 1_000, parentPid: 500, read: options.read || agyTree(), writeRecord: options.writeRecord });
     return { code, output: output.join('') };
@@ -65,6 +65,29 @@ test('each event gives its state, keeps createdAtMs, and replies with the neutra
     transcriptMtimePath: path.join(homeDir, '.gemini', 'antigravity-cli', 'brain', ID, 'transcript.jsonl') });
 });
 
+test('a subagent record keeps its parent ID across events and saves only a valid name', async (t) => {
+  const { run, record } = await fixture(t);
+  const parentConversationId = '42B74C00-A221-41BA-96C9-1C571AC0565B';
+  for (const parent of [undefined, ID.toUpperCase(), '../bad-id']) {
+    await run('SessionStart', { parentConversationId: parent, agentName: 'research' });
+    const saved = await record();
+    assert.equal('parentConversationId' in saved, false);
+    assert.equal('agentName' in saved, false);
+  }
+  await run('SessionStart', { parentConversationId, agentName: ' research ' });
+  let saved = await record();
+  assert.deepEqual([saved.parentConversationId, saved.agentName], [parentConversationId.toLowerCase(), 'research']);
+  await run('PreInvocation');
+  saved = await record();
+  assert.equal(saved.parentConversationId, parentConversationId.toLowerCase());
+  for (const agentName of ['a'.repeat(81), 'a\x00b', 'a\x9fb', `a${String.fromCodePoint(0x202e)}b`]) {
+    await run('PreInvocation', { parentConversationId, agentName });
+    saved = await record();
+    assert.equal(saved.parentConversationId, parentConversationId.toLowerCase());
+    assert.equal('agentName' in saved, false);
+  }
+});
+
 test('Stop with fullyIdle false keeps working with background, an error gives failed with no text, and other tools change nothing', async (t) => {
   const { run, record } = await fixture(t);
   await run('PreInvocation');
@@ -88,7 +111,7 @@ test('no prompt, answer, tool input, error, model, or artifact text is in any re
   await run('Stop', { error: `${MARKER} error`, fullyIdle: true });
   for (const name of await readdir(dir)) {
     const text = await readFile(path.join(dir, name), 'utf8');
-    for (const word of [MARKER, 'made-up-model', 'lastUserInput', 'artifact', 'toolCall', 'error']) assert.equal(text.includes(word), false, word);
+    for (const word of [MARKER, 'made-up-model', 'lastUserInput', 'callerContext', 'artifact', 'toolCall', 'error']) assert.equal(text.includes(word), false, word);
   }
 });
 
