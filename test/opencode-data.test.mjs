@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { querySqliteJson } from '../src/codex-data.mjs';
 import { processStart } from '../src/claude-registry.mjs';
-import { defaultOpenCodeStateDir, invalidateOpenCodeData, loadOpenCodeDashboard, opencodeBridgeId } from '../src/opencode-data.mjs';
+import { defaultOpenCodeStateDir, invalidateOpenCodeData, loadOpenCodeDashboard, opencodeBridgeId, OPENCODE_APPROVAL_WAIT } from '../src/opencode-data.mjs';
 import { buildSwitchboardDashboard } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-10-19T12:00:00Z');
@@ -407,6 +407,7 @@ test('OpenCode shows Bridge questions and approvals only for a live receiver', a
     const load = () => loadOpenCodeDashboard({ dataDir: f.dataDir, stateDir: f.stateDir, nowMs: now });
     let thread = (await load()).threads.find((item) => item.id === sessionIds[0]);
     assert.equal(thread.awaitingPermission, true);
+    assert.equal(thread[OPENCODE_APPROVAL_WAIT], true);
     assert.equal(thread.pendingToolAtMs, now - 2 * minute);
     assert.equal(thread.awaitingUserInput, true);
     assert.equal(thread.userQuestionBlocking, true);
@@ -414,6 +415,7 @@ test('OpenCode shows Bridge questions and approvals only for a live receiver', a
     assert.equal(thread.latestUserQuestionAtMs, now - minute);
     const other = (await load()).threads.find((item) => item.id === sessionIds[1]);
     assert.equal(Object.hasOwn(other, 'awaitingPermission'), false);
+    assert.equal(OPENCODE_APPROVAL_WAIT in other, false);
     const board = buildSwitchboardDashboard((await load()).threads, [], now);
     const row = board.threads.find((item) => item.id === sessionIds[0]);
     assert.equal(row.state, 'waiting');
@@ -422,7 +424,12 @@ test('OpenCode shows Bridge questions and approvals only for a live receiver', a
     f.writer.exec('update runtime set questions = 0, question_at = null');
     thread = (await load()).threads.find((item) => item.id === sessionIds[0]);
     assert.equal(thread.awaitingUserInput, undefined);
+    assert.equal(thread[OPENCODE_APPROVAL_WAIT], true);
     assert.equal(buildSwitchboardDashboard([thread], [], now).threads[0].actionRequired, true);
+    // A question alone gives no approval mark (the engine closes the phone approval).
+    f.writer.exec('update runtime set approvals = 0, approval_at = null, questions = 1, question_at = 1');
+    assert.equal(OPENCODE_APPROVAL_WAIT in (await load()).threads.find((item) => item.id === sessionIds[0]), false);
+    f.writer.exec('update runtime set approvals = 2, approval_at = 1, questions = 0, question_at = null');
     // A receiver process that ended, or a PID with another start time, gives no wait.
     if (!windows) {
       f.writer.prepare('update receiver set proc_start = ?').run(`${procStart}0`);

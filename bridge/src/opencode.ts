@@ -1,10 +1,12 @@
 // OpenCode 2 plugin entry. A plain object works today (V7); no @opencode/plugin import.
 // One coordinator on globalThis holds the receivers; each setup() instance owns its location.
 import { readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { waitForDecision, whole, type Approval, type Decision } from './approval';
 import { Bridge } from './bridge';
+import { engineRuntime } from './engine';
 import { peers, privateDirectory, removeStaleReceivers } from './claude';
 import { createOpenCodeHost, opencodeBridgeId, unwrap, type OpenCodeHostParts } from './opencode-host';
 import { placeholderCommand, spawnPlaceholder } from './placeholder';
@@ -62,6 +64,10 @@ type Coordinator = {
   registering: Map<string, Promise<RegisterResult | undefined>>;
   running: Set<string>;
   seen: Set<string>;
+  // The phone waits by permission request ID: one per request in this process, as the stacked setup streams each see the request.
+  approvals: Map<string, { controller: AbortController; root: string; location: string }>;
+  // Phone decisions that OpenCode did not take (the reply threw): a count only.
+  replyFailures: number;
   configDir: string;
   stateDir: string;
 };
@@ -73,7 +79,8 @@ function coordinator(): Coordinator | undefined {
 function ensureCoordinator(configDir: string, stateDir: string): Coordinator {
   const existing = coordinator();
   if (existing) return existing;
-  const next: Coordinator = { instances: new Map(), receivers: new Map(), registering: new Map(), running: new Set(), seen: new Set(), configDir, stateDir };
+  const next: Coordinator = { instances: new Map(), receivers: new Map(), registering: new Map(), running: new Set(), seen: new Set(),
+    approvals: new Map(), replyFailures: 0, configDir, stateDir };
   (globalThis as Record<symbol, unknown>)[COORDINATOR] = next;
   return next;
 }
@@ -209,6 +216,7 @@ async function recentInputs(instance: Instance, openCodeSessionId: string) {
 }
 
 async function unregister(co: Coordinator, openCodeSessionId: string) {
+  stopApprovals(co, wait => wait.root === openCodeSessionId);
   const receiver = co.receivers.get(openCodeSessionId);
   if (!receiver) return;
   co.receivers.delete(openCodeSessionId);
@@ -253,7 +261,87 @@ function writeWaits(receiver: Receiver) {
   receiver.bridge.setWaits({ approvals: count('approval'), questions: count('question'), approvalAt: newest('approval'), questionAt: newest('question') });
 }
 
-async function handleEvent(co: Coordinator, event: { id?: string; type?: string; data?: Record<string, unknown> }) {
+function stopApprovals(co: Coordinator, test: (wait: { root: string; location: string }, requestId: string) => boolean) {
+  for (const [requestId, wait] of co.approvals) {
+    if (!test(wait, requestId)) continue;
+    wait.controller.abort();
+    co.approvals.delete(requestId);
+  }
+}
+
+const SESSION_KEY = /^[A-Za-z0-9_-]{1,128}$/;
+type ToolPart = { name: unknown; input: Record<string, unknown> };
+const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+// The tool part that a permission request names (`data.source`), from the session context at ask time (spike D1b).
+async function toolPartOf(ctx: any, data: Record<string, unknown>): Promise<ToolPart | null> {
+  const source = data.source;
+  if (!record(source) || typeof source.messageID !== 'string' || typeof source.id !== 'string' || typeof ctx?.session?.context !== 'function') return null;
+  try {
+    const rows = unwrap<unknown>(await ctx.session.context({ sessionID: data.sessionID }));
+    const message = (Array.isArray(rows) ? rows : []).find(row => record(row) && row.id === source.messageID) as Record<string, unknown> | undefined;
+    const part = (Array.isArray(message?.content) ? message.content : []).find(item => record(item) && item.type === 'tool' && item.id === source.id);
+    const input = part?.state?.input;
+    return record(input) ? { name: part.name, input } : null;
+  } catch { return null; }
+}
+
+// The phone card of an OpenCode permission request: the tool's own input, never the permission view. Null keeps it on the PC.
+// `resources` holds parsed parts of a command (D1a), so the card shows the command only when each part is in it.
+function opencodeApproval(data: Record<string, unknown>, part: ToolPart | null, directory: unknown, subagent: boolean): Approval | null {
+  const resources = data.resources;
+  if (!part || !Array.isArray(resources) || !resources.length || !resources.every(item => typeof item === 'string' && item)) return null;
+  const { input } = part;
+  const end = subagent ? ' for a subagent?' : '?';
+  const item = (label: string, text: string, mono = true) => ({ label, text, mono });
+  if (data.action === 'shell') {
+    const command = input.command;
+    const folder = typeof input.workdir === 'string' ? input.workdir : directory;
+    if (!whole(command) || !command || !resources.every(text => command.includes(text)) || !whole(folder) || !folder) return null;
+    return { kind: 'tool', title: `Allow a shell command${end}`, display: [item('Command', command), item('Folder', folder)], note: true };
+  }
+  if (data.action === 'edit' && (part.name === 'write' || part.name === 'edit')) {
+    const path = input.path;
+    if (!whole(path) || path !== resources[0]) return null;
+    const length = (value: unknown) => typeof value === 'string' ? value.length : 0;
+    const size = part.name === 'write' ? `${length(input.content)} characters` : `${length(input.oldString)} to ${length(input.newString)} characters`;
+    const display = [item('File', path)];
+    if (!isAbsolute(path)) {
+      if (!whole(directory) || !directory) return null;
+      display.push(item('Folder', directory));
+    }
+    display.push(item('Size', size, false));
+    return { kind: 'tool', title: `Allow a file change${end}`, display, note: true };
+  }
+  return null;
+}
+
+// Allow is one run only, never `always`; a deny always has a message, as a reject without one stops the turn (D0).
+function permissionReply(sessionID: string, requestID: string, decided: Decision) {
+  if (decided.decision === 'allow') return { sessionID, requestID, decision: 'once' as const };
+  return { sessionID, requestID, decision: 'reject' as const, message: decided.note === undefined ? 'Denied from the phone.' : `Denied from the phone: ${decided.note}` };
+}
+
+// One detached phone wait for a request. Only the setup of the request's own folder can reply (D1b), so no other instance is used.
+// The bridge replies only for a request that it registered and only from an engine answer of allow or deny.
+function askPhone(co: Coordinator, receiver: Receiver, data: Record<string, unknown>, requestId: string, directory: unknown, subagent: boolean) {
+  const owner = typeof directory === 'string' ? co.instances.get(directory) : undefined;
+  const sessionKey = receiver.openCodeSessionId;
+  if (!owner || typeof directory !== 'string' || !SESSION_KEY.test(sessionKey) || co.approvals.has(requestId)) return;
+  const controller = new AbortController();
+  co.approvals.set(requestId, { controller, root: sessionKey, location: directory });
+  void (async () => {
+    const approval = opencodeApproval(data, await toolPartOf(owner.ctx, data), directory, subagent);
+    if (!approval || controller.signal.aborted) return;
+    const decided = await waitForDecision(engineRuntime(), 'opencode', sessionKey, approval, controller.signal);
+    if (!decided || controller.signal.aborted) return;
+    // A failed reply is not tried again: the TUI dialog stays for the PC.
+    try { await owner.ctx.permission.reply(permissionReply(String(data.sessionID), requestId, decided)); }
+    catch { co.replyFailures += 1; }
+  })().catch(() => {});
+}
+
+async function handleEvent(co: Coordinator, event: { id?: string; type?: string; data?: Record<string, unknown>; location?: { directory?: unknown } }) {
   const type = event.type ?? '';
   if (!HANDLED_EVENTS.has(type)) return;
   const id = event.id;
@@ -273,7 +361,9 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     if (!receiver || !requestId) return;
     if (type === 'permission.asked' || type === 'form.created') receiver.asks.set(requestId, { kind: form ? 'question' : 'approval', at: Date.now() });
     else receiver.asks.delete(requestId);
+    if (type === 'permission.replied') stopApprovals(co, (_wait, id) => id === requestId);
     writeWaits(receiver);
+    if (type === 'permission.asked') askPhone(co, receiver, data, requestId, event.location?.directory, Boolean(session.parentID));
     return;
   }
   if (type === 'session.renamed') {
@@ -300,6 +390,7 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     receiver.lastActivity = Date.now();
     // A turn that ended has no open request.
     receiver.asks.clear();
+    stopApprovals(co, wait => wait.root === session.id);
     writeWaits(receiver);
     receiver.bridge.updateRuntime(await receiver.host.runtime());
     return;
@@ -403,7 +494,7 @@ export default {
     try {
       events = ctx.event.subscribe({ signal: controller.signal });
     } catch (error) { events = undefined; }
-    instance.disposers.push(() => controller.abort());
+    instance.disposers.push(() => controller.abort(), () => stopApprovals(co, wait => wait.location === directory));
     if (typeof (events as { [Symbol.asyncIterator]?: unknown } | undefined)?.[Symbol.asyncIterator] !== 'function') {
       console.error('ASB Bridge: OpenCode events are not available.');
     } else {
@@ -517,4 +608,4 @@ function compareVersion(a: string, b: string) {
   return 0;
 }
 
-export { ensureCoordinator, coordinator, registerSession, unregister, deleteSession, handleEvent, canClose, expireIdle, bridgeIdOf, rootSessionId, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS };
+export { opencodeApproval, permissionReply, ensureCoordinator, coordinator, registerSession, unregister, deleteSession, handleEvent, canClose, expireIdle, bridgeIdOf, rootSessionId, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS };

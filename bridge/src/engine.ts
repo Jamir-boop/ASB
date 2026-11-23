@@ -46,10 +46,11 @@ export function engineRuntime(env: Record<string, string | undefined> = process.
   return null;
 }
 
-export async function engineRequest(runtime: EngineRuntime, route: string, { method = 'GET', body, timeoutMs }: { method?: 'GET' | 'POST'; body?: unknown; timeoutMs?: number } = {}) {
+export async function engineRequest(runtime: EngineRuntime, route: string, { method = 'GET', body, timeoutMs, signal }: { method?: 'GET' | 'POST'; body?: unknown; timeoutMs?: number; signal?: AbortSignal } = {}) {
   const origin = `http://127.0.0.1:${runtime.port}`;
+  const timeout = AbortSignal.timeout(timeoutMs ?? (method === 'POST' && route === '/api/relay/send' ? 12_000 : 2_000));
   const response = await fetch(`${origin}${route}`, { method, redirect: 'error',
-    signal: AbortSignal.timeout(timeoutMs ?? (method === 'POST' && route === '/api/relay/send' ? 12_000 : 2_000)),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
     headers: { 'x-asb-source-token': runtime.sourceToken, ...(method === 'POST' ? { origin, 'content-type': 'application/json' } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const bytes = await response.arrayBuffer();

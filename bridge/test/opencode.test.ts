@@ -11,7 +11,8 @@ import { peers, register, uniqueName, bridgeNameBase, namedSession, inbox, peerA
 import { createOpenCodeHost, modeFromRules, opencodeBridgeId, uuidV5 } from '../src/opencode-host';
 import { listSessions, sendMessage, agentLabel } from '../src/tools';
 import { Bridge } from '../src/bridge';
-import { ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, handleEvent, expireIdle, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
+import { fakeEngine } from './engine-fixture';
+import { opencodeApproval, permissionReply, ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, handleEvent, expireIdle, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
 
 const posix = test.skipIf(process.platform === 'win32');
 // The ASB engine runs on Linux and Windows only: `engineRuntime` gives null on macOS, so no references come back.
@@ -1220,6 +1221,247 @@ posix('permission and form requests open and close waits, a subagent request wai
     expect(waits()).toEqual({ approvals: 0, questions: 0, approval_at: null, question_at: null });
     expect(co.receivers.get('ses_wait')?.asks.size).toBe(0);
   } finally {
+    await resetCoordinator(co);
+    rmSync(root, { recursive: true });
+  }
+});
+
+const askData = (extra: Record<string, unknown> = {}) => ({ id: 'per_1', sessionID: 'ses_a', action: 'shell', resources: ['touch a.txt'],
+  save: ['touch *'], source: { type: 'tool', messageID: 'msg_1', id: 'call_1' }, ...extra });
+const shellPart = (input: Record<string, unknown>) => ({ name: 'shell', input });
+const FOLDER = '/work/project';
+
+test('the shell card shows the tool input command and its folder, only when each resource is in the command', () => {
+  expect(opencodeApproval(askData(), shellPart({ command: 'touch a.txt' }), FOLDER, false)).toEqual({ kind: 'tool', title: 'Allow a shell command?',
+    display: [{ label: 'Command', text: 'touch a.txt', mono: true }, { label: 'Folder', text: FOLDER, mono: true }], note: true });
+  // A compound command: the resources are its parts, the card has the full line.
+  expect(opencodeApproval(askData({ resources: ['echo one', 'echo two'] }), shellPart({ command: 'echo one && echo two' }), FOLDER, false)?.display[0])
+    .toEqual({ label: 'Command', text: 'echo one && echo two', mono: true });
+  // The tool's own work folder wins; a workdir that is not a string does not.
+  expect(opencodeApproval(askData(), shellPart({ command: 'touch a.txt', workdir: 'sub' }), FOLDER, false)?.display[1]!.text).toBe('sub');
+  expect(opencodeApproval(askData(), shellPart({ command: 'touch a.txt', workdir: 5 }), FOLDER, false)?.display[1]!.text).toBe(FOLDER);
+  expect(opencodeApproval(askData(), shellPart({ command: 'touch a.txt' }), FOLDER, true)?.title).toBe('Allow a shell command for a subagent?');
+  expect(opencodeApproval(askData({ resources: ['a'.repeat(4_000)] }), shellPart({ command: 'a'.repeat(4_000) }), FOLDER, false)).not.toBeNull();
+  // No card: a resource not in the input, no resources, an empty resource, no tool part, no command, a 4,001-character command,
+  // no folder, an unknown action.
+  for (const [data, part, folder] of [
+    [askData({ resources: ['rm -rf data'] }), shellPart({ command: 'touch a.txt' }), FOLDER],
+    [askData({ resources: [] }), shellPart({ command: 'touch a.txt' }), FOLDER],
+    [askData({ resources: [''] }), shellPart({ command: 'touch a.txt' }), FOLDER],
+    [askData({ resources: 'touch a.txt' }), shellPart({ command: 'touch a.txt' }), FOLDER],
+    [askData(), null, FOLDER],
+    [askData(), shellPart({ cmd: 'touch a.txt' }), FOLDER],
+    [askData({ resources: ['a'] }), shellPart({ command: 'a'.repeat(4_001) }), FOLDER],
+    [askData(), shellPart({ command: 'touch a.txt' }), undefined],
+    [askData(), shellPart({ command: 'touch a.txt' }), ''],
+    [askData({ action: 'webfetch' }), shellPart({ command: 'touch a.txt' }), FOLDER],
+  ] as const) expect(opencodeApproval(data as never, part as never, folder, false)).toBeNull();
+});
+
+test('a bidi, a zero-width, or a C1 character in the command, the path, or the folder gives no card', () => {
+  for (const mark of ['\u202e', '\u200b', '\x85']) {
+    const command = `touch a${mark}.txt`;
+    expect(opencodeApproval(askData({ resources: [command] }), shellPart({ command }), FOLDER, false)).toBeNull();
+    expect(opencodeApproval(askData(), shellPart({ command: 'touch a.txt' }), `/work/pro${mark}ject`, false)).toBeNull();
+    expect(opencodeApproval(askData(), shellPart({ command: 'touch a.txt', workdir: `su${mark}b` }), FOLDER, false)).toBeNull();
+    const path = `b${mark}.txt`;
+    expect(opencodeApproval(askData({ action: 'edit', resources: [path] }), { name: 'write', input: { path, content: 'x' } }, FOLDER, false)).toBeNull();
+  }
+});
+
+test('the file card shows the path and sizes only, with the folder for a relative path', () => {
+  const edit = (path: string) => askData({ action: 'edit', resources: [path], metadata: { files: [{ file: path, patch: '+secret text', status: 'added' }] } });
+  const relative = opencodeApproval(edit('b.txt'), { name: 'write', input: { path: 'b.txt', content: 'test\n' } }, FOLDER, false);
+  expect(relative).toEqual({ kind: 'tool', title: 'Allow a file change?', display: [{ label: 'File', text: 'b.txt', mono: true },
+    { label: 'Folder', text: FOLDER, mono: true }, { label: 'Size', text: '5 characters', mono: false }], note: true });
+  expect(JSON.stringify(relative)).not.toContain('test');
+  expect(JSON.stringify(relative)).not.toContain('secret');
+  const absolute = opencodeApproval(edit('/work/b.txt'), { name: 'edit', input: { path: '/work/b.txt', oldString: 'old', newString: 'newer' } }, FOLDER, true);
+  expect(absolute).toEqual({ kind: 'tool', title: 'Allow a file change for a subagent?', display: [{ label: 'File', text: '/work/b.txt', mono: true },
+    { label: 'Size', text: '3 to 5 characters', mono: false }], note: true });
+  expect(JSON.stringify(absolute)).not.toContain('newer');
+  // An absolute path needs no folder.
+  expect(opencodeApproval(edit('/work/b.txt'), { name: 'write', input: { path: '/work/b.txt', content: '' } }, undefined, false)?.display.length).toBe(2);
+  // No card: a path not equal to resources[0], another tool (patch, worktree remove), no path, a relative path with no folder.
+  for (const [data, part, folder] of [
+    [edit('b.txt'), { name: 'write', input: { path: 'sub/b.txt', content: '' } }, FOLDER],
+    [edit('/work/b.txt'), { name: 'write', input: { path: 'b.txt', content: '' } }, FOLDER],
+    [edit('b.txt'), { name: 'patch', input: { path: 'b.txt' } }, FOLDER],
+    [edit('/work/tree'), { name: 'worktree_remove', input: { directory: '/work/tree' } }, FOLDER],
+    [edit('b.txt'), { name: 'write', input: { content: '' } }, FOLDER],
+    [edit('b.txt'), { name: 'write', input: { path: 'b.txt', content: '' } }, undefined],
+  ] as const) expect(opencodeApproval(data as never, part as never, folder, false)).toBeNull();
+});
+
+test('the reply is once for allow and reject with a message for deny, never always', () => {
+  expect(permissionReply('ses_a', 'per_1', { decision: 'allow' })).toEqual({ sessionID: 'ses_a', requestID: 'per_1', decision: 'once' });
+  expect(permissionReply('ses_a', 'per_1', { decision: 'deny' })).toEqual({ sessionID: 'ses_a', requestID: 'per_1', decision: 'reject', message: 'Denied from the phone.' });
+  expect(permissionReply('ses_a', 'per_1', { decision: 'deny', note: 'Use b.txt.' }))
+    .toEqual({ sessionID: 'ses_a', requestID: 'per_1', decision: 'reject', message: 'Denied from the phone: Use b.txt.' });
+});
+
+const REQUEST_ID = 'b'.repeat(32);
+const opens = (engine: { calls: Array<{ route: string }> }) => engine.calls.filter(call => call.route === '/api/agent/wait').length;
+
+// A registered root session `ses_root` (and a child `ses_kid`) in /tmp/opencode-project, a context with the tool part, recorded replies,
+// and a fake engine whose poll replies come from `answer`.
+async function phoneSetup(answer: (poll: number) => unknown, reply?: (input: unknown) => Promise<unknown>) {
+  const home = tempHome();
+  const fake = fakeCtx();
+  const co = ensureCoordinator(home.configDir, home.stateDir);
+  const replies: unknown[] = [];
+  const ctx = fake.ctx as Record<string, any>;
+  ctx.session.context = async ({ sessionID }: { sessionID: string }) => ({ data: [{ id: 'msg_1', type: 'assistant', content: [
+    { type: 'reasoning', text: 'x' }, { type: 'tool', id: 'call_1', name: 'shell', executed: false, state: { status: 'running', input: { command: `touch ${sessionID}.txt` } } }] }] });
+  ctx.permission = { reply: reply ?? (async (input: unknown) => { replies.push(input); return {}; }) };
+  const instance = { ctx, directory: '/tmp/opencode-project', disposers: [] as Array<() => void> };
+  co.instances.set(instance.directory, instance);
+  fake.setSession('ses_root', { location: { directory: '/tmp/opencode-project' }, title: 'Root' });
+  fake.setSession('ses_kid', { location: { directory: '/tmp/opencode-project' }, title: 'Kid', parentID: 'ses_root' });
+  await handleEvent(co, { id: 'ev_start', type: 'session.execution.started', data: { sessionID: 'ses_root' } });
+  let polls = 0;
+  const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, route => route === '/api/agent/wait' ? { wait: true, requestId: REQUEST_ID } : answer(++polls));
+  let n = 0;
+  const ask = (sessionID = 'ses_root', requestID = 'per_1', directory: string | null = '/tmp/opencode-project') => handleEvent(co, {
+    id: `ev_ask_${++n}`, type: 'permission.asked', ...(directory === null ? {} : { location: { directory } }),
+    data: { id: requestID, sessionID, action: 'shell', resources: [`touch ${sessionID}.txt`], save: [], source: { type: 'tool', messageID: 'msg_1', id: 'call_1' } } });
+  return { co, fake, replies, engine, ask, instance,
+    async done() { engine.close(); await resetCoordinator(co); rmSync(home.root, { recursive: true }); } };
+}
+
+posix('a phone allow replies once and a deny rejects with the note; the registration body is exact', async () => {
+  for (const [answer, expected] of [
+    [{ state: 'answered', decision: 'allow' }, { sessionID: 'ses_root', requestID: 'per_1', decision: 'once' }],
+    [{ state: 'answered', decision: 'deny' }, { sessionID: 'ses_root', requestID: 'per_1', decision: 'reject', message: 'Denied from the phone.' }],
+    [{ state: 'answered', decision: 'deny', note: 'No.' }, { sessionID: 'ses_root', requestID: 'per_1', decision: 'reject', message: 'Denied from the phone: No.' }],
+  ] as const) {
+    const run = await phoneSetup(poll => poll === 1 ? { state: 'open' } : answer);
+    try {
+      await run.ask();
+      await until(() => run.replies.length === 1, 'reply');
+      expect(run.replies).toEqual([expected]);
+      expect(run.engine.calls[0]!.body).toEqual({ provider: 'opencode', sessionKey: 'ses_root', approval: { kind: 'tool', title: 'Allow a shell command?',
+        display: [{ label: 'Command', text: 'touch ses_root.txt', mono: true }, { label: 'Folder', text: '/tmp/opencode-project', mono: true }], note: true } });
+    } finally { await run.done(); }
+  }
+});
+
+posix('no reply without an answered allow or deny, and no record without the exact folder instance or a card', async () => {
+  for (const answer of [{ state: 'closed' }, { state: 'answered', decision: 'always' }, new Response('{}', { status: 404 })]) {
+    const run = await phoneSetup(() => answer);
+    try {
+      await run.ask();
+      await until(() => run.engine.calls.length === 2, 'poll');
+      await settle(50);
+      expect(run.replies).toEqual([]);
+    } finally { await run.done(); }
+  }
+  const run = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }));
+  try {
+    // Another folder, or no folder: no instance of that folder, so no record (the D1b reply fault).
+    await run.ask('ses_root', 'per_2', '/tmp/other-project');
+    await run.ask('ses_root', 'per_3', null);
+    // A root session ID outside the engine's sessionKey rule.
+    run.fake.setSession('ses.bad', { location: { directory: '/tmp/opencode-project' }, title: 'Bad' });
+    await handleEvent(run.co, { id: 'ev_start_bad', type: 'session.execution.started', data: { sessionID: 'ses.bad' } });
+    expect(run.co.receivers.has('ses.bad')).toBe(true);
+    await run.ask('ses.bad', 'per_6');
+    // A tool part that cannot be read.
+    (run.instance.ctx as Record<string, any>).session.context = async () => { throw new Error('gone'); };
+    await run.ask('ses_root', 'per_4');
+    await settle(100);
+    expect(opens(run.engine)).toBe(0);
+    expect(run.replies).toEqual([]);
+  } finally { await run.done(); }
+  // No engine: no reply.
+  const alone = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }));
+  try {
+    alone.engine.close();
+    await alone.ask();
+    await settle(100);
+    expect(alone.replies).toEqual([]);
+  } finally { await alone.done(); }
+});
+
+posix('a subagent request registers for the root session and replies for its own session', async () => {
+  const run = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }));
+  try {
+    await run.ask('ses_kid', 'per_kid');
+    await until(() => run.replies.length === 1, 'reply');
+    const body = run.engine.calls[0]!.body as { sessionKey: string; approval: { title: string; display: Array<{ text: string }> } };
+    expect([body.sessionKey, body.approval.title, body.approval.display[0]!.text]).toEqual(['ses_root', 'Allow a shell command for a subagent?', 'touch ses_kid.txt']);
+    expect(run.replies).toEqual([{ sessionID: 'ses_kid', requestID: 'per_kid', decision: 'once' }]);
+  } finally { await run.done(); }
+});
+
+posix('permission.replied, the turn end, and the stacked setups: one wait per request, aborted with no reply', async () => {
+  let release: ((value: unknown) => void) | undefined;
+  const run = await phoneSetup(() => new Promise(resolve => { release = resolve; }));
+  try {
+    await run.ask();
+    // The same request from a second setup stream (another event ID) starts nothing.
+    await run.ask();
+    await until(() => !!release, 'held poll');
+    expect(opens(run.engine)).toBe(1);
+    await handleEvent(run.co, { id: 'ev_replied', type: 'permission.replied', data: { sessionID: 'ses_root', requestID: 'per_1', reply: 'once' } });
+    expect(run.co.approvals.size).toBe(0);
+    release!({ state: 'answered', decision: 'allow' });
+    await settle(100);
+    expect(run.replies).toEqual([]);
+    release = undefined;
+    await run.ask('ses_root', 'per_5');
+    await until(() => !!release, 'held poll 2');
+    await handleEvent(run.co, { id: 'ev_end', type: 'session.execution.succeeded', data: { sessionID: 'ses_root' } });
+    expect(run.co.approvals.size).toBe(0);
+    release!({ state: 'answered', decision: 'allow' });
+    await settle(100);
+    expect(run.replies).toEqual([]);
+  } finally { await run.done(); }
+});
+
+posix('a reply that throws is counted and not tried again', async () => {
+  let calls = 0;
+  const run = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }), async () => { calls += 1; throw new Error('PermissionNotFoundError'); });
+  try {
+    await run.ask();
+    await until(() => run.co.replyFailures === 1, 'failure count');
+    await settle(50);
+    expect(calls).toBe(1);
+  } finally { await run.done(); }
+});
+
+posix('the plugin cleanup aborts its waits', async () => {
+  const { root, configDir, stateDir } = tempHome();
+  const co = ensureCoordinator(configDir, stateDir);
+  const { default: plugin } = await import('../src/opencode');
+  const fake = fakeCtx();
+  const ctx = fake.ctx as Record<string, any>;
+  const replies: unknown[] = [];
+  ctx.session.context = async () => [{ id: 'msg_1', type: 'assistant', content: [{ type: 'tool', id: 'call_1', name: 'shell', state: { input: { command: 'touch a.txt' } } }] }];
+  ctx.permission = { async reply(input: unknown) { replies.push(input); } };
+  let release: ((value: unknown) => void) | undefined;
+  const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, route => route === '/api/agent/wait' ? { wait: true, requestId: REQUEST_ID }
+    : new Promise(resolve => { release = resolve; }));
+  let cleanup: Awaited<ReturnType<typeof plugin.setup>> = undefined;
+  try {
+    fake.setSession('ses_root', { location: { directory: '/tmp/opencode-project' }, title: 'Root' });
+    cleanup = await plugin.setup(ctx);
+    fake.pushEvent({ id: 'ev_s', type: 'session.execution.started', data: { sessionID: 'ses_root' } });
+    await until(() => co.receivers.has('ses_root'), 'receiver');
+    fake.pushEvent({ id: 'ev_a', type: 'permission.asked', location: { directory: '/tmp/opencode-project' },
+      data: { id: 'per_1', sessionID: 'ses_root', action: 'shell', resources: ['touch a.txt'], source: { type: 'tool', messageID: 'msg_1', id: 'call_1' } } } as never);
+    await until(() => !!release, 'held poll');
+    const wait = co.approvals.get('per_1')!;
+    if (typeof cleanup === 'function') await cleanup();
+    cleanup = undefined;
+    expect(wait.controller.signal.aborted).toBe(true);
+    expect(co.approvals.size).toBe(0);
+    release!({ state: 'answered', decision: 'allow' });
+    await settle(100);
+    expect(replies).toEqual([]);
+  } finally {
+    if (typeof cleanup === 'function') await cleanup();
+    engine.close();
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
   }

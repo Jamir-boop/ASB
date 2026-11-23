@@ -16,7 +16,8 @@ import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { CLI_SESSION_IDS } from '../src/session-targets.mjs';
 import { processStart } from '../src/claude-registry.mjs';
-import { ACTION_AT, createSwitchboardServer, loadSwitchboardDashboard } from '../src/switchboard.mjs';
+import { ACTION_AT, buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard } from '../src/switchboard.mjs';
+import { OPENCODE_APPROVAL_WAIT } from '../src/opencode-data.mjs';
 import { claudeApproval } from '../scripts/asb-agent.mjs';
 
 // Made-up data only.
@@ -503,6 +504,42 @@ test('only the text=1 list has the approval field', async (t) => {
   e.store.close(requestId);
   assert.equal(await (await fetch(`${e.base}/api/dashboard?text=1`)).text().then((text) => text.includes('echo synthetic')), false);
   assert.ok(before);
+});
+
+test('an OpenCode approval stays open while its Bridge counts the request, and closes after the grace when it does not', async (t) => {
+  const time = clock(Date.now());
+  const store = createClaudeQuestions({ now: time });
+  let counted = false;
+  // A made-up OpenCode row: the Bridge wait gives it the approval mark (src/opencode-data.mjs).
+  const opencodeRow = () => buildSwitchboardDashboard([{ id: 'ses_synthetic', externalId: 'ses_synthetic', provider: 'opencode', source: 'opencode-db',
+    title: 'Synthetic', cwd: '/work/synthetic', createdAtMs: Date.now() - 60_000, updatedAtMs: Date.now() - 1_000,
+    ...(counted ? { awaitingPermission: true, pendingToolAtMs: Date.now() - 1_000, [OPENCODE_APPROVAL_WAIT]: true } : {}) }], [], Date.now()).threads;
+  const e = await engine(t, { store, loadDashboard: async (options) => {
+    const board = await loadSwitchboardDashboard({ ...options, loadCodex: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) });
+    board.threads.push(...opencodeRow());
+    return board;
+  } });
+  const open = async () => (await (await e.post('/api/agent/wait', { provider: 'opencode', sessionKey: 'ses_synthetic', approval: approval() })).json()).requestId;
+  const load = () => e.server.dashboardForRequest({ force: true });
+  counted = true;
+  const first = await open();
+  await load();
+  assert.equal(store.forSession('opencode', 'ses_synthetic').seenPending, true);
+  time.advance(31_000);
+  await load();
+  assert.equal(store.forSession('opencode', 'ses_synthetic')?.requestId, first);
+  // The Bridge no longer counts it (a PC answer, or the turn ended): the next load closes it.
+  counted = false;
+  await load();
+  assert.deepEqual(await store.wait(first, 0), { state: 'closed' });
+  // A record that the Bridge never counts stays for the grace, then closes; the Claude sets do not close it.
+  const second = await open();
+  time.advance(29_000);
+  await load();
+  assert.equal(store.forSession('opencode', 'ses_synthetic')?.requestId, second);
+  time.advance(2_000);
+  await load();
+  assert.deepEqual(await store.wait(second, 0), { state: 'closed' });
 });
 
 test('the raw registry wait, not the row state with its grace, keeps a Claude approval open', async (t) => {
