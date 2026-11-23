@@ -1,7 +1,7 @@
 // OpenCode 2 plugin entry. A plain object works today (V7); no @opencode/plugin import.
 // One coordinator on globalThis holds the receivers; each setup() instance owns its location.
 import { readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { waitForDecision, whole, type Approval, type Decision } from './approval';
@@ -302,16 +302,14 @@ function opencodeApproval(data: Record<string, unknown>, part: ToolPart | null, 
   }
   if (data.action === 'edit' && (part.name === 'write' || part.name === 'edit')) {
     const path = input.path;
-    if (!whole(path) || resources.length !== 1 || path !== resources[0]) return null;
+    if (!whole(path) || !path || resources.length !== 1 || !whole(directory) || !isAbsolute(directory)) return null;
+    // OpenCode can give a relative permission resource for an absolute tool input.
+    const absolute = (value: string) => isAbsolute(value) ? value : resolve(directory, value);
+    const file = absolute(path);
+    if (!whole(file) || file !== absolute(resources[0])) return null;
     const length = (value: unknown) => typeof value === 'string' ? value.length : 0;
     const size = part.name === 'write' ? `${length(input.content)} characters` : `${length(input.oldString)} to ${length(input.newString)} characters`;
-    const display = [item('File', path)];
-    if (!isAbsolute(path)) {
-      if (!whole(directory) || !directory) return null;
-      display.push(item('Folder', directory));
-    }
-    display.push(item('Size', size, false));
-    return { kind: 'tool', title: `Allow a file change${end}`, display, note: true };
+    return { kind: 'tool', title: `Allow a file change${end}`, display: [item('File', file), item('Size', size, false)], note: true };
   }
   return null;
 }

@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { once } from 'node:events';
@@ -1269,20 +1269,26 @@ test('a bidi, a zero-width, or a C1 character in the command, the path, or the f
   }
 });
 
-test('the file card shows the path and sizes only, with the folder for a relative path', () => {
+test('the file card shows the matching absolute path and sizes only', () => {
   const edit = (path: string) => askData({ action: 'edit', resources: [path], metadata: { files: [{ file: path, patch: '+secret text', status: 'added' }] } });
-  const relative = opencodeApproval(edit('b.txt'), { name: 'write', input: { path: 'b.txt', content: 'test\n' } }, FOLDER, false);
-  expect(relative).toEqual({ kind: 'tool', title: 'Allow a file change?', display: [{ label: 'File', text: 'b.txt', mono: true },
-    { label: 'Folder', text: FOLDER, mono: true }, { label: 'Size', text: '5 characters', mono: false }], note: true });
+  const directory = resolve(FOLDER);
+  const file = join(directory, 'b.txt');
+  const relative = opencodeApproval(edit('b.txt'), { name: 'write', input: { path: 'b.txt', content: 'test\n' } }, directory, false);
+  expect(relative).toEqual({ kind: 'tool', title: 'Allow a file change?', display: [{ label: 'File', text: file, mono: true },
+    { label: 'Size', text: '5 characters', mono: false }], note: true });
+  expect(opencodeApproval(edit('b.txt'), { name: 'write', input: { path: file, content: 'test\n' } }, directory, false)).toEqual(relative);
+  const outside = resolve(directory, '../b.txt');
+  expect(opencodeApproval(edit(outside), { name: 'write', input: { path: '../b.txt', content: '' } }, directory, false)?.display[0]?.text).toBe(outside);
   expect(JSON.stringify(relative)).not.toContain('test');
   expect(JSON.stringify(relative)).not.toContain('secret');
   const absolute = opencodeApproval(edit('/work/b.txt'), { name: 'edit', input: { path: '/work/b.txt', oldString: 'old', newString: 'newer' } }, FOLDER, true);
   expect(absolute).toEqual({ kind: 'tool', title: 'Allow a file change for a subagent?', display: [{ label: 'File', text: '/work/b.txt', mono: true },
     { label: 'Size', text: '3 to 5 characters', mono: false }], note: true });
   expect(JSON.stringify(absolute)).not.toContain('newer');
-  // An absolute path needs no folder.
-  expect(opencodeApproval(edit('/work/b.txt'), { name: 'write', input: { path: '/work/b.txt', content: '' } }, undefined, false)?.display.length).toBe(2);
-  // No card: a path not equal to resources[0], another tool (patch, worktree remove), no path, a relative path with no folder.
+  for (const folder of [undefined, '', 'relative', '/work/\u202e']) {
+    expect(opencodeApproval(edit(file), { name: 'write', input: { path: file, content: '' } }, folder, false)).toBeNull();
+  }
+  // No card for different files, other tools, or missing fields.
   for (const [data, part, folder] of [
     [edit('b.txt'), { name: 'write', input: { path: 'sub/b.txt', content: '' } }, FOLDER],
     [edit('/work/b.txt'), { name: 'write', input: { path: 'b.txt', content: '' } }, FOLDER],
