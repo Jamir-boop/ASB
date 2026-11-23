@@ -88,6 +88,43 @@ test('a subagent record keeps its parent ID across events and saves only a valid
   }
 });
 
+test('a new conversation in the agy process of one working root conversation is its subagent', async (t) => {
+  const { run, record, dir } = await fixture(t);
+  const PARENT = '42b74c00-a221-41ba-96c9-1c571ac0565b';
+  const OTHER = '5e1f0a11-a221-41ba-96c9-1c571ac0565b';
+  const saved = async (id) => JSON.parse(await readFile(path.join(dir, `${id}.json`), 'utf8'));
+  const otherTree = async (pid, name) => name === 'stat' && pid === 400 ? stat22(400, 'agy', 300, '999') : agyTree()(pid, name);
+  // Parent done: no parent. Then working in another agy process: no parent.
+  await run('Stop', { conversationId: PARENT, fullyIdle: true });
+  await run('SessionStart');
+  assert.equal('parentConversationId' in await record(), false);
+  await rm(path.join(dir, `${ID}.json`));
+  await run('PreInvocation', { conversationId: PARENT }, { read: otherTree });
+  await run('SessionStart');
+  assert.equal('parentConversationId' in await record(), false);
+  // Working root in the same process: the new conversation is its subagent, and keeps it after the parent stops.
+  await rm(path.join(dir, `${ID}.json`));
+  await run('PreInvocation', { conversationId: PARENT });
+  await run('SessionStart');
+  assert.equal((await record()).parentConversationId, PARENT);
+  await run('Stop', { conversationId: PARENT, fullyIdle: true });
+  await run('PreInvocation');
+  assert.equal((await record()).parentConversationId, PARENT);
+  // A working subagent is not a parent: a third conversation goes under the root only.
+  await run('PreInvocation', { conversationId: PARENT });
+  await run('SessionStart', { conversationId: OTHER });
+  assert.equal((await saved(OTHER)).parentConversationId, PARENT);
+  // An old record without a parent stays a root; two working roots give no parent.
+  await rm(path.join(dir, `${OTHER}.json`));
+  await run('Stop', { conversationId: PARENT, fullyIdle: true });
+  await run('PreInvocation', { conversationId: OTHER });
+  assert.equal('parentConversationId' in await saved(OTHER), false);
+  await run('PreInvocation', { conversationId: PARENT });
+  await rm(path.join(dir, `${ID}.json`));
+  await run('SessionStart');
+  assert.equal('parentConversationId' in await record(), false);
+});
+
 test('Stop with fullyIdle false keeps working with background, an error gives failed with no text, and other tools change nothing', async (t) => {
   const { run, record } = await fixture(t);
   await run('PreInvocation');

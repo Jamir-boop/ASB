@@ -96,7 +96,7 @@ The first command of a new session can get no card. The first command after a ti
 
 ## Antigravity CLI
 
-ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and shows their state. On main, not in a release yet. A live row in a kitty with remote control opens by focusing its kitty window. ASB counts each agy subagent on the card of the session that started it and does not show a separate card.
+ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and shows their state. On main, not in a release yet. A live row in a kitty with remote control opens by focusing its kitty window. ASB counts each agy subagent on the card of the session that started it and does not show a separate card. agy hooks do not give the parent session, so ASB uses this rule: a new conversation that starts in the agy process of one working session is a subagent of that session.
 
 Run `asb agent agy-hook install` to add the hook. It writes one `asb` key into `~/.gemini/config/hooks.json`, keeps the old file as `hooks.json.asb-backup`, and leaves other hooks as they are. `asb agent agy-hook status` shows the state, and `asb agent agy-hook remove` takes the hook out. Linux only.
 

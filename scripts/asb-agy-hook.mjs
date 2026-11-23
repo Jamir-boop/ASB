@@ -54,10 +54,26 @@ async function oldRecord(file) {
     handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await handle.stat();
     if (!info.isFile() || info.size > MAX_RECORD) return null;
-    const { createdAtMs, parentConversationId } = JSON.parse(await handle.readFile('utf8'));
+    const { createdAtMs, parentConversationId, state, agyPid, agyStartTicks } = JSON.parse(await handle.readFile('utf8'));
     const value = Number(createdAtMs);
-    return { createdAtMs: Number.isFinite(value) && value > 0 ? value : 0, parentConversationId };
+    return { createdAtMs: Number.isFinite(value) && value > 0 ? value : 0, parentConversationId, state, agyPid, agyStartTicks };
   } catch { return null; } finally { await handle?.close().catch(() => {}); }
+}
+
+// agy hooks carry no parent ID. A subagent runs in the agy process of its parent and starts while that parent works,
+// so a new conversation's parent is the one working root conversation of the same agy process.
+async function agyProcessParent(dir, id, agy) {
+  let names;
+  try { names = await fs.readdir(dir); } catch { return ''; }
+  const found = [];
+  for (const name of names) {
+    const other = name.slice(0, -5);
+    if (!name.endsWith('.json') || !AGY_UUID.test(other) || other === id) continue;
+    const record = await oldRecord(path.join(dir, name));
+    if (record?.state === 'working' && !record.parentConversationId && record.agyPid === agy.agyPid
+      && record.agyStartTicks === agy.agyStartTicks) found.push(other);
+  }
+  return found.length === 1 ? found[0] : '';
 }
 
 export async function writeAgyRecord(hook, { env = process.env, homeDir = os.homedir(), nowMs = Date.now(), parentPid = process.ppid, read } = {}) {
@@ -73,7 +89,8 @@ export async function writeAgyRecord(hook, { env = process.env, homeDir = os.hom
   const transcript = agyTranscriptPath(hook.transcriptPath, homeDir);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const previous = await oldRecord(file);
-  const parentConversationId = agyParentId(hook.parentConversationId === undefined ? previous?.parentConversationId : hook.parentConversationId, id);
+  const parentConversationId = agyParentId(hook.parentConversationId === undefined ? previous?.parentConversationId : hook.parentConversationId, id)
+    || (!previous && agy ? agyParentId(await agyProcessParent(dir, id, agy), id) : '');
   const agentName = typeof hook.agentName === 'string' ? hook.agentName.trim() : '';
   const record = {
     conversationId: id, workspace, state: next.state, stateAtMs: nowMs, event: hook.hookEventName,
