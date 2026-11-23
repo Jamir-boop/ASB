@@ -22,7 +22,7 @@ export function promptZone(screen: string): string[] | null {
   const lines = screen.trimEnd().split('\n');
   const borders = lines.flatMap((line, i) => /^[─━═╭╮╰╯│┃ ]{10,}$/.test(line) && /[─━═]/.test(line) ? [i] : []);
   const top = borders.at(-2), bottom = borders.at(-1);
-  if (top === undefined || bottom === undefined || bottom - top < 2
+  if (top === undefined || bottom === undefined || bottom - top < 2 || /allow calling this tool\?/i.test(screen)
     || /allow once|permission required|run this command\?|submit answers|select an option/i.test(lines.slice(top).join('\n'))) return null;
   return lines.slice(top + 1, bottom).map(line => line.replace(/^[ │┃>›❯]+/, '').replace(/[ │┃]+$/, ''));
 }
@@ -109,7 +109,7 @@ export function createAgyHost({ id, pid, mailbox, read, kittyDelivery, focus = a
 
   async function command(record: AgyRecord, action: string, args: string[], before?: () => Promise<boolean>) {
     const target = await focus(record);
-    if (!target || closed || (before && !await before())) throw new Error('agy kitty target changed');
+    if (!target?.listenOn.startsWith('unix:/') || closed || (before && !await before())) throw new Error('agy kitty target changed');
     return exec(['@', '--to', target.listenOn, action, '--match', `id:${target.windowId}`, ...args]);
   }
 

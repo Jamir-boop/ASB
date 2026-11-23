@@ -17,7 +17,7 @@ const identity = { agyPid: 222, agyStartTicks: '333' };
 const body = '[ASB Bridge peer message from Fixture.]\nNext\tline';
 const screen = (line = '', tail = '') => `case output\n╭───────────╮\n│ › ${line}   │\n╰───────────╯\n${tail}`;
 
-function fixture(kittyDelivery = true) {
+function fixture(kittyDelivery = true, listenOn = 'unix:/fake/kitty.sock') {
   const root = mkdtempSync('/tmp/asb-agy-');
   const mailbox = join(root, 'asb-agy-mailbox');
   const id = randomUUID();
@@ -36,7 +36,7 @@ function fixture(kittyDelivery = true) {
   let validFocus = true;
   const runStop = () => takeAgyMailbox({ conversationId: id }, env);
   const host = createAgyHost({ id, pid: process.pid, mailbox, now: () => time, read: async () => record,
-    kittyDelivery, focus: async () => { checks++; return validFocus ? { listenOn: 'unix:/fake/kitty.sock', windowId: '2' } : null; },
+    kittyDelivery, focus: async () => { checks++; return validFocus ? { listenOn, windowId: '2' } : null; },
     exec: async args => {
       calls.push(args);
       if (args[3] === 'get-text') await afterRead?.();
@@ -144,6 +144,26 @@ linux('maps runtime and refuses every prohibited control, 4001 characters, and 4
     }
     await expect(f.host.deliver(randomUUID(), 'newline\nand\ttab')).resolves.toEqual({ status: 'accepted', turnId: null });
     expect(f.calls).toEqual([]);
+  } finally { await f.host.close(); f.close(); }
+});
+
+test('the MCP permission dialog is not an idle prompt with one or two borders', () => {
+  const title = 'Antigravity CLI\nASB Bridge MCP tool: list_sessions';
+  const border = '──────────────────────────────';
+  const options = 'Allow calling this tool?\n> 1. Yes, allow tool call\n  2. Yes, allow this tool always\n  3. Yes, allow all tools from this server\n  4. No, deny tool call';
+  const hint = '↑/↓ Navigate · tab Amend';
+  expect(promptZone([title, border, options, hint].join('\n'))).toBeNull();
+  expect(promptZone([title, border, options, border, hint].join('\n'))).toBeNull();
+  expect(promptZone(`${title}\n${border}\n${options}\n${hint}\n${screen()}`)).toBeNull();
+});
+
+linux('an abstract kitty socket uses the Stop mailbox without reading the screen', async () => {
+  const f = fixture(true, 'unix:@kitty-1234');
+  try {
+    await f.host.deliver(randomUUID(), body, true);
+    await f.poll();
+    expect(f.calls).toEqual([]);
+    expect(await f.runStop()).toBe(body);
   } finally { await f.host.close(); f.close(); }
 });
 

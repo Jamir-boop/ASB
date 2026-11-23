@@ -28,7 +28,7 @@ asb bridge install --opencode
 asb bridge install --opencode --opencode-config /path/to/opencode/config
 ```
 
-Use `asb bridge install --all` for detected Codex, Claude, and OpenCode targets. `--all` adds OpenCode when its config folder exists. On Linux, install the agy hook, then run `asb bridge install --agy` to add agy. agy sends through MCP and receives through Stop at the end of a turn. The kitty paste path is off until a live proof. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
+Use `asb bridge install --all` for detected Codex, Claude, and OpenCode targets. `--all` adds OpenCode when its config folder exists. On Linux, install the agy hook, then run `asb bridge install --agy` to add agy. agy sends through MCP. It receives at an idle kitty prompt with remote control on a file socket, or through Stop at the end of a turn. `asb bridge uninstall --agy` turns off kitty typing. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
 
 `asb setup --only bridge` installs the bridge for each detected provider that does not have it, and does not change an existing install. Preferences > Profiles in the ASB window shows the bridge state of each enabled profile, with **Install** or **Update**. `asb bridge status --claude-home <path>` (you can give it more than once) adds the skill state of each named Claude home to the output.
 

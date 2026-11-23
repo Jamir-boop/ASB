@@ -253,7 +253,7 @@ const SUPPORT = [
   ['Claude Desktop Code', '✓', '✓', '✓', '✓', '✓ Linux, with the hook', '✓', '✓', '✓', '✓', '✗ Anthropic: no entry point', '✗ Anthropic: no entry point', '✓'],
   ['Claude Code CLI', '✓', '✓', '✓', '✓', '✓ Linux, with the hook', '✗ ASB work: terminal tab', '✓', '✓', '✓', '✗ ASB work', '✗ Anthropic: no archive', '✓'],
   ['OpenCode 2', '✓', '✓', '✓ with ASB Bridge', '✓ with ASB Bridge', '✗ ASB work: docs only', '✗ ASB work: terminal tab', '✓ no reference sends to it', '✓', '✓', '✗ ASB work', '✗ ASB work', '✓'],
-  ['Antigravity CLI', '✓ with the hook', '✓ with the hook', '✓ with the hook', '✗ Google: no event', '✗ Not checked', '✓ live kitty sessions, with remote control', '✓ ASB Bridge; inbound at Stop', '✗ Not checked', '✓', '✗ Not checked', '✗ Not checked', '✗ ASB work'],
+  ['Antigravity CLI', '✓ with the hook', '✓ with the hook', '✓ with the hook', '✗ Google: no event', '✗ Not checked', '✓ live kitty sessions, with remote control', '✓ ASB Bridge; idle kitty with a file socket or at Stop', '✗ Not checked', '✓', '✗ Not checked', '✗ Not checked', '✗ ASB work'],
   ['Claude Code on the web', '✓ Claude app cache', '✓ fresh cache only', '✓ one signal', '✓ one signal', '✗ Not planned: login', '✓', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Anthropic: cloud only', '✗ Not planned: login', '✗ Not planned: login', '✗ ASB work: cache format'],
 ];
 const APP_ICONS = { 'Codex app': ['openai'], 'Codex CLI': ['openai', 'terminal'], 'Claude Desktop Code': ['claude'], 'Claude Code CLI': ['claude', 'terminal'], 'OpenCode 2': ['opencode'], 'Antigravity CLI': ['terminal'], 'Claude Code on the web': ['claude', 'globe'] };
@@ -278,7 +278,7 @@ const FEATURE_NOTES = {
 const ALSO = 'All apps also have Read and Unread, pins, the drawer, Mute for a time (30 min to Always), Discard, Copy (relative reference, absolute reference, or name), sounds, the GNOME top bar, and the phone.';
 const REMOTE = 'Cards of other machines do not open, have no Discard, and copy only the absolute reference or the name.';
 
-const AGY_CHECKED = 'Built for the Antigravity CLI on Linux, on main, not in a release yet. Checked on 2026-11-22 and 2026-11-23 with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked.';
+const AGY_CHECKED = 'Built for the Antigravity CLI on Linux, on main, not in a release yet. Checked on 2026-11-22 and 2026-11-23 with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked. The empty-prompt rule and paste behavior with @ and / were checked live once with agy 1.5.15 (2026-11-23).';
 const RENAME_CHECKED = 'Checked on 2026-10-26: Codex 0.164.0, OpenCode 2.1.4, Claude Code 2.1.310. On 2026-11-16, Codex 0.169.0 still has thread/name/set and adds codex archive; OpenCode 2.3.0 and Claude Code 2.1.325 are not checked again.';
 // [support app names, what the note says]
 const RENAME = [

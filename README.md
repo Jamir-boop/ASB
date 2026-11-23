@@ -121,11 +121,11 @@ Limits:
 
 On Linux, install the ASB agy hook, then run `asb bridge install --agy` with agy and Bun on `PATH`. Start a new agy session. It shows to other agents after its first turn. `asb bridge status` checks the installation. `asb bridge uninstall --agy` removes it.
 
-Use the `asb-bridge` MCP tools to list peers and send to one peer by its session ID or reference. agy shows "Allow calling this tool?" for each Bridge tool call unless you allow that tool always. The MCP allow prompt with `--dangerously-skip-permissions` is not tested. Another agent can send to agy by session ID. Messages to agy arrive at the end of a turn, through its `Stop` hook. If agy stays idle with no new turn, the message waits. ASB does not need kitty for this path. The Stop path delivers every input kind, including idle notices, and each one starts a model turn on your agy account, as in Codex and OpenCode. In a session started with `--dangerously-skip-permissions`, a message delivered through Stop can run tools with no agy permission prompt.
+Use the `asb-bridge` MCP tools to list peers and send to one peer by its session ID or reference. agy shows "Allow calling this tool?" for each Bridge tool call unless you allow that tool always. The MCP allow prompt with `--dangerously-skip-permissions` is not tested. Another agent can send to agy by session ID. When kitty typing cannot deliver a message, the message can arrive through the `Stop` hook at the end of a turn. If agy stays idle and kitty typing cannot deliver it, the message waits. ASB does not need kitty for the Stop path. The Stop path delivers every input kind, including idle notices, and each one starts a model turn on your agy account, as in Codex and OpenCode. In a session started with `--dangerously-skip-permissions`, a message delivered through Stop can run tools with no agy permission prompt.
 
 Checked live once with agy 1.5.15 (2026-11-23): `list_sessions` through MCP, and one message delivered at Stop. Tests use fakes for withdrawal at 60 min, `unknown` outcomes, two receivers, and release from hold.
 
-The kitty typing path is built but off. It would read the prompt screen in memory and type the message into the agy window. In a session with `--dangerously-skip-permissions`, a message submitted this way can run tools with no agy permission prompt. The empty-prompt rule and the effect of `@` and `/` in a paste are not proven in a live agy 1.5.15 session. Tests use fakes for the kitty path.
+Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty with remote control on a file socket. ASB reads the prompt screen in memory only and types into that kitty window. In a session started with `--dangerously-skip-permissions`, a message typed this way can run tools with no agy permission prompt. `asb bridge uninstall --agy` turns off kitty typing. The empty-prompt rule and paste behavior with `@` and `/` were checked live once with agy 1.5.15 (2026-11-23). Tests use fakes for other kitty cases.
 
 ## Support by app
 
@@ -136,7 +136,7 @@ The kitty typing path is built but off. It would read the prompt screen in memor
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
 | OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: docs only | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✗ Not checked | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; inbound at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
+| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✗ Not checked | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.

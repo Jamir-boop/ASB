@@ -12,8 +12,8 @@ import { peers, privateDirectory } from './claude';
 import { brief, listSessions, listSessionsInput, sendMessage, sendMessageInput, statusBrief } from './tools';
 import { version } from './version';
 
-// Off until a live kitty check proves the empty-prompt rule and paste behavior with @ and /.
-const AGY_KITTY_DELIVERY = false;
+// Kitty delivery uses the idle prompt and file-socket checks in the host.
+const AGY_KITTY_DELIVERY = true;
 const NO_RECORD = 'ASB has no agy hook record for this process. The ASB agy hook writes its first record on the first turn.';
 const META_KEY = 'antigravity.google/root_conversation_id';
 
