@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { waitForAnswers, waitForDecision, whole, type Approval, type Decision, type PhoneQuestionItem, type QuestionAnswers } from './approval';
 import { Bridge } from './bridge';
-import { engineRuntime } from './engine';
+import { engineRequest, engineRuntime } from './engine';
 import { peers, privateDirectory, removeStaleReceivers } from './claude';
 import { createOpenCodeHost, opencodeBridgeId, unwrap, type OpenCodeHostParts } from './opencode-host';
 import { placeholderCommand, spawnPlaceholder } from './placeholder';
@@ -325,17 +325,20 @@ function permissionReply(sessionID: string, requestID: string, decided: Decision
 function askPhone(co: Coordinator, receiver: Receiver, data: Record<string, unknown>, requestId: string, directory: unknown, subagent: boolean) {
   const owner = typeof directory === 'string' ? co.instances.get(directory) : undefined;
   const sessionKey = receiver.openCodeSessionId;
-  if (!owner || typeof directory !== 'string' || !SESSION_KEY.test(sessionKey) || co.approvals.has(requestId)) return;
+  if (!owner || typeof directory !== 'string' || !SESSION_KEY.test(sessionKey) || co.approvals.has(requestId)
+    || (data.action !== 'shell' && data.action !== 'edit')) return;
   const controller = new AbortController();
   co.approvals.set(requestId, { controller, root: sessionKey, location: directory });
   void (async () => {
-    // No engine: no context read (it reads the whole session).
     const runtime = engineRuntime();
     if (!runtime) return;
+    const signal = controller.signal;
+    const ready = await engineRequest(runtime, '/api/agent/wait', { method: 'POST', body: { provider: 'opencode', sessionKey, checkApproval: true }, signal });
+    if (!record(ready) || ready.wait !== true || signal.aborted) return;
     const approval = opencodeApproval(data, await toolPartOf(owner.ctx, data), directory, subagent);
-    if (!approval || controller.signal.aborted) return;
-    const decided = await waitForDecision(runtime, 'opencode', sessionKey, approval, controller.signal);
-    if (!decided || controller.signal.aborted) return;
+    if (!approval || signal.aborted) return;
+    const decided = await waitForDecision(runtime, 'opencode', sessionKey, approval, signal);
+    if (!decided || signal.aborted) return;
     // A failed reply is not tried again: the TUI dialog stays for the PC.
     try { await owner.ctx.permission.reply(permissionReply(String(data.sessionID), requestId, decided)); }
     catch { co.replyFailures += 1; }
@@ -502,8 +505,9 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     const receiver = receiverOf(co, session.parentID ? await rootSessionId(instance, session.id) : session.id);
     const requestId = String((type === 'permission.replied' ? data.requestID : (form ?? data).id) ?? '');
     if (!receiver || !requestId) return;
-    if (type === 'permission.asked' || type === 'form.created') receiver.asks.set(requestId, { kind: form ? 'question' : 'approval', at: Date.now() });
-    else receiver.asks.delete(requestId);
+    if (type === 'permission.asked' || type === 'form.created') {
+      if (!receiver.asks.has(requestId)) receiver.asks.set(requestId, { kind: form ? 'question' : 'approval', at: Date.now() });
+    } else receiver.asks.delete(requestId);
     if (type === 'permission.replied' || type === 'form.replied' || type === 'form.cancelled') stopApprovals(co, (_wait, id) => id === requestId);
     writeWaits(receiver);
     if (type === 'permission.asked') askPhone(co, receiver, data, requestId, event.location?.directory, Boolean(session.parentID));

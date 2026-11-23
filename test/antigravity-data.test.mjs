@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { answerAgyInKitty, loadAntigravityDashboard } from '../src/antigravity-data.mjs';
+import { agyScreenInterrupted, answerAgyInKitty, loadAntigravityDashboard } from '../src/antigravity-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
 
@@ -97,30 +97,119 @@ test('a record whose agy ended, or whose PID was reused, is not live', async (t)
   }
 });
 
-test('ten quiet minutes give Unknown unless the transcript changed or a background command runs', async (t) => {
+test('an agy turn with no newer signal becomes Unknown after ten minutes', async (t) => {
   const { homeDir, put, rows, load } = await fixture(t);
   const transcript = path.join(homeDir, '.gemini', 'antigravity-cli', 'brain', id(2), 'transcript.jsonl');
   await mkdir(path.dirname(transcript), { recursive: true });
   await writeFile(transcript, '');
-  await utimes(transcript, (now - minute) / 1000, (now - minute) / 1000);
-  // Off the 30 s grid, so the 10-minute deadline is the next check.
-  const old = now - 11 * minute + 7_000;
-  await put(1, { stateAtMs: old });
+  await utimes(transcript, (now - 20_000) / 1000, (now - 20_000) / 1000);
+  // Off the 30 s grid, so the quiet deadline is the next check.
+  const old = now - 10 * minute - 3_000;
+  await put(1, { event: 'PreInvocation', stateAtMs: old });
   await put(2, { stateAtMs: old, transcriptMtimePath: transcript });
   await put(3, { stateAtMs: old, background: true });
   await put(4, { state: 'question', stateAtMs: now - 11 * minute });
   const byId = new Map((await rows()).map((row) => [row.externalId, row]));
-  assert.deepEqual([byId.get(id(1)).state, byId.get(id(1)).reason], ['unknown', 'No news from the agy session for 10 minutes.']);
+  const quiet = byId.get(id(1));
+  assert.deepEqual([quiet.state, quiet.reason, quiet.completionAtMs, quiet.failedAtMs],
+    ['unknown', 'No news from the agy session for 10 minutes.', 0, 0]);
   assert.equal(byId.get(id(4)).state, 'waiting');
   assert.equal(byId.get(id(4)).questionPending, true);
   assert.equal((await rows({ nowMs: now + 7 * 60 * minute })).find((row) => row.externalId === id(4)).state, 'waiting');
   assert.equal(byId.get(id(2)).state, 'working');
   assert.equal(byId.get(id(3)).state, 'working');
-  const early = now - 58_000;
+  const early = now - 8_000;
   const threads = (await load({ nowMs: early })).threads;
   assert.deepEqual(threads.map((thread) => [thread.externalId, thread.cliProcessCheckAtMs]),
-    [[id(1), old + 10 * minute], [id(2), now - 30_000], [id(3), now - 30_000], [id(4), now - 30_000]]);
+    [[id(1), old + 10 * minute], [id(2), now], [id(3), now], [id(4), now]]);
   assert.equal(buildSwitchboardDashboard(threads, [], early).nextStatusCheckAtMs, old + 10 * minute + 1);
+  assert.equal((await rows({ nowMs: old + 10 * minute })).find((row) => row.externalId === id(1)).state, 'working');
+  assert.equal((await rows({ nowMs: old + 10 * minute + 1 })).find((row) => row.externalId === id(1)).state, 'unknown');
+  assert.equal((await rows({ nowMs: now + 20 * minute })).find((row) => row.externalId === id(3)).state, 'working');
+  await utimes(transcript, (now + 2 * minute) / 1000, (now + 2 * minute) / 1000);
+  assert.equal((await rows({ nowMs: now + 2 * minute })).find((row) => row.externalId === id(2)).state, 'working');
+  const tracker = new PendingTracker(false);
+  const observe = async (atMs) => (await tracker.observe(buildSwitchboardDashboard((await load({ nowMs: atMs })).threads, [], atMs)))
+    .threads.find((row) => row.externalId === id(1));
+  assert.equal((await observe(early)).state, 'working');
+  const silent = await observe(now);
+  assert.deepEqual([silent.state, silent.completionAttention, silent.failedAttention], ['unknown', false, false]);
+  await put(1, { state: 'done', event: 'Stop', stateAtMs: now + minute });
+  const done = await observe(now + minute);
+  assert.deepEqual([done.state, done.completionAtMs, done.completionAttention], ['idle', now + minute, true]);
+});
+
+const interruptedLine = '  ⎿  Interrupted · What should Antigravity CLI do instead?';
+const prompt = '\n\n──────────────────────────────\n> \n──────────────────────────────\n  ? for shortcuts';
+const workingLine = '  ⎿  Running command...';
+
+test('the kitty screen proves an interrupt only above its current empty prompt', () => {
+  const cases = [
+    [`● Tool\n${interruptedLine}${prompt}`, true],
+    [`● Tool\n  ⎿  User declined the tool call\n${interruptedLine}${prompt}`, true],
+    [`● Tool\n${workingLine}${prompt}`, false],
+    [`${interruptedLine}\n> Please continue\n● Shell\n${workingLine}${prompt}`, false],
+    [`${interruptedLine}${prompt}\n> Please continue\n● Shell`, false],
+    [`${interruptedLine}\n> My draft`, false],
+    [`${interruptedLine}${prompt.replace('> ', '> \n draft')}`, false],
+    [interruptedLine, false],
+  ];
+  for (const [screen, interrupted] of cases) assert.equal(agyScreenInterrupted(screen), interrupted, screen);
+});
+
+test('a quiet foreground agy row reads its verified kitty screen at most once per 30 seconds', async (t) => {
+  const { homeDir, put, rows } = await fixture(t);
+  const procDir = path.join(homeDir, 'proc');
+  for (const [pid, comm, ppid] of [[400, 'agy', 300], [300, 'kitty', 1]]) {
+    const dir = path.join(procDir, String(pid));
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'stat'), `${pid} (${comm}) S ${ppid}\n`);
+  }
+  const putKitty = (n, fields) => put(n, { stateAtMs: now - 30_000, kittyWindowId: String(n), kittyPid: '300',
+    kittyListenOn: 'unix:@kitty-300', ...fields });
+  await putKitty(1);
+  await putKitty(2);
+  await putKitty(3, { agyStartTicks: '999' });
+  await putKitty(4, { background: true });
+  await put(5, { stateAtMs: now - 30_000 });
+  await putKitty(6);
+  await putKitty(7, { stateAtMs: now - 30_000, state: 'question' });
+  await putKitty(8, { stateAtMs: now - 30_000, kittyPid: '400' });
+  const calls = [];
+  const exec = async (args) => {
+    calls.push(args);
+    const window = args[5];
+    assert.deepEqual(args, ['@', '--to', 'unix:@kitty-300', 'get-text', '--match', window, '--extent', 'screen']);
+    if (window === 'id:6') throw new Error('kitty is unavailable');
+    return `● Synthetic private text\n${window === 'id:1' ? interruptedLine : workingLine}${prompt}`;
+  };
+  const scan = async (nowMs) => new Map((await rows({ procDir, exec, nowMs })).map((row) => [row.externalId, row]));
+  const tracker = new PendingTracker(false);
+  const before = await scan(now - 1);
+  assert.deepEqual(calls, []);
+  assert.equal(before.get(id(1)).state, 'working');
+  await tracker.observe({ generatedAtMs: now - 1, threads: [...before.values()], providers: [] });
+  const [first, concurrent] = await Promise.all([scan(now), scan(now + 1)]);
+  assert.deepEqual(calls.map((args) => args[5]).sort(), ['id:1', 'id:2', 'id:6']);
+  for (const data of [first, concurrent]) {
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8].map((n) => data.get(id(n)).state),
+      ['idle', 'working', 'unknown', 'working', 'working', 'working', 'waiting', 'working']);
+    assert.equal(JSON.stringify([...data.values()]).includes('Synthetic private text'), false);
+  }
+  const observed = await tracker.observe({ generatedAtMs: now, threads: [...first.values()], providers: [] });
+  const stopped = observed.threads.find((row) => row.externalId === id(1));
+  assert.deepEqual([stopped.reason, stopped.lastOutcome, stopped.completionAtMs, stopped.failedAtMs, stopped.pending],
+    ['The agy turn was interrupted.', 'stopped', 0, 0, false]);
+  assert.equal((await scan(now + 29_999)).get(id(1)).state, 'idle');
+  assert.equal(calls.length, 3);
+  // New activity invalidates the cached interruption but does not bypass the screen rate limit.
+  await putKitty(1, { stateAtMs: now + 1 });
+  assert.equal((await scan(now + 29_999)).get(id(1)).state, 'working');
+  assert.equal(calls.length, 3);
+  const long = await scan(now + 3 * minute);
+  assert.equal(long.get(id(2)).state, 'working');
+  assert.deepEqual(calls.slice(3).map((args) => args[5]).sort(), ['id:1', 'id:2', 'id:6']);
+  assert.equal((await scan(now + 10 * minute)).get(id(5)).state, 'unknown');
 });
 
 test('bad files are skipped, at most 500 files are read, and old records that are not live are removed', async (t) => {

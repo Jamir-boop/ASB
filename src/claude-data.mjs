@@ -994,7 +994,8 @@ export function applyLiveClaudeStatus(thread, records, nowMs) {
   if (!input && record.statusUpdatedAt > 0 && nowMs - record.statusUpdatedAt < CLAUDE_APPROVAL_GRACE_MS) {
     return { ...thread, ...raw, approvalCheckAtMs: record.statusUpdatedAt + CLAUDE_APPROVAL_GRACE_MS };
   }
-  const atMs = record.statusUpdatedAt || nowMs;
+  // Scan time is not a request start and would change on every read.
+  const atMs = Math.max(0, record.statusUpdatedAt || 0);
   return { ...thread, ...raw, awaitingPermission: true, questionNonBlocking: false,
     pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, atMs), liveWaitingFor: record.waitingFor || 'permission prompt',
     ...(input ? { awaitingUserInput: true, latestUserQuestionAtMs: Math.max(thread.latestUserQuestionAtMs || 0, atMs) } : {}) };

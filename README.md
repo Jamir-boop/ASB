@@ -84,7 +84,7 @@ On main, not in a release yet. Use ASB Bridge `0.10.0` with OpenCode 2 on Linux 
 - A shell permission request can show `Command` and `Folder`. A `write` or `edit` permission request for one file can show `File` (the resolved path) and `Size` (the content length or the old and new text lengths). A subagent request shows `for a subagent` in the title on the root session's card.
 - Other types of permission request get no approval card. OpenCode question forms use the question card (see Answer questions from the phone). A permission request stays on the PC if the plugin cannot match it to its tool input, or if a command, folder, or path is over 4,000 characters or has control or hidden characters (tabs and newlines are allowed).
 - `Allow once` lets OpenCode run the tool once, not always. `Deny` rejects the request and sends `Denied from the phone.` or `Denied from the phone: <note>` to OpenCode.
-- With no paired phone, a switch off, or the engine down, use the PC dialog. If you answer there first, the plugin stops its phone wait. Only one card can be open on the phone for each session. A newer request replaces the older card.
+- The plugin checks the local ASB engine before it reads the OpenCode session context. With no paired phone, a switch off, or the engine down, the plugin does not read the context. Use the PC dialog. If you answer there first, the plugin stops its phone wait. Only one card can be open on the phone for each session. A newer request replaces the older card.
 - A card comes only when OpenCode itself asks for permission. A rule that allows the tool (for example a global `allow` for all) gives no dialog and no card.
 - For group sessions, use the same switches on both PCs. Not tested end to end on Windows or on a phone with a real OpenCode session.
 
@@ -115,9 +115,9 @@ This is a file socket in your runtime folder, so only your user can connect to i
 
 Limits:
 - Checked with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked.
-- agy has no hook event for a command approval, so ASB shows Working, not Waiting, while agy waits for one.
-- Esc fires no hook event. After 10 minutes with no event and no transcript change, a Working row shows Unknown.
-- If you deny an MCP tool call (and probably if you press Esc), agy 1.5.15 ends the turn without a Stop hook and the record stays `working` until the next turn ends; the board shows Working (then Unknown after 10 minutes with no news), kitty does not type, and a message still waiting after 60 min is withdrawn with a drop receipt.
+- agy has no hook event for a command approval, so ASB cannot show Waiting for it.
+- Esc or a denied tool request can end a turn without a Stop hook. After 30 quiet seconds, ASB can use the kitty screen to show Idle when it finds the interrupt above an empty prompt. With no match, the row keeps Working until the 10-minute Unknown rule. Questions and work that agy marks as background keep their state.
+- Without Stop, the hook record stays `working`. The Bridge does not type into kitty, and a message still waiting after 60 min is withdrawn with a drop receipt.
 - `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
 - Each agy hook call adds about 80 ms, and agy waits for it.
 - Not yet: phone approvals, Windows, and the Antigravity app and IDE.

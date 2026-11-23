@@ -1316,11 +1316,13 @@ test('the reply is once for allow and reject with a message for deny, never alwa
 });
 
 const REQUEST_ID = 'b'.repeat(32);
-const opens = (engine: { calls: Array<{ route: string }> }) => engine.calls.filter(call => call.route === '/api/agent/wait').length;
+const isApprovalCheck = (body: unknown) => (body as { checkApproval?: boolean } | null)?.checkApproval === true;
+const openCalls = (engine: { calls: Array<{ route: string; body: unknown }> }) =>
+  engine.calls.filter(call => call.route === '/api/agent/wait' && !isApprovalCheck(call.body));
 
 // A registered root session `ses_root` (and a child `ses_kid`) in /tmp/opencode-project, a context with the tool part, recorded replies,
 // and a fake engine whose poll replies come from `answer`.
-async function phoneSetup(answer: (poll: number) => unknown, reply?: (input: unknown) => Promise<unknown>) {
+async function phoneSetup(answer: (poll: number) => unknown, reply?: (input: unknown) => Promise<unknown>, check = () => ({ wait: true })) {
   const home = tempHome();
   const fake = fakeCtx();
   const co = ensureCoordinator(home.configDir, home.stateDir);
@@ -1335,7 +1337,8 @@ async function phoneSetup(answer: (poll: number) => unknown, reply?: (input: unk
   fake.setSession('ses_kid', { location: { directory: '/tmp/opencode-project' }, title: 'Kid', parentID: 'ses_root' });
   await handleEvent(co, { id: 'ev_start', type: 'session.execution.started', data: { sessionID: 'ses_root' } });
   let polls = 0;
-  const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, route => route === '/api/agent/wait' ? { wait: true, requestId: REQUEST_ID } : answer(++polls));
+  const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, (route, body) => route === '/api/agent/wait'
+    ? isApprovalCheck(body) ? check() : { wait: true, requestId: REQUEST_ID } : answer(++polls));
   let n = 0;
   const ask = (sessionID = 'ses_root', requestID = 'per_1', directory: string | null = '/tmp/opencode-project') => handleEvent(co, {
     id: `ev_ask_${++n}`, type: 'permission.asked', ...(directory === null ? {} : { location: { directory } }),
@@ -1355,7 +1358,7 @@ posix('a phone allow replies once and a deny rejects with the note; the registra
       await run.ask();
       await until(() => run.replies.length === 1, 'reply');
       expect(run.replies).toEqual([expected]);
-      expect(run.engine.calls[0]!.body).toEqual({ provider: 'opencode', sessionKey: 'ses_root', approval: { kind: 'tool', title: 'Allow a shell command?',
+      expect(openCalls(run.engine)[0]!.body).toEqual({ provider: 'opencode', sessionKey: 'ses_root', approval: { kind: 'tool', title: 'Allow a shell command?',
         display: [{ label: 'Command', text: 'touch ses_root.txt', mono: true }, { label: 'Folder', text: '/tmp/opencode-project', mono: true }], note: true } });
     } finally { await run.done(); }
   }
@@ -1366,7 +1369,7 @@ posix('no reply without an answered allow or deny, and no record without the exa
     const run = await phoneSetup(() => answer);
     try {
       await run.ask();
-      await until(() => run.engine.calls.length === 2, 'poll');
+      await until(() => run.engine.calls.length === 3, 'poll');
       await settle(50);
       expect(run.replies).toEqual([]);
     } finally { await run.done(); }
@@ -1385,7 +1388,7 @@ posix('no reply without an answered allow or deny, and no record without the exa
     (run.instance.ctx as Record<string, any>).session.context = async () => { throw new Error('gone'); };
     await run.ask('ses_root', 'per_4');
     await settle(100);
-    expect(opens(run.engine)).toBe(0);
+    expect(openCalls(run.engine)).toHaveLength(0);
     expect(run.replies).toEqual([]);
   } finally { await run.done(); }
   // No engine: no context read and no reply.
@@ -1400,12 +1403,39 @@ posix('no reply without an answered allow or deny, and no record without the exa
   } finally { await alone.done(); }
 });
 
+linux('the OpenCode plugin reads context only after the engine agrees to hold an approval', async () => {
+  let ready = false;
+  const run = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }), undefined, () => ({ wait: ready }));
+  try {
+    const session = (run.instance.ctx as Record<string, any>).session;
+    const context = session.context;
+    let reads = 0;
+    session.context = async (args: unknown) => {
+      expect(run.engine.calls.at(-1)?.body).toEqual({ provider: 'opencode', sessionKey: 'ses_root', checkApproval: true });
+      reads += 1;
+      return context(args);
+    };
+    await run.ask();
+    await until(() => run.engine.calls.length > 0, 'approval check');
+    await settle(30);
+    expect(run.engine.calls.map(call => [call.route, call.body])).toEqual([
+      ['/api/agent/wait', { provider: 'opencode', sessionKey: 'ses_root', checkApproval: true }],
+    ]);
+    expect([reads, run.replies.length, run.co.receivers.get('ses_root')?.asks.has('per_1')]).toEqual([0, 0, true]);
+    ready = true;
+    await run.ask('ses_root', 'per_2');
+    await until(() => run.replies.length === 1, 'reply');
+    expect(reads).toBe(1);
+    expect(openCalls(run.engine)).toHaveLength(1);
+  } finally { await run.done(); }
+});
+
 posix('a subagent request registers for the root session and replies for its own session', async () => {
   const run = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }));
   try {
     await run.ask('ses_kid', 'per_kid');
     await until(() => run.replies.length === 1, 'reply');
-    const body = run.engine.calls[0]!.body as { sessionKey: string; approval: { title: string; display: Array<{ text: string }> } };
+    const body = openCalls(run.engine)[0]!.body as { sessionKey: string; approval: { title: string; display: Array<{ text: string }> } };
     expect([body.sessionKey, body.approval.title, body.approval.display[0]!.text]).toEqual(['ses_root', 'Allow a shell command for a subagent?', 'touch ses_kid.txt']);
     expect(run.replies).toEqual([{ sessionID: 'ses_kid', requestID: 'per_kid', decision: 'once' }]);
   } finally { await run.done(); }
@@ -1416,10 +1446,14 @@ posix('permission.replied, the turn end, and the stacked setups: one wait per re
   const run = await phoneSetup(() => new Promise(resolve => { release = resolve; }));
   try {
     await run.ask();
-    // The same request from a second setup stream (another event ID) starts nothing.
-    await run.ask();
     await until(() => !!release, 'held poll');
-    expect(opens(run.engine)).toBe(1);
+    const asks = run.co.receivers.get('ses_root')!.asks;
+    const start = asks.get('per_1')!.at;
+    // The same request from a second setup stream starts no wait and does not change its start time.
+    await settle(5);
+    await run.ask();
+    expect(asks.get('per_1')!.at).toBe(start);
+    expect(openCalls(run.engine)).toHaveLength(1);
     await handleEvent(run.co, { id: 'ev_replied', type: 'permission.replied', data: { sessionID: 'ses_root', requestID: 'per_1', reply: 'once' } });
     expect(run.co.approvals.size).toBe(0);
     release!({ state: 'answered', decision: 'allow' });
@@ -1457,8 +1491,8 @@ posix('the plugin cleanup aborts its waits', async () => {
   ctx.session.context = async () => [{ id: 'msg_1', type: 'assistant', content: [{ type: 'tool', id: 'call_1', name: 'shell', state: { input: { command: 'touch a.txt' } } }] }];
   ctx.permission = { async reply(input: unknown) { replies.push(input); } };
   let release: ((value: unknown) => void) | undefined;
-  const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, route => route === '/api/agent/wait' ? { wait: true, requestId: REQUEST_ID }
-    : new Promise(resolve => { release = resolve; }));
+  const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, (route, body) => route === '/api/agent/wait'
+    ? isApprovalCheck(body) ? { wait: true } : { wait: true, requestId: REQUEST_ID } : new Promise(resolve => { release = resolve; }));
   let cleanup: Awaited<ReturnType<typeof plugin.setup>> = undefined;
   try {
     fake.setSession('ses_root', { location: { directory: '/tmp/opencode-project' }, title: 'Root' });

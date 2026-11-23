@@ -633,6 +633,30 @@ test('the wait route checks the body and the switch of each kind', async (t) => 
   assert.equal((await fetch(`${e.base}/api/agent/wait`)).status, 405);
 });
 
+test('the OpenCode approval check uses the wait gate and capacity without opening or replacing a record', async (t) => {
+  let approve = false, paired = true, loads = 0;
+  const e = await engine(t, { approveEnabled: () => approve, phonePaired: async () => paired, onLoad: () => { loads += 1; } });
+  const route = '/api/agent/wait';
+  const check = { provider: 'opencode', sessionKey: 'ses_new', checkApproval: true };
+  assert.equal((await e.post(route, check, { headers: { 'X-ASB-Source-Token': '' } })).status, 403);
+  assert.equal((await e.post(route, check, { headers: { origin: 'http://evil.example' } })).status, 403);
+  for (const body of [{ ...check, provider: 'codex' }, { ...check, sessionKey: 'bad key' }, { ...check, checkApproval: false }, { ...check, approval: approval() }]) {
+    assert.equal((await e.post(route, body)).status, 400);
+  }
+  assert.deepEqual(await openWait(e, check), { wait: false });
+  approve = true; paired = false;
+  assert.deepEqual(await openWait(e, check), { wait: false });
+  paired = true;
+  assert.deepEqual(await openWait(e, check), { wait: true });
+  assert.equal(e.store.hasRecords(), false);
+  const existing = e.store.open({ provider: 'opencode', sessionKey: 'ses_0', approval: approval() });
+  for (let i = 1; i < 32; i++) e.store.open({ provider: 'opencode', sessionKey: `ses_${i}`, approval: approval() });
+  assert.deepEqual(await openWait(e, check), { wait: false });
+  assert.deepEqual(await openWait(e, { ...check, sessionKey: 'ses_0' }), { wait: true });
+  assert.equal(e.store.forSession('opencode', 'ses_0').requestId, existing.requestId);
+  assert.equal(loads, 0);
+});
+
 test('the answer route checks a decision against the open approval of its row', async (t) => {
   let approve = true;
   const e = await engine(t, { approveEnabled: () => approve });
