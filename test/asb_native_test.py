@@ -1517,6 +1517,39 @@ class WidgetCheck(unittest.TestCase):
                 self.assertNotIn("asb-" + "filters-on", window.css.to_string())
                 self.assert_accessible_label(window.filters_pill, "Working", asb.Gtk.AccessibleProperty.DESCRIPTION)
 
+    def test_antigravity_source_editor_keeps_fixed_fields_and_saves_enabled(self):
+        requests = []
+        def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):
+            requests.append((route, callback, method, body))
+        with patch.object(asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None), \
+             patch.object(asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)), \
+             patch.object(asb, "request_async", request):
+            window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", copy.deepcopy(FIXTURE),
+                                          theme_path=False, layout_path=False)
+            self.addCleanup(window.close)
+            window.present(); self.drain(.2)
+            window.open_preferences(); self.drain(.2)
+            preferences = window.preferences_window
+            preferences.stack.set_visible_child_name("profiles"); self.drain(.1)
+            editor = preferences.profiles_editor
+            source = {"id": "antigravity", "provider": "antigravity", "label": "Antigravity CLI", "enabled": True,
+                      "builtin": True, "dataDir": "/example/state/asb/agy", "launcher": "", "color": "#8296b4",
+                      "showMarker": True, "sessionCount": 1, "status": "ready"}
+            next(item for item in reversed(requests) if item[0] == "/api/sources")[1](
+                {"sources": [source], "maxSources": 8, "revision": "a" * 64}, None)
+            self.drain(.15)
+            editor.table.emit("row-activated", board_listed(editor.table)[0]); self.drain(.3)
+            self.assertEqual(editor.provider_fixed_name.get_label(), "Antigravity CLI")
+            self.assertEqual(editor.launcher_fixed.get_subtitle(), "Not used: ASB does not open CLI sessions.")
+            self.assertFalse(editor.provider.get_visible())
+            self.assertFalse(editor.data_dir.get_editable())
+            self.assertFalse(editor.launcher.get_visible())
+            editor.enabled.set_active(False)
+            editor.save_source()
+            saved = next(item for item in reversed(requests) if item[0] == "/api/sources" and item[2] == "POST")[3]["source"]
+            self.assertEqual((saved["id"], saved["provider"], saved["enabled"], saved["launcher"]),
+                             ("antigravity", "antigravity", False, ""))
+
     def test_profiles_show_remote_claude_sessions_only_for_claude_and_save_the_choice(self):
         requests = []
         def request(_base, route, callback, _dispatch, method="GET", body=None, etag=None, headers=None):

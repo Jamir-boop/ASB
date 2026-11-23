@@ -500,7 +500,7 @@ class ProfileSyncChecks(unittest.TestCase):
         editor.header_tick = editor.focus_after_close = None
         editor.request_bridge = Mock()
         for name in ("dialog_message", "install_result", "bridge_header", "bridge_group", "bridge_row", "bridge_icon",
-                     "install_button", "files_group", "color_row", "provider_fixed", "launcher_fixed", "count"):
+                     "install_button", "files_group", "color_row", "provider_fixed", "provider_fixed_name", "launcher_fixed", "count"):
             setattr(editor, name, Mock())
         editor.provider = self.control(0, "get_selected", "set_selected")
         for name in ("name", "data_dir", "launcher", "projects_dir"):
@@ -5590,6 +5590,41 @@ class NativeLogicChecks(unittest.TestCase):
             window.provider_fixed.set_visible.assert_called_with(False)
             for entry in (window.data_dir, window.launcher):
                 entry.set_editable.assert_called_with(True)
+
+    def test_only_the_default_antigravity_source_can_be_edited(self):
+        body = SCOPE["source_form_body"]
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                self.assertEqual(body("antigravity", "Antigravity CLI", "/state/asb/agy", "", enabled, "antigravity"),
+                                 {"source": {"id": "antigravity", "provider": "antigravity", "label": "Antigravity CLI",
+                                             "dataDir": "/state/asb/agy", "launcher": "", "enabled": enabled}})
+        for identity in ("", "opencode", "antigravity-2"):
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                body("antigravity", "Antigravity CLI", "/state/asb/agy", "", True, identity)
+        fixture = ProfileSyncChecks()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        window = fixture.editor()
+        default = {"id": "antigravity", "provider": "antigravity", "label": "Antigravity CLI", "builtin": True,
+                   "enabled": False, "launcher": "", "dataDir": "/state/asb/agy"}
+        with patch.dict(SCOPE, {"Gtk": SimpleNamespace(AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3), AccessibleState=SimpleNamespace(BUSY=0))}):
+            window.sources = [default]
+            window.set_form(default)
+            self.assertEqual(window.fixed_provider, "antigravity")
+            window.provider_fixed_name.set_label.assert_called_with("Antigravity CLI")
+            window.launcher_fixed.set_subtitle.assert_called_with("Not used: ASB does not open CLI sessions.")
+            window.provider.set_visible.assert_called_with(False)
+            for entry in (window.data_dir, window.launcher):
+                entry.set_editable.assert_called_with(False)
+            window.closed = window.loading = window.choosing = window.conflict = False
+            window.loaded, window.editing_id, window.request_sources = True, "antigravity", Mock()
+            window.name.get_text.return_value = "Antigravity CLI"
+            window.data_dir.get_text.return_value = "/state/asb/agy"
+            window.launcher.get_text.return_value = window.projects_dir.get_text.return_value = ""
+            window.enabled.get_active.return_value = False
+            window.save_source()
+            self.assertEqual(window.request_sources.call_args.args[2]["source"]["enabled"], False)
+            self.assertEqual(window.request_sources.call_args.args[2]["source"]["provider"], "antigravity")
 
     def test_source_requests_serialize_keep_failed_form_and_refresh_after_changes(self):
         fixture = ProfileSyncChecks()

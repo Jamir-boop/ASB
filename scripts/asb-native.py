@@ -46,7 +46,7 @@ INACTIVE_POPOVER_MS = 100
 APP_ID = "local.asb.AgentSwitchBoard"
 STATES = ("working", "waiting", "idle", "unknown")
 SOURCE_PROVIDERS = ("codex", "claude-desktop-code")
-APP_NAMES = {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code", "opencode": "OpenCode"}
+APP_NAMES = {"codex": "Codex", "claude-desktop-code": "Claude Desktop Code", "opencode": "OpenCode", "antigravity": "Antigravity CLI"}
 # How Claude in a profile reaches Claude sessions on other machines (`remoteClaude`, plan 9.6).
 REMOTE_CLAUDE = (("auto", "Automatic", "Claude in this profile reaches Claude sessions on other machines through ASB, unless both machines use Claude Remote Control."),
                  ("bridge", "Through ASB", "Claude in this profile always reaches Claude sessions on other machines through ASB."),
@@ -192,8 +192,8 @@ def provider_icon(provider):
 
 def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None,
                      remote_claude=None):
-    # Only the default OpenCode source exists; new sources stay Codex or Claude.
-    if provider not in SOURCE_PROVIDERS and not (provider == "opencode" and identity == "opencode") or type(enabled) is not bool:
+    # Only the default OpenCode and Antigravity CLI sources exist; new sources stay Codex or Claude.
+    if provider not in SOURCE_PROVIDERS and not (provider in ("opencode", "antigravity") and identity == provider) or type(enabled) is not bool:
         raise ValueError("Choose an app and its Enabled setting.")
     if not isinstance(name, str) or not name.strip() or len(name) > 80 or re.search(r"[\x00-\x1f\x7f]", name):
         raise ValueError("Name must have 1–80 characters with no control characters.")
@@ -5316,7 +5316,8 @@ class AppSourcesEditor(Gtk.Box):
         self.provider = Adw.ComboRow(title="App", model=Gtk.StringList.new(["Codex", "Claude Desktop Code"]))
         self.provider.connect("notify::selected", self.provider_changed)
         self.provider_fixed = Adw.ActionRow(title="App")
-        self.provider_fixed.add_suffix(label("OpenCode"))
+        self.provider_fixed_name = label("OpenCode")
+        self.provider_fixed.add_suffix(self.provider_fixed_name)
         self.enabled = Adw.SwitchRow(title="Enabled", subtitle="Show the chats of this profile on the board.")
         for row in (self.name, self.provider, self.provider_fixed, self.enabled):
             fields.add(row)
@@ -5553,8 +5554,12 @@ class AppSourcesEditor(Gtk.Box):
         self.source_id.set_label("ID: " + (self.editing_id or "Assigned when saved"))
         self.source_id.set_visible(True)
         provider = source.get("provider", "codex")
-        # The default OpenCode source keeps its app, folder, and empty launcher.
+        # The default OpenCode and Antigravity CLI sources keep their app, folder, and empty launcher.
         self.fixed_provider = provider if provider not in SOURCE_PROVIDERS else ""
+        if self.fixed_provider:
+            self.provider_fixed_name.set_label(APP_NAMES.get(provider, provider))
+            self.launcher_fixed.set_subtitle("Not used: ASB does not open CLI sessions." if provider == "antigravity"
+                                             else "Not used: OpenCode cannot open one session from a link.")
         self.provider.set_visible(not self.fixed_provider)
         self.provider_fixed.set_visible(bool(self.fixed_provider))
         self.launcher_fixed.set_visible(bool(self.fixed_provider))
