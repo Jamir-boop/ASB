@@ -121,9 +121,11 @@ Limits:
 
 On Linux, install the ASB agy hook, then run `asb bridge install --agy` with agy and Bun on `PATH`. Start a new agy session. It shows to other agents after its first turn. `asb bridge status` checks the installation. `asb bridge uninstall --agy` removes it.
 
-Use the `asb-bridge` MCP tools to list peers and send to one peer by its session ID or reference. agy asks you to allow each MCP tool call unless you allow it always. The MCP allow prompt with `--dangerously-skip-permissions` is not tested. Another agent can send to agy by session ID. Messages to agy arrive at the end of a turn, through its `Stop` hook. If agy stays idle with no new turn, the message waits. ASB does not need kitty for this path. The Stop path delivers every input kind, including idle notices, and each one starts a model turn on your agy account, as in Codex and OpenCode. In a session started with `--dangerously-skip-permissions`, a message delivered through Stop can run tools with no agy permission prompt.
+Use the `asb-bridge` MCP tools to list peers and send to one peer by its session ID or reference. agy shows "Allow calling this tool?" for each Bridge tool call unless you allow that tool always. The MCP allow prompt with `--dangerously-skip-permissions` is not tested. Another agent can send to agy by session ID. Messages to agy arrive at the end of a turn, through its `Stop` hook. If agy stays idle with no new turn, the message waits. ASB does not need kitty for this path. The Stop path delivers every input kind, including idle notices, and each one starts a model turn on your agy account, as in Codex and OpenCode. In a session started with `--dangerously-skip-permissions`, a message delivered through Stop can run tools with no agy permission prompt.
 
-The kitty typing path is built but off. It would read the prompt screen in memory and type the message into the agy window. In a session with `--dangerously-skip-permissions`, a message submitted this way can run tools with no agy permission prompt. The empty-prompt rule and the effect of `@` and `/` in a paste are not proven in a live agy 1.5.15 session. Tests use fakes.
+Checked live once with agy 1.5.15 (2026-11-23): `list_sessions` through MCP, and one message delivered at Stop. Tests use fakes for withdrawal at 60 min, `unknown` outcomes, two receivers, and release from hold.
+
+The kitty typing path is built but off. It would read the prompt screen in memory and type the message into the agy window. In a session with `--dangerously-skip-permissions`, a message submitted this way can run tools with no agy permission prompt. The empty-prompt rule and the effect of `@` and `/` in a paste are not proven in a live agy 1.5.15 session. Tests use fakes for the kitty path.
 
 ## Support by app
 

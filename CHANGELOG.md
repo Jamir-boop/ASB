@@ -4,7 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
-- Added the optional Antigravity CLI Bridge target on Linux (`asb bridge install --agy`). agy can send through MCP and can receive through the Stop hook at the end of a turn. Tests use fakes. The kitty paste path is off until a live proof.
+- Added the optional Antigravity CLI Bridge target on Linux (`asb bridge install --agy`). agy can send through MCP and can receive through the Stop hook at the end of a turn. Checked live once with agy 1.5.15 (2026-11-23): `list_sessions` through MCP, and one message delivered at Stop. agy shows "Allow calling this tool?" for each Bridge tool call unless you allow that tool always. The MCP allow prompt with `--dangerously-skip-permissions` is not tested. Tests use fakes for withdrawal at 60 min, `unknown` outcomes, two receivers, and release from hold. The kitty paste path is off until a live proof.
 
 - ASB Bridge is now `0.10.0`: the OpenCode plugin supports phone approvals.
 - Added OpenCode approvals from the phone on Linux. With **Approve requests from phones** on and a paired phone, a shell command or a `write` or `edit` request for one file can get a card. Only one card can be open per local root session. Other requests stay on the PC. Not tested end to end on a phone with a real OpenCode session.
