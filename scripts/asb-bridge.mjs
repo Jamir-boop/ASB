@@ -483,9 +483,10 @@ function runAgy(agy, env, args) {
 async function agyConfig(file) {
   await safeParents(file);
   const bytes = await contents(file);
-  if (!bytes) return { bytes, keys: [], server: null };
+  const text = bytes?.toString();
+  if (!text?.trim()) return { bytes, keys: [], server: null };
   let config;
-  try { config = JSON.parse(bytes); } catch { throw new Error('Invalid agy MCP config.'); }
+  try { config = JSON.parse(text); } catch { throw new Error('Invalid agy MCP config.'); }
   const servers = config?.mcpServers ?? {};
   if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid agy MCP config.');
   return { bytes, keys: Object.keys(servers).sort(), server: servers['asb-bridge'] ?? null };

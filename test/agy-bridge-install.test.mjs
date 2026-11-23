@@ -25,7 +25,8 @@ const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALLS, JSON.stringify(args) + '\\n');
 const file = process.env.MCP_FILE;
-const value = JSON.parse(fs.readFileSync(file));
+const text = fs.readFileSync(file, 'utf8');
+const value = text.trim() ? JSON.parse(text) : { mcpServers: {} };
 if (args[0] !== 'mcp') process.exit(2);
 const [,, name, command, bundle] = args;
 if (args[1] === 'add' && name === 'asb-bridge' && command && bundle && args.length === 5) {
@@ -107,4 +108,24 @@ test('agy install backs up once, records the digest, and uses only the agy CLI t
     ['mcp', 'add', 'asb-bridge', path.join(f.bin, 'bun'), bundle], ['mcp', 'add', 'asb-bridge', path.join(f.bin, 'bun'), bundle],
     ['mcp', 'list'], ['mcp', 'list'], ['mcp', 'list'], ['mcp', 'remove', 'asb-bridge'],
   ]);
+});
+
+test('agy install accepts empty or whitespace-only config and keeps its exact backup and digest', async (t) => {
+  for (const text of ['', ' \n\t']) {
+    const f = await fixture(t);
+    await writeFile(f.config, text);
+    await f.fake(); await f.bun(); await f.installHook();
+    const installed = f.run('install', '--agy');
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.ok(installed.stdout.split('\n').includes(`agy MCP before: keys []; sha256 ${sha(text)}`));
+    assert.equal(await readFile(`${f.config}.asb-backup`, 'utf8'), text);
+    assert.equal((await stat(`${f.config}.asb-backup`)).mode & 0o777, 0o600);
+    const status = f.run('status', '--json');
+    assert.equal(status.status, 0, status.stderr);
+    const { registered, enabled, versionMatches } = JSON.parse(status.stdout).agy;
+    assert.deepEqual({ registered, enabled, versionMatches }, { registered: true, enabled: true, versionMatches: true });
+    assert.deepEqual((await readFile(f.log, 'utf8')).trim().split('\n').map(JSON.parse), [
+      ['mcp', 'add', 'asb-bridge', path.join(f.bin, 'bun'), path.join(f.install, 'agy.js')], ['mcp', 'list'],
+    ]);
+  }
 });
