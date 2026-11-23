@@ -305,8 +305,52 @@ function human(result) {
   return `App sources ${result.changed ? 'saved' : 'unchanged'}.\nSaved: ${result.verification.saved.status}. Backend: ${result.verification.backend.status}. UI: ${result.verification.ui.status}.${result.verification.error ? `\n${result.verification.error.message}` : ''}`;
 }
 
-// The Claude Code PermissionRequest hook of AskUserQuestion: it waits for a phone answer. It prints the decision only on an answer,
-// and nothing in every other case, so the question card on the PC stays as it is. It never prints or saves question or answer text.
+// The characters that a phone text must not have: the controls but a tab and a newline (C0, DEL, C1), and the invisible and
+// direction marks that can make a command look like another one.
+const HIDDEN = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/;
+const cut = (value, max) => value.length > max ? `${value.slice(0, max - 1)}…` : value;
+// A display text that the phone may see in part: the hidden characters removed, then cut to its limit.
+const shown = (value, max = 4_000) => cut(String(value).replace(new RegExp(HIDDEN, 'g'), ''), max);
+// A text that the phone user allows: shown whole and unchanged, or not at all.
+const whole = (value, max = 4_000) => typeof value === 'string' && value.length <= max && !HIDDEN.test(value);
+
+// The approval that the phone shows for a Claude Code PermissionRequest (`{ kind, title, display, note }`), or null when the request
+// must stay on the PC only. The full tool input never leaves the client: never a file content, an old or a new string, or a fetch prompt.
+export function claudeApproval(hook) {
+  const name = hook.tool_name;
+  const input = object(hook.tool_input) ? hook.tool_input : {};
+  if (typeof name !== 'string' || !name || HIDDEN.test(name) || /[\t\n]/.test(name)) return null;
+  const item = (label, text, mono = false) => ({ label, text, mono });
+  const keys = () => item('Input', shown([...Object.keys(input).slice(0, 20), ...(Object.keys(input).length > 20 ? ['…'] : [])].join(', ')));
+  let display;
+  if (name === 'Bash') {
+    if (!whole(input.command)) return null;
+    display = [item('Command', input.command, true), ...(typeof input.description === 'string' ? [item('Description', shown(input.description, 500))] : [])];
+  } else if (name === 'Write') {
+    if (!whole(input.file_path)) return null;
+    display = [item('File', input.file_path, true), item('Size', `${typeof input.content === 'string' ? input.content.length : 0} characters`)];
+  } else if (name === 'Edit') {
+    if (!whole(input.file_path)) return null;
+    const length = (value) => typeof value === 'string' ? value.length : 0;
+    display = [item('File', input.file_path, true),
+      item('Change', `${length(input.old_string)} to ${length(input.new_string)} characters${input.replace_all === true ? ', all matches' : ''}`)];
+  } else if (name === 'NotebookEdit') {
+    if (!whole(input.notebook_path)) return null;
+    display = [item('File', input.notebook_path, true)];
+  } else if (name === 'WebFetch') {
+    if (!whole(input.url, 2_000)) return null;
+    display = [item('URL', input.url, true)];
+  } else if (name === 'WebSearch') {
+    display = typeof input.query === 'string' ? [item('Query', shown(input.query, 500))] : [];
+  } else if (name.startsWith('mcp__')) {
+    display = [item('Server', shown(typeof hook.mcp_server?.name === 'string' && hook.mcp_server.name ? hook.mcp_server.name : name.split('__')[1] || '')), keys()];
+  } else display = [keys()];
+  return { kind: 'tool', title: cut(`Allow ${name}${hook.agent_id != null ? ' for a subagent' : ''}?`, 300), display, note: true };
+}
+
+// The Claude Code PermissionRequest hook: it holds an AskUserQuestion or a tool request for the phone. It prints the decision only on
+// a phone answer, and nothing in every other case, so the dialog on the PC stays as it is. It never prints or saves request or answer
+// text. A PC answer ends it from outside (a "No" kills it, a "Yes" closes the engine record).
 async function claudeWait(stdin = process.stdin, write = (line) => process.stdout.write(line)) {
   const chunks = [];
   let size = 0;
@@ -317,21 +361,34 @@ async function claudeWait(stdin = process.stdin, write = (line) => process.stdou
   }
   let hook;
   try { hook = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return; }
-  if (!object(hook) || hook.hook_event_name !== 'PermissionRequest' || hook.tool_name !== 'AskUserQuestion'
-    || typeof hook.session_id !== 'string' || !hook.session_id || !Array.isArray(hook.tool_input?.questions)) return;
-  const { questions } = hook.tool_input;
+  // ExitPlanMode is a plan approval, not in this part.
+  if (!object(hook) || hook.hook_event_name !== 'PermissionRequest' || typeof hook.session_id !== 'string' || !hook.session_id
+    || hook.tool_name === 'ExitPlanMode') return;
+  const question = hook.tool_name === 'AskUserQuestion';
+  if (question && !Array.isArray(hook.tool_input?.questions)) return;
+  const approval = question ? null : claudeApproval(hook);
+  if (!question && !approval) return;
+  const { questions } = question ? hook.tool_input : {};
   const runtime = await readServiceRuntime();
   if (!runtime) return;
   try {
-    const opened = await requestInstance(runtime, '/api/agent/claude-wait', { method: 'POST', body: { sessionId: hook.session_id, questions }, maxBytes: 4096 });
+    const opened = await requestInstance(runtime, '/api/agent/wait', { method: 'POST', maxBytes: 4096,
+      body: { provider: 'claude', sessionKey: hook.session_id, ...(question ? { question: { questions } } : { approval }) } });
     if (opened.statusCode !== 200 || opened.body?.wait !== true || typeof opened.body.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(opened.body.requestId)) return;
     for (;;) {
-      const reply = await requestInstance(runtime, `/api/agent/claude-wait/${opened.body.requestId}`, { method: 'POST', timeoutMs: 30_000, maxBytes: 1024 * 1024 });
+      const reply = await requestInstance(runtime, `/api/agent/wait/${opened.body.requestId}`, { method: 'POST', timeoutMs: 30_000, maxBytes: 1024 * 1024 });
       if (reply.statusCode !== 200 || reply.body?.state === 'closed') return;
       if (reply.body?.state === 'answered') {
-        if (!object(reply.body.answers)) return;
-        write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest',
-          decision: { behavior: 'allow', updatedInput: { questions, answers: reply.body.answers } } } })}\n`);
+        const { answers, decision, note } = reply.body;
+        let output;
+        if (question) {
+          if (!object(answers)) return;
+          output = { behavior: 'allow', updatedInput: { questions, answers } };
+        } else if (decision === 'allow') output = { behavior: 'allow' };
+        else if (decision === 'deny' && (note === undefined || typeof note === 'string')) {
+          output = { behavior: 'deny', message: note === undefined ? 'Denied from the phone.' : `Denied from the phone: ${note}` };
+        } else return;
+        write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: output } })}\n`);
         return;
       }
       if (reply.body?.state !== 'open') return;

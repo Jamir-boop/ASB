@@ -26,8 +26,8 @@ const clock = (start = 1_000_000) => { const value = { now: start }; return Obje
 test('the store checks each limit', () => {
   const store = createClaudeQuestions();
   let session = 0;
-  const ok = (questions) => assert.match(store.open({ cliSessionId: `s-${session += 1}`, questions }).requestId, /^[0-9a-f]{32}$/);
-  const bad = (questions) => assert.throws(() => store.open({ cliSessionId: 'bad', questions }), (error) => error.statusCode === 400 && error.message === 'Invalid question.');
+  const ok = (questions) => assert.match(store.open({ provider: 'claude', sessionKey: `s-${session += 1}`, questions }).requestId, /^[0-9a-f]{32}$/);
+  const bad = (questions) => assert.throws(() => store.open({ provider: 'claude', sessionKey: 'bad', questions }), (error) => error.statusCode === 400 && error.message === 'Invalid question.');
   ok([one()]); ok([one(), one(), one(), one()]); bad([]); bad([one(), one(), one(), one(), one()]); bad('x');
   ok([one({ question: 'q'.repeat(2000) })]); bad([one({ question: 'q'.repeat(2001) })]); bad([one({ question: '' })]);
   ok([one({ question: 'Line one\nline two' })]); ok([one({ question: 'Tab\there' })]); bad([one({ question: 'Bell\x07' })]);
@@ -41,27 +41,27 @@ test('the store checks each limit', () => {
   ok([one({ options: [{ label: 'A', description: 'Tab\there' }] })]); bad([one({ header: 'Tab\there' })]); bad([one({ options: [{ label: 'Tab\there' }] })]);
   ok([one({ multiSelect: true })]); bad([one({ multiSelect: 'yes' })]);
   // Only the known keys, and multiSelect false when missing.
-  const { requestId } = store.open({ cliSessionId: 'copy', questions: [{ ...one({ extra: 'x' }), options: [{ label: 'A', other: 1 }] }] });
-  assert.deepEqual(store.forSession('copy').questions, [{ question: 'Synthetic question?', header: 'Pick', options: [{ label: 'A' }], multiSelect: false }]);
-  assert.equal(store.forSession('copy').requestId, requestId);
+  const { requestId } = store.open({ provider: 'claude', sessionKey: 'copy', questions: [{ ...one({ extra: 'x' }), options: [{ label: 'A', other: 1 }] }] });
+  assert.deepEqual(store.forSession('claude', 'copy').questions, [{ question: 'Synthetic question?', header: 'Pick', options: [{ label: 'A' }], multiSelect: false }]);
+  assert.equal(store.forSession('claude', 'copy').requestId, requestId);
 });
 
 test('the store keeps one open request per session and at most 32', () => {
   const store = createClaudeQuestions();
-  const first = store.open({ cliSessionId: 's1', questions: [one()] });
-  const second = store.open({ cliSessionId: 's1', questions: [one()] });
-  assert.equal(store.forSession('s1').requestId, second.requestId);
+  const first = store.open({ provider: 'claude', sessionKey: 's1', questions: [one()] });
+  const second = store.open({ provider: 'claude', sessionKey: 's1', questions: [one()] });
+  assert.equal(store.forSession('claude', 's1').requestId, second.requestId);
   assert.equal(store.openRecords().length, 1);
   assert.notEqual(first.requestId, second.requestId);
-  for (let index = 2; index <= 32; index += 1) store.open({ cliSessionId: `s${index}`, questions: [one()] });
-  assert.throws(() => store.open({ cliSessionId: 's33', questions: [one()] }), (error) => error.statusCode === 503 && error.message === 'Too many open questions.');
+  for (let index = 2; index <= 32; index += 1) store.open({ provider: 'claude', sessionKey: `s${index}`, questions: [one()] });
+  assert.throws(() => store.open({ provider: 'claude', sessionKey: 's33', questions: [one()] }), (error) => error.statusCode === 503 && error.message === 'Too many open questions.');
   // A new request of a session with an open one replaces it, also at the limit.
-  assert.ok(store.open({ cliSessionId: 's5', questions: [one()] }).requestId);
+  assert.ok(store.open({ provider: 'claude', sessionKey: 's5', questions: [one()] }).requestId);
 });
 
 test('wait settles at once on an answer and a close, and after its time with open', async () => {
   const store = createClaudeQuestions();
-  const { requestId } = store.open({ cliSessionId: 's1', questions: [one()] });
+  const { requestId } = store.open({ provider: 'claude', sessionKey: 's1', questions: [one()] });
   const started = Date.now();
   assert.deepEqual(await store.wait(requestId, 30), { state: 'open' });
   assert.ok(Date.now() - started >= 25);
@@ -70,14 +70,14 @@ test('wait settles at once on an answer and a close, and after its time with ope
   assert.deepEqual(await held, { state: 'answered', answers: { 'Synthetic question?': 'A' } });
   assert.deepEqual(await store.wait(requestId, 20_000), { state: 'answered', answers: { 'Synthetic question?': 'A' } });
   assert.equal(store.answer(requestId, {}), false);
-  const other = store.open({ cliSessionId: 's2', questions: [one()] });
+  const other = store.open({ provider: 'claude', sessionKey: 's2', questions: [one()] });
   const closing = store.wait(other.requestId, 20_000);
   store.close(other.requestId);
   assert.deepEqual(await closing, { state: 'closed' });
   assert.equal(store.answer(other.requestId, {}), false);
   assert.equal(store.wait('0'.repeat(32), 10), null);
   // An abort ends a held wait.
-  const third = store.open({ cliSessionId: 's3', questions: [one()] });
+  const third = store.open({ provider: 'claude', sessionKey: 's3', questions: [one()] });
   const controller = new AbortController();
   const aborted = store.wait(third.requestId, 20_000, controller.signal);
   controller.abort();
@@ -89,18 +89,18 @@ test('wait settles at once on an answer and a close, and after its time with ope
 test('reconcile, sweep, and the drop follow their times', () => {
   const now = clock();
   const store = createClaudeQuestions({ now });
-  const seen = store.open({ cliSessionId: 'seen', questions: [one()] }).requestId;
-  const unseen = store.open({ cliSessionId: 'unseen', questions: [one()] }).requestId;
-  store.reconcile(new Set(['seen']));
-  assert.equal(store.forSession('seen').seenPending, true);
+  const seen = store.open({ provider: 'claude', sessionKey: 'seen', questions: [one()] }).requestId;
+  const unseen = store.open({ provider: 'claude', sessionKey: 'unseen', questions: [one()] }).requestId;
+  store.reconcile('claude', 'question', new Set(['seen']));
+  assert.equal(store.forSession('claude', 'seen').seenPending, true);
   now.advance(10_000);
-  store.reconcile(new Set());
+  store.reconcile('claude', 'question', new Set());
   // Seen, then gone: closed. Never seen within 30 s: stays.
-  assert.equal(store.forSession('seen'), null);
-  assert.equal(store.forSession('unseen').requestId, unseen);
+  assert.equal(store.forSession('claude', 'seen'), null);
+  assert.equal(store.forSession('claude', 'unseen').requestId, unseen);
   now.advance(20_001);
-  store.reconcile(new Set());
-  assert.equal(store.forSession('unseen'), null);
+  store.reconcile('claude', 'question', new Set());
+  assert.equal(store.forSession('claude', 'unseen'), null);
   // A closed record answers a late poll for 60 s, then it is gone.
   assert.ok(store.wait(seen, 0));
   now.advance(49_000);
@@ -113,16 +113,16 @@ test('reconcile, sweep, and the drop follow their times', () => {
   assert.equal(store.wait(unseen, 0), null);
   assert.equal(store.hasRecords(), false);
   // Sweep: no wait for more than 60 s closes.
-  const swept = store.open({ cliSessionId: 'swept', questions: [one()] }).requestId;
+  const swept = store.open({ provider: 'claude', sessionKey: 'swept', questions: [one()] }).requestId;
   now.advance(60_000);
   store.sweep();
-  assert.equal(store.forSession('swept').requestId, swept);
+  assert.equal(store.forSession('claude', 'swept').requestId, swept);
   store.wait(swept, 0);
   now.advance(60_001);
   store.sweep();
-  assert.equal(store.forSession('swept'), null);
+  assert.equal(store.forSession('claude', 'swept'), null);
   // An answered record is dropped 60 s after its answer.
-  const answered = store.open({ cliSessionId: 'answered', questions: [one()] }).requestId;
+  const answered = store.open({ provider: 'claude', sessionKey: 'answered', questions: [one()] }).requestId;
   store.answer(answered, { q: 'A' });
   now.advance(60_000);
   assert.equal(store.wait(answered, 0), null);
@@ -263,9 +263,9 @@ test('with no client the engine closes a request that the PC answered, and loads
   const { requestId } = await (await e.post('/api/agent/claude-wait', { sessionId: e.sessionId, questions: [one()] })).json();
   // The engine itself loads the dashboard and sees the pending question.
   const deadline = Date.now() + 5_000;
-  while (!store.forSession(e.sessionId)?.seenPending && Date.now() < deadline) await delay(20);
+  while (!store.forSession('claude', e.sessionId)?.seenPending && Date.now() < deadline) await delay(20);
   assert.ok(e.loads() > idle);
-  assert.equal(store.forSession(e.sessionId).seenPending, true);
+  assert.equal(store.forSession('claude', e.sessionId).seenPending, true);
   await appendFile(e.transcript, `${JSON.stringify(toolAnswer(e.nowMs, -1_000, 'ask-1'))}\n`);
   await utimes(e.transcript, e.nowMs / 1000 + 2, e.nowMs / 1000 + 2);
   const result = await Promise.race([e.post(`/api/agent/claude-wait/${requestId}`).then((reply) => reply.json()),
@@ -287,7 +287,7 @@ test('a question pending for more than six hours closes its request', async (t) 
   const { requestId } = await (await e.post('/api/agent/claude-wait', { sessionId: e.sessionId, questions: [one()] })).json();
   now.advance(30_001);
   await e.server.dashboardForRequest({ force: true });
-  assert.equal(store.forSession(e.sessionId), null);
+  assert.equal(store.forSession('claude', e.sessionId), null);
   assert.deepEqual(await store.wait(requestId, 0), { state: 'closed' });
 });
 
@@ -335,7 +335,7 @@ const hookInput = (questions, overrides = {}) => ({ session_id: 'cccccccc-dddd-4
 const quiet = { code: 0, stdout: '', stderr: '' };
 
 test('the hook prints nothing for bad stdin, wait false, an error, a closed request, and no engine', async (t) => {
-  const h = await hook(t, (route) => route === '/api/agent/claude-wait' ? [200, { wait: true, requestId: 'a'.repeat(32) }] : [200, { state: 'closed' }]);
+  const h = await hook(t, (route) => route === '/api/agent/wait' ? [200, { wait: true, requestId: 'a'.repeat(32) }] : [200, { state: 'closed' }]);
   for (const stdin of ['{bad', JSON.stringify([]), hookInput([one()], { hook_event_name: 'PreToolUse' }), hookInput([one()], { tool_name: 'Bash' }),
     hookInput([one()], { session_id: '' }), hookInput('x'), 'x'.repeat(256 * 1024 + 1)]) {
     assert.deepEqual(await h.run(stdin), quiet);
@@ -345,7 +345,7 @@ test('the hook prints nothing for bad stdin, wait false, an error, a closed requ
   assert.equal(h.requests.length, 2);
   assert.deepEqual(await (await hook(t, () => [200, { wait: false }])).run(hookInput([one()])), quiet);
   assert.deepEqual(await (await hook(t, () => [500, { error: 'x' }])).run(hookInput([one()])), quiet);
-  const restarted = await hook(t, (route) => route === '/api/agent/claude-wait' ? [200, { wait: true, requestId: 'a'.repeat(32) }] : [404, { error: 'Unknown question.' }]);
+  const restarted = await hook(t, (route) => route === '/api/agent/wait' ? [200, { wait: true, requestId: 'a'.repeat(32) }] : [404, { error: 'Unknown question.' }]);
   assert.deepEqual(await restarted.run(hookInput([one()])), quiet);
   assert.deepEqual(await (await hook(t, null, { runtime: false })).run(hookInput([one()])), quiet);
   // A closed port: the engine is down.
@@ -360,19 +360,19 @@ test('the hook prints the exact decision for one and two questions, also after a
   const questions = [one({ question: 'Pick one?' })];
   let polls = 0;
   const h = await hook(t, (route) => {
-    if (route === '/api/agent/claude-wait') return [200, { wait: true, requestId: 'c'.repeat(32) }, 1_000];
+    if (route === '/api/agent/wait') return [200, { wait: true, requestId: 'c'.repeat(32) }, 1_000];
     polls += 1;
     return polls < 2 ? [200, { state: 'open' }] : [200, { state: 'answered', answers: { 'Pick one?': 'A' } }];
   });
   const result = await h.run(hookInput(questions));
   assert.equal(result.stdout, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"questions":${JSON.stringify(questions)},"answers":{"Pick one?":"A"}}}}}\n`);
   assert.deepEqual([result.code, result.stderr], [0, '']);
-  assert.deepEqual(h.requests[0].body, { sessionId: 'cccccccc-dddd-4eee-8fff-000000000003', questions });
+  assert.deepEqual(h.requests[0].body, { provider: 'claude', sessionKey: 'cccccccc-dddd-4eee-8fff-000000000003', question: { questions } });
   assert.equal(h.requests[0].token, TOKEN);
-  assert.deepEqual(h.requests.slice(1).map((request) => request.route), [`/api/agent/claude-wait/${'c'.repeat(32)}`, `/api/agent/claude-wait/${'c'.repeat(32)}`]);
+  assert.deepEqual(h.requests.slice(1).map((request) => request.route), [`/api/agent/wait/${'c'.repeat(32)}`, `/api/agent/wait/${'c'.repeat(32)}`]);
   // The stdin questions go back unchanged, with their unknown keys.
   const two = [one({ question: 'Colors?', multiSelect: true, extra: 'kept' }), one({ question: 'Size?' })];
-  const h2 = await hook(t, (route) => route === '/api/agent/claude-wait' ? [200, { wait: true, requestId: 'd'.repeat(32) }]
+  const h2 = await hook(t, (route) => route === '/api/agent/wait' ? [200, { wait: true, requestId: 'd'.repeat(32) }]
     : [200, { state: 'answered', answers: { 'Colors?': 'A, B', 'Size?': 'Large, typed' } }]);
   const second = await h2.run(hookInput(two));
   assert.deepEqual(JSON.parse(second.stdout), { hookSpecificOutput: { hookEventName: 'PermissionRequest',
@@ -403,8 +403,8 @@ test('no question or answer text stays at rest after an open and an answer', asy
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stdin.end(JSON.stringify(hookInput([one({ question: SECRET_QUESTION, options: [{ label: SECRET_ANSWER }] })], { session_id: e.sessionId })));
   const deadline = Date.now() + 5_000;
-  while (!store.forSession(e.sessionId) && Date.now() < deadline) await delay(20);
-  const record = store.forSession(e.sessionId);
+  while (!store.forSession('claude', e.sessionId) && Date.now() < deadline) await delay(20);
+  const record = store.forSession('claude', e.sessionId);
   assert.ok(record);
   store.answer(record.requestId, { [SECRET_QUESTION]: SECRET_ANSWER });
   const [code] = await once(child, 'close');
@@ -432,8 +432,8 @@ async function hookOn(e, questions) {
 
 const untilOpen = async (store, sessionId) => {
   const deadline = Date.now() + 5_000;
-  while (!store.forSession(sessionId) && Date.now() < deadline) await delay(20);
-  return store.forSession(sessionId);
+  while (!store.forSession('claude', sessionId) && Date.now() < deadline) await delay(20);
+  return store.forSession('claude', sessionId);
 };
 
 test('the answer route checks the answer against the stored questions and builds the Claude answers', async (t) => {
@@ -476,7 +476,7 @@ test('the answer route checks the answer against the stored questions and builds
   }
   assert.equal((await e.post(row, undefined, { raw: '{bad' })).status, 400);
   assert.equal((await e.post(row, undefined, { raw: 'x'.repeat(64 * 1024 + 1) })).status, 413);
-  assert.equal(store.forSession(e.sessionId).requestId, id);
+  assert.equal(store.forSession('claude', e.sessionId).requestId, id);
   // 403 from another origin, 404 for an unknown row, 409 for a wrong ID, the gate off, an answered, and a closed request.
   assert.equal((await answer(id, [{ selected: ['A'] }, { selected: ['Large'] }], { headers: { origin: 'http://evil.example' } })).status, 403);
   assert.equal((await answer(id, [{ selected: ['A'] }, { selected: ['Large'] }], { headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
@@ -563,7 +563,7 @@ test('a saved switch change closes the open questions; a listener restart keeps 
   let record = await untilOpen(store, e.sessionId);
   assert.ok(record);
   assert.equal((await save({ port: await free() })).running, true);
-  assert.equal(store.forSession(e.sessionId)?.requestId, record.requestId);
+  assert.equal(store.forSession('claude', e.sessionId)?.requestId, record.requestId);
   const typed = 'Synthetic typed gadget note';
   const reply = await answer(record.requestId, [{ selected: [SECRET_ANSWER], other: typed }]);
   assert.deepEqual([reply.status, reply.json], [200, { answered: true }]);
@@ -582,7 +582,7 @@ test('a saved switch change closes the open questions; a listener restart keeps 
     record = await untilOpen(store, e.sessionId);
     assert.ok(record, JSON.stringify(change));
     await save(change);
-    assert.equal(store.forSession(e.sessionId), null, JSON.stringify(change));
+    assert.equal(store.forSession('claude', e.sessionId), null, JSON.stringify(change));
     assert.deepEqual(await hooked.done, { code: 0, stdout: '' }, JSON.stringify(change));
     // A new question does not wait while the switch is off.
     assert.deepEqual(await (await e.post('/api/agent/claude-wait', { sessionId: e.sessionId, questions })).json(), { wait: false });

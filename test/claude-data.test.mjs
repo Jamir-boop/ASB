@@ -9,6 +9,7 @@ import path from 'node:path';
 import {
   applyClaudeAppApproval,
   applyLiveClaudeStatus,
+  PERMISSION_WAIT,
   claudeTitle,
   getClaudeCacheStats,
   invalidateClaudeData,
@@ -1484,8 +1485,10 @@ test('app approval tool, process start, turn end, and grace rules', async (t) =>
       });
     }
   }
-  assert.deepEqual(applyClaudeAppApproval(thread, approvals(), atMs + 9999), { ...thread, approvalCheckAtMs: atMs + 10_000 });
+  // The raw wait shows also in the grace, for the phone approvals.
+  assert.deepEqual(applyClaudeAppApproval(thread, approvals(), atMs + 9999), { ...thread, [PERMISSION_WAIT]: true, approvalCheckAtMs: atMs + 10_000 });
   const waiting = applyClaudeAppApproval(thread, approvals(), atMs + 10_000);
+  assert.equal(waiting[PERMISSION_WAIT], true);
   assert.equal(waiting.awaitingPermission, true);
   assert.equal(waiting.questionNonBlocking, false);
   assert.equal(waiting.pendingToolAtMs, atMs);
@@ -1502,12 +1505,14 @@ test('a live registry permission wait gets the 10 s grace, and a question does n
   const nowMs = new Date(2026, 9, 25, 7, 56, 0).getTime();
   const thread = { id: 'claude-desktop-code:local_grace', externalId: 'local_grace', provider: 'claude-desktop-code', lifecycleRunning: true };
   const records = (fields) => [{ hostSessionId: thread.externalId, status: 'waiting', waitingFor: 'permission prompt', ...fields }];
+  // The raw wait (for the phone approvals) has no grace.
   assert.deepEqual(applyLiveClaudeStatus(thread, records({ statusUpdatedAt: nowMs - 9999 }), nowMs),
-    { ...thread, approvalCheckAtMs: nowMs + 1 });
+    { ...thread, [PERMISSION_WAIT]: true, approvalCheckAtMs: nowMs + 1 });
   const late = applyLiveClaudeStatus(thread, records({ statusUpdatedAt: nowMs - 10_000 }), nowMs);
-  assert.deepEqual([late.awaitingPermission, late.pendingToolAtMs, late.approvalCheckAtMs], [true, nowMs - 10_000, undefined]);
+  assert.deepEqual([late.awaitingPermission, late.pendingToolAtMs, late.approvalCheckAtMs, late[PERMISSION_WAIT]], [true, nowMs - 10_000, undefined, true]);
   const question = applyLiveClaudeStatus(thread, records({ waitingFor: 'input needed', statusUpdatedAt: nowMs - 1000 }), nowMs);
-  assert.deepEqual([question.awaitingPermission, question.awaitingUserInput], [true, true]);
+  assert.deepEqual([question.awaitingPermission, question.awaitingUserInput, question[PERMISSION_WAIT]], [true, true, undefined]);
+  assert.equal(applyLiveClaudeStatus(thread, records({ status: 'busy', waitingFor: undefined }), nowMs)[PERMISSION_WAIT], undefined);
   const noTime = applyLiveClaudeStatus(thread, records({ statusUpdatedAt: 0 }), nowMs);
   assert.deepEqual([noTime.awaitingPermission, noTime.pendingToolAtMs], [true, nowMs]);
 });
