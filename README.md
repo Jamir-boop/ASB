@@ -116,7 +116,7 @@ This is a file socket in your runtime folder, so only your user can connect to i
 Limits:
 - Checked with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked.
 - agy has no hook event for a command approval, so ASB cannot show Waiting for it.
-- Esc or a denied tool request can end a turn without a Stop hook. After 60 seconds with no hook event or transcript change, the row shows Unknown, not Done or Failed. A long foreground tool with no updates can also show Unknown. Questions and work that agy marks as background keep their state.
+- Esc or a denied tool request can end a turn without a Stop hook. After 30 quiet seconds, ASB can use the kitty screen to show Idle when it finds the interrupt above an empty prompt. With no match, the row keeps Working until the 10-minute Unknown rule. Questions and work that agy marks as background keep their state.
 - Without Stop, the hook record stays `working`. The Bridge does not type into kitty, and a message still waiting after 60 min is withdrawn with a drop receipt.
 - `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
 - Each agy hook call adds about 80 ms, and agy waits for it.

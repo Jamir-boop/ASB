@@ -20,12 +20,12 @@ const MAX_RECORD = 16 * 1024;
 const MAX_TITLE = 1024;
 const BAD_TITLE_CHAR = /[\x00-\x1f\x7f-\x9f\p{Cf}\u2028\u2029]/u;
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
-const NO_NEWS_MS = 60_000;
+const NO_NEWS_MS = 10 * 60_000;
 // agy fires no event when it ends, so a live row is checked again at the next 30 s mark.
 const LIVE_CHECK_MS = 30_000;
 const KITTY_LEVELS = 8;
 export const AGY_FOCUS_ERROR = 'ASB could not focus this agy session in kitty.';
-export const AGY_QUIET_REASON = 'No news from the agy session for 60 seconds.';
+export const AGY_QUIET_REASON = 'No news from the agy session for 10 minutes.';
 
 export const agyAbsolutePath = (value) => typeof value === 'string' && PATH_TEXT.test(value) && path.isAbsolute(value) ? path.resolve(value) : '';
 export const agyRecordsDir = (env = process.env, homeDir = os.homedir()) => path.join(stateDir(env, 'linux', homeDir), 'agy');
@@ -299,7 +299,39 @@ async function transcriptMtime(file) {
   return info?.isFile() ? info.mtimeMs : 0;
 }
 
-export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now(), canFocus = false, title = '' }) {
+const NEW_AGY_TURN = /^(?:>\s+\S|●)/;
+const AGY_PROMPT_BORDER = /^[─━═╭╮╰╯│┃ ]{10,}$/;
+const AGY_INTERRUPT = /^(?:⎿\s*)?Interrupted · What should Antigravity CLI do instead\?/;
+
+export function agyScreenInterrupted(screen) {
+  const lines = screen.split('\n').map((line) => line.trim());
+  const prompt = lines.findLastIndex((line) => line === '>');
+  if (prompt < 1) return false;
+  const after = lines.slice(prompt + 1);
+  const footer = after.find((line) => line);
+  if ((footer && !AGY_PROMPT_BORDER.test(footer)) || after.some((line) => NEW_AGY_TURN.test(line))) return false;
+  let before = prompt - 1;
+  while (before >= 0 && (!lines[before] || AGY_PROMPT_BORDER.test(lines[before]))) before--;
+  return before >= 0 && AGY_INTERRUPT.test(lines[before]);
+}
+
+// Keep only the check result (not the screen). Reserve the interval before the read starts, also for overlapping scans.
+let interruptChecks;
+async function checkAgyInterrupt(file, record, target, newsAtMs, nowMs, exec) {
+  if (!target || record.state !== 'working' || record.background || record.parentConversationId) return {};
+  const last = interruptChecks.get(file);
+  const screenCheckAtMs = Math.max(newsAtMs + LIVE_CHECK_MS, last?.nextAtMs || 0);
+  const turn = JSON.stringify([record.agyPid, record.agyStartTicks, record.stateAtMs, newsAtMs, target.listenOn, target.windowId]);
+  if (nowMs < screenCheckAtMs) return { screenCheckAtMs, interrupted: last?.turn === turn && await last.result };
+  const result = Promise.resolve().then(() => exec(['@', '--to', target.listenOn, 'get-text', '--match', `id:${target.windowId}`, '--extent', 'screen']))
+    .then(agyScreenInterrupted).catch(() => false);
+  const nextAtMs = nowMs + LIVE_CHECK_MS;
+  interruptChecks.set(file, { turn, nextAtMs, result });
+  return { screenCheckAtMs: nextAtMs, interrupted: await result };
+}
+
+export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now(), canFocus = false, title = '',
+  interrupted = false, screenCheckAtMs = Infinity }) {
   const { conversationId: id, workspace, state, stateAtMs } = record;
   const thread = {
     id: `agy:${id}`, externalId: id, provider: 'antigravity', providerLabel: 'Antigravity CLI', source: 'agy-cli', surface: 'cli',
@@ -323,17 +355,21 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
     return thread;
   }
   if (state === 'question') thread.agyStatus = { state: 'waiting', reason: 'The current tool is waiting for an answer.' };
-  // shortcut: Quiet foreground work and an interrupt look the same, use a turn-end signal if agy adds one.
   const newsAtMs = Math.max(stateAtMs, transcriptAtMs);
   const quiet = state === 'working' && !record.background;
-  if (quiet && nowMs - newsAtMs > NO_NEWS_MS) thread.agyStatus = { state: 'unknown', reason: AGY_QUIET_REASON };
+  if (interrupted) Object.assign(thread, { lifecycleRunning: false, latestLifecycleKind: 'turn_aborted',
+    agyStatus: { state: 'idle', reason: 'The agy turn was interrupted.' } });
+  else if (quiet && nowMs - newsAtMs > NO_NEWS_MS) thread.agyStatus = { state: 'unknown', reason: AGY_QUIET_REASON };
   const nextCheck = (Math.floor(nowMs / LIVE_CHECK_MS) + 1) * LIVE_CHECK_MS;
-  thread.cliProcessCheckAtMs = quiet && !thread.agyStatus ? Math.min(nextCheck, newsAtMs + NO_NEWS_MS) : nextCheck;
+  thread.cliProcessCheckAtMs = Math.min(nextCheck, screenCheckAtMs, quiet && !thread.agyStatus ? newsAtMs + NO_NEWS_MS : Infinity);
   return thread;
 }
 
 // Reads the hook records (at most 500 files of 16 KiB each); a bad file is skipped. Removes its own records that are not live and older than 7 days.
-export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), homeDir = os.homedir(), startOf = processStart, procDir = '/proc' } = {}) {
+export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), homeDir = os.homedir(), startOf = processStart,
+  procDir = '/proc', exec = defaultKitty } = {}) {
+  interruptChecks ??= new Map();
+  for (const [file, check] of interruptChecks) if (check.nextAtMs <= nowMs) interruptChecks.delete(file);
   const names = await fs.readdir(dataDir).catch((error) => {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -352,8 +388,10 @@ export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), ho
       await fs.rm(titleFile, { force: true }).catch(() => {});
       return null;
     }
-    return agyThread(record, { live, nowMs, transcriptAtMs: live ? await transcriptMtime(record.transcriptMtimePath) : 0,
-      canFocus: live && Boolean(await agyFocusTarget(record, { procDir })), title: await readAgyTitle(titleFile) });
+    const [transcriptAtMs, target, title] = await Promise.all([live ? transcriptMtime(record.transcriptMtimePath) : 0,
+      live ? agyFocusTarget(record, { procDir }) : null, readAgyTitle(titleFile)]);
+    const check = await checkAgyInterrupt(file, record, target, Math.max(record.stateAtMs, transcriptAtMs), nowMs, exec);
+    return agyThread(record, { live, nowMs, transcriptAtMs, canFocus: Boolean(target), title, ...check });
   }))).filter(Boolean);
   return { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
 }

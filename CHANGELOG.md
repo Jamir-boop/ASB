@@ -4,7 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
-- Antigravity CLI: a foreground Working row shows Unknown after 60 seconds with no hook event or transcript change. agy can omit the Stop hook after Esc or a denied tool request. ASB does not guess a result for a quiet turn.
+- Antigravity CLI: after Esc or a denied tool request, a quiet Working row can show Idle if its kitty screen shows an interrupt above the empty prompt. ASB keeps no screen text. Without a match, the 10-minute Unknown rule stays.
 - OpenCode: the Bridge checks if the local engine can hold a phone approval before it reads the session context. It skips the read when phone approvals are off or no phone is paired.
 - PC sounds: a new question or approval can play Needs input again while the row still needs input. The same request does not play again on each scan.
 
