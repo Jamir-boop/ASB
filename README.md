@@ -65,13 +65,21 @@ ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and sho
 
 Run `asb agent agy-hook install` to add the hook. It writes one `asb` key into `~/.gemini/config/hooks.json`, keeps the old file as `hooks.json.asb-backup`, and leaves other hooks as they are. `asb agent agy-hook status` shows the state, and `asb agent agy-hook remove` takes the hook out. Linux only.
 
-Focus needs kitty remote control (`allow_remote_control` and `listen_on`) in your `kitty.conf`. `asb doctor` checks it.
+Focus needs kitty remote control in your `kitty.conf`. Use these two lines (`asb doctor` prints them):
+
+```
+allow_remote_control socket-only
+listen_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}
+```
+
+This is a file socket in your runtime folder, so only your user can connect to it. Do not use an abstract socket (`unix:@name`): each local process of each user can connect to it and control kitty (checked with kitty 0.41.1). ASB sends only `focus-window`.
 
 Limits:
 - Checked with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked.
 - agy has no hook event for a command approval, so ASB shows Working, not Waiting, while agy waits for one.
 - Esc fires no hook event. After 10 minutes with no event and no transcript change, a Working row shows Unknown.
 - `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
+- Each agy hook call adds about 80 ms, and agy waits for it.
 - Not yet: phone answers and approvals, bridge messages, Windows, and the Antigravity app and IDE.
 
 ## Support by app
