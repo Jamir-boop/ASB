@@ -81,7 +81,7 @@ export async function writeTarget(target, value, { beforeRename = async () => {}
   } finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
 }
 
-export function permissionRequestHook({ fileName, matcher, timeout, suffix, questionsMatcher, allowUnknownLauncher = false }) {
+export function permissionRequestHook({ fileName, matcher, timeout, suffix, questionsMatcher }) {
   const hookCommand = (launcher) => `${shellQuote(launcher)}${suffix}`;
   const ours = (hook) => object(hook) && hook.type === 'command' && typeof hook.command === 'string' && hook.command.endsWith(suffix);
   const hasOurs = (item) => object(item) && Array.isArray(item.hooks) && item.hooks.some(ours);
@@ -94,7 +94,7 @@ export function permissionRequestHook({ fileName, matcher, timeout, suffix, ques
     if (!found.length) return 'not installed';
     const [entry] = found;
     if (found.length !== 1 || entry.hook.timeout !== timeout
-      || (!(allowUnknownLauncher && !command) && entry.hook.command !== command)) return 'other launcher';
+      || (command && entry.hook.command !== command)) return 'other launcher';
     return entry.matcher === matcher ? 'installed' : questionsMatcher && entry.matcher === questionsMatcher ? QUESTIONS_ONLY : 'other launcher';
   }
 
@@ -167,7 +167,7 @@ export function permissionRequestHook({ fileName, matcher, timeout, suffix, ques
 
 // The entry from before phone approvals still answers questions, so install replaces it in place.
 export const { hookCommand, hookState, installedValue, removedValue, status: claudeHookStatus, change: changeClaudeHook } = permissionRequestHook({
-  fileName: 'settings.json', matcher: '*', timeout: HOOK_TIMEOUT, suffix: ' agent claude-wait', questionsMatcher: 'AskUserQuestion', allowUnknownLauncher: true,
+  fileName: 'settings.json', matcher: '*', timeout: HOOK_TIMEOUT, suffix: ' agent claude-wait', questionsMatcher: 'AskUserQuestion',
 });
 
 export const CHANGED_MESSAGE = CHANGED.message;

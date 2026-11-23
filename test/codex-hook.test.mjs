@@ -97,6 +97,15 @@ test('Codex status matches the command, matcher, timeout and number of ASB hooks
   }
 });
 
+test('Codex status accepts any launcher if none is set', async (t) => {
+  const { target, local, env } = await fixture(t);
+  const { dir } = await target('unknown-launcher', value(OLD));
+  delete env.ASB_INSTALLED_LAUNCHER;
+  const status = await local('status', dir, {}, '--json');
+  assert.equal(status.code, 0);
+  assert.deepEqual(JSON.parse(status.stdout), { targets: [{ dir, state: 'installed' }] });
+});
+
 test('install and remove refuse an edit during a write, and install cannot overwrite a new file', async (t) => {
   const { target, local } = await fixture(t);
   for (const action of ['install', 'remove']) {
