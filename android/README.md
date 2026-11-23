@@ -335,7 +335,7 @@ planning)` on a plan card; the note goes only with a deny. The buttons arm one
 second after the card opens, so a new request does not replace a control under
 the finger. After a decision, `Sending`, then `Sent` or `Answered on the PC`
 shows; `Approvals are off on the PC.` and `The PC did not take this answer.` stay
-on the card. The card and the decision stay in memory only.
+on the card. The card and the decision stay in memory only. After a sent decision, the list shows the banner `Allowed`, `Denied`, `Plan approved`, or `Kept planning`.
 
 The PC wins: when you answer on the PC, the card closes in place at the next
 phone read with the line `This request is closed.` and both buttons off (at most
