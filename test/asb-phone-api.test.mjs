@@ -167,18 +167,19 @@ test('phone settings validate booleans, the address list, port bounds and the AS
   for (const extra of [{ enabled: 1 }, { enabled: null }, { bindAddresses: '192.168.50.4' }, { bindAddresses: [1] },
     { bindAddresses: ['192.168.50.4', '192.168.50.4'] }, { bindAddresses: Array(9).fill('192.168.50.4') },
     { bindAddress: '192.168.50.4' }, { port: 1023 }, { port: 65536 }, { port: 4630.5 }, { port: '4630' }, { port }, { extra: true },
-    { sendText: 1 }, { sendText: 'true' }, { sendText: null }, { sendText: true, extra: true }, { answer: 1 }, { answer: null }, { answer: true, extra: true }]) {
+    { sendText: 1 }, { sendText: 'true' }, { sendText: null }, { sendText: true, extra: true }, { answer: 1 }, { answer: null }, { answer: true, extra: true },
+    { approve: 1 }, { approve: 'true' }, { approve: true, extra: true }]) {
     assert.equal((await request('/api/phone/settings', { method: 'POST', body: { ...configuration, ...extra } })).status, 400, JSON.stringify(extra));
   }
   assert.equal(calls.some(([action]) => action === 'settings'), false);
   for (const body of [{ enabled: false, bindAddresses: [], port: 1024 }, { enabled: false, bindAddresses: ['10.147.17.4'], port: 1024 },
     { ...configuration, port: 65535 }, { ...configuration, sendText: true }, { ...configuration, sendText: false }, { ...configuration, answer: true },
-    { ...configuration, sendText: true, answer: false }]) {
+    { ...configuration, sendText: true, answer: false }, { ...configuration, approve: true }, { ...configuration, sendText: true, answer: true, approve: false }]) {
     assert.equal((await request('/api/phone/settings', { method: 'POST', body })).status, 200);
   }
-  // Both field sets reach the gateway as they are.
-  assert.deepEqual(calls.filter(([action]) => action === 'settings').slice(-4).map(([, value]) => [value.sendText, value.answer]),
-    [[true, undefined], [false, undefined], [undefined, true], [true, false]]);
+  // Each field set reaches the gateway as it is.
+  assert.deepEqual(calls.filter(([action]) => action === 'settings').slice(-6).map(([, value]) => [value.sendText, value.answer, value.approve]),
+    [[true, undefined, undefined], [false, undefined, undefined], [undefined, true, undefined], [true, false, undefined], [undefined, undefined, true], [true, true, false]]);
 });
 
 test('phone API preserves user errors and hides internal gateway errors', async (t) => {

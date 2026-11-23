@@ -157,12 +157,14 @@ export async function runEngine({ env = process.env, platform = process.platform
     onPhonePaired: group.onPhonePaired, onPhoneRevoked: group.onPhoneRevoked,
     // The question text lives in the reader only while the text switch is on; a change rebuilds the rows.
     onSendText: (on) => { if (useClaudeQuestionText(on)) server.invalidateDashboard('phone-text'); },
-    // Only a saved change closes the open phone questions; a listener restart keeps them for the phone.
-    onAnswer: (on) => { if (!on) claudeQuestions.closeAll(); } });
+    // Only a saved change closes the open phone questions or approvals; a listener restart keeps them for the phone.
+    onAnswer: (on) => { if (!on) claudeQuestions.closeAll('question'); },
+    onApprove: (on) => { if (!on) claudeQuestions.closeAll('approval'); } });
   const positions = createReaderPositions({ file: readerPositionsPath(env, platform), key: () => gateway.readerPositionsKey(), platform });
   let machineId = '';
   let referenceScopes = null;
-  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, claudeQuestions, answerEnabled: () => gateway.answerReady() === true, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
+  const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, claudeQuestions, answerEnabled: () => gateway.answerReady() === true,
+    approveEnabled: () => gateway.approveReady() === true, machineGroup: group, machineRelay: relay, serviceMode: true, platform,
     readerPositions: positions, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform), usageBackupFile: usageBackupPath(env, platform),
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,

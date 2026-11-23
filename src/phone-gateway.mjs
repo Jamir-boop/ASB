@@ -119,11 +119,13 @@ function threadQuery(params) {
 const validAddresses = (value) => Array.isArray(value) && value.length <= 8
   && value.every((address) => typeof address === 'string') && new Set(value).size === value.length;
 
+const SWITCHES = ['sendText', 'answer', 'approve'];
+
 function validSettings(value) {
   return (value?.schema === 1 ? fields(value, ['schema', 'enabled', 'bindAddress', 'port', 'devices']) && typeof value.bindAddress === 'string'
-    // sendText and answer are saved only when they are true, so an older ASB keeps reading a file saved with the switches off.
-    : fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices', ...['sendText', 'answer'].filter((name) => Object.hasOwn(Object(value), name))])
-      && ['sendText', 'answer'].every((name) => value[name] === undefined || typeof value[name] === 'boolean')
+    // sendText, answer, and approve are saved only when they are true, so an older ASB keeps reading a file saved with the switches off.
+    : fields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices', ...SWITCHES.filter((name) => Object.hasOwn(Object(value), name))])
+      && SWITCHES.every((name) => value[name] === undefined || typeof value[name] === 'boolean')
       && value.schema === 2 && validAddresses(value.bindAddresses))
     && typeof value.enabled === 'boolean' && validPort(value.port)
     && Array.isArray(value.devices) && value.devices.length <= 8 && value.devices.every((device) =>
@@ -139,12 +141,16 @@ function validSettings(value) {
 
 export { acceptsGzip };
 
-// The shape of an answer body; the engine checks the labels against the question.
-const validAnswer = (value) => fields(value, ['requestId', 'answers']) && typeof value.requestId === 'string' && /^[0-9a-f]{32}$/.test(value.requestId)
+// The shape of an answer body (a question's answers, or an approval's decision with an optional deny note); the engine checks it
+// against the open record.
+const validAnswer = (value) => typeof value?.requestId === 'string' && /^[0-9a-f]{32}$/.test(value.requestId) && (fields(value, ['requestId', 'answers'])
   && Array.isArray(value.answers) && value.answers.length >= 1 && value.answers.length <= 4
   && value.answers.every((item) => (fields(item, ['selected']) || fields(item, ['selected', 'other']) && typeof item.other === 'string')
     && Array.isArray(item.selected) && item.selected.length <= 8
-    && item.selected.every((label) => typeof label === 'string' && label.length >= 1 && label.length <= 200));
+    && item.selected.every((label) => typeof label === 'string' && label.length >= 1 && label.length <= 200))
+  || fields(value, ['requestId', 'decision']) && ['allow', 'deny'].includes(value.decision)
+  || fields(value, ['requestId', 'decision', 'note']) && value.decision === 'deny' && typeof value.note === 'string'
+    && value.note.length >= 1 && value.note.length <= 500 && !/[\x00-\x08\x0b-\x1f\x7f]/.test(value.note));
 
 function readBody(request, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
@@ -165,7 +171,7 @@ function readBody(request, limit = 64 * 1024) {
 
 export function createPhoneGateway({ localPort, asbVersion, settingsPath = phoneSettingsPath(), tlsDir = phoneTlsDir(),
   now = Date.now, openssl = 'openssl', hostName = os.hostname(), listAddresses = listPhoneAddresses,
-  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {}, onSendText = () => {}, onAnswer = () => {}, platform = process.platform, env = process.env,
+  peer = null, onPhonePaired = () => {}, onPhoneRevoked = () => {}, onSendText = () => {}, onAnswer = () => {}, onApprove = () => {}, platform = process.platform, env = process.env,
   execFile: run = execFileAsync }) {
   if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw invalid('Invalid ASB port.');
   let settings = defaults();
@@ -183,11 +189,14 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
   const failures = new Map();
   const sockets = new Set();
   const upstreams = new Set();
-  // The saved answer switch as `onAnswer` last got it.
+  // The saved answer and approve switches as `onAnswer` and `onApprove` last got them.
   let answerSaved = false;
+  let approveSaved = false;
   const answerChanged = () => {
     const on = settings.enabled && settings.sendText === true && settings.answer === true;
     if (on !== answerSaved) { answerSaved = on; onAnswer(on); }
+    const approve = on && settings.approve === true;
+    if (approve !== approveSaved) { approveSaved = approve; onApprove(approve); }
   };
   const serialize = (action) => {
     const result = work.catch(() => {}).then(action);
@@ -222,8 +231,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     await fs.mkdir(path.dirname(settingsPath), { recursive: true, mode: 0o700 });
     await fs.rm(temporary, { force: true });
     try {
-      const { sendText, answer, ...rest } = next;
-      await fs.writeFile(temporary, JSON.stringify({ ...rest, ...(sendText === true ? { sendText } : {}), ...(answer === true ? { answer } : {}) }, null, 2) + '\n',
+      const { sendText, answer, approve, ...rest } = next;
+      await fs.writeFile(temporary, JSON.stringify({ ...rest, ...(sendText === true ? { sendText } : {}), ...(answer === true ? { answer } : {}),
+        ...(approve === true ? { approve } : {}) }, null, 2) + '\n',
         { flag: 'wx', mode: 0o600 });
       await fs.rename(temporary, settingsPath);
     } finally { await fs.rm(temporary, { force: true }); }
@@ -245,10 +255,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
   const listening = () => listeners.filter((item) => item.server.listening).map(({ kind, address }) => ({ kind, address }));
   // A phone can answer now: the switches are on and a listener runs.
   const answerReady = () => settings.enabled && settings.sendText === true && settings.answer === true && listening().length > 0;
+  // A phone can approve now: it can answer, and the approve switch is on.
+  const approveReady = () => answerReady() && settings.approve === true;
 
   function status() {
     return { enabled: settings.enabled, bindAddresses: [...settings.bindAddresses], port: settings.port, sendText: settings.sendText === true,
-      answer: settings.answer === true, addresses: listAddresses().map(({ address, interface: name, kind }) => ({ address, interface: name, kind })),
+      answer: settings.answer === true, approve: settings.approve === true, addresses: listAddresses().map(({ address, interface: name, kind }) => ({ address, interface: name, kind })),
       listening: listening(), running: listening().length > 0, error, warning, fingerprint,
       devices: settings.devices.map(({ id, name, createdAtMs, lastSeenAtMs }) => ({ id, name, createdAtMs, lastSeenAtMs })),
       pairing: { expiresAtMs: activePairing()?.expiresAtMs || 0 } };
@@ -587,7 +599,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           addresses: listening(), port: settings.port, machineId,
           engines: (peer?.engines() || []).map((engine) => engine.machineId === machineId
             ? { ...engine, addresses: listening(), port: settings.port } : engine), sendText: settings.sendText === true,
-          answer: settings.answer === true });
+          answer: settings.answer === true, approve: settings.approve === true });
       } else if (activity === 'thread') {
         // The switch can go off while the phone waits for its token check.
         if (settings.sendText !== true) { reject(404, 'Route is not available.'); return; }
@@ -608,10 +620,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           }
         }
         if (match?.[2] === 'answer') {
-          // The switch can go off while the phone waits for its token check.
-          if (!answerReady()) { reject(404, 'Route is not available.'); return; }
           let value;
           try { value = JSON.parse(body.toString('utf8')); } catch {}
+          // A decision needs the approve switch, an answer the answer switch; a switch can go off while the phone waits for its token check.
+          if (!(Object.hasOwn(Object(value), 'decision') ? approveReady() : answerReady())) { reject(404, 'Route is not available.'); return; }
           if (!validAnswer(value)) { reject(400, 'Invalid answer.'); return; }
         }
         // Only with the text switch on does the dashboard carry the question text of a waiting Claude session.
@@ -648,6 +660,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     status: () => serialize(async () => { await load(); return status(); }),
     // Sync: the engine asks it for each new question and each answer.
     answerReady,
+    approveReady,
     // The certificate is the machine identity, also while phone access is off: the ID is its first 16 fingerprint characters.
     identity: () => serialize(async () => {
       try { await certificate(); } catch { return ''; }
@@ -669,14 +682,16 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     }),
     updateSettings: (value) => serialize(async () => {
       await load();
-      // sendText and answer are optional; without them the saved values stay.
-      const optional = ['sendText', 'answer'].filter((name) => Object.hasOwn(Object(value), name));
+      // sendText, answer, and approve are optional; without them the saved values stay.
+      const optional = SWITCHES.filter((name) => Object.hasOwn(Object(value), name));
       if (!fields(value, ['enabled', 'bindAddresses', 'port', ...optional]) || optional.some((name) => typeof value[name] !== 'boolean')
         || typeof value.enabled !== 'boolean' || !validAddresses(value.bindAddresses)) {
         throw invalid('Invalid phone settings.');
       }
       const sendText = value.sendText ?? settings.sendText === true;
       if (value.answer === true && !sendText) throw invalid('Turn on message text first.');
+      const answer = sendText && (value.answer ?? settings.answer === true);
+      if (value.approve === true && !answer) throw invalid('Turn on question answers first.');
       if (!validPort(value.port) || value.port === localPort) throw invalid('The phone port must be from 1024 to 65535 and different from the ASB port.');
       const listed = listAddresses();
       if ((value.enabled && !value.bindAddresses.length)
@@ -685,9 +700,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         throw invalid('Choose a phone address on this PC.');
       }
       const before = settings;
-      await save({ ...settings, ...value, bindAddresses: [...value.bindAddresses], ...(sendText ? {} : { answer: false }) });
+      await save({ ...settings, ...value, bindAddresses: [...value.bindAddresses], ...(sendText ? {} : { answer: false }), ...(answer ? {} : { approve: false }) });
       // Only a switch changed: the routes read them per request, so the listeners and their sockets stay.
-      const textOnly = ((settings.sendText === true) !== (before.sendText === true) || (settings.answer === true) !== (before.answer === true))
+      const textOnly = SWITCHES.some((name) => (settings[name] === true) !== (before[name] === true))
         && settings.enabled === before.enabled && settings.port === before.port && settings.bindAddresses.join() === before.bindAddresses.join();
       if (!textOnly) await restart();
       return status();

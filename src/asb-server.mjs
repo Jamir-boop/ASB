@@ -10,7 +10,7 @@ import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, par
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
 import { CLAUDE_QUESTION, MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
-import { answersFor, MAX_WAIT_MS } from './claude-questions.mjs';
+import { answersFor, checkedDecision, MAX_WAIT_MS, PROVIDERS } from './claude-questions.mjs';
 
 const gzipAsync = promisify(gzip);
 
@@ -62,12 +62,15 @@ function questionTexts(dashboard) {
   return rows.length ? createHash('sha256').update(JSON.stringify(rows)).digest('base64url') : '';
 }
 
-// The list text with `questionText` on each row that has a kept question text, and `question` on each row with an open phone question.
+// The list text with `questionText` on each row that has a kept question text, and `question` or `approval` on each row with an open
+// phone request of that kind.
 function questionListText(dashboard, text) {
   const { generatedAtMs: _, performance: __, ...rest } = dashboard;
   return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => {
-    const question = row[CLAUDE_QUESTION];
-    return row[QUESTION_TEXT] || question ? { ...row, ...(row[QUESTION_TEXT] ? { questionText: row[QUESTION_TEXT] } : {}), ...(question ? { question } : {}) } : row;
+    const request = row[CLAUDE_QUESTION];
+    const field = !request ? {} : request.kind === 'question' ? { question: { requestId: request.requestId, questions: request.questions } }
+      : { approval: { requestId: request.requestId, ...request.approval } };
+    return row[QUESTION_TEXT] || request ? { ...row, ...(row[QUESTION_TEXT] ? { questionText: row[QUESTION_TEXT] } : {}), ...field } : row;
   }), summary: { ...(rest.summary || {}) } });
 }
 
@@ -112,8 +115,9 @@ export function createAsbServer({
   machineRelay = null, bridgeCoverage = null, activityMessages = null, activityUsage = null, panelMachines = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
   appVersion = '', rootDir = '', sourcesPath = '', maxUsageImportBytes = 64 * 1024 * 1024, readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now,
-  // The open phone questions (src/claude-questions.mjs); the answer switch and the paired phones decide if a hook waits.
-  claudeQuestions = null, answerEnabled = () => false, phonePaired = async () => false, claudeHookStatus = null,
+  // The open phone questions and approvals (src/claude-questions.mjs); the answer switch (questions), the approve switch (approvals),
+  // and the paired phones decide if a client waits.
+  claudeQuestions = null, answerEnabled = () => false, approveEnabled = () => false, phonePaired = async () => false, claudeHookStatus = null,
   claudeWaitMs = MAX_WAIT_MS, claudeQuestionTickMs = 5_000, claudeQuestionReloadMs = 30_000, ...snapshotOptions
 } = {}) {
   // The top-bar reply, and its short tag in each `dashboard` event: the tag changes exactly when the reply would change.
@@ -222,8 +226,9 @@ export function createAsbServer({
     const resolveBoundRoute = Boolean(resolveBound) && url.pathname === '/api/agent/resolve-bound';
     const sendMemberRoute = Boolean(sendMember) && url.pathname === '/api/agent/send-member';
     const listReferencesRoute = Boolean(listReferences) && url.pathname === '/api/agent/list-references';
-    const claudeWaitRoute = Boolean(claudeQuestions) && url.pathname === '/api/agent/claude-wait';
-    const claudePoll = claudeQuestions ? url.pathname.match(/^\/api\/agent\/claude-wait\/([0-9a-f]{32})$/) : null;
+    // `/api/agent/wait` for every app; `/api/agent/claude-wait` stays for the Claude client of the last version.
+    const claudeWaitRoute = Boolean(claudeQuestions) && ['/api/agent/wait', '/api/agent/claude-wait'].includes(url.pathname);
+    const claudePoll = claudeQuestions ? url.pathname.match(/^\/api\/agent\/(?:claude-)?wait\/([0-9a-f]{32})$/) : null;
     const answerMatch = claudeQuestions ? url.pathname.match(/^\/api\/threads\/([^/]+)\/answer$/) : null;
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
@@ -513,13 +518,21 @@ export function createAsbServer({
         if (!response.destroyed) sendJson(response, 200, result);
         return;
       }
-      if (!exactKeys(body, ['questions', 'sessionId']) || typeof body.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.sessionId)) {
-        sendJson(response, 400, { error: 'Invalid question.' });
+      const sessionKey = /^[A-Za-z0-9_-]{1,128}$/;
+      const wanted = url.pathname === '/api/agent/claude-wait'
+        ? exactKeys(body, ['questions', 'sessionId']) && typeof body.sessionId === 'string' && sessionKey.test(body.sessionId)
+          && { provider: 'claude', sessionKey: body.sessionId, questions: body.questions }
+        : (exactKeys(body, ['provider', 'question', 'sessionKey']) && exactKeys(body.question, ['questions'])
+          || exactKeys(body, ['approval', 'provider', 'sessionKey'])) && PROVIDERS.includes(body.provider)
+          && typeof body.sessionKey === 'string' && sessionKey.test(body.sessionKey)
+          && { provider: body.provider, sessionKey: body.sessionKey, ...(body.question ? { questions: body.question.questions } : { approval: body.approval }) };
+      if (!wanted) {
+        sendJson(response, 400, { error: body?.approval !== undefined ? 'Invalid approval.' : 'Invalid question.' });
         return;
       }
       try {
-        if (!answerEnabled() || !await phonePaired()) { sendJson(response, 200, { wait: false }); return; }
-        const { requestId } = claudeQuestions.open({ cliSessionId: body.sessionId, questions: body.questions });
+        if (!(wanted.approval === undefined ? answerEnabled() : approveEnabled()) || !await phonePaired()) { sendJson(response, 200, { wait: false }); return; }
+        const { requestId } = claudeQuestions.open(wanted);
         startQuestionTimer();
         sendJson(response, 200, { wait: true, requestId });
       } catch (error) {
@@ -636,11 +649,11 @@ export function createAsbServer({
         else {
           const body = await readBody(request);
           const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort().join(',') : 'invalid';
-          // sendText (the message text switch) and answer (the answer switch) are optional: without them the saved values stay.
+          // sendText (the message text switch), answer (the answer switch), and approve (the approve switch) are optional: without
+          // them the saved values stay.
           const settingsFields = url.pathname === '/api/phone/settings'
-            && ['bindAddresses,enabled,port', 'answer,bindAddresses,enabled,port', 'bindAddresses,enabled,port,sendText',
-              'answer,bindAddresses,enabled,port,sendText'].includes(fields)
-            && ['sendText', 'answer'].every((name) => body[name] === undefined || typeof body[name] === 'boolean');
+            && exactKeys(body, ['bindAddresses', 'enabled', 'port'], ['answer', 'approve', 'sendText'])
+            && ['sendText', 'answer', 'approve'].every((name) => body[name] === undefined || typeof body[name] === 'boolean');
           if (url.pathname === '/api/phone/settings' ? !settingsFields : fields !== '') {
             sendJson(response, 400, { error: 'Invalid phone action.' });
             return;
@@ -917,18 +930,22 @@ export function createAsbServer({
       }
       let threadId = null;
       try { threadId = decodeURIComponent(answerMatch[1]); } catch {}
-      if (threadId === null || !exactKeys(body, ['requestId', 'answers']) || typeof body.requestId !== 'string') {
+      // A question body `{ requestId, answers }`, or an approval body `{ requestId, decision, note? }`.
+      const kind = exactKeys(body, ['requestId', 'answers']) ? 'question'
+        : exactKeys(body, ['requestId', 'decision'], ['note']) ? 'approval' : '';
+      if (threadId === null || !kind || typeof body.requestId !== 'string') {
         sendJson(response, 400, { error: 'Invalid answer.' });
         return;
       }
       try {
         const thread = await findThreadForAction(threadId);
         if (!thread) { threadNotFound(response); return; }
-        const question = answerEnabled() ? thread[CLAUDE_QUESTION] : null;
-        if (question?.requestId !== body.requestId) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
-        const answers = answersFor(question.questions, body.answers);
+        const open = (kind === 'question' ? answerEnabled() : approveEnabled()) ? thread[CLAUDE_QUESTION] : null;
+        if (open?.kind !== kind || open.requestId !== body.requestId) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
+        const { requestId, ...decision } = body;
+        const answers = kind === 'question' ? answersFor(open.questions, body.answers) : checkedDecision(open.approval, decision);
         if (!answers) { sendJson(response, 400, { error: 'Invalid answer.' }); return; }
-        if (!claudeQuestions.answer(body.requestId, answers)) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
+        if (!claudeQuestions.answer(requestId, answers)) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
         sendJson(response, 200, { answered: true });
       } catch { sendJson(response, 500, { error: 'Cannot save the answer.' }); }
       return;

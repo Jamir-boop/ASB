@@ -978,6 +978,9 @@ export function applyClaudeBackground(thread, record) {
 }
 
 const CLAUDE_APPROVAL_GRACE_MS = 10_000;
+// A session whose permission dialog is open now, with no grace: the raw registry wait or an open app-log approval. Only the phone
+// approval records read it (src/claude-questions.mjs); as a symbol it is in no row JSON.
+export const PERMISSION_WAIT = Symbol('ASB raw Claude permission wait');
 const APPROVAL_FORMAT_WARNING = 'ASB cannot read the approvals in the Claude app log. Update ASB.';
 
 // A permission prompt leaves no transcript signal, so a live registry record in the waiting status adds one.
@@ -986,12 +989,13 @@ export function applyLiveClaudeStatus(thread, records, nowMs) {
   const record = liveClaudeRecord(thread, records);
   if (record?.status !== 'waiting') return thread;
   const input = record.waitingFor === 'input needed';
+  const raw = record.waitingFor === 'permission prompt' ? { [PERMISSION_WAIT]: true } : {};
   // Permission waits that the user answers at once must not flash Waiting or play the Needs input sound.
   if (!input && record.statusUpdatedAt > 0 && nowMs - record.statusUpdatedAt < CLAUDE_APPROVAL_GRACE_MS) {
-    return { ...thread, approvalCheckAtMs: record.statusUpdatedAt + CLAUDE_APPROVAL_GRACE_MS };
+    return { ...thread, ...raw, approvalCheckAtMs: record.statusUpdatedAt + CLAUDE_APPROVAL_GRACE_MS };
   }
   const atMs = record.statusUpdatedAt || nowMs;
-  return { ...thread, awaitingPermission: true, questionNonBlocking: false,
+  return { ...thread, ...raw, awaitingPermission: true, questionNonBlocking: false,
     pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, atMs), liveWaitingFor: record.waitingFor || 'permission prompt',
     ...(input ? { awaitingUserInput: true, latestUserQuestionAtMs: Math.max(thread.latestUserQuestionAtMs || 0, atMs) } : {}) };
 }
@@ -1009,9 +1013,9 @@ export function applyClaudeAppApproval(thread, approvals, nowMs, liveSinceMs = 0
     Number(thread.latestTaskEndedAtMs || 0));
   if (turnEndAtMs >= request.atMs + 2_000 && !childMayWait) return thread;
   // Approvals that the user answers at once must not flash Waiting or play the Needs input sound.
-  if (nowMs - request.atMs < CLAUDE_APPROVAL_GRACE_MS) return { ...thread, approvalCheckAtMs: request.atMs + CLAUDE_APPROVAL_GRACE_MS };
+  if (nowMs - request.atMs < CLAUDE_APPROVAL_GRACE_MS) return { ...thread, [PERMISSION_WAIT]: true, approvalCheckAtMs: request.atMs + CLAUDE_APPROVAL_GRACE_MS };
   // Only the log shows the answer, so check again every 5 s while the wait shows.
-  return { ...thread, awaitingPermission: true, questionNonBlocking: false, approvalCheckAtMs: nowMs + 5_000,
+  return { ...thread, [PERMISSION_WAIT]: true, awaitingPermission: true, questionNonBlocking: false, approvalCheckAtMs: nowMs + 5_000,
     pendingToolAtMs: Math.max(thread.pendingToolAtMs || 0, request.atMs), liveWaitingFor: 'permission prompt' };
 }
 

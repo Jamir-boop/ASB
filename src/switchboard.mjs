@@ -3,7 +3,7 @@ import os from 'node:os';
 import { promises as fs, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, querySqliteJson, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
-import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, retainClaudeDataSources } from './claude-data.mjs';
+import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, PERMISSION_WAIT, retainClaudeDataSources } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
@@ -33,7 +33,10 @@ export const QUESTION_AT = Symbol('ASB question timestamp');
 export const QUESTION_TEXT = Symbol('ASB question text');
 // A local Claude row with a current pending AskUserQuestion: its CLI session IDs, for the open phone questions (src/claude-questions.mjs).
 export const QUESTION_SESSIONS = Symbol('ASB pending question sessions');
-// The open phone question of a row (`{ requestId, questions }` or null), read live from the store: only `/api/dashboard?text=1` sends it.
+// A local Claude row with an open permission dialog (no grace): its CLI session IDs, for the open phone approvals.
+const APPROVAL_SESSIONS = Symbol('ASB pending approval sessions');
+// The open phone request of a row (`{ kind: 'question', requestId, questions }`, `{ kind: 'approval', requestId, approval }`, or null),
+// read live from the store: only `/api/dashboard?text=1` sends it.
 export const CLAUDE_QUESTION = Symbol('ASB open Claude question');
 export const ACTION_AT = Symbol('ASB required action timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
@@ -354,6 +357,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       if (row[CLI_SESSION_IDS] && row.questionPending && (thread.pendingTools || []).some((tool) => tool.tool === 'AskUserQuestion')) {
         Object.defineProperty(row, QUESTION_SESSIONS, { value: row[CLI_SESSION_IDS] });
       }
+      if (row[CLI_SESSION_IDS] && thread[PERMISSION_WAIT]) Object.defineProperty(row, APPROVAL_SESSIONS, { value: row[CLI_SESSION_IDS] });
       const times = rowStatusTimes(thread, row);
       statusTimes.set(thread.id, times);
       // The kept row is a copy, so that the engine's in-place changes do not reach it.
@@ -1192,13 +1196,16 @@ export function createSwitchboardServer(options = {}) {
       const dashboard = await tracker.observe(loaded, options.machineGroup?.memberIds?.());
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
       // The pending questions close the phone questions that the PC answered; each row reads its open question live from the store.
-      claudeQuestions.reconcile(new Set(dashboard.threads.flatMap((row) => row[QUESTION_SESSIONS] || [])));
+      claudeQuestions.reconcile('claude', 'question', new Set(dashboard.threads.flatMap((row) => row[QUESTION_SESSIONS] || [])));
+      claudeQuestions.reconcile('claude', 'approval', new Set(dashboard.threads.flatMap((row) => row[APPROVAL_SESSIONS] || [])));
       for (const row of dashboard.threads) {
-        const ids = row[CLI_SESSION_IDS];
-        if (!ids || row.remote) continue;
+        if (row.remote) continue;
+        // A Claude record is for a CLI session ID; another app's record is for the row's own ID in that app.
+        const keys = row[CLI_SESSION_IDS] ? row[CLI_SESSION_IDS].map((id) => ['claude', id]) : [[row.provider, row.externalId]];
         Object.defineProperty(row, CLAUDE_QUESTION, { configurable: true, get: () => {
-          const record = ids.map((id) => claudeQuestions.forSession(id)).find(Boolean);
-          return record ? { requestId: record.requestId, questions: record.questions } : null;
+          const record = keys.map(([provider, key]) => claudeQuestions.forSession(provider, key)).find(Boolean);
+          return !record ? null : record.kind === 'question' ? { kind: 'question', requestId: record.requestId, questions: record.questions }
+            : { kind: 'approval', requestId: record.requestId, approval: record.approval };
         } });
       }
       // The sound baseline keeps the bits of an offline member's rows, so its return plays only what is new.
