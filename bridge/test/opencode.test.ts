@@ -12,7 +12,7 @@ import { createOpenCodeHost, modeFromRules, opencodeBridgeId, uuidV5 } from '../
 import { listSessions, sendMessage, agentLabel } from '../src/tools';
 import { Bridge } from '../src/bridge';
 import { fakeEngine } from './engine-fixture';
-import { opencodeApproval, permissionReply, ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, handleEvent, expireIdle, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
+import { opencodeApproval, opencodeQuestion, formAnswer, opencodeService, replyForm, permissionReply, ensureCoordinator, bridgeIdOf, registerSession, unregister, deleteSession, handleEvent, expireIdle, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS } from '../src/opencode';
 
 const posix = test.skipIf(process.platform === 'win32');
 // The ASB engine runs on Linux and Windows only: `engineRuntime` gives null on macOS, so no references come back.
@@ -1482,4 +1482,103 @@ posix('the plugin cleanup aborts its waits', async () => {
     await resetCoordinator(co);
     rmSync(root, { recursive: true });
   }
+});
+
+test('opencodeQuestion maps choice forms (1-4 fields, 1-8 options) and refuses free text, other types, hidden, and when', () => {
+  const mapped = opencodeQuestion({
+    id: 'frm_1', sessionID: 'ses_root', title: 'Setup',
+    fields: [
+      { key: 'fruit', type: 'string', title: 'Fruit', description: 'Pick a fruit', options: [{ value: 'k', label: 'Kiwi' }, { value: 'p', label: 'Plum', description: 'Purple' }], custom: false },
+      { key: 'tops', type: 'multiselect', title: 'Pick toppings', options: [{ value: 's', label: 'Salt' }, { value: 'l', label: 'Lime' }], custom: true, minItems: 1, maxItems: 3 },
+    ],
+  });
+  expect(mapped?.questions).toEqual([
+    { question: 'Pick a fruit', header: 'Fruit', options: [{ label: 'Kiwi' }, { label: 'Plum', description: 'Purple' }], multiSelect: false },
+    { question: 'Pick toppings', options: [{ label: 'Salt' }, { label: 'Lime' }], multiSelect: true },
+  ]);
+  expect(formAnswer(mapped!, { 'Pick a fruit': 'Plum', 'Pick toppings': 'Salt, Lime, Chili, hot' })).toEqual({
+    fruit: 'p', tops: ['s', 'l', 'Chili, hot'],
+  });
+  expect(formAnswer(mapped!, { 'Pick a fruit': 'Other fruit', 'Pick toppings': 'Salt' })).toBeNull();
+  const noCustomMulti = opencodeQuestion({
+    id: 'frm_2', sessionID: 'ses_root', title: 'T',
+    fields: [{ key: 'tops', type: 'multiselect', title: 'Toppings', options: [{ value: 's', label: 'Salt' }], custom: false }],
+  })!;
+  expect(formAnswer(noCustomMulti, { Toppings: 'Salt, Chili' })).toBeNull();
+  expect(formAnswer(noCustomMulti, { Toppings: 'Salt' })).toEqual({ tops: ['s'] });
+  for (const fields of [
+    [],
+    [{ key: 'name', type: 'string', title: 'Your name' }],
+    [{ key: 'count', type: 'number', title: 'Count' }],
+    [{ key: 'flag', type: 'boolean', title: 'Enable?' }],
+    [{ key: 'ext', type: 'external', url: 'https://example.invalid' }],
+    [{ key: 'a', type: 'string', title: 'A', options: [{ value: '1', label: 'One' }], hidden: true }],
+    [{ key: 'a', type: 'string', title: 'A', options: [{ value: '1', label: 'One' }], when: [{ key: 'x', op: 'eq', value: '1' }] }],
+    Array.from({ length: 5 }, (_, i) => ({ key: `f${i}`, type: 'string', title: `Q${i}`, options: [{ value: '1', label: 'One' }] })),
+    [{ key: 'many', type: 'string', title: 'Many', options: Array.from({ length: 9 }, (_, i) => ({ value: `v${i}`, label: `L${i}` })) }],
+  ]) {
+    expect(opencodeQuestion({ id: 'frm_bad', sessionID: 'ses_root', title: 'Bad', fields })).toBeNull();
+  }
+});
+
+posix('opencodeService and replyForm read service.json for this PID and POST /api/session/:id/form/:id/reply with Basic auth', async () => {
+  const dir = mkdtempSync('/tmp/asb-oc-svc-');
+  const received: Array<{ path: string; auth: string | null; body: unknown }> = [];
+  const srv = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    async fetch(req) {
+      received.push({ path: new URL(req.url).pathname, auth: req.headers.get('authorization'), body: await req.json() });
+      return new Response(null, { status: 204 });
+    },
+  });
+  try {
+    const ocDir = join(dir, 'opencode');
+    mkdirSync(ocDir, { recursive: true });
+    const svcFile = join(ocDir, 'service.json');
+    writeFileSync(svcFile, JSON.stringify({ id: 's1', version: '2.4.0', url: `http://127.0.0.1:${srv.port}`, pid: process.pid, password: 'secret-token' }));
+    const svc = opencodeService({ XDG_STATE_HOME: dir }, process.pid);
+    expect(svc).toEqual({ url: `http://127.0.0.1:${srv.port}`, auth: `Basic ${Buffer.from('opencode:secret-token').toString('base64')}` });
+    expect(await replyForm('ses_root', 'frm_1', { fruit: 'p' }, svc)).toBe(true);
+    expect(received).toEqual([{ path: '/api/session/ses_root/form/frm_1/reply', auth: svc!.auth, body: { answer: { fruit: 'p' } } }]);
+    expect(opencodeService({ XDG_STATE_HOME: dir }, process.pid + 1)).toBeNull();
+    writeFileSync(svcFile, JSON.stringify({ id: 's1', version: '2.4.0', url: 'http://example.invalid:49374', pid: process.pid, password: 'secret' }));
+    expect(opencodeService({ XDG_STATE_HOME: dir }, process.pid)).toBeNull();
+  } finally { srv.stop(true); rmSync(dir, { recursive: true, force: true }); }
+});
+
+posix('form.created opens a phone question wait, replies on answer, and stops on form.replied and form.cancelled', async () => {
+  const formReplies: unknown[] = [];
+  const run = await phoneSetup(() => ({ state: 'answered', answers: { 'Pick a fruit': 'Plum' } }));
+  (run.instance.ctx as Record<string, any>).session.form = { async reply(input: unknown) { formReplies.push(input); } };
+  const form = (id: string, sessionID = 'ses_root') => ({
+    id, sessionID, title: 'Fruit',
+    fields: [{ key: 'fruit', type: 'string', title: 'Pick a fruit', options: [{ value: 'k', label: 'Kiwi' }, { value: 'p', label: 'Plum' }] }],
+  });
+  try {
+    await handleEvent(run.co, { id: 'ev_f1', type: 'form.created', location: { directory: '/tmp/opencode-project' }, data: { form: form('frm_1', 'ses_kid') } });
+    await until(() => formReplies.length === 1, 'form reply');
+    expect(formReplies).toEqual([{ sessionID: 'ses_kid', formID: 'frm_1', answer: { fruit: 'p' } }]);
+    expect(run.engine.calls[0]!.body).toEqual({
+      provider: 'opencode', sessionKey: 'ses_root',
+      question: { questions: [{ question: 'Pick a fruit', options: [{ label: 'Kiwi' }, { label: 'Plum' }], multiSelect: false }] },
+    });
+  } finally { await run.done(); }
+
+  let release: ((value: unknown) => void) | undefined;
+  const held = await phoneSetup(() => new Promise(resolve => { release = resolve; }));
+  const heldReplies: unknown[] = [];
+  (held.instance.ctx as Record<string, any>).session.form = { async reply(input: unknown) { heldReplies.push(input); } };
+  try {
+    for (const stopEvent of ['form.replied', 'form.cancelled'] as const) {
+      release = undefined;
+      const fid = `frm_${stopEvent}`;
+      await handleEvent(held.co, { id: `ev_c_${fid}`, type: 'form.created', location: { directory: '/tmp/opencode-project' }, data: { form: form(fid) } });
+      await until(() => !!release, `held ${stopEvent}`);
+      await handleEvent(held.co, { id: `ev_s_${fid}`, type: stopEvent, data: { id: fid, sessionID: 'ses_root' } });
+      expect(held.co.approvals.size).toBe(0);
+      release!({ state: 'answered', answers: { 'Pick a fruit': 'Plum' } });
+      await settle(50);
+      expect(heldReplies).toEqual([]);
+    }
+  } finally { await held.done(); }
 });

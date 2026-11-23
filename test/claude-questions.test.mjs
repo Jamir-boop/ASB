@@ -14,6 +14,7 @@ import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { exportLocalSessions } from '../src/machine-peers.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { agyThread } from '../src/antigravity-data.mjs';
+import { OPENCODE_QUESTION_WAIT } from '../src/opencode-data.mjs';
 import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, QUESTION_SESSIONS } from '../src/switchboard.mjs';
 
 // Made-up data only.
@@ -682,4 +683,31 @@ test('antigravity question records survive sweep(), close by reconcile(), and an
   assert.deepEqual(await first, { status: 200, json: { answered: true } });
   assert.equal(answerCalls, 3);
   assert.equal(store.forSession('antigravity', id), null);
+});
+
+test('opencode question records stay open while OPENCODE_QUESTION_WAIT is set and close when reconcile sees it clear', async (t) => {
+  const store = createClaudeQuestions();
+  const sessionId = 'ses_oc_q1';
+  const questions = [{ question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false }];
+  let waiting = true;
+  const server = createSwitchboardServer({
+    pendingStatePath: false,
+    dashboardWatchPaths: [],
+    loadDashboard: async () => buildSwitchboardDashboard([{
+      id: sessionId, externalId: sessionId, provider: 'opencode', source: 'opencode-db', title: 'OC', cwd: '/tmp/ws',
+      lifecycleRunning: true, ...(waiting ? { [OPENCODE_QUESTION_WAIT]: true } : {}),
+    }], [], Date.now()),
+    claudeQuestions: store,
+    answerEnabled: () => true,
+    phonePaired: async () => true,
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const { requestId } = store.open({ provider: 'opencode', sessionKey: sessionId, questions });
+  await fetch(`${base}/api/dashboard?force=1`);
+  assert.equal(store.forSession('opencode', sessionId)?.requestId, requestId);
+  waiting = false;
+  await fetch(`${base}/api/dashboard?force=1`);
+  assert.equal(store.forSession('opencode', sessionId), null);
 });

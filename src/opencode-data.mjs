@@ -15,8 +15,9 @@ const BACKGROUND_WINDOW_MS = 24 * 60 * 60 * 1000;
 const validJson = (column) => `case when json_valid(${column}) then ${column} end`;
 const LIFECYCLE_KINDS = { succeeded: 'task_complete', failed: 'failed', interrupted: 'turn_aborted' };
 const cache = new Map();
-// The Bridge counts an open permission request of this session: the engine keeps its phone approval open while it does.
+// The Bridge counts open permission and form requests of this session: the engine keeps their phone cards open while it does.
 export const OPENCODE_APPROVAL_WAIT = Symbol('ASB OpenCode approval wait');
+export const OPENCODE_QUESTION_WAIT = Symbol('ASB OpenCode question wait');
 
 // Must stay the same as opencodeBridgeId in bridge/src/opencode-host.ts.
 export function opencodeBridgeId(sessionId) {
@@ -177,7 +178,9 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
       const messages = incoming.get(id);
       const waits = bridge.waits.get(id);
       const next = applyBridgeWaits(messages ? { ...thread, incomingMessages: messages } : thread, waits);
-      return waits?.approvals ? { ...next, [OPENCODE_APPROVAL_WAIT]: true } : next;
+      return waits?.approvals || waits?.questions
+        ? { ...next, ...(waits.approvals ? { [OPENCODE_APPROVAL_WAIT]: true } : {}), ...(waits.questions ? { [OPENCODE_QUESTION_WAIT]: true } : {}) }
+        : next;
     }) };
   }
   return result;

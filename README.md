@@ -39,17 +39,17 @@ The GNOME top bar and the Android app show the same counts, and Read on the phon
 
 ## Answer questions from the phone
 
-On Linux, the Android app can answer the questions of Claude Desktop Code, Claude Code CLI, and Antigravity CLI (agy) sessions on the PC that it is paired to. On main, not in a release yet.
+On Linux, the Android app can answer the questions of Claude Desktop Code, Claude Code CLI, Antigravity CLI (agy), and OpenCode 2 sessions on the PC that it is paired to. On main, not in a release yet.
 
 1. In Preferences > Phone, turn on **Send message text to phones**, then **Answer questions from phones** (off by default). Phone access must be on, with a paired phone.
-2. Run `asb agent claude-hook install` for Claude, or `asb agent agy-hook install` for agy. The Claude install adds one hook to the Claude settings of each Claude profile that ASB reads, and keeps the old file as `settings.json.asb-backup`. `asb agent claude-hook status` shows the state, and `asb agent claude-hook remove` takes the hook out.
+2. Run `asb agent claude-hook install` for Claude, `asb agent agy-hook install` for agy, or `asb bridge install --opencode` for OpenCode 2. The Claude install adds one hook to the Claude settings of each Claude profile that ASB reads, and keeps the old file as `settings.json.asb-backup`. `asb agent claude-hook status` shows the state, and `asb agent claude-hook remove` takes the hook out.
 3. Update the phone app: the question card is in the app from this build on. A tap on a Needs input notification opens it.
 
-The card stays on the PC too, and the first answer wins. For agy sessions in a kitty with remote control, ASB verifies the agy question form on the kitty screen and types the phone answer into it; if the form changed or is gone, the phone shows an error and you answer on the PC. A long wait works (checked with an answer after 4,000 s). With the answer switch on, each paired phone can answer for your agents: unpair a lost phone in Preferences > Phone.
+The card stays on the PC too, and the first answer wins. For agy sessions in a kitty with remote control, ASB verifies the agy question form on the kitty screen and types the phone answer into it; if the form changed or is gone, the phone shows an error and you answer on the PC. For OpenCode 2, choice forms (1 to 4 single-choice or multi-select fields, 1 to 8 options each) get a phone card; forms with a free-text field or other field kinds stay on the PC (not tested end to end on a phone with a real OpenCode session). A long wait works (checked with an answer after 4,000 s). With the answer switch on, each paired phone can answer for your agents: unpair a lost phone in Preferences > Phone.
 
 - An engine restart ends the phone path of an open question: answer it on the PC.
 - Run `asb agent claude-hook remove` before `asb uninstall`.
-- This question-answer feature is for local Claude and Antigravity CLI sessions on Linux. It does not apply to OpenCode, group members, or Windows.
+- This question-answer feature is for local Claude, Antigravity CLI, and OpenCode 2 sessions on Linux. It does not apply to Codex, group members, or Windows.
 
 ## Approve Claude Code requests from the phone
 
@@ -140,7 +140,7 @@ Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty 
 | Codex CLI | ✓ | ✓ | ✓ | ✓ with ASB Bridge, daemon tasks only | ✗ ASB work: docs only | ✗ ASB work: terminal tab | ✓ daemon tasks only | ✓ subagents only | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
-| OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: docs only | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
+| OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ Linux, with ASB Bridge | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 

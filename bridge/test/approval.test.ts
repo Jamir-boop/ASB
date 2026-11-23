@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { HIDDEN, shown, whole, waitForDecision, type Approval } from '../src/approval';
+import { HIDDEN, shown, whole, waitForAnswers, waitForDecision, type Approval, type PhoneQuestionItem } from '../src/approval';
 import { engineRuntime } from '../src/engine';
 import { ENGINE_TOKEN, fakeEngine } from './engine-fixture';
 const posix = test.skipIf(process.platform === 'win32');
@@ -110,4 +110,17 @@ posix('the signal ends a held poll at once with null', async () => {
     expect(await waitForDecision(engineRuntime({ XDG_RUNTIME_DIR: root }, 'linux'), 'opencode', 'ses_one', approval, controller.signal)).toBeNull();
     expect(engine.calls.length).toBe(2);
   } finally { engine.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+posix('waitForAnswers shares the poll loop and returns the engine answers map', async () => {
+  const questions: PhoneQuestionItem[] = [{ question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false }];
+  const { engine, runtime, done } = engineWith({ wait: true, requestId: REQUEST }, [{ state: 'open' }, { state: 'answered', answers: { 'Pick one': 'B' } }]);
+  try {
+    expect(await waitForAnswers(runtime, 'opencode', 'ses_one', questions, signal())).toEqual({ 'Pick one': 'B' });
+    expect(engine.calls.map(call => [call.route, call.body])).toEqual([
+      ['/api/agent/wait', { provider: 'opencode', sessionKey: 'ses_one', question: { questions } }],
+      [`/api/agent/wait/${REQUEST}`, {}],
+      [`/api/agent/wait/${REQUEST}`, {}],
+    ]);
+  } finally { done(); }
 });

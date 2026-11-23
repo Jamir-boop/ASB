@@ -8,7 +8,7 @@ import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
 import { agyRecordsDir, answerAgyInKitty, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
-import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir, OPENCODE_APPROVAL_WAIT } from './opencode-data.mjs';
+import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir, OPENCODE_APPROVAL_WAIT, OPENCODE_QUESTION_WAIT } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
 import { codexHookStatus, codexHookTargets } from './codex-hook.mjs';
@@ -39,6 +39,7 @@ export const QUESTION_SESSIONS = Symbol('ASB pending question sessions');
 const APPROVAL_SESSIONS = Symbol('ASB pending approval sessions');
 // A local OpenCode row whose Bridge counts an open permission request: its session ID, for the open phone approvals.
 const OPENCODE_APPROVAL_SESSIONS = Symbol('ASB pending OpenCode approval sessions');
+const OPENCODE_QUESTION_SESSIONS = Symbol('ASB pending OpenCode question sessions');
 // The open phone request of a row (`{ kind: 'question', requestId, questions }`, `{ kind: 'approval', requestId, approval }`, or null),
 // read live from the store: only `/api/dashboard?text=1` sends it.
 export const CLAUDE_QUESTION = Symbol('ASB open Claude question');
@@ -370,6 +371,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       }
       if (row[CLI_SESSION_IDS] && thread[PERMISSION_WAIT]) Object.defineProperty(row, APPROVAL_SESSIONS, { value: row[CLI_SESSION_IDS] });
       if (thread.provider === 'opencode' && thread[OPENCODE_APPROVAL_WAIT]) Object.defineProperty(row, OPENCODE_APPROVAL_SESSIONS, { value: [thread.externalId] });
+      if (thread.provider === 'opencode' && thread[OPENCODE_QUESTION_WAIT]) Object.defineProperty(row, OPENCODE_QUESTION_SESSIONS, { value: [thread.externalId] });
       const times = rowStatusTimes(thread, row);
       statusTimes.set(thread.id, times);
       // The kept row is a copy, so that the engine's in-place changes do not reach it.
@@ -1233,6 +1235,7 @@ export function createSwitchboardServer(options = {}) {
       claudeQuestions.reconcile('claude', 'question', new Set(dashboard.threads.flatMap((row) => row[QUESTION_SESSIONS] || [])));
       claudeQuestions.reconcile('claude', 'approval', new Set(dashboard.threads.flatMap((row) => row[APPROVAL_SESSIONS] || [])));
       claudeQuestions.reconcile('opencode', 'approval', new Set(dashboard.threads.flatMap((row) => row[OPENCODE_APPROVAL_SESSIONS] || [])));
+      claudeQuestions.reconcile('opencode', 'question', new Set(dashboard.threads.flatMap((row) => row[OPENCODE_QUESTION_SESSIONS] || [])));
       claudeQuestions.reconcile('antigravity', 'question', new Set(
         dashboard.threads.filter((row) => !row.remote && row.provider === 'antigravity'
           && (row.userQuestionBlocking === true || (row.state === 'waiting' && row.questionPending === true))).map((row) => row.externalId)));

@@ -1,10 +1,10 @@
 // OpenCode 2 plugin entry. A plain object works today (V7); no @opencode/plugin import.
 // One coordinator on globalThis holds the receivers; each setup() instance owns its location.
-import { readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { lstatSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { waitForDecision, whole, type Approval, type Decision } from './approval';
+import { waitForAnswers, waitForDecision, whole, type Approval, type Decision, type PhoneQuestionItem, type QuestionAnswers } from './approval';
 import { Bridge } from './bridge';
 import { engineRuntime } from './engine';
 import { peers, privateDirectory, removeStaleReceivers } from './claude';
@@ -342,6 +342,147 @@ function askPhone(co: Coordinator, receiver: Receiver, data: Record<string, unkn
   })().catch(() => {});
 }
 
+const CONTROL = /[\x00-\x1f\x7f]/;
+const CONTROL_BUT_TAB_NEWLINE = /[\x00-\x08\x0b-\x1f\x7f]/;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+type MappedOption = { value: string; label: string; description?: string };
+type MappedField = { key: string; question: string; multiSelect: boolean; custom: boolean; options: MappedOption[]; minItems?: number; maxItems?: number };
+type MappedForm = { questions: PhoneQuestionItem[]; fields: MappedField[] };
+
+// Maps an OpenCode 2.4 Form.Info to ASB phone questions only when every field is a single-choice string (with options)
+// or multiselect with 1 to 8 options (1 to 4 fields total). Free text, number, integer, boolean, external, hidden, or
+// conditional (`when`) fields keep the form on the PC.
+function opencodeQuestion(form: Record<string, unknown>): MappedForm | null {
+  const rawFields = form.fields;
+  if (!Array.isArray(rawFields) || rawFields.length < 1 || rawFields.length > 4) return null;
+  const questions: PhoneQuestionItem[] = [];
+  const fields: MappedField[] = [];
+  const seenQuestions = new Set<string>();
+  const seenKeys = new Set<string>();
+  for (const field of rawFields) {
+    if (!record(field) || typeof field.key !== 'string' || !field.key || seenKeys.has(field.key)) return null;
+    if (field.hidden === true || field.when !== undefined) return null;
+    const multiSelect = field.type === 'multiselect';
+    if (field.type !== 'string' && !multiSelect) return null;
+    if (!Array.isArray(field.options) || field.options.length < 1 || field.options.length > 8) return null;
+    const options: MappedOption[] = [];
+    const seenLabels = new Set<string>();
+    for (const option of field.options) {
+      if (!record(option) || typeof option.value !== 'string' || !option.value
+        || typeof option.label !== 'string' || option.label.length < 1 || option.label.length > 200 || CONTROL.test(option.label)
+        || seenLabels.has(option.label)) return null;
+      if (option.description !== undefined && (typeof option.description !== 'string' || option.description.length > 1_000
+        || CONTROL_BUT_TAB_NEWLINE.test(option.description))) return null;
+      seenLabels.add(option.label);
+      options.push({ value: option.value, label: option.label, ...(option.description !== undefined ? { description: option.description } : {}) });
+    }
+    const title = typeof field.title === 'string' ? field.title.trim() : '';
+    const desc = typeof field.description === 'string' ? field.description.trim() : '';
+    const useHeader = Boolean(title && desc && title !== desc && title.length <= 100 && !CONTROL.test(title));
+    const question = useHeader ? desc : (title || desc || field.key);
+    const header = useHeader ? title : undefined;
+    if (question.length < 1 || question.length > 2_000 || CONTROL_BUT_TAB_NEWLINE.test(question) || seenQuestions.has(question)) return null;
+    seenKeys.add(field.key);
+    seenQuestions.add(question);
+    const minItems = multiSelect && typeof field.minItems === 'number' ? field.minItems : undefined;
+    const maxItems = multiSelect && typeof field.maxItems === 'number' ? field.maxItems : undefined;
+    questions.push({ question, ...(header !== undefined ? { header } : {}), options: options.map(({ label, description }) => ({ label, ...(description !== undefined ? { description } : {}) })), multiSelect });
+    fields.push({ key: field.key, question, multiSelect, custom: field.custom === true, options, ...(minItems !== undefined ? { minItems } : {}), ...(maxItems !== undefined ? { maxItems } : {}) });
+  }
+  return { questions, fields };
+}
+
+// Maps the engine's QuestionAnswers (question text -> labels/other joined with `, `) back to OpenCode Form.Answer values.
+// Refuses Other text when the field does not have `custom: true`, or counts outside minItems/maxItems.
+function formAnswer(mapped: MappedForm, answers: QuestionAnswers): Record<string, string | string[]> | null {
+  const out: Record<string, string | string[]> = Object.create(null);
+  for (const field of mapped.fields) {
+    const raw = answers[field.question];
+    if (typeof raw !== 'string' || !raw) return null;
+    if (!field.multiSelect) {
+      const hit = field.options.find(option => option.label === raw);
+      if (hit) out[field.key] = hit.value;
+      else if (field.custom) out[field.key] = raw;
+      else return null;
+    } else {
+      let rest = raw;
+      const values: string[] = [];
+      const used = new Set<string>();
+      const byLength = [...field.options].sort((a, b) => b.label.length - a.label.length);
+      while (rest.length) {
+        const exact = byLength.find(option => !used.has(option.label) && rest === option.label);
+        if (exact) { values.push(exact.value); used.add(exact.label); rest = ''; break; }
+        const prefix = byLength.find(option => !used.has(option.label) && rest.startsWith(`${option.label}, `));
+        if (prefix) { values.push(prefix.value); used.add(prefix.label); rest = rest.slice(prefix.label.length + 2); continue; }
+        if (!field.custom) return null;
+        values.push(rest);
+        rest = '';
+      }
+      if (!values.length || (field.minItems !== undefined && values.length < field.minItems)
+        || (field.maxItems !== undefined && values.length > field.maxItems)) return null;
+      out[field.key] = values;
+    }
+  }
+  return out;
+}
+
+// Reads OpenCode's own service registration file (`$XDG_STATE_HOME/opencode/service.json`) for the server this plugin runs inside.
+function opencodeService(env: NodeJS.ProcessEnv = process.env, pid = process.pid): { url: string; auth: string } | null {
+  const state = env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME)
+    ? env.XDG_STATE_HOME : env.HOME && isAbsolute(env.HOME) ? join(env.HOME, '.local', 'state') : '';
+  if (!state) return null;
+  const file = join(state, 'opencode', 'service.json');
+  try {
+    const info = lstatSync(file);
+    if (!info.isFile() || info.size > 16 * 1024 || (process.getuid && info.uid !== process.getuid())) return null;
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    if (parsed.pid !== pid || typeof parsed.url !== 'string' || typeof parsed.password !== 'string' || !parsed.password) return null;
+    const url = new URL(parsed.url);
+    if (url.protocol !== 'http:' || !LOOPBACK_HOSTS.has(url.hostname)) return null;
+    return { url: url.origin, auth: `Basic ${Buffer.from(`opencode:${parsed.password}`).toString('base64')}` };
+  } catch { return null; }
+}
+
+async function replyForm(sessionID: string, formID: string, answer: Record<string, string | string[]>,
+  service: { url: string; auth: string } | null = opencodeService()): Promise<boolean> {
+  if (!service) return false;
+  const response = await fetch(`${service.url}/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}/reply`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: service.auth },
+    body: JSON.stringify({ answer }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  return response.ok;
+}
+
+function askPhoneQuestion(co: Coordinator, receiver: Receiver, form: Record<string, unknown>, requestId: string, directory: unknown) {
+  const owner = typeof directory === 'string' ? co.instances.get(directory) : undefined;
+  const sessionKey = receiver.openCodeSessionId;
+  const formSessionId = String(form.sessionID ?? '');
+  if (!owner || typeof directory !== 'string' || !SESSION_KEY.test(sessionKey) || !formSessionId || co.approvals.has(requestId)) return;
+  const mapped = opencodeQuestion(form);
+  if (!mapped) return;
+  const controller = new AbortController();
+  co.approvals.set(requestId, { controller, root: sessionKey, location: directory });
+  void (async () => {
+    const runtime = engineRuntime();
+    if (!runtime) return;
+    const answers = await waitForAnswers(runtime, 'opencode', sessionKey, mapped.questions, controller.signal);
+    if (!answers || controller.signal.aborted) return;
+    const answer = formAnswer(mapped, answers);
+    if (!answer) { co.replyFailures += 1; return; }
+    // A failed reply is not tried again: the TUI form stays for the PC.
+    try {
+      if (typeof owner.ctx?.session?.form?.reply === 'function') {
+        await owner.ctx.session.form.reply({ sessionID: formSessionId, formID: requestId, answer });
+      } else if (!await replyForm(formSessionId, requestId, answer)) {
+        co.replyFailures += 1;
+      }
+    } catch { co.replyFailures += 1; }
+  })().catch(() => {});
+}
+
 async function handleEvent(co: Coordinator, event: { id?: string; type?: string; data?: Record<string, unknown>; location?: { directory?: unknown } }) {
   const type = event.type ?? '';
   if (!HANDLED_EVENTS.has(type)) return;
@@ -362,9 +503,10 @@ async function handleEvent(co: Coordinator, event: { id?: string; type?: string;
     if (!receiver || !requestId) return;
     if (type === 'permission.asked' || type === 'form.created') receiver.asks.set(requestId, { kind: form ? 'question' : 'approval', at: Date.now() });
     else receiver.asks.delete(requestId);
-    if (type === 'permission.replied') stopApprovals(co, (_wait, id) => id === requestId);
+    if (type === 'permission.replied' || type === 'form.replied' || type === 'form.cancelled') stopApprovals(co, (_wait, id) => id === requestId);
     writeWaits(receiver);
     if (type === 'permission.asked') askPhone(co, receiver, data, requestId, event.location?.directory, Boolean(session.parentID));
+    if (type === 'form.created' && form) askPhoneQuestion(co, receiver, form, requestId, event.location?.directory);
     return;
   }
   if (type === 'session.renamed') {
@@ -609,4 +751,4 @@ function compareVersion(a: string, b: string) {
   return 0;
 }
 
-export { opencodeApproval, permissionReply, ensureCoordinator, coordinator, registerSession, unregister, deleteSession, handleEvent, canClose, expireIdle, bridgeIdOf, rootSessionId, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS };
+export { opencodeApproval, opencodeQuestion, formAnswer, opencodeService, replyForm, permissionReply, ensureCoordinator, coordinator, registerSession, unregister, deleteSession, handleEvent, canClose, expireIdle, bridgeIdOf, rootSessionId, recentInputs, CAP, START_LIMIT, START_WINDOW_MS, IDLE_MS };

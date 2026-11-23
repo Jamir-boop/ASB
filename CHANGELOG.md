@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- OpenCode 2: paired phones can now answer OpenCode choice forms (1 to 4 single-choice or multi-select fields, 1 to 8 options each) on Linux with ASB Bridge and the phone answer switches on. Forms with a free-text field or other field kinds stay on the PC. Not tested end to end on a phone with a real OpenCode session.
 - Antigravity CLI: paired phones can now answer agy `ask_question` prompts on Linux when the agy hook, kitty remote control, and the phone answer switches are on. The form stays on the PC; ASB verifies the form on the kitty screen and types the phone answer into it.
 - Antigravity CLI: agy rows now have a session reference (`agy:<conversation-uuid>` in full `asb:1/...` references and `<host>/<conversation-uuid>` in short references), so the board Copy menu and `asb agent resolve-session` work for agy sessions.
 - Antigravity CLI: `asb agent agy-hook install` also sets agy's window title command (`title` in `~/.gemini/antigravity-cli/settings.json`) to `asb agent agy-title`, unless you have your own `title` setting. After you name a conversation with `/rename`, the board shows that name as the row title, and the kitty window title shows it too (`agy · <folder>` before a rename). `asb agent agy-hook remove` takes the setting out, and `asb doctor` shows the `agy title` state.
