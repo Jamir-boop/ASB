@@ -4,7 +4,8 @@ import path from 'node:path';
 import { DEFAULT_CLAUDE_PROJECTS_DIR } from './claude-data.mjs';
 
 export const BRIDGE_STATES = ['ready', 'update', 'hooks', 'off', 'nobun', 'missing', 'conflict', 'old-app', 'unknown'];
-const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
+const MEMBER_PROVIDERS = ['codex', 'claude-desktop-code', 'opencode'];
+const PROVIDERS = [...MEMBER_PROVIDERS, 'antigravity'];
 const CHECK_ERROR = 'ASB cannot check ASB Bridge. Run asb bridge status in a terminal.';
 const conflict = (state) => state === 'foreign' || state === 'modified';
 const pathsFor = (platform) => platform === 'win32' ? path.win32 : path.posix;
@@ -44,12 +45,20 @@ function opencodeApp(status) {
   return { state, version: o.version ?? null, live: (o.liveReceiverSessions || []).length, install: { args: ['--opencode'], env: {} } };
 }
 
+function agyApp(status) {
+  const a = status.agy;
+  const state = !a?.detected ? 'missing' : !a.listOk ? 'unknown' : conflict(a.files) ? 'conflict'
+    : !a.bun ? 'nobun' : a.hook !== 'installed' ? 'hooks' : !a.registered || a.files === 'missing' ? 'missing'
+      : !a.enabled ? 'off' : !a.versionMatches ? 'update' : 'ready';
+  return { state, version: a?.version ?? null, live: a?.liveReceivers ?? 0, install: { args: ['--agy'], env: {} } };
+}
+
 export function coverageApps(status, sources, threads, { platform = process.platform, homeDir = os.homedir() } = {}) {
-  return sources.filter((source) => source.enabled === true && PROVIDERS.includes(source.provider)).map((source) => {
+  return sources.filter((source) => source.enabled === true && PROVIDERS.includes(source.provider) && (source.provider !== 'antigravity' || platform === 'linux')).map((source) => {
     const app = source.provider === 'codex' ? codexApp(status, source, threads, platform)
-      : source.provider === 'opencode' ? opencodeApp(status) : claudeApp(status, source, platform);
+      : source.provider === 'opencode' ? opencodeApp(status) : source.provider === 'antigravity' ? agyApp(status) : claudeApp(status, source, platform);
     const result = { sourceId: source.id, label: source.label || source.name || source.id, provider: source.provider,
-      state: app.state, version: app.version, live: app.live, install: app.install, command: null, canInstall: ['missing', 'update'].includes(app.state) };
+      state: app.state, version: app.version, live: app.live, install: app.install, command: null, canInstall: ['missing', 'update'].includes(app.state) && (source.provider !== 'antigravity' || status.agy?.detected === true) };
     result.command = installCommand(result, { platform, homeDir });
     return result;
   });
@@ -69,6 +78,7 @@ export function installCommand(app, { platform = process.platform, homeDir = os.
     const home = place(app.install.args[1]);
     return home === null ? null : `asb bridge install --codex-home ${home}`;
   }
+  if (app.provider === 'antigravity') return 'asb bridge install --agy';
   if (app.provider === 'opencode') return 'asb bridge install --opencode';
   const dir = app.install.env.CLAUDE_CONFIG_DIR;
   if (!dir) return 'asb bridge install --claude';
@@ -90,7 +100,7 @@ export function validReport(body) {
     && (!Object.hasOwn(body, 'error') || body.error === 'check') && Array.isArray(body.apps) && body.apps.length <= 32
     && body.apps.every((app) => plain(app) && Object.keys(app).sort().join(',') === [...REPORT_KEYS].sort().join(',')
       && typeof app.sourceId === 'string' && app.sourceId.length >= 1 && app.sourceId.length <= 80 && shortString(app.label, 80)
-      && PROVIDERS.includes(app.provider) && BRIDGE_STATES.includes(app.state) && (app.version === null || shortString(app.version, 40))
+      && MEMBER_PROVIDERS.includes(app.provider) && BRIDGE_STATES.includes(app.state) && (app.version === null || shortString(app.version, 40))
       && (app.live === null || (Number.isInteger(app.live) && app.live >= 0 && app.live <= 10_000))
       && (app.command === null || (shortString(app.command, 300) && !/\p{Cc}/u.test(app.command))));
 }
@@ -183,14 +193,14 @@ export function createBridgeCoverage({ runCli, readSources, readThreads, machine
       });
       return { api: 1, expectedVersion: result?.expectedVersion || '', machines: [self, ...others] };
     },
-    // The body of the member route GET /peer/v1/bridge: no install data and no path.
+    // The v1 member route keeps its provider list, no install data, and no paths. Older members reject new providers.
     async report() {
       // Shorter than the 4 s timeout of the asking machine: it shows checking and asks again.
       await within([local()], reportWaitMs);
       if (!result) return { status: 503, body: { error: 'ASB is checking ASB Bridge.' } };
       const { asbVersion } = machine();
       if (result.error) return { status: 200, body: { api: 1, asbVersion, checkedAtMs: result.checkedAtMs, expectedVersion: '', apps: [], error: 'check' } };
-      return { status: 200, body: { api: 1, asbVersion, checkedAtMs: result.checkedAtMs, expectedVersion: result.expectedVersion, apps: result.apps.map(reportApp) } };
+      return { status: 200, body: { api: 1, asbVersion, checkedAtMs: result.checkedAtMs, expectedVersion: result.expectedVersion, apps: result.apps.filter(app => MEMBER_PROVIDERS.includes(app.provider)).map(reportApp) } };
     },
     async install(body) {
       if (!validInstall(body)) return { status: 400, body: { error: 'Invalid install request.' } };

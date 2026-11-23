@@ -366,6 +366,15 @@ test('report gives the member body without install data or paths', async (t) => 
   assert.equal(s.calls.length, 1);
 });
 
+test('agy coverage is local without changing the provider list of the v1 member report', async (t) => {
+  const agy = { id: 'antigravity', provider: 'antigravity', enabled: true };
+  const status = report({ agy: { detected: true, listOk: true, files: 'ok', bun: true, hook: 'installed',
+    registered: true, enabled: true, versionMatches: true, liveReceivers: 1 } });
+  const s = service(t, { status, sources: [SOURCES.codex, agy] });
+  assert.deepEqual((await s.coverage.local()).apps.map(app => [app.provider, app.state]), [['codex', 'ready'], ['antigravity', 'ready']]);
+  assert.deepEqual((await s.coverage.report()).body.apps.map(app => app.provider), ['codex']);
+});
+
 test('report is 503 while the first check runs, and the error body after a failed check', async (t) => {
   const slow = service(t, { reportWaitMs: 20, run: () => new Promise(() => {}) });
   assert.deepEqual(await slow.coverage.report(), { status: 503, body: { error: 'ASB is checking ASB Bridge.' } });

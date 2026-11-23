@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { bindingSchema, boundPeer, outboundServer, refreshReceiver, refuse, sendBound, sendBoundViaReceiver, sendViaReceiver, type Binding, type ExactReceipt } from './outbound';
 import { isWindows, outboxPath } from './platform';
 import { PeerGuard } from './guard';
-import { DeliveryRefused, peerHeader } from './delivery';
+import { DeliveryRefused, namedPeer, peerHeader } from './delivery';
 import { engineRequest, engineRuntime, remotePeers, type EngineRuntime, type RemotePeer } from './engine';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
@@ -45,7 +45,7 @@ const remoteRefusals: Record<'machine-offline' | 'too-large' | 'rate-limited' | 
 // The native host behind one Bridge: Codex (desktop or app-server IPC) or the OpenCode plugin.
 // Policy, receipts, idle notices, limits, and hop chains stay in Bridge and do not depend on the host.
 export type Host = {
-  entrypoint: 'codex-asb-bridge' | 'opencode-asb-bridge';
+  entrypoint: 'codex-asb-bridge' | 'opencode-asb-bridge' | 'agy-asb-bridge';
   transport: string;
   remoteAgent: 'codex' | 'claude';
   replyHint: string;
@@ -56,7 +56,7 @@ export type Host = {
   receiverError: string;
   runtime(): Promise<Runtime>;
   inputs(awaiting: string[]): Promise<Inputs>;
-  deliver(inputId: string, text: string): Promise<{ status: string; turnId: string | null }>;
+  deliver(inputId: string, text: string, namedMessage?: boolean): Promise<{ status: string; turnId: string | null }>;
 };
 
 export class Bridge {
@@ -215,8 +215,8 @@ export class Bridge {
     })();
   }
 
-  start(directory: string, cwd: string, generation: string) {
-    uuid.parse(generation);
+  start(directory: string, cwd: string, generation?: string) {
+    if (generation !== undefined) uuid.parse(generation);
     return this.exclusive(async () => {
       if (this.closing) throw new Error('Receiver is closing');
       if (this.listener) return;
@@ -235,12 +235,14 @@ export class Bridge {
       const hostPid = this.host.identity.pid;
       const procStart = await processStart(hostPid);
       this.db.transaction(() => {
-        if (!this.db.query('SELECT 1 FROM lifecycle WHERE singleton=1 AND generation=? AND active=1').get(generation)) {
+        if (generation !== undefined && !this.db.query('SELECT 1 FROM lifecycle WHERE singleton=1 AND generation=? AND active=1').get(generation)) {
           throw new Error('Session ended or was replaced before receiver startup');
         }
         if (old) this.db.run('DELETE FROM receiver WHERE singleton=1 AND pid=? AND proc_start=?', [old.pid, old.proc_start]);
         const claim = this.db.run('INSERT OR IGNORE INTO receiver VALUES (1,?,?)', [hostPid, procStart]);
         if (!claim.changes) throw new Error('Another receiver claimed this task');
+        // An agy loser must not reset the active receiver's lifecycle or held input.
+        if (generation === undefined) this.beginSession();
       })();
       this.ownsReceiver = true;
       this.procStart = procStart;
@@ -293,8 +295,8 @@ export class Bridge {
       }
     })();
     this.registration?.update(state.status, renamed);
-    if (this.listener) void this.exclusive(async () => {
-      if (state.status === 'idle') await this.syncInputs();
+    if (this.listener) return this.exclusive(async () => {
+      if (state.status === 'idle' || this.host.transport === 'agy') await this.syncInputs();
       await this.flushIdle();
     }).catch(() => console.error('Inbound state update failed.'));
   }
@@ -321,11 +323,17 @@ export class Bridge {
       "SELECT desktop_input_id FROM messages WHERE direction='in' AND awaiting_input=1").all()
       .flatMap(message => message.desktop_input_id ? [message.desktop_input_id] : []);
     const inputs = await this.host.inputs(awaiting);
-    this.db.transaction(() => {
+    const withdrawn = this.db.transaction(() => {
       for (const input of inputs.consumed) this.db.run(
         "UPDATE messages SET awaiting_input=0,native_input_id=? WHERE direction='in' AND (desktop_input_id=? OR native_input_id=?) AND status IN ('submitting','started','steered','accepted','unknown')",
         [input.id, input.clientId, input.id]);
+      for (const input of inputs.lost ?? []) this.db.run(
+        "UPDATE messages SET status='unknown',awaiting_input=0 WHERE direction='in' AND desktop_input_id=? AND status='accepted'", [input.clientId]);
+      return (inputs.withdrawn ?? []).flatMap(input => this.db.query<Message, [string | null]>(
+        "UPDATE messages SET status='dropped',drop_reason='delivery-refused',awaiting_input=0 WHERE direction='in' AND desktop_input_id=? AND status='accepted' RETURNING *",
+      ).all(input.clientId));
     })();
+    for (const message of withdrawn) await this.receipt(message, 'dropped', 'delivery-refused');
     return inputs;
   }
 
@@ -780,9 +788,9 @@ export class Bridge {
       const { sessionId, name } = this.currentPeer(message);
       const embedInput = this.host.transport === 'app-server' ? inputId : undefined;
       const text = `${peerHeader(sessionId, name, embedInput, this.host.replyHint)}\n${body}`;
-      const result = await this.host.deliver(inputId, text);
+      const result = await this.host.deliver(inputId, text, message.kind === 'message' && namedPeer(name));
       this.db.run('UPDATE messages SET status=?,turn_id=? WHERE id=?', [result.status, result.turnId, message.id]);
-      if (message.status === 'held') await this.receipt(message, 'delivered');
+      if (message.status === 'held' && this.host.transport !== 'agy') await this.receipt(message, 'delivered');
     } catch (error) {
       if (error instanceof DeliveryRefused) {
         this.db.run("UPDATE messages SET status='dropped',drop_reason='delivery-refused',awaiting_input=0 WHERE id=?", [message.id]);

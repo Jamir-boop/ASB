@@ -10,7 +10,7 @@ const historySchema = z.object({ entitiesByKey: z.record(z.string(), turnSchema)
 })) });
 
 type Input = { id: string; clientId: string | null };
-export type Inputs = { latest: Input | null | undefined; consumed: Input[] };
+export type Inputs = { latest: Input | null | undefined; consumed: Input[]; lost?: Input[]; withdrawn?: Input[] };
 
 export function desktopInputs(state: { turns?: unknown; turnHistory?: unknown }): Inputs {
   const tail = z.array(turnSchema).safeParse(state.turns);

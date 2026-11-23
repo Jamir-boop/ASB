@@ -1,10 +1,13 @@
 // `asb agent agy-hook <event>`: the Antigravity CLI (agy) hook client. It keeps one record per conversation with IDs, paths, times,
-// and the state only (never prompt, answer, tool input, or error text), and it never contacts the engine.
+// and the state only (never prompt, answer, tool input, or error text). Stop can read its local mailbox; it never contacts the engine.
 import { constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AGY_LISTEN_ON, AGY_UUID, agyAbsolutePath as absolutePath, agyRecordsDir, agyTranscriptPath } from '../src/antigravity-data.mjs';
+import { AGY_LISTEN_ON, AGY_UUID, agyAbsolutePath as absolutePath, agyProcess, agyRecordsDir, agyTranscriptPath } from '../src/antigravity-data.mjs';
+
+import { takeAgyMailbox } from '../src/agy-mailbox.mjs';
+export { agyProcess };
 
 const MAX_STDIN = 256 * 1024;
 const MAX_RECORD = 16 * 1024;
@@ -28,30 +31,6 @@ export function agyNextState(hook) {
   if (hook.fullyIdle === true) return { state: 'done' };
   if (hook.fullyIdle === false) return { state: 'working', background: true };
   return null;
-}
-
-async function readProc(pid, name) {
-  return fs.readFile(`/proc/${pid}/${name}`, 'utf8');
-}
-
-// The fields after the command name: [0] is field 3 (state), [1] field 4 (parent PID), [19] field 22 (start ticks).
-const statFields = (text) => text.slice(text.lastIndexOf(') ') + 2).split(' ');
-
-// The installed line runs the client as agy -> sh -> sh -> timeout -> sh (scripts/asb) -> node (shorter under bash):
-// the first ancestor above the parent with comm agy, at most 8 levels up.
-const AGY_LEVELS = 8;
-export async function agyProcess(parentPid = process.ppid, read = readProc) {
-  try {
-    let pid = parentPid;
-    for (let level = 0; level < AGY_LEVELS; level++) {
-      pid = Number(statFields(await read(pid, 'stat'))[1]);
-      if (!Number.isInteger(pid) || pid <= 1) return null;
-      if ((await read(pid, 'comm')).trim() !== 'agy') continue;
-      const ticks = statFields(await read(pid, 'stat'))[19];
-      return /^[0-9]{1,20}$/.test(ticks || '') ? { agyPid: pid, agyStartTicks: ticks } : null;
-    }
-    return null;
-  } catch { return null; }
 }
 
 const HARD_EXIT_MS = 3000;
@@ -78,7 +57,7 @@ async function oldCreatedAt(file) {
   } catch { return 0; } finally { await handle?.close().catch(() => {}); }
 }
 
-export async function writeAgyRecord(hook, { env = process.env, homeDir = os.homedir(), nowMs = Date.now(), parentPid = process.ppid, read = readProc } = {}) {
+export async function writeAgyRecord(hook, { env = process.env, homeDir = os.homedir(), nowMs = Date.now(), parentPid = process.ppid, read } = {}) {
   const next = agyNextState(hook);
   if (!next || typeof hook.conversationId !== 'string' || !AGY_UUID.test(hook.conversationId)) return null;
   const workspace = absolutePath(Array.isArray(hook.workspacePaths) ? hook.workspacePaths[0] : '') || absolutePath(hook.cwd);
@@ -90,7 +69,7 @@ export async function writeAgyRecord(hook, { env = process.env, homeDir = os.hom
   const transcript = agyTranscriptPath(hook.transcriptPath, homeDir);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const record = {
-    conversationId: hook.conversationId.toLowerCase(), workspace, state: next.state, stateAtMs: nowMs,
+    conversationId: hook.conversationId.toLowerCase(), workspace, state: next.state, stateAtMs: nowMs, event: hook.hookEventName,
     createdAtMs: await oldCreatedAt(file) || nowMs,
     ...(agy || {}),
     ...(digits(env.KITTY_WINDOW_ID) ? { kittyWindowId: env.KITTY_WINDOW_ID } : {}),
@@ -107,12 +86,17 @@ export async function writeAgyRecord(hook, { env = process.env, homeDir = os.hom
   return record;
 }
 
-// Always the neutral reply first and exit code 0: a fault after the reply cannot deny a tool. A stdin that never closes or a
-// slow write ends at 3 s, well before agy's hook timeout (10 s) that would deny the tool.
+// The other hooks reply before reading stdin. Stop waits to see if it can continue the session.
 export async function agyHook(args, { stdin = process.stdin, write = (text) => process.stdout.write(text), exit = process.exit, ...options } = {}) {
   const event = typeof args[0] === 'string' ? args[0] : '';
-  try { write(`${neutralReply(event)}\n`); } catch {}
-  const timer = setTimeout(() => exit(0), HARD_EXIT_MS);
+  let replied = false;
+  const reply = (text = neutralReply(event)) => {
+    if (replied) return;
+    replied = true;
+    try { write(`${text}\n`); } catch {}
+  };
+  if (event !== 'Stop') reply();
+  const timer = setTimeout(() => { reply(); exit(0); }, HARD_EXIT_MS);
   timer.unref();
   try {
     const text = await readStdin(stdin);
@@ -120,6 +104,10 @@ export async function agyHook(args, { stdin = process.stdin, write = (text) => p
     const hook = JSON.parse(text);
     if (!hook || typeof hook !== 'object' || Array.isArray(hook) || hook.hookEventName !== event) return 0;
     await (options.writeRecord || writeAgyRecord)(hook, options);
-  } catch {} finally { clearTimeout(timer); }
+    if (event === 'Stop') {
+      const continuation = await takeAgyMailbox(hook, options.env);
+      if (continuation !== null) reply(JSON.stringify({ decision: 'continue', reason: continuation }));
+    }
+  } catch {} finally { clearTimeout(timer); reply(); }
   return 0;
 }

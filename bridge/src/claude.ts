@@ -25,7 +25,7 @@ const registry = z.object({
   peerProtocol: z.literal(1), procStart: z.string().optional(),
   entrypoint: z.string().optional(), startedAt: z.number().int().nonnegative().optional(),
   peerFeatures: z.array(z.string()).default([]), bridgeSessionId: z.string().optional(),
-  opencodeSessionId: z.string().optional(), hostSessionId: z.string().optional(),
+  opencodeSessionId: z.string().optional(), agyConversationId: uuid.optional(), hostSessionId: z.string().optional(),
 });
 export type Peer = z.infer<typeof registry>;
 export const modeSchema = z.enum(['prompting', 'bypass']);
@@ -76,7 +76,7 @@ export function peers(configDir: string): Peer[] {
 
 // A relay deletes every .sock file in its own folder, and a receiver row can carry any folder: only a native Claude row names a folder for a new receiver socket.
 export function nativePeer(rows: Peer[]) {
-  return rows.find(peer => peer.entrypoint !== 'asb-relay' && peer.entrypoint !== 'codex-asb-bridge' && peer.entrypoint !== 'opencode-asb-bridge');
+  return rows.find(peer => peer.entrypoint !== 'asb-relay' && peer.entrypoint !== 'codex-asb-bridge' && peer.entrypoint !== 'opencode-asb-bridge' && peer.entrypoint !== 'agy-asb-bridge');
 }
 
 export function findPeer(configDir: string, sessionId: string): Peer {

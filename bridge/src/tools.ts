@@ -11,7 +11,8 @@ export const sendMessageInput = z.object({ sessionId: z.string().optional(), ref
   text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false) });
 
 export function agentLabel(entrypoint: string | undefined) {
-  return entrypoint === 'codex-asb-bridge' ? 'codex' as const : entrypoint === 'opencode-asb-bridge' ? 'opencode' as const : 'claude' as const;
+  return entrypoint === 'codex-asb-bridge' ? 'codex' as const : entrypoint === 'opencode-asb-bridge' ? 'opencode' as const
+    : entrypoint === 'agy-asb-bridge' ? 'agy' as const : 'claude' as const;
 }
 
 // startedAt in whole seconds: the sort below uses the milliseconds of the peer row, so the order does not change.
@@ -22,7 +23,7 @@ export function brief(status: ReturnType<Bridge['status']>) {
   return { ...status, messages: status.messages.slice(0, 5).map(row => Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null))) };
 }
 
-export type ListedSession = { sessionId: string; name: string; agent: 'codex' | 'opencode' | 'claude'; cwd?: string;
+export type ListedSession = { sessionId: string; name: string; agent: 'codex' | 'opencode' | 'agy' | 'claude'; cwd?: string;
   status: string; startedAt?: string; remote?: boolean; machine?: string } & Partial<ListedReference>;
 
 export async function listSessions(caller: string, configDir: string, nameContains?: string): Promise<ListedSession[]> {

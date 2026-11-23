@@ -1,5 +1,5 @@
 // Antigravity CLI (agy) sessions from the records of the ASB agy hook (scripts/asb-agy-hook.mjs): IDs, paths, times, and states only.
-// The rows are view only, except that a live row in a kitty with remote control focuses its kitty window.
+// A live row in a kitty with remote control can focus its kitty window. The Bridge also uses these records to bind.
 // ASB never reads agy's own stores, its login, or its transcript text (the transcript is only stat'ed).
 import { execFile } from 'node:child_process';
 import { constants, promises as fs } from 'node:fs';
@@ -12,8 +12,9 @@ export const AGY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 export const AGY_LISTEN_ON = /^unix:(?:\/|@)[^\x00-\x1f\x7f]+$/;
 const PATH_TEXT = /^[^\x00-\x1f\x7f]{1,4096}$/;
 const STATES = ['idle', 'working', 'question', 'done', 'failed'];
+const EVENTS = ['SessionStart', 'PreInvocation', 'PostInvocation', 'PreToolUse', 'PostToolUse', 'Stop'];
 const FIELDS = new Set(['conversationId', 'workspace', 'state', 'stateAtMs', 'createdAtMs', 'agyPid', 'agyStartTicks', 'kittyWindowId', 'kittyPid',
-  'kittyListenOn', 'background', 'transcriptMtimePath']);
+  'kittyListenOn', 'background', 'transcriptMtimePath', 'event']);
 const MAX_FILES = 500;
 const MAX_RECORD = 16 * 1024;
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
@@ -37,14 +38,40 @@ const time = (value) => Number.isFinite(value) && value > 0;
 export function validAgyRecord(record, id, homeDir = os.homedir()) {
   if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).some((key) => !FIELDS.has(key))) return false;
   const { conversationId, workspace, state, stateAtMs, createdAtMs, agyPid, agyStartTicks, kittyWindowId, kittyPid, kittyListenOn,
-    background, transcriptMtimePath } = record;
+    background, transcriptMtimePath, event } = record;
   return conversationId === id && agyAbsolutePath(workspace) === workspace && STATES.includes(state) && time(stateAtMs) && time(createdAtMs)
     && (agyPid === undefined) === (agyStartTicks === undefined)
     && (agyPid === undefined || (Number.isInteger(agyPid) && agyPid > 1 && digits(agyStartTicks, 20)))
     && (kittyWindowId === undefined || digits(kittyWindowId, 10)) && (kittyPid === undefined || digits(kittyPid, 10))
     && (kittyListenOn === undefined || (typeof kittyListenOn === 'string' && kittyListenOn.length <= 300 && AGY_LISTEN_ON.test(kittyListenOn)))
-    && (background === undefined || background === true)
+    && (background === undefined || background === true) && (event === undefined || EVENTS.includes(event))
     && (transcriptMtimePath === undefined || agyTranscriptPath(transcriptMtimePath, homeDir) === transcriptMtimePath);
+}
+
+export { processStart as agyProcessStart };
+
+async function readProc(pid, name) {
+  return fs.readFile(`/proc/${pid}/${name}`, 'utf8');
+}
+
+// The fields after the command name: [0] is field 3 (state), [1] field 4 (parent PID), [19] field 22 (start ticks).
+const statFields = (text) => text.slice(text.lastIndexOf(') ') + 2).split(' ');
+
+// The installed line runs the client as agy -> sh -> sh -> timeout -> sh (scripts/asb) -> node (shorter under bash):
+// the first ancestor above the parent with comm agy, at most 8 levels up.
+const AGY_LEVELS = 8;
+export async function agyProcess(parentPid = process.ppid, read = readProc) {
+  try {
+    let pid = parentPid;
+    for (let level = 0; level < AGY_LEVELS; level++) {
+      pid = Number(statFields(await read(pid, 'stat'))[1]);
+      if (!Number.isInteger(pid) || pid <= 1) return null;
+      if ((await read(pid, 'comm')).trim() !== 'agy') continue;
+      const ticks = statFields(await read(pid, 'stat'))[19];
+      return /^[0-9]{1,20}$/.test(ticks || '') ? { agyPid: pid, agyStartTicks: ticks } : null;
+    }
+    return null;
+  } catch { return null; }
 }
 
 // A process of this user that is not a zombie: its comm and parent PID, from `<procDir>/<pid>/stat`.
@@ -113,6 +140,19 @@ async function readRecord(file) {
     if (!info.isFile() || info.uid !== process.getuid() || info.size > MAX_RECORD) return null;
     return JSON.parse(await handle.readFile('utf8'));
   } catch { return null; } finally { await handle?.close().catch(() => {}); }
+}
+
+// The Bridge reads only ASB's hook records, never agy's stores or their metadata.
+export async function readAgyRecords(dataDir, homeDir = os.homedir()) {
+  const files = await fs.readdir(dataDir).catch(() => []);
+  const records = [];
+  for (const name of files) {
+    const id = name.slice(0, -5);
+    if (!name.endsWith('.json') || !AGY_UUID.test(id) || id !== id.toLowerCase()) continue;
+    const record = await readRecord(path.join(dataDir, name));
+    if (validAgyRecord(record, id, homeDir)) records.push(record);
+  }
+  return records;
 }
 
 // The transcript's modification time: stat only, a regular file only.

@@ -11,7 +11,7 @@
 - **One board:** all your sessions in one window, with Pending attention, unread marks, pins, a drawer, and Done, Needs input, and Failed sounds.
 - **All your machines:** an optional machine group adds the sessions of your other computers.
 - **Your phone:** an optional Android app shows your sessions and notifications.
-- **Messages:** the Messages window shows the messages that your agents send each other on all machines, with their text. The optional ASB Bridge lets Codex, Claude Code, and OpenCode sessions send messages to each other.
+- **Messages:** the Messages window shows the messages that your agents send each other on all machines, with their text. The optional ASB Bridge lets Codex, Claude Code, OpenCode, and Antigravity CLI sessions send messages to each other.
 - **Usage:** the Usage window shows the tokens and the API price of your Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines, and the sessions that cost the most. ASB keeps this history with daily backups, also after the apps delete old transcripts. For the prices, the window downloads the LiteLLM price list (prices only) while you use it.
 - **GNOME top bar:** an optional extension shows how many sessions need you and how many work, with no count of all sessions.
 
@@ -107,7 +107,7 @@ allow_remote_control socket-only
 listen_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}
 ```
 
-This is a file socket in your runtime folder, so only your user can connect to it. Do not use an abstract socket (`unix:@name`): each local process of each user can connect to it and control kitty (checked with kitty 0.41.1). ASB sends only `focus-window`.
+This is a file socket in your runtime folder, so only your user can connect to it. Do not use an abstract socket (`unix:@name`): each local process of each user can connect to it and control kitty (checked with kitty 0.41.1). ASB uses `focus-window` to open a live row.
 
 Limits:
 - Checked with agy 1.5.14 and kitty 0.41.1 on X11; Wayland is not checked.
@@ -115,7 +115,15 @@ Limits:
 - Esc fires no hook event. After 10 minutes with no event and no transcript change, a Working row shows Unknown.
 - `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
 - Each agy hook call adds about 80 ms, and agy waits for it.
-- Not yet: phone answers and approvals, bridge messages, Windows, and the Antigravity app and IDE.
+- Not yet: phone answers and approvals, Windows, and the Antigravity app and IDE.
+
+### ASB Bridge for agy
+
+On Linux, install the ASB agy hook, then run `asb bridge install --agy` with agy and Bun on `PATH`. Start a new agy session. `asb bridge status` checks the installation. `asb bridge uninstall --agy` removes it.
+
+Use the `asb-bridge` MCP tools to list peers and send to one peer by its session ID or reference. agy asks you to allow each MCP tool call unless you allow it always. The MCP allow prompt with `--dangerously-skip-permissions` is not tested. Another agent can send to agy by session ID. Messages to agy arrive at the end of a turn, through its `Stop` hook. If agy stays idle with no new turn, the message waits. ASB does not need kitty for this path.
+
+The kitty typing path is built but off. It would read the prompt screen in memory and type the message into the agy window. In a session with `--dangerously-skip-permissions`, a message submitted this way can run tools with no agy permission prompt. The MCP startup time, agy process ancestry, empty-prompt rule, and the effect of `@` and `/` in a paste are not proven in a live agy 1.5.15 session. Tests use fakes.
 
 ## Support by app
 
@@ -126,7 +134,7 @@ Limits:
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ Linux, with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
 | OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: docs only | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✗ Not checked | ✓ live kitty sessions, with remote control | ✗ ASB work | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
+| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✗ Not checked | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; inbound at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.

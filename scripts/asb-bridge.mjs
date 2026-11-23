@@ -7,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findExecutable as executable, stripWindowsVerbatimPath } from '../src/platform-paths.mjs';
 import { contents, safeParents } from './asb-package.mjs';
+import { agyHome, agyHooksFile, agyHookStatus } from '../src/agy-hook.mjs';
+import { agyMailboxDir, privateAgyMailbox } from '../src/agy-mailbox.mjs';
 // The tests and the Windows checks use the PATH search by this name.
 export { executable };
 
@@ -20,7 +22,7 @@ export function nextSteps({ codex = false, claude = false, opencode = false } = 
     opencode ? 'OpenCode loads the plugin by itself. A session shows to other agents after it runs a turn.' : null,
     guide, 'After an ASB upgrade, run the install command again with the same targets.'].filter(Boolean).join('\n');
 }
-const USAGE = 'Use: asb bridge status [--json] [--claude-home <path> ...]\n     asb bridge install (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude | --opencode) [--opencode-config <path>] [--force]\n     asb bridge link-claude <profile-home> <shared-home>';
+const USAGE = 'Use: asb bridge status [--json] [--claude-home <path> ...]\n     asb bridge install (--all | --codex-home <path> ... | --claude | --opencode | --agy) [--opencode-config <path>] [--force]\n     asb bridge uninstall (--all | --codex-home <path> ... | --claude | --opencode | --agy) [--opencode-config <path>] [--force]\n     asb bridge link-claude <profile-home> <shared-home>';
 const RECORD = '.asb-bridge.json';
 const OLD_PLUGIN = 'claude-uds-bridge@leonkohli';
 const OLD_WARNING = 'the old claude-uds-bridge plugin is installed here; run bridge/scripts/migrate-from-claude-uds-bridge.mjs first';
@@ -467,6 +469,92 @@ async function withdrawOpenCodeRows(claudeConfigDir) {
     } catch { /* A stale or partial registry row is not a live receiver. */ }
   }
 }
+function agyPaths(options) {
+  const env = options.env || process.env;
+  const home = absolute(options.home || agyHome(env));
+  const directory = path.join(home, '.local/share/asb-bridge/agy');
+  const config = path.join(home, '.gemini/config/mcp_config.json');
+  return { env: { ...env, HOME: home }, home, directory, config, bundle: path.join(directory, 'agy.js') };
+}
+function runAgy(agy, env, args) {
+  try { return execFileSync(agy, ['mcp', ...args], { env, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch { throw new Error(`agy mcp ${args[0]} failed for ASB Bridge.`); }
+}
+async function agyConfig(file) {
+  await safeParents(file);
+  const bytes = await contents(file);
+  if (!bytes) return { bytes, keys: [], server: null };
+  let config;
+  try { config = JSON.parse(bytes); } catch { throw new Error('Invalid agy MCP config.'); }
+  const servers = config?.mcpServers ?? {};
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid agy MCP config.');
+  return { bytes, keys: Object.keys(servers).sort(), server: servers['asb-bridge'] ?? null };
+}
+function ownAgyServer(server, bundle) {
+  return Array.isArray(server?.args) && server.args.length === 1 && server.args[0] === bundle;
+}
+function showAgyConfig(stage, config) {
+  console.log(`agy MCP ${stage}: keys ${JSON.stringify(config.keys)}; sha256 ${config.bytes ? digest(config.bytes) : 'missing'}`);
+}
+async function checkAgyTarget(options, install) {
+  if ((options.platform || process.platform) !== 'linux') throw new Error('ASB Bridge for agy needs Linux.');
+  const paths = agyPaths(options);
+  const agy = await executable('agy', paths);
+  if (!agy) throw new Error('ASB Bridge needs agy on PATH.');
+  const bun = install ? await executable('bun', paths) : null;
+  if (install && !bun) throw new Error('ASB Bridge needs bun on PATH.');
+  if (install && await agyHookStatus(agyHooksFile(paths.home)) !== 'installed') throw new Error('Install the ASB agy hook first: asb agent agy-hook install.');
+  await checkSkill(paths.directory, options.force);
+  const config = await agyConfig(paths.config);
+  if (config.server && !ownAgyServer(config.server, paths.bundle) && !options.force) throw new Error('ASB will not change a foreign asb-bridge entry in agy.');
+  return { ...paths, agy, bun, before: config };
+}
+async function installAgy(target, root, force) {
+  const bytes = await contents(path.join(root, 'bridge/dist/agy.js'));
+  if (!bytes) throw new Error('Missing ASB Bridge runtime file: bridge/dist/agy.js');
+  showAgyConfig('before', target.before);
+  if (target.before.bytes) {
+    try { await writeFile(`${target.config}.asb-backup`, target.before.bytes, { flag: 'wx', mode: 0o600 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
+  await copySkill(new Map([['agy.js', bytes]]), target.directory, force);
+  runAgy(target.agy, target.env, ['add', 'asb-bridge', absolute(target.bun), target.bundle]);
+  showAgyConfig('after', await agyConfig(target.config));
+  return { directory: target.directory, installed: true };
+}
+async function uninstallAgy(target) {
+  const mailbox = agyMailboxDir(target.env);
+  if (mailbox && await info(mailbox) && !await privateAgyMailbox(mailbox)) throw new Error('ASB will not remove a non-private agy mailbox.');
+  runAgy(target.agy, target.env, ['remove', 'asb-bridge']);
+  await rm(target.directory, { recursive: true, force: true });
+  if (mailbox) await rm(mailbox, { recursive: true, force: true });
+  return { directory: target.directory, removed: true };
+}
+async function statusAgy(options, root, expectedVersion, rows) {
+  const paths = agyPaths(options);
+  const agy = (options.platform || process.platform) === 'linux' && await executable('agy', paths);
+  const bun = agy && await executable('bun', paths);
+  const files = agy ? await skillState(paths.directory) : 'missing';
+  let registered = false, enabled = false, listOk = false;
+  if (agy) {
+    try {
+      const list = runAgy(agy, paths.env, ['list']);
+      listOk = true;
+      const found = /^asb-bridge\s+stdio\s+(enabled|disabled)\s+(.+)$/m.exec(list);
+      const { server } = found ? await agyConfig(paths.config) : {};
+      // The list table can omit stdio arguments. Confirm the command there, and the exact bundle path in its config.
+      registered = Boolean(found && server && ownAgyServer(server, paths.bundle)
+        && (found[2].trim() === server.command || found[2].trim() === `${server.command} ${paths.bundle}`));
+      enabled = registered && found[1] === 'enabled';
+    } catch { listOk = false; }
+  }
+  const versionMatches = files === 'ok' && Boolean(await contents(path.join(root, 'bridge/dist/agy.js')).then(bytes => bytes && digest(bytes))
+    === await contents(paths.bundle).then(bytes => bytes && digest(bytes)).catch(() => null));
+  const live = rows.filter(row => row.entrypoint === 'agy-asb-bridge');
+  return { detected: Boolean(agy), bun: Boolean(bun), hook: agy ? await agyHookStatus(agyHooksFile(paths.home)) : 'not installed',
+    files, listOk, registered, enabled, versionMatches, version: versionMatches ? expectedVersion : null,
+    liveReceivers: live.length, liveReceiverSessions: sessionIds(live) };
+}
 export async function detectTargets(options = {}) {
   const home = absolute(options.home || os.homedir());
   const codexHomes = [];
@@ -486,7 +574,8 @@ export async function detectTargets(options = {}) {
 export async function install(options = {}) {
   const codexHomes = [...new Set(options.codexHomes || [])];
   if (codexHomes.length) await checkDependencies();
-  await checkRoot(options.sourceRoot || ROOT);
+  const root = await checkRoot(options.sourceRoot || ROOT);
+  const agyTarget = options.agy ? await checkAgyTarget(options, true) : null;
   // Check the Claude and OpenCode folders before Codex changes anything, so their refusal leaves no partial install.
   if (options.claudeHome) await checkSkill(path.join(absolute(options.claudeHome), 'skills/bridge'), options.force);
   const openCodePaths = options.opencode ? await opencodePaths(options) : null;
@@ -495,11 +584,12 @@ export async function install(options = {}) {
   for (const home of codexHomes) codex.push(await installCodex(home, options));
   const claude = options.claudeHome ? await installClaude(options.claudeHome, options) : null;
   const opencode = openCodePaths ? await installOpencode(options, openCodePaths) : null;
-  return { codex, claude, opencode };
+  return { codex, claude, opencode, ...(agyTarget ? { agy: await installAgy(agyTarget, root, options.force) } : {}) };
 }
 export async function uninstall(options = {}) {
   const tools = options.codexHomes?.length ? await checkDependencies(['codex']) : {};
   await checkRoot(options.sourceRoot || ROOT);
+  const agyTarget = options.agy ? await checkAgyTarget(options, false) : null;
   // Check the Claude and OpenCode folders before Codex changes anything, so their refusal leaves no partial uninstall.
   if (options.claudeHome) await checkSkill(path.join(absolute(options.claudeHome), 'skills/bridge'), options.force);
   const openCodePaths = options.opencode ? await opencodePaths(options) : null;
@@ -525,7 +615,7 @@ export async function uninstall(options = {}) {
     await rm(path.join(claude.home, 'skills/bridge'), { recursive: true, force: true });
   }
   const opencode = openCodePaths ? await uninstallOpencode(options, openCodePaths) : null;
-  return { codex, claude, opencode };
+  return { codex, claude, opencode, ...(agyTarget ? { agy: await uninstallAgy(agyTarget) } : {}) };
 }
 async function entries(directory) {
   try { return await readdir(directory, { withFileTypes: true }); }
@@ -611,6 +701,7 @@ export async function status(options = {}) {
       liveReceivers: opencodeReceivers.length,
       liveReceiverSessions: sessionIds(opencodeReceivers),
     },
+    agy: await statusAgy(options, root, expectedVersion, rows),
     liveReceivers: receivers.length, liveReceiverSessions: sessionIds(receivers), versions: { bun: await toolVersion('bun'), codex: await toolVersion('codex'), opencode: opencodeVersionRaw },
   };
 }
@@ -649,6 +740,8 @@ export async function main(args = process.argv.slice(2), context = {}) {
       console.log(result.claude.requirement);
       console.log(`OpenCode ${result.opencode.config}: plugin ${result.opencode.plugin}; version ${result.opencode.version || 'missing'} (${result.opencode.versionMatches ? 'current' : `expected ${result.opencode.expectedVersion}`}); skill ${skillText(result.opencode, '--opencode')}; opencode ${result.opencode.opencodeVersion || 'missing'}; live receivers ${result.opencode.liveReceivers}`);
       if (result.opencode.warning) console.log(`Warning: ${result.opencode.warning}`);
+      const a = result.agy;
+      console.log(`agy: ${!a.detected ? 'not found' : !a.listOk ? 'MCP list unavailable' : !a.registered ? 'not registered; asb bridge install --agy' : a.enabled ? 'registered' : 'disabled'}; hook ${a.hook}; bundle ${a.files}${a.versionMatches ? ' (current)' : ''}; live receivers ${a.liveReceivers}`);
       console.log(`Live receivers: ${result.liveReceivers}; bun: ${result.versions.bun || 'missing'}; codex: ${result.versions.codex || 'missing'}`);
     }
     for (const item of result.codex) if (item.bunOnAppServerPath === false) warnBun(item.home);
@@ -661,13 +754,14 @@ export async function main(args = process.argv.slice(2), context = {}) {
     if (args[i] === '--all') all = true;
     else if (args[i] === '--claude') claude = true;
     else if (args[i] === '--opencode') opencode = true;
+    else if (args[i] === '--agy') options.agy = true;
     else if (args[i] === '--force') options.force = true;
     else if (args[i] === '--opencode-config' && args[i + 1] && !args[i + 1].startsWith('--')) options.opencodeConfig = absolute(args[++i]);
     else if (args[i] === '--codex-home' && args[i + 1] && !args[i + 1].startsWith('--')) options.codexHomes.push(absolute(args[++i]));
     else throw new Error(USAGE);
   }
-  if (all && (claude || opencode || options.codexHomes.length)) throw new Error(USAGE);
-  if (all || (!claude && !opencode && !options.codexHomes.length)) {
+  if (all && (claude || opencode || options.agy || options.codexHomes.length)) throw new Error(USAGE);
+  if (all || (!claude && !opencode && !options.agy && !options.codexHomes.length)) {
     const targets = await detectTargets(context);
     if (!all) {
       console.log(`Detected Codex homes: ${targets.codexHomes.join(', ') || 'none'}\nDetected Claude home: ${targets.claudeHome || 'none'}\nDetected OpenCode config: ${targets.opencodeConfig || 'none'}\n${USAGE}`);
@@ -691,6 +785,7 @@ export async function main(args = process.argv.slice(2), context = {}) {
   }
   if (result.claude) console.log(`Claude ${result.claude.home}: ${command === 'install' ? 'installed' : 'removed'}`);
   if (result.opencode) console.log(`OpenCode ${result.opencode.config}: ${command === 'install' ? `installed ${result.opencode.version}` : `removed; message history stays at ${result.opencode.historyKept}`}`);
+  if (result.agy) console.log(`agy ${result.agy.directory}: ${command === 'install' ? 'installed; start a new agy session' : 'removed; message history kept'}`);
   // OpenCode keeps the loaded plugin in memory, so it can register sessions again until it restarts.
   if (result.opencode && command === 'uninstall') console.log('Restart OpenCode to unload the ASB Bridge plugin.');
   if (command === 'install') {

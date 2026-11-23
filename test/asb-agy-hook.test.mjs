@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -59,7 +60,7 @@ test('each event gives its state, keeps createdAtMs, and replies with the neutra
     const saved = await record();
     assert.deepEqual([saved.state, saved.stateAtMs, saved.createdAtMs], [state, nowMs, 2_000]);
   }
-  assert.deepEqual(await record(), { conversationId: ID, workspace: path.join(homeDir, 'ws'), state: 'done', stateAtMs: 6_000, createdAtMs: 2_000,
+  assert.deepEqual(await record(), { conversationId: ID, workspace: path.join(homeDir, 'ws'), state: 'done', stateAtMs: 6_000, event: 'Stop', createdAtMs: 2_000,
     agyPid: 400, agyStartTicks: '4377321', kittyWindowId: '2', kittyPid: '3280986', kittyListenOn: `unix:${path.join(homeDir, 'kitty.sock')}`,
     transcriptMtimePath: path.join(homeDir, '.gemini', 'antigravity-cli', 'brain', ID, 'transcript.jsonl') });
 });
@@ -179,4 +180,85 @@ test('a client whose stdin never closes ends at 3 s with exit 0 and the neutral 
   const ms = Date.now() - started;
   assert.deepEqual(result, { code: 0, stdout: '{"decision":"ask"}\n' });
   assert.ok(ms >= 2900 && ms < 3500, `${ms} ms`);
+});
+
+const INPUT = '16a48bd1-8ff3-41c6-8c77-fd1124d4aa7a';
+const BODY = '[ASB Bridge peer message from fixture.]\nSecond\tline';
+async function mailbox(t) {
+  const f = await fixture(t);
+  const env = { ...f.env, XDG_RUNTIME_DIR: f.homeDir };
+  const dir = path.join(f.homeDir, 'asb-agy-mailbox');
+  await mkdir(dir, { mode: 0o700 });
+  const base = path.join(dir, ID);
+  const put = (data = { id: INPUT, text: BODY }, file = `${base}.msg`) => writeFile(file, JSON.stringify(data), { mode: 0o600 });
+  const stop = (fields = {}, options = {}) => f.run('Stop', { fullyIdle: true, ...fields }, { env, ...options });
+  return { ...f, env, dir, base, put, stop };
+}
+
+test('Stop claims once after the record write, and its next Stop leaves the next file in place', async (t) => {
+  const { put, stop, base, record } = await mailbox(t);
+  await put();
+  const replies = await Promise.all([stop(), stop()]);
+  assert.deepEqual(replies.map(r => JSON.parse(r.output)).filter(reply => reply.decision), [{ decision: 'continue', reason: BODY }]);
+  assert.equal((await record()).event, 'Stop');
+  assert.equal(await readFile(`${base}.taken`, 'utf8'), INPUT);
+  assert.equal((await stat(`${base}.taken`)).mode & 0o777, 0o600);
+  // Two concurrent Stops can use up the guard. Set it again to test the next Stop in order.
+  await writeFile(`${base}.continued`, '', { mode: 0o600 });
+  await rm(`${base}.taken`);
+  await put();
+  assert.deepEqual(await stop(), { code: 0, output: '{}\n' });
+  assert.equal(JSON.parse(await readFile(`${base}.msg`, 'utf8')).id, INPUT);
+  await assert.rejects(stat(`${base}.continued`), { code: 'ENOENT' });
+  assert.equal((await stop()).output, `${JSON.stringify({ decision: 'continue', reason: BODY })}\n`);
+});
+
+test('Stop skips continuationActive, unsafe files and controls and stays neutral on every fault', async (t) => {
+  const { dir, put, stop, base, run, env } = await mailbox(t);
+  await put();
+  assert.equal((await stop({ continuationActive: true })).output, '{}\n');
+  assert.equal((await run('PreInvocation', {}, { env })).output, '{}\n');
+  assert.equal((await stop({}, { writeRecord: () => { throw new Error('fixture'); } })).output, '{}\n');
+  assert.equal(JSON.parse(await readFile(`${base}.msg`, 'utf8')).id, INPUT);
+  await chmod(dir, 0o755);
+  assert.equal((await stop()).output, '{}\n');
+  await chmod(dir, 0o700);
+  const outside = path.join(path.dirname(dir), 'untouched');
+  await put(undefined, outside);
+  await rm(`${base}.msg`);
+  await symlink(outside, `${base}.msg`);
+  assert.equal((await stop()).output, '{}\n');
+  assert.equal(JSON.parse(await readFile(outside, 'utf8')).id, INPUT);
+  await writeFile(`${base}.msg`, 'x'.repeat(16 * 1024 + 1), { mode: 0o600 });
+  assert.equal((await stop()).output, '{}\n');
+  await put();
+  await utimes(`${base}.msg`, new Date(0), new Date(0));
+  assert.equal((await stop()).output, '{}\n');
+  await writeFile(`${base}.msg`, 'not json', { mode: 0o600 });
+  assert.equal((await stop()).output, '{}\n');
+  await put({ id: INPUT, text: 'bad\x9b' });
+  assert.equal((await stop()).output, '{}\n');
+  await put();
+  await writeFile(`${base}.taken`, 'previous', { mode: 0o600 });
+  assert.equal((await stop()).output, '{}\n');
+  await assert.rejects(stat(`${base}.continued`), { code: 'ENOENT' });
+  assert.equal(await readFile(`${base}.taken`, 'utf8'), 'previous');
+});
+
+test('PreToolUse replies before stdin is read; a Stop with open stdin prints once at the hard exit', async (t) => {
+  const output = [];
+  await agyHook(['PreToolUse'], { stdin: { async *[Symbol.asyncIterator]() {
+    assert.deepEqual(output, ['{"decision":"ask"}\n']);
+    yield Buffer.from('null');
+  } }, write: line => output.push(line) });
+  assert.equal(output.length, 1);
+  const { homeDir, env } = await fixture(t);
+  const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'asb-agent.mjs'), 'agy-hook', 'Stop'],
+    { env: { PATH: process.env.PATH, HOME: homeDir, XDG_STATE_HOME: env.XDG_STATE_HOME } });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  let stdout = '';
+  child.stdout.on('data', b => { stdout += b; });
+  child.stdin.write('{');
+  assert.deepEqual(await once(child, 'close'), [0, null]);
+  assert.equal(stdout, '{}\n');
 });

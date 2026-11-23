@@ -1,6 +1,6 @@
 # ASB Bridge
 
-A plugin that lets Codex tasks, Claude Code sessions, and OpenCode 2 sessions message each other on one machine and, in an ASB machine group, with the sessions on your other machines (Linux and Windows).
+A plugin that lets Codex tasks, Claude Code sessions, OpenCode 2 sessions, and Antigravity CLI (agy) sessions message each other on one machine and, in an ASB machine group, with the sessions on your other machines (Linux and Windows).
 
 Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task and each OpenCode session in that registry, so Claude finds them with `ListAgents` and writes to them with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories. On Windows they travel over named pipes, and each receiver has a key file and checks an `auth` line (see [Windows](#windows)).
 
@@ -28,7 +28,7 @@ asb bridge install --opencode
 asb bridge install --opencode --opencode-config /path/to/opencode/config
 ```
 
-Use `asb bridge install --all` for all detected providers. `--all` adds OpenCode when its config folder exists. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
+Use `asb bridge install --all` for detected Codex, Claude, and OpenCode targets. `--all` adds OpenCode when its config folder exists. On Linux, install the agy hook, then run `asb bridge install --agy` to add agy. agy sends through MCP and receives through Stop at the end of a turn. The kitty paste path is off until a live proof. From a source checkout, use `scripts/asb bridge` in place of `asb bridge`. Without a target flag, `asb bridge install` prints the detected targets and usage, and changes nothing.
 
 `asb setup --only bridge` installs the bridge for each detected provider that does not have it, and does not change an existing install. Preferences > Profiles in the ASB window shows the bridge state of each enabled profile, with **Install** or **Update**. `asb bridge status --claude-home <path>` (you can give it more than once) adds the skill state of each named Claude home to the output.
 

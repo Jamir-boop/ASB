@@ -97,7 +97,7 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const bridgeRuntimeFiles = [
   '.agents/plugins/marketplace.json', 'bridge/.codex-plugin/plugin.json', 'bridge/.mcp.json',
   'bridge/hooks/hooks.json', 'bridge/dist/server.js', 'bridge/dist/hook.js', 'bridge/dist/relay.js',
-  'bridge/dist/opencode.js', 'bridge/LICENSE',
+  'bridge/dist/opencode.js', 'bridge/dist/agy.js', 'bridge/LICENSE',
   'bridge/agent-skills/claude/bridge/SKILL.md', 'bridge/agent-skills/codex/bridge/SKILL.md',
   'bridge/agent-skills/opencode/bridge/SKILL.md',
   'bridge/agent-skills/codex/bridge/agents/openai.yaml', 'scripts/asb-bridge.mjs',
@@ -116,7 +116,7 @@ test('the shared file helpers give the same neutral messages to the install, the
   assert.equal(await readFile(file, 'utf8'), 'new');
 });
 
-test('the bridge runtime whitelist has exactly the fourteen required files', () => {
+test('the bridge runtime whitelist has exactly the required files', () => {
   assert.deepEqual(RUNTIME_FILES.filter((file) => file.startsWith('bridge/')
     || file === '.agents/plugins/marketplace.json' || file === 'scripts/asb-bridge.mjs'), bridgeRuntimeFiles);
 });

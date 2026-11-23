@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { codexBunOnPath, commandLine, executable, hasOldPlugin, linkClaudeRegistry, opencodePaths, parseDebugPaths, skillState } from '../scripts/asb-bridge.mjs';
+import { RUNTIME_FILES } from '../scripts/asb-package.mjs';
 import { defaultOpenCodeStateDir } from '../src/opencode-data.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -615,8 +616,8 @@ test('Claude configuration override and CLI argument validation stay within expl
 
 test('status uses shipped plugin metadata without bridge package.json and missing root refuses writes', async (t) => {
   const f = await fixture(t), root = path.join(f.temporary, 'payload');
-  // The script and the shared helpers that it imports; no bridge runtime files.
-  for (const file of ['scripts/asb-bridge.mjs', 'scripts/asb-package.mjs', 'scripts/asb-icon.mjs', 'src/linux-system.mjs', 'src/platform-paths.mjs']) {
+  // Shipped source helpers only. Omit the bundle and its metadata.
+  for (const file of RUNTIME_FILES.filter(name => name.endsWith('.mjs'))) {
     await mkdir(path.dirname(path.join(root, file)), { recursive: true });
     await copyFile(path.join(ROOT, file), path.join(root, file));
   }
