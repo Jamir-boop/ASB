@@ -76,7 +76,7 @@ Limits:
 
 ## Approve OpenCode requests from the phone
 
-On main, not in a release yet. Use ASB Bridge `0.10.0` with OpenCode 2 on Linux or Windows.
+On main, not in a release yet. Use ASB Bridge `0.11.0` with OpenCode 2 on Linux or Windows.
 
 1. Run `asb bridge install --opencode`. OpenCode loads the plugin by itself. In one observation (OpenCode 2.4.0) a session that ran took the new plugin with no restart. If a session shows no card, start OpenCode again.
 2. In Preferences > Phone, turn on **Allow phone access**, **Send message text to phones**, **Answer questions from phones**, and **Approve requests from phones**. Pair a phone with this PC or another machine in its group.
