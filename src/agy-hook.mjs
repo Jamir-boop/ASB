@@ -9,7 +9,7 @@ import { findExecutable } from './platform-paths.mjs';
 // Claude Code installer. It never prints, logs, or returns other content of the file.
 export const AGY_HOOK_TIMEOUT = 10;
 export const NO_AGY = 'no agy';
-const QUESTION_MATCHER = '^ask_question$';
+const TOOL_MATCHER = '^(ask_question|run_command|edit_file|write_file)$';
 const LINE_LAUNCHER = /^out=\$\(timeout 5 '([^'\x00-\x1f\x7f]+)' agent agy-hook /;
 const TITLE_LAUNCHER = /^'([^'\x00-\x1f\x7f]+)' agent agy-title$/;
 const INVALID = { state: 'invalid settings' };
@@ -32,7 +32,7 @@ export const agyHookLine = (launcher, event) => `out=$(timeout 5 '${launcher}' a
 export function agyHookEntry(launcher) {
   const hooks = (event) => [{ type: 'command', command: agyHookLine(launcher, event), timeout: AGY_HOOK_TIMEOUT }];
   return { SessionStart: hooks('SessionStart'), PreInvocation: hooks('PreInvocation'), Stop: hooks('Stop'),
-    PreToolUse: [{ matcher: QUESTION_MATCHER, hooks: hooks('PreToolUse') }], PostToolUse: [{ matcher: QUESTION_MATCHER, hooks: hooks('PostToolUse') }] };
+    PreToolUse: [{ matcher: TOOL_MATCHER, hooks: hooks('PreToolUse') }], PostToolUse: [{ matcher: TOOL_MATCHER, hooks: hooks('PostToolUse') }] };
 }
 
 export const agyTitleEntry = (launcher) => ({ type: 'command', command: `'${launcher}' agent agy-title`, enabled: true });

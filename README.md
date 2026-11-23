@@ -120,7 +120,7 @@ Limits:
 - If you deny an MCP tool call (and probably if you press Esc), agy 1.5.15 ends the turn without a Stop hook and the record stays `working` until the next turn ends; the board shows Working (then Unknown after 10 minutes with no news), kitty does not type, and a message still waiting after 60 min is withdrawn with a drop receipt.
 - `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
 - Each agy hook call adds about 80 ms, and agy waits for it.
-- Phone approvals work in agy's default mode only (in a kitty with remote control and **Approve requests from phones** on). ASB never chooses an "always allow" option. A deny on the phone stops the agy turn, as on the PC. Not tested end to end on a phone with a real agy session.
+- Phone approvals work in agy's default mode only (in a kitty with remote control and **Approve requests from phones** on). Run `asb agent agy-hook install` again if you installed the hook earlier (`asb agent agy-hook status` shows `changed` until you do). ASB never chooses an "always allow" option. A deny on the phone stops the agy turn, as on the PC. Not tested end to end on a phone with a real agy session.
 - Not yet: Windows, and the Antigravity app and IDE.
 
 ### ASB Bridge for agy

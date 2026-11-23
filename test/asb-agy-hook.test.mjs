@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { agyHook, agyProcess, agyTitle } from '../scripts/asb-agy-hook.mjs';
+import { agyHook, agyNextState, agyProcess, agyTitle } from '../scripts/asb-agy-hook.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ID = '9d482c79-a221-41ba-96c9-1c571ac0565b';
@@ -483,4 +483,9 @@ test('PreToolUse run_command, write_file, and edit_file post approval cards with
   ]);
   const serialized = JSON.stringify(posted);
   for (const secret of ['secret-content-xyz', 'secret-old', 'secret-new']) assert.equal(serialized.includes(secret), false, secret);
+  // PreToolUse and PostToolUse of the three approval tools change no record state (agyNextState gives null).
+  for (const name of ['run_command', 'edit_file', 'write_file']) {
+    assert.equal(agyNextState({ hookEventName: 'PreToolUse', toolCall: { name } }), null, name);
+    assert.equal(agyNextState({ hookEventName: 'PostToolUse', toolCall: { name } }), null, name);
+  }
 });

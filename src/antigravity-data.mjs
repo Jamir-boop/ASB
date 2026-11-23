@@ -288,7 +288,7 @@ export function matchAgyApprovalScreen(screen, approval) {
     }
     if (headerIdx < 0) return null;
     let endIdx = -1;
-    for (let i = headerIdx + 1; i < lines.length; i -= -1) {
+    for (let i = headerIdx + 1; i < lines.length; i += 1) {
       if (lines[i].trim() === 'Run this command?' || yesPattern.test(lines[i])) { endIdx = i; break; }
     }
     if (endIdx <= headerIdx + 1) return null;
