@@ -10,8 +10,6 @@ import local.asb.companion.data.QuestionOption
 import local.asb.companion.data.Store
 import local.asb.companion.data.Thread
 import local.asb.companion.net.AnswerReply
-import local.asb.companion.notify.BIT_INPUT
-import local.asb.companion.notify.notificationTag
 import local.asb.companion.notify.update
 import local.asb.companion.ui.CardStatus
 import local.asb.companion.ui.QUESTION_CLOSED
@@ -20,7 +18,6 @@ import local.asb.companion.ui.keptQuestion
 import local.asb.companion.ui.OTHER_LIMIT
 import local.asb.companion.ui.QuestionCard
 import local.asb.companion.ui.cleanOther
-import local.asb.companion.ui.questionRowToOpen
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -224,13 +221,4 @@ class QuestionCardTest {
         assertEquals(QuestionCard(next.requestId, listOf(emptyList(), emptyList()), listOf("", "")), QuestionCard(next))
     }
 
-    @Test fun aNotificationTapOpensOnlyARowWithAQuestion() {
-        val asking = Thread(id = "r1", globalId = "pc:r1", question = question)
-        val plain = Thread(id = "r2", globalId = "pc:r2")
-        val rows = listOf(asking, plain)
-        assertEquals(asking, questionRowToOpen(notificationTag(asking.key, BIT_INPUT), rows))
-        assertNull(questionRowToOpen(notificationTag(plain.key, BIT_INPUT), rows))
-        assertNull(questionRowToOpen(notificationTag("gone", BIT_INPUT), rows))
-        assertNull(questionRowToOpen("asb-status", rows))
-    }
 }

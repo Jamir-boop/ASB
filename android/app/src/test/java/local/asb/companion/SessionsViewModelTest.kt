@@ -21,6 +21,9 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.ApprovalItem
+import local.asb.companion.data.PhoneApproval
+import local.asb.companion.net.Decision
 import local.asb.companion.data.Palette
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
@@ -817,6 +820,51 @@ class SessionsViewModelTest {
             assertEquals(banner, model.state.value.banner?.takeIf { it == "Answer sent" || it == "Answered on the PC" })
             server.takeRequest()
             if (refetch) server.takeRequest()
+        }
+    }
+
+    @Test fun aDecisionLeavesItsBannerAndNoApprovalTextInTheSavedStore() = runBlocking {
+        val command = "rm -rf build/made-up-output"
+        val noteText = "Use the clean task instead"
+        val banners = setOf("Allowed", "Denied", "Plan approved", "Kept planning", "Answered on the PC")
+        val cases = listOf(
+            Triple("tool", Decision.Allow, MockResponse().setBody("""{"answered":true}""")) to "Allowed",
+            Triple("tool", Decision.Deny, MockResponse().setBody("""{"answered":true}""")) to "Denied",
+            Triple("plan", Decision.Allow, MockResponse().setBody("""{"answered":true}""")) to "Plan approved",
+            Triple("plan", Decision.Deny, MockResponse().setBody("""{"answered":true}""")) to "Kept planning",
+            Triple("tool", Decision.Allow,
+                MockResponse().setResponseCode(409).setBody("""{"error":"This request is closed."}""")) to "Answered on the PC",
+            Triple("tool", Decision.Allow,
+                MockResponse().setResponseCode(404).setBody("""{"error":"Route is not available."}""")) to null,
+            Triple("tool", Decision.Deny,
+                MockResponse().setResponseCode(400).setBody("""{"error":"Invalid decision."}""")) to null,
+        )
+        for ((case, banner) in cases) {
+            val (kind, decision, reply) = case
+            val approval = PhoneApproval("c".repeat(32), kind, "Run a command?",
+                listOf(ApprovalItem("Command", command, mono = true)), note = true)
+            val preferences = MemoryPreferences(mutableMapOf("token" to "t".repeat(43), "deviceId" to "0123456789ab"))
+            val store = Store(preferences)
+            val model = model(saveBaseline = { baseline, engine -> store.saveBaselineIfPaired("t".repeat(43), AsbJson.encodeToString(baseline), engine) })
+            val dashboard = Dashboard(1, threads = listOf(Thread(id = "one", questionAttention = true, approval = approval)))
+            load(model, dashboard)
+            assertEquals(approval, model.state.value.dashboard?.threads?.single()?.approval)
+            model.dismissBanner()
+            server.enqueue(reply)
+            server.enqueue(response(dashboard.copy(threads = listOf(Thread(id = "one")))))
+            var got: AnswerReply? = AnswerReply.Refused
+            model.decide("one", approval.requestId, decision, noteText, kind == "plan") { got = it }
+            await { "one" !in model.state.value.busyIds }
+            assertTrue(got != null)
+            assertEquals(banner, model.state.value.banner?.takeIf { it in banners })
+            val request = server.takeRequest()
+            assertEquals("/phone/v1/threads/one/answer", request.path)
+            server.takeRequest()
+            for (value in preferences.values.values) {
+                assertFalse(value.toString().contains(command))
+                assertFalse(value.toString().contains(noteText))
+                assertFalse(value.toString().contains("Run a command"))
+            }
         }
     }
 }

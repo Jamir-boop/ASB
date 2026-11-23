@@ -129,6 +129,9 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.selection.selectableGroup
 import local.asb.companion.data.PhoneQuestion
+import local.asb.companion.data.PhoneApproval
+import local.asb.companion.net.Decision
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -512,7 +515,7 @@ fun SessionsScreen(
     LaunchedEffect(questionTap, state.lastUpdateMs) {
         val tap = questionTap ?: return@LaunchedEffect
         if (state.lastUpdateMs <= tap.atMs) return@LaunchedEffect
-        questionRowToOpen(tap.tag, rows)?.let { keyboard?.hide(); inspector = it.id to Offset.Zero }
+        answerRowToOpen(tap.tag, rows)?.let { keyboard?.hide(); inspector = it.id to Offset.Zero }
         onQuestionTapDone()
     }
     LaunchedEffect(state.lastError) {
@@ -1688,6 +1691,9 @@ private fun SessionInspector(
     var kept by remember(row.id) { mutableStateOf<PhoneQuestion?>(null) }
     val questionCard = keptQuestion(kept, row.question)
     SideEffect { row.question?.let { kept = it } }
+    var keptRequest by remember(row.id) { mutableStateOf<PhoneApproval?>(null) }
+    val approvalCard = keptApproval(keptRequest, row.approval)
+    SideEffect { row.approval?.let { keptRequest = it } }
     val controls = rowPanelControls(row)
     LaunchedEffect(row, busy, refocus) {
         if (!busy) {
@@ -1733,7 +1739,10 @@ private fun SessionInspector(
                     .semantics { paneTitle = title },
             ) {
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(12.dp)) {
-                    questionCard.question?.let {
+                    if (approvalWins(approvalCard, row.question)) {
+                        ApprovalCardPanel(row.id, approvalCard.approval!!, approvalCard.closed, offline, viewModel, text, muted, group,
+                            onDismiss)
+                    } else questionCard.question?.let {
                         QuestionCardPanel(row.id, it, questionCard.closed, offline, viewModel, text, muted, group, onDismiss)
                     }
                     Column(
@@ -1984,6 +1993,85 @@ private fun QuestionCardPanel(
                 } ?: Modifier),
         ) {
             Text("Send", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/** The approval card at the top of the inspector; [ApprovalCard] holds its logic, and its note lives in this screen only. */
+@Composable
+private fun ApprovalCardPanel(
+    rowId: String, approval: PhoneApproval, closed: Boolean, offline: Boolean, viewModel: SessionsViewModel,
+    text: Color, muted: Color, group: String, onDone: () -> Unit,
+) {
+    var card by remember(rowId, approval.requestId) { mutableStateOf(ApprovalCard(approval)) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val labels = approvalLabels(approval)
+    LaunchedEffect(approval.requestId) {
+        // A new request must not replace a control under the finger with an active approval button.
+        delay(1_000)
+        card = card.arm()
+    }
+    val enabled = card.canDecide(offline, closed, card.armed)
+    fun decide(decision: Decision) {
+        keyboard?.hide()
+        val note = card.noteFor(approval, decision)
+        card = card.sending()
+        viewModel.decide(rowId, card.requestId, decision, note, approval.kind == "plan") { reply ->
+            card = card.replied(reply)
+            // The banner says the result after the inspector closes.
+            if (reply != null && answerBanner(reply) != null) onDone()
+        }
+    }
+    Column(
+        Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(10.dp)).background(hexColor(group))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.semantics(mergeDescendants = true) { }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(approval.title, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, fontWeight = FontWeight.Bold, color = text,
+                modifier = Modifier.semantics { contentDescription = approvalHeading(approval) })
+            for (item in approval.display) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(item.label, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+                    Text(item.text, fontSize = 12.sp, lineHeight = TITLE_LINE_HEIGHT.sp, color = text,
+                        fontFamily = if (item.mono) FontFamily.Monospace else null)
+                }
+            }
+        }
+        if (approval.note) OutlinedTextField(
+            value = card.note,
+            onValueChange = { card = card.type(it) },
+            enabled = !closed && !card.locked && !offline,
+            label = { Text(NOTE_LABEL) },
+            textStyle = MaterialTheme.typography.bodyMedium,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+        )
+        card.line(offline, closed)?.let {
+            Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { decide(Decision.Deny) },
+                enabled = enabled,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+            ) {
+                Text(labels.deny, fontSize = 13.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            }
+            Button(
+                onClick = { decide(Decision.Allow) },
+                enabled = enabled,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    .then(card.allowDescription(approval, closed)?.let { description ->
+                        Modifier.semantics { contentDescription = description }
+                    } ?: Modifier),
+            ) {
+                Text(labels.allow, fontSize = 13.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            }
         }
     }
 }

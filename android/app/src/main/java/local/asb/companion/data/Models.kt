@@ -132,6 +132,8 @@ data class Thread(
     // The open Claude Code question that the phone can answer (local rows only, while the text switch is on); memory only, as
     // questionText. An older engine sends none.
     @Serializable(with = QuestionSerializer::class) val question: PhoneQuestion? = null,
+    // The open approval request (a tool or a plan) that the phone can allow or deny; memory only, as question.
+    @Serializable(with = ApprovalSerializer::class) val approval: PhoneApproval? = null,
     val actionRequired: Boolean = false,
     // An older engine sends none.
     val actionAttention: Boolean? = null,
@@ -236,6 +238,53 @@ object QuestionSerializer : KSerializer<PhoneQuestion?> {
 
     override fun serialize(encoder: Encoder, value: PhoneQuestion?) =
         encoder.encodeSerializableValue(PhoneQuestion.serializer().nullable, value)
+}
+
+@Serializable
+data class ApprovalItem(val label: String, val text: String, val mono: Boolean = false)
+
+/** An open approval request; [kind] is `tool` or `plan`, and [note] means that a deny can carry a typed note. */
+@Serializable
+data class PhoneApproval(
+    val requestId: String,
+    val kind: String,
+    val title: String,
+    val display: List<ApprovalItem> = emptyList(),
+    val note: Boolean = false,
+)
+
+private fun jsonBoolean(value: JsonElement): Boolean? = (value as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+
+/** The approval of a row, or null when it breaks a rule. The limits are wider than the engine's, so a larger engine limit needs no update. */
+internal fun parseApproval(value: JsonElement): PhoneApproval? {
+    val root = value as? JsonObject ?: return null
+    val requestId = jsonString(root["requestId"])?.takeIf { requestIdPattern.matches(it) } ?: return null
+    val kind = jsonString(root["kind"])?.takeIf { it == "tool" || it == "plan" } ?: return null
+    val title = jsonString(root["title"])?.takeIf { it.length in 1..300 } ?: return null
+    val display = root["display"]?.let { list ->
+        (list as? JsonArray)?.takeIf { it.size <= 8 }?.map { entry ->
+            val item = entry as? JsonObject ?: return null
+            val label = jsonString(item["label"])?.takeIf { it.length in 1..40 } ?: return null
+            val text = jsonString(item["text"])?.takeIf { it.length <= 16_000 } ?: return null
+            ApprovalItem(label, text, item["mono"]?.let { jsonBoolean(it) ?: return null } ?: false)
+        } ?: return null
+    } ?: emptyList()
+    if (display.sumOf { it.text.length } > 32_000) return null
+    val note = root["note"]?.let { jsonBoolean(it) ?: return null } ?: false
+    return PhoneApproval(requestId, kind, title, display, note)
+}
+
+/** A malformed approval is null, so it cannot fail its row. */
+object ApprovalSerializer : KSerializer<PhoneApproval?> {
+    override val descriptor = PhoneApproval.serializer().nullable.descriptor
+
+    override fun deserialize(decoder: Decoder): PhoneApproval? {
+        if (decoder !is JsonDecoder) return decoder.decodeSerializableValue(PhoneApproval.serializer().nullable)
+        return parseApproval(decoder.decodeJsonElement())
+    }
+
+    override fun serialize(encoder: Encoder, value: PhoneApproval?) =
+        encoder.encodeSerializableValue(PhoneApproval.serializer().nullable, value)
 }
 
 /** The saved attention bits of a row and its result times; a time of 0 is not known. */

@@ -2,7 +2,6 @@ package local.asb.companion.ui
 
 import local.asb.companion.data.PhoneAnswer
 import local.asb.companion.data.PhoneQuestion
-import local.asb.companion.data.Thread
 import local.asb.companion.net.AnswerReply
 
 /** The engine limit of the Other text, in UTF-16 units (String.length), as the engine counts. */
@@ -103,15 +102,6 @@ private fun <T> List<T>.replace(index: Int, value: T): List<T> = toMutableList()
 
 /** The engine refuses control characters except a newline and a tab. */
 fun cleanOther(text: String): String = text.filterNot { (it < ' ' && it != '\n' && it != '\t') || it == '\u007f' }
-
-/**
- * The row whose inspector a notification tap opens: the tag is `<row.key>:<kind>`, and only a row of the list on screen that has an
- * open question qualifies.
- */
-fun questionRowToOpen(tag: String, rows: List<Thread>): Thread? {
-    val key = tag.substringBeforeLast(':', "").ifEmpty { return null }
-    return rows.firstOrNull { it.key == key && it.question != null }
-}
 
 /** A tap on a notification at [atMs]; the screen acts on it after the first dashboard read after that time. */
 data class QuestionTap(val tag: String, val atMs: Long)

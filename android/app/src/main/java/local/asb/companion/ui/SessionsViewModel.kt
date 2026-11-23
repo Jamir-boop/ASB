@@ -27,6 +27,7 @@ import local.asb.companion.data.PhoneAnswer
 import local.asb.companion.net.AnswerReply
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
+import local.asb.companion.net.Decision
 import local.asb.companion.net.DashboardResult
 import local.asb.companion.notify.update as updateBaseline
 
@@ -190,7 +191,15 @@ class SessionsViewModel(
      * Sends [answers] to the open question [requestId] of row [id] on the engine on screen. [done] gets the reply before the board
      * refresh, or null after an error (the row error shows it, as for the other actions).
      */
-    fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, done: (AnswerReply?) -> Unit) {
+    fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, done: (AnswerReply?) -> Unit) =
+        sendAnswer(id, done, ::answerBanner) { api.answer(id, requestId, answers, it) }
+
+    /** Allows or denies the open approval [requestId] of row [id], as [answer] does for a question; [plan] picks the banner words. */
+    fun decide(id: String, requestId: String, decision: Decision, note: String?, plan: Boolean, done: (AnswerReply?) -> Unit) =
+        sendAnswer(id, done, { approvalBanner(it, decision, plan) }) { api.decide(id, requestId, decision, note, it) }
+
+    private fun sendAnswer(id: String, done: (AnswerReply?) -> Unit, banner: (AnswerReply) -> String?,
+                           call: suspend (engine: String) -> AnswerReply) {
         if (state.value.revoked || id in state.value.busyIds) { done(null); return }
         mutableState.update { it.copy(busyIds = it.busyIds + id) }
         viewModelScope.launch {
@@ -198,10 +207,10 @@ class SessionsViewModel(
             try {
                 notificationMutex.withLock {
                     if (state.value.revoked) return@withLock
-                    val reply = api.answer(id, requestId, answers, state.value.engine)
+                    val reply = call(state.value.engine)
                     currentCoroutineContext().ensureActive()
                     // The next read drops the answered question and its card, so the banner keeps the result in view.
-                    answerBanner(reply)?.let { banner -> mutableState.update { it.copy(banner = banner) } }
+                    banner(reply)?.let { banner -> mutableState.update { it.copy(banner = banner) } }
                     mutableState.update { it.copy(actionErrors = it.actionErrors - id,
                         lastError = it.lastError.takeIf { e -> e != it.actionErrors[id] }) }
                     replied = true
@@ -291,4 +300,13 @@ fun answerBanner(reply: AnswerReply): String? = when (reply) {
     AnswerReply.Sent -> "Answer sent"
     AnswerReply.Closed -> "Answered on the PC"
     AnswerReply.Off, AnswerReply.Refused -> null
+}
+
+/** The banner after a decision that ends the approval card, in the words of its kind. */
+fun approvalBanner(reply: AnswerReply, decision: Decision, plan: Boolean): String? = when (reply) {
+    AnswerReply.Sent -> when (decision) {
+        Decision.Allow -> if (plan) "Plan approved" else "Allowed"
+        Decision.Deny -> if (plan) "Kept planning" else "Denied"
+    }
+    else -> answerBanner(reply)
 }

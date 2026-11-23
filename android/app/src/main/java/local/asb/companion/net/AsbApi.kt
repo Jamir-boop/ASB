@@ -61,6 +61,9 @@ sealed class AsbError(message: String) : Exception(message) {
 /** What the PC did with an answer. Sent means that the hook on the PC has it, not that Claude took it: a PC answer can win. */
 enum class AnswerReply { Sent, Closed, Off, Refused }
 
+/** The phone's answer to an approval request: allow once or deny. */
+enum class Decision { Allow, Deny }
+
 // The gateway text of a route that the PC switches turned off; every other 404 means the row is gone.
 const val ROUTE_NOT_AVAILABLE = "Route is not available."
 
@@ -195,7 +198,6 @@ class AsbApi(
 
     /** Answers the open question [requestId] of row [id] on [engine]; other errors than the mapped replies are thrown. */
     suspend fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, engine: String): AnswerReply {
-        if (id.isEmpty() || id == "." || id == "..") throw AsbError.Server("Invalid session ID.")
         val body = buildJsonObject {
             put("requestId", requestId)
             putJsonArray("answers") {
@@ -205,6 +207,21 @@ class AsbApi(
                 }
             }
         }
+        return postAnswer(id, body, engine)
+    }
+
+    /** Allows or denies the open approval [requestId] of row [id] on [engine]; [note] goes only with a deny and only when not blank. */
+    suspend fun decide(id: String, requestId: String, decision: Decision, note: String?, engine: String): AnswerReply {
+        val body = buildJsonObject {
+            put("requestId", requestId)
+            put("decision", if (decision == Decision.Allow) "allow" else "deny")
+            note?.takeIf { decision == Decision.Deny && it.isNotBlank() }?.let { put("note", it) }
+        }
+        return postAnswer(id, body, engine)
+    }
+
+    private suspend fun postAnswer(id: String, body: JsonObject, engine: String): AnswerReply {
+        if (id.isEmpty() || id == "." || id == "..") throw AsbError.Server("Invalid session ID.")
         return try {
             request("threads", id, "answer", body = body.toString(), only = engine)
             AnswerReply.Sent
