@@ -265,7 +265,58 @@ const answerRoute = (row) => `/api/threads/${encodeURIComponent(row)}/answer`;
 const codexTool = (sessionKey) => ({ provider: 'codex', sessionKey, approval: approval() });
 const openWait = async (e, body) => (await e.post('/api/agent/wait', body)).json();
 
-test('Codex requires approval and a phone seen in the last 60 s; other providers still require pairing', async (t) => {
+test('Codex questions use the answer switch, reject forbidden Other text and return separate answer items', async (t) => {
+  const now = clock(Date.now());
+  const store = createClaudeQuestions({ now });
+  let answer = false, paired = true;
+  const sessionKey = 'codex-key';
+  const e = await engine(t, { now, store, answerEnabled: () => answer, approveEnabled: () => false, phonePaired: async () => paired,
+    codexThreads: [{ id: 'codex-row', externalId: sessionKey, provider: 'codex', lifecycleRunning: false }],
+    claudeWaitMs: 0 });
+  const questions = [
+    { question: 'Pick a value?', options: [{ label: 'One, two' }], multiSelect: false, allowOther: false },
+    { question: 'Pick a value?', options: [{ label: 'Three' }], multiSelect: false, allowOther: true },
+  ];
+  const body = { provider: 'codex', sessionKey, question: { questions } };
+  assert.deepEqual(await openWait(e, body), { wait: false });
+  answer = true;
+  paired = false;
+  assert.deepEqual(await openWait(e, body), { wait: false });
+  paired = true;
+  const { requestId } = await openWait(e, body);
+  assert.match(requestId, /^[a-f0-9]{32}$/);
+  assert.equal(store.forSession('codex', sessionKey).deadlineAtMs, undefined);
+  now.advance(CODEX_FIRST_MS + 1);
+  const poll = async () => (await e.post(`/api/agent/wait/${requestId}`)).json();
+  assert.deepEqual(await poll(), { state: 'open' });
+  const row = (await e.rows()).find((item) => item.id === 'codex-row');
+  assert.deepEqual(row.question, { requestId, questions });
+  assert.equal(row.actionRequired, false);
+  const typed = { selected: [], other: 'Four, five' };
+  const submit = (answers) => e.post(answerRoute(row.id), { requestId, answers });
+  const bad = await submit([typed, typed]);
+  assert.deepEqual([bad.status, await bad.json()], [400, { error: 'Invalid answer.' }]);
+  assert.deepEqual(await poll(), { state: 'open' });
+  const answerItems = [{ selected: ['One, two'] }, typed];
+  assert.equal((await submit(answerItems)).status, 200);
+  assert.deepEqual(await poll(), { state: 'answered', answers: { 'Pick a value?': 'Four, five' }, answerItems });
+});
+
+test('a Codex question closes at the sweep after 60 s without a poll', async () => {
+  const now = clock();
+  const store = createClaudeQuestions({ now });
+  const { requestId } = store.open({ provider: 'codex', sessionKey: 's', questions: [{ question: 'Pick?', options: [{ label: 'A' }] }] });
+  now.advance(50_000);
+  assert.deepEqual(await store.wait(requestId, 0), { state: 'open' });
+  now.advance(60_000);
+  store.sweep();
+  assert.equal(store.forSession('codex', 's')?.requestId, requestId);
+  now.advance(1);
+  store.sweep();
+  assert.deepEqual(await store.wait(requestId, 0), { state: 'closed' });
+});
+
+test('Codex approvals require a phone seen in the last 60 s; other providers still require pairing', async (t) => {
   const now = clock();
   let approve = false;
   let devices = [{ lastSeenAtMs: now() }];
@@ -412,7 +463,7 @@ test('the contract: a record of each provider and kind gives the same row field 
     assert.deepEqual(questionRow.question, { requestId: asked.requestId, questions }, provider);
     assert.equal('approval' in questionRow, false);
     assert.equal((await e.post(answerRoute(rowOf[provider]), { requestId: asked.requestId, answers: [{ selected: ['A'] }] })).status, 200, provider);
-    assert.deepEqual(JSON.parse(JSON.stringify(await e.store.wait(asked.requestId, 0))), { state: 'answered', answers: { 'Synthetic?': 'A' } });
+    assert.deepEqual(JSON.parse(JSON.stringify(await e.store.wait(asked.requestId, 0))), { state: 'answered', answers: { 'Synthetic?': 'A' }, answerItems: [{ selected: ['A'] }] });
   }
   // The old claude-wait alias and its poll still work.
   const old = await (await e.post('/api/agent/claude-wait', { sessionId: SESSION, questions: [{ question: 'Old?', options: [{ label: 'A' }] }] })).json();
@@ -420,7 +471,7 @@ test('the contract: a record of each provider and kind gives the same row field 
   assert.deepEqual((await e.rows()).find((item) => item.id === e.row).question.requestId, old.requestId);
   const oldPoll = e.post(`/api/agent/claude-wait/${old.requestId}`);
   assert.equal((await e.post(answerRoute(e.row), { requestId: old.requestId, answers: [{ selected: ['A'] }] })).status, 200);
-  assert.deepEqual(await (await oldPoll).json(), { state: 'answered', answers: { 'Old?': 'A' } });
+  assert.deepEqual(await (await oldPoll).json(), { state: 'answered', answers: { 'Old?': 'A' }, answerItems: [{ selected: ['A'] }] });
 });
 
 test('the wait route checks the body and the switch of each kind', async (t) => {

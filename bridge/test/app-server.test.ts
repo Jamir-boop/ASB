@@ -7,6 +7,9 @@ import { peers } from '../src/claude';
 import { appServer } from './app-server-fixture';
 import { discoverTarget, watchCodex } from '../src/codex';
 import { DeliveryRefused, peerHeader } from '../src/delivery';
+import { waitForQuestion } from '../src/approval';
+import { engineRuntime } from '../src/engine';
+import { fakeEngine } from './engine-fixture';
 // POSIX only on Windows CI: the Unix socket file of the app-server fixture.
 const posix = test.skipIf(process.platform === 'win32');
 
@@ -192,3 +195,81 @@ posix('an observer disconnect suspends reception until fresh permissions are rea
     expect(server.submissions).toEqual([]);
   } finally { stop(); await server.close(); }
 });
+
+const QUESTION_REQUEST = 'a'.repeat(32);
+const available = { id: 'option', header: 'Select', question: 'Pick?', isOther: false, isSecret: false,
+  options: [{ label: 'A, B', description: 'First choice' }] };
+const freeText = { ...available, id: '__proto__', isOther: true, options: [{ label: 'C', description: '' }] };
+const questionPacket = (threadId: string, questionId: string | number, questions: unknown[]) => ({
+  id: questionId, method: 'item/tool/requestUserInput',
+  params: { threadId, itemId: 'different-id', turnId: 'turn-id', questions, isBlocking: true, autoResolutionMs: null },
+});
+const answered = { state: 'answered', answers: { 'Pick?': 'Other, text' }, answerItems: [{ selected: ['A, B'] }, { selected: [], other: 'Other, text' }] };
+
+async function untilQuestion(predicate: () => boolean) {
+  const deadline = Date.now() + 2000;
+  while (!predicate() && Date.now() < deadline) await Bun.sleep(5);
+  expect(predicate()).toBe(true);
+}
+
+posix('the Codex watcher maps a replayed question and replies once with the server request and question IDs', async () => {
+  const server = await appServer();
+  const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, route => route === '/api/agent/wait' ? { wait: true, requestId: QUESTION_REQUEST } : answered);
+  const packet = questionPacket(server.threadId, 0, [available, freeText]);
+  server.replayOnResume(packet);
+  let stop: (() => void) | undefined;
+  try {
+    stop = await watchCodex({ kind: 'app-server', path: server.path }, server.threadId, () => {}, () => {});
+    await untilQuestion(() => server.responses.length === 1);
+    // A repeat before or after resolution must not open a second wait or send a second reply.
+    server.send(packet);
+    server.send({ method: 'serverRequest/resolved', params: { threadId: server.threadId, requestId: packet.id } });
+    server.send(packet);
+    server.send(questionPacket(randomUUID(), 1, [available]));
+    server.send(questionPacket(server.threadId, 2, [{ ...available, options: null }]));
+    server.send(questionPacket(server.threadId, 3, [available, { ...freeText, isSecret: true }]));
+    await Bun.sleep(30);
+    expect(engine.calls.map(call => [call.route, call.body])).toEqual([
+      ['/api/agent/wait', { provider: 'codex', sessionKey: server.threadId, question: { questions: [
+        { question: 'Pick?', header: 'Select', options: available.options, multiSelect: false, allowOther: false },
+        { question: 'Pick?', header: 'Select', options: freeText.options, multiSelect: false, allowOther: true },
+      ] } }],
+      [`/api/agent/wait/${QUESTION_REQUEST}`, {}],
+    ]);
+    expect(server.responses).toEqual([{ id: 0, result: { answers: { option: { answers: ['A, B'] }, ['__proto__']: { answers: ['Other, text'] } } } }]);
+  } finally { stop?.(); engine.close(); await server.close(); }
+});
+
+for (const closeBy of ['resolved', 'thread close', 'disconnect', 'receiver close']) {
+  posix(`a Codex question stops polling with no reply on ${closeBy}`, async () => {
+    const server = await appServer();
+    const held = Promise.withResolvers<unknown>();
+    const engine = fakeEngine(server.root, route => route === '/api/agent/wait' ? { wait: true, requestId: QUESTION_REQUEST } : held.promise);
+    const client = new AppServer(server.path, server.threadId);
+    let signal: AbortSignal | undefined;
+    try {
+      await client.connect();
+      await client.observe(() => {}, (questions, requestSignal) => {
+        signal = requestSignal;
+        return waitForQuestion(engineRuntime({ XDG_RUNTIME_DIR: server.root }, 'linux'), 'codex', server.threadId, questions, requestSignal);
+      });
+      const packet = questionPacket(server.threadId, 'pending', [available, freeText]);
+      server.send(packet);
+      server.send(packet);
+      await untilQuestion(() => engine.calls.length === 2);
+      if (closeBy === 'resolved') {
+        server.send({ method: 'serverRequest/resolved', params: { threadId: server.threadId, requestId: 'unrelated' } });
+        await client.request('thread/read', { threadId: server.threadId });
+        expect(signal?.aborted).toBe(false);
+        server.send({ method: 'serverRequest/resolved', params: { threadId: server.threadId, requestId: packet.id } });
+      } else if (closeBy === 'thread close') server.send({ method: 'thread/closed', params: { threadId: server.threadId } });
+      else if (closeBy === 'disconnect') server.disconnectClients();
+      else client.close();
+      await untilQuestion(() => signal?.aborted === true);
+      held.resolve(answered);
+      await Bun.sleep(30);
+      expect(engine.calls.length).toBe(2);
+      expect(server.responses).toEqual([]);
+    } finally { held.resolve({ state: 'closed' }); client.close(); engine.close(); await server.close(); }
+  });
+}

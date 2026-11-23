@@ -1159,7 +1159,7 @@ export function createSwitchboardServer(options = {}) {
   const activityMessages = createActivityMessages({ readSources: readMessageSources, claudeMessages,
     dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage, busy, changes });
   const claudeQuestions = options.claudeQuestions || createClaudeQuestions();
-  const openCodex = () => claudeQuestions.openRecords().filter((record) => record.provider === 'codex');
+  const openCodexApprovals = () => claudeQuestions.openRecords().filter((record) => record.provider === 'codex' && record.kind === 'approval');
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     claudeQuestions,
@@ -1203,7 +1203,7 @@ export function createSwitchboardServer(options = {}) {
       // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
       await options.readerPositions?.ready();
       const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts, rowCache, loaderCache,
-        codexWaits: () => new Map(openCodex().map((record) => [record.sessionKey, record])) });
+        codexWaits: () => new Map(openCodexApprovals().map((record) => [record.sessionKey, record])) });
       const nextRows = new Map((loaded.threads || []).filter((row) => !row.remote)
         .map(({ id, state, updatedAtMs, archived }) => [id, [state, updatedAtMs, archived]]));
       if (nextRows.size !== localRows.size || [...nextRows].some(([id, values]) =>
@@ -1239,7 +1239,7 @@ export function createSwitchboardServer(options = {}) {
       claudeQuestions.reconcile('antigravity', 'question', new Set(
         dashboard.threads.filter((row) => !row.remote && row.provider === 'antigravity'
           && (row.userQuestionBlocking === true || (row.state === 'waiting' && row.questionPending === true))).map((row) => row.externalId)));
-      const codexRecords = openCodex();
+      const codexRecords = openCodexApprovals();
       if (codexRecords.length) {
         const localCodex = new Set(dashboard.threads.filter((row) => !row.remote && row.provider === 'codex').map((row) => row.externalId));
         for (const { requestId, sessionKey } of codexRecords) if (!localCodex.has(sessionKey)) claudeQuestions.close(requestId);

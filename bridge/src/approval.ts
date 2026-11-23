@@ -1,4 +1,5 @@
-// The phone approval of an agent request: the text rules of scripts/asb-agent.mjs and the engine wait loop (/api/agent/wait).
+// Phone questions and approvals use the same engine wait loop (/api/agent/wait).
+import { z } from 'zod';
 import { engineRequest, type EngineRuntime } from './engine';
 
 // A copy of HIDDEN in scripts/asb-agent.mjs (a test compares the two): the controls but a tab and a newline (C0, DEL, C1), and the
@@ -17,6 +18,11 @@ export type QuestionOption = { label: string; description?: string };
 export type PhoneQuestionItem = { question: string; header?: string; options: QuestionOption[]; multiSelect: boolean };
 export type QuestionAnswers = Record<string, string>;
 
+export type Question = { question: string; header: string; options: { label: string; description: string }[];
+  multiSelect: false; allowOther: boolean };
+const answerItems = z.array(z.object({ selected: z.array(z.string()).max(8), other: z.string().min(1).max(2_000).optional() })).min(1).max(4);
+export type QuestionAnswer = z.infer<typeof answerItems>[number];
+
 const POLL_MS = 30_000;
 const GONE_POLLS = 3;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -27,14 +33,13 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => 
   function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
 });
 
-// Holds the request for the phone and parses an answered reply, or returns null in every other case (no engine, a refusal,
-// a closed record, a bad reply, the engine gone for 3 polls in a row, or the signal). It never throws.
-async function waitForPhone<T>(runtime: EngineRuntime | null, body: Record<string, unknown>,
-  parse: (reply: Record<string, unknown>) => T | null, signal: AbortSignal): Promise<T | null> {
+// Gives the answered engine record, or null on refusal, close, abort, or loss of the engine.
+async function waitForAnswer(runtime: EngineRuntime | null, provider: string, sessionKey: string,
+  request: { approval: Approval } | { question: { questions: (Question | PhoneQuestionItem)[] } }, signal: AbortSignal) {
   if (!runtime || signal.aborted) return null;
   let requestId: string;
   try {
-    const opened = await engineRequest(runtime, '/api/agent/wait', { method: 'POST', body, signal });
+    const opened = await engineRequest(runtime, '/api/agent/wait', { method: 'POST', body: { provider, sessionKey, ...request }, signal });
     if (!object(opened) || opened.wait !== true || typeof opened.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(opened.requestId)) return null;
     requestId = opened.requestId;
   } catch { return null; }
@@ -51,30 +56,34 @@ async function waitForPhone<T>(runtime: EngineRuntime | null, body: Record<strin
     }
     gone = 0;
     if (!object(reply)) return null;
-    if (reply.state === 'answered') return parse(reply);
+    if (reply.state === 'answered') return signal.aborted ? null : reply;
     if (reply.state !== 'open') return null;
   }
   return null;
 }
 
-export function waitForDecision(runtime: EngineRuntime | null, provider: string, sessionKey: string, approval: Approval, signal: AbortSignal): Promise<Decision | null> {
-  return waitForPhone(runtime, { provider, sessionKey, approval }, reply => {
-    if (reply.decision === 'allow') return { decision: 'allow' };
-    if (reply.decision === 'deny' && (reply.note === undefined || typeof reply.note === 'string')) {
-      return reply.note === undefined ? { decision: 'deny' } : { decision: 'deny', note: reply.note };
-    }
-    return null;
-  }, signal);
+export async function waitForDecision(runtime: EngineRuntime | null, provider: string, sessionKey: string, approval: Approval, signal: AbortSignal): Promise<Decision | null> {
+  const reply = await waitForAnswer(runtime, provider, sessionKey, { approval }, signal);
+  if (reply?.decision === 'allow') return { decision: 'allow' };
+  if (reply?.decision === 'deny' && (reply.note === undefined || typeof reply.note === 'string')) {
+    return reply.note === undefined ? { decision: 'deny' } : { decision: 'deny', note: reply.note };
+  }
+  return null;
 }
 
-export function waitForAnswers(runtime: EngineRuntime | null, provider: string, sessionKey: string, questions: PhoneQuestionItem[], signal: AbortSignal): Promise<QuestionAnswers | null> {
-  return waitForPhone(runtime, { provider, sessionKey, question: { questions } }, reply => {
-    if (!object(reply.answers)) return null;
-    const out: QuestionAnswers = Object.create(null);
-    for (const [key, value] of Object.entries(reply.answers)) {
-      if (typeof value !== 'string') return null;
-      out[key] = value;
-    }
-    return out;
-  }, signal);
+export async function waitForQuestion(runtime: EngineRuntime | null, provider: string, sessionKey: string, questions: Question[], signal: AbortSignal) {
+  const reply = await waitForAnswer(runtime, provider, sessionKey, { question: { questions } }, signal);
+  return answerItems.safeParse(reply?.answerItems).data ?? null;
+}
+
+// The legacy text-to-answer map (question text -> labels and Other joined with `, `), for OpenCode forms.
+export async function waitForAnswers(runtime: EngineRuntime | null, provider: string, sessionKey: string, questions: PhoneQuestionItem[], signal: AbortSignal): Promise<QuestionAnswers | null> {
+  const reply = await waitForAnswer(runtime, provider, sessionKey, { question: { questions } }, signal);
+  if (!object(reply?.answers)) return null;
+  const out: QuestionAnswers = Object.create(null);
+  for (const [key, value] of Object.entries(reply.answers)) {
+    if (typeof value !== 'string') return null;
+    out[key] = value;
+  }
+  return out;
 }

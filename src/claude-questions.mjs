@@ -1,6 +1,6 @@
 import { randomBytes as cryptoRandomBytes } from 'node:crypto';
 
-// The open questions and approvals that an agent client (today the Claude Code hook `asb agent claude-wait`) holds for the phone.
+// The open questions and approvals that an agent client holds for the phone.
 // One store for every app: a record is for one `(provider, sessionKey)`. Memory only.
 export const MAX_WAIT_MS = 25_000;
 export const CODEX_FIRST_MS = 28_000;
@@ -28,6 +28,7 @@ export function checkedQuestions(questions) {
   for (const item of questions) {
     if (!object(item) || !text(item.question, 1, 2_000, true) || (item.header !== undefined && !text(item.header, 0, 100))
       || (item.multiSelect !== undefined && typeof item.multiSelect !== 'boolean')
+      || (item.allowOther !== undefined && typeof item.allowOther !== 'boolean')
       || !Array.isArray(item.options) || item.options.length < 1 || item.options.length > 8) return null;
     const options = [];
     for (const option of item.options) {
@@ -35,7 +36,8 @@ export function checkedQuestions(questions) {
         || options.some((other) => other.label === option.label)) return null;
       options.push({ label: option.label, ...(option.description !== undefined ? { description: option.description } : {}) });
     }
-    copy.push({ question: item.question, ...(item.header !== undefined ? { header: item.header } : {}), options, multiSelect: item.multiSelect === true });
+    copy.push({ question: item.question, ...(item.header !== undefined ? { header: item.header } : {}), options, multiSelect: item.multiSelect === true,
+      ...(item.allowOther !== undefined ? { allowOther: item.allowOther } : {}) });
   }
   return copy;
 }
@@ -64,23 +66,25 @@ export function checkedDecision(approval, value) {
   return value.decision === 'deny' && approval.note === true && text(value.note, 1, 500, true) ? { decision: 'deny', note: value.note } : null;
 }
 
-// The Claude `answers` object (question text to the labels, then the typed text, joined with `, `) for the phone's answer items, one per
-// stored question in order, or null when an item does not fit its question.
+// The checked items in question order, and the legacy text-to-answer map for Claude. The map joins labels and Other with `, `.
 export function answersFor(questions, items) {
   if (!Array.isArray(items) || items.length !== questions.length) return null;
   // No prototype: a question text such as `__proto__` stays an own key.
   const answers = Object.create(null);
+  const answerItems = [];
   for (const [index, question] of questions.entries()) {
     const item = items[index];
     if (!object(item) || !Object.keys(item).every((key) => ['selected', 'other'].includes(key)) || !Array.isArray(item.selected)
       || new Set(item.selected).size !== item.selected.length
       || !item.selected.every((label) => question.options.some((option) => option.label === label))
-      || (item.other !== undefined && !text(item.other, 1, 2_000, true))) return null;
+      || (item.other !== undefined && (question.allowOther === false || !text(item.other, 1, 2_000, true)))) return null;
     const count = item.selected.length + (item.other !== undefined ? 1 : 0);
     if (question.multiSelect ? count < 1 : count !== 1) return null;
-    answers[question.question] = [...item.selected, ...(item.other !== undefined ? [item.other] : [])].join(', ');
+    const other = item.other === undefined ? [] : [item.other];
+    answers[question.question] = [...item.selected, ...other].join(', ');
+    answerItems.push({ selected: [...item.selected], ...(item.other === undefined ? {} : { other: item.other }) });
   }
-  return answers;
+  return { answers, answerItems };
 }
 
 export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRandomBytes, socketGraceMs = SOCKET_GRACE_MS } = {}) {
@@ -102,9 +106,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
     waiters.delete(record.requestId);
     changed(record);
   };
-  // A question answer is the Claude `answers` object; an approval answer is `{ decision, note? }`.
-  const replyOf = (record) => record.state !== 'answered' ? { state: record.state }
-    : record.kind === 'question' ? { state: 'answered', answers: record.answer } : { state: 'answered', ...record.answer };
+  const replyOf = (record) => record.state !== 'answered' ? { state: record.state } : { state: 'answered', ...record.answer };
   const prune = () => {
     for (const [id, record] of records) if (record.state !== 'open' && now() - record.endedAtMs >= KEEP_ENDED_MS) records.delete(id);
   };
@@ -134,7 +136,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
       const record = { requestId, provider, sessionKey, kind, ...(kind === 'question' ? { questions: payload } : { approval: payload }),
         createdAtMs: atMs, lastWaitAtMs: atMs, seenPending: false, state: 'open' };
       records.set(requestId, record);
-      if (provider === 'codex') {
+      if (provider === 'codex' && kind === 'approval') {
         record.deadlineAtMs = atMs + CODEX_FIRST_MS;
         record.deadlineTimer = setTimeout(() => end(record, 'closed'), CODEX_FIRST_MS);
         record.deadlineTimer.unref?.();
@@ -174,7 +176,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
         if (signal?.aborted) aborted();
       });
     },
-    // `value`: the Claude answers of a question, or the checked decision of an approval.
+    // `value`: the checked question answer or approval decision.
     answer(requestId, value) {
       prune();
       const record = records.get(requestId);

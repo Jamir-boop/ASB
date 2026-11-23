@@ -43,7 +43,7 @@ async function runReceiver(event: Event) {
   const close = async () => {
     if (closing) return;
     closing = true;
-    try { await bridge.close(); unwatch?.(); }
+    try { unwatch?.(); await bridge.close(); }
     finally { process.exit(0); }
   };
   process.once('SIGTERM', () => { void close(); });
