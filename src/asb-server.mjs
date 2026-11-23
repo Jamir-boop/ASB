@@ -117,7 +117,8 @@ export function createAsbServer({
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now,
   // The open phone questions and approvals (src/claude-questions.mjs); the answer switch (questions), the approve switch (approvals),
   // and the paired phones decide if a client waits.
-  claudeQuestions = null, answerEnabled = () => false, approveEnabled = () => false, phonePaired = async () => false, claudeHookStatus = null,
+  claudeQuestions = null, answerEnabled = () => false, approveEnabled = () => false, phonePaired = async () => false,
+  phoneSeenWithin = async () => false, claudeHookStatus = null,
   claudeWaitMs = MAX_WAIT_MS, claudeQuestionTickMs = 5_000, claudeQuestionReloadMs = 30_000, ...snapshotOptions
 } = {}) {
   // The top-bar reply, and its short tag in each `dashboard` event: the tag changes exactly when the reply would change.
@@ -531,7 +532,9 @@ export function createAsbServer({
         return;
       }
       try {
-        if (!(wanted.approval === undefined ? answerEnabled() : approveEnabled()) || !await phonePaired()) { sendJson(response, 200, { wait: false }); return; }
+        const ready = wanted.provider === 'codex' ? approveEnabled() && await phoneSeenWithin(60_000)
+          : (wanted.approval === undefined ? answerEnabled() : approveEnabled()) && await phonePaired();
+        if (!ready) { sendJson(response, 200, { wait: false }); return; }
         const { requestId } = claudeQuestions.open(wanted);
         startQuestionTimer();
         sendJson(response, 200, { wait: true, requestId });
@@ -975,7 +978,8 @@ export function createAsbServer({
     await serveStatic(request, response, publicDir);
   });
   snapshot.attach(server);
-  server.once('close', () => { clearInterval(questionTimer); questionTimer = null; });
+  const stopCodexChanges = claudeQuestions?.onCodexChange(() => invalidateDashboard('asb-agent-wait', { hard: false }));
+  server.once('close', () => { clearInterval(questionTimer); questionTimer = null; stopCodexChanges?.(); });
   server.boardOpen = () => { expireUiClients(); return uiClients.size > 0; };
   // The newest board plays the engine's sound (the same client choice as show-window).
   server.playBoardSound = (file) => {

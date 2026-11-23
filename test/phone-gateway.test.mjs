@@ -961,6 +961,7 @@ gatewayTest('last-seen state saves at most once per ten minutes and flushes on s
   await request('/phone/v1/hello', { token: paired.token });
   assert.equal(await storedSeen(), 1_000_000);
   assert.equal((await gateway.status()).devices[0].lastSeenAtMs, 1_599_999);
+  assert.equal((await gateway.devices())[0].lastSeenAtMs, 1_599_999);
   advance(1);
   await request('/phone/v1/hello', { token: paired.token });
   assert.equal(await storedSeen(), 1_600_000);
@@ -1454,7 +1455,7 @@ gatewayTest('a group phone token works on the phone routes, and pairing and revo
   const after = (await pair('After')).json;
   assert.equal((await request('/phone/v1/hello', { host: '127.0.0.2', token: after.token })).status, 200);
   assert.deepEqual((await group.status()).phones.map((item) => item.name), ['Before', 'Shared', 'After']);
-  assert.deepEqual((await gateway.devices()).map((item) => Object.keys(item).sort()), Array(2).fill(['createdAtMs', 'id', 'name', 'tokenSha256']));
+  assert.deepEqual((await gateway.devices()).map((item) => Object.keys(item).sort()), Array(2).fill(['createdAtMs', 'id', 'lastSeenAtMs', 'name', 'tokenSha256']));
   await gateway.revokeDevice(before.deviceId);
   assert.deepEqual((await group.status()).phones.map((item) => item.name), ['Shared', 'After']);
   assert.equal((await request('/phone/v1/hello', { host: '127.0.0.2', token: before.token })).status, 401);

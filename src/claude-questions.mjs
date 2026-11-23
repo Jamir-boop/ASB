@@ -3,6 +3,7 @@ import { randomBytes as cryptoRandomBytes } from 'node:crypto';
 // The open questions and approvals that an agent client (today the Claude Code hook `asb agent claude-wait`) holds for the phone.
 // One store for every app: a record is for one `(provider, sessionKey)`. Memory only.
 export const MAX_WAIT_MS = 25_000;
+export const CODEX_FIRST_MS = 28_000;
 export const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity'];
 const MAX_OPEN = 32;
 const UNSEEN_GRACE_MS = 30_000;
@@ -85,15 +86,21 @@ export function answersFor(questions, items) {
 export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRandomBytes, socketGraceMs = SOCKET_GRACE_MS } = {}) {
   const records = new Map();
   const waiters = new Map();
+  const codexListeners = new Set();
+  const changed = (record) => {
+    if (record.provider === 'codex') for (const notify of codexListeners) notify();
+  };
 
   const end = (record, state, answer) => {
     record.state = state;
     if (answer) record.answer = answer;
     record.endedAtMs = now();
     clearTimeout(record.socketTimer);
+    clearTimeout(record.deadlineTimer);
     const reply = replyOf(record);
     for (const resolve of waiters.get(record.requestId) || []) resolve(reply);
     waiters.delete(record.requestId);
+    changed(record);
   };
   // A question answer is the Claude `answers` object; an approval answer is `{ decision, note? }`.
   const replyOf = (record) => record.state !== 'answered' ? { state: record.state }
@@ -101,9 +108,17 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
   const prune = () => {
     for (const [id, record] of records) if (record.state !== 'open' && now() - record.endedAtMs >= KEEP_ENDED_MS) records.delete(id);
   };
-  const openList = () => [...records.values()].filter((record) => record.state === 'open');
+  const isOpen = (record) => {
+    if (record?.state === 'open' && record.deadlineAtMs !== undefined && now() >= record.deadlineAtMs) end(record, 'closed');
+    return record?.state === 'open';
+  };
+  const openList = () => [...records.values()].filter(isOpen);
 
   return {
+    onCodexChange(listener) {
+      codexListeners.add(listener);
+      return () => codexListeners.delete(listener);
+    },
     // `{ provider, sessionKey, questions }` or `{ provider, sessionKey, approval }`.
     open({ provider, sessionKey, questions, approval }) {
       prune();
@@ -116,8 +131,15 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
       let requestId;
       do requestId = randomBytes(16).toString('hex'); while (records.has(requestId));
       const atMs = now();
-      records.set(requestId, { requestId, provider, sessionKey, kind, ...(kind === 'question' ? { questions: payload } : { approval: payload }),
-        createdAtMs: atMs, lastWaitAtMs: atMs, seenPending: false, state: 'open' });
+      const record = { requestId, provider, sessionKey, kind, ...(kind === 'question' ? { questions: payload } : { approval: payload }),
+        createdAtMs: atMs, lastWaitAtMs: atMs, seenPending: false, state: 'open' };
+      records.set(requestId, record);
+      if (provider === 'codex') {
+        record.deadlineAtMs = atMs + CODEX_FIRST_MS;
+        record.deadlineTimer = setTimeout(() => end(record, 'closed'), CODEX_FIRST_MS);
+        record.deadlineTimer.unref?.();
+      }
+      changed(record);
       return { requestId };
     },
     // `signal` ends a held wait early (the client closed its socket), so no timer or resolver stays. With no next poll in
@@ -128,7 +150,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
       if (!record) return null;
       record.lastWaitAtMs = now();
       clearTimeout(record.socketTimer);
-      if (record.state !== 'open') return Promise.resolve(replyOf(record));
+      if (!isOpen(record)) return Promise.resolve(replyOf(record));
       return new Promise((resolve) => {
         const list = waiters.get(requestId) || new Set();
         waiters.set(requestId, list);
@@ -156,7 +178,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
     answer(requestId, value) {
       prune();
       const record = records.get(requestId);
-      if (record?.state !== 'open') return false;
+      if (!isOpen(record)) return false;
       end(record, 'answered', value);
       return true;
     },

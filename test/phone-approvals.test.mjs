@@ -9,12 +9,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createClaudeQuestions, PROVIDERS } from '../src/claude-questions.mjs';
+import { CODEX_FIRST_MS, createClaudeQuestions, PROVIDERS } from '../src/claude-questions.mjs';
+import { applyBridgeWaits } from '../src/codex-data.mjs';
+import { BIT_INPUT } from '../src/asb-sounds.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { CLI_SESSION_IDS } from '../src/session-targets.mjs';
 import { processStart } from '../src/claude-registry.mjs';
-import { createSwitchboardServer, loadSwitchboardDashboard } from '../src/switchboard.mjs';
+import { ACTION_AT, createSwitchboardServer, loadSwitchboardDashboard } from '../src/switchboard.mjs';
 import { claudeApproval } from '../scripts/asb-agent.mjs';
 
 // Made-up data only.
@@ -138,7 +140,7 @@ test('an approval answer gives the decision to its wait, and reconcile closes it
   const seen = store.open({ provider: 'claude', sessionKey: 'seen', approval: approval() }).requestId;
   const unseen = store.open({ provider: 'claude', sessionKey: 'unseen', approval: approval() }).requestId;
   const question = store.open({ provider: 'claude', sessionKey: 'question', questions: [{ question: 'Q?', options: [{ label: 'A' }] }] }).requestId;
-  const codex = store.open({ provider: 'codex', sessionKey: 'seen', approval: approval() }).requestId;
+  const opencode = store.open({ provider: 'opencode', sessionKey: 'seen', approval: approval() }).requestId;
   store.reconcile('claude', 'approval', new Set(['seen']));
   store.reconcile('claude', 'question', new Set(['question']));
   assert.equal(store.forSession('claude', 'seen').seenPending, true);
@@ -152,11 +154,11 @@ test('an approval answer gives the decision to its wait, and reconcile closes it
   assert.equal(store.forSession('claude', 'unseen'), null);
   assert.equal(store.forSession('claude', 'question').requestId, question);
   // A provider with no reconcile set keeps its record (only the other rules close it).
-  assert.equal(store.forSession('codex', 'seen').requestId, codex);
+  assert.equal(store.forSession('opencode', 'seen').requestId, opencode);
   // Sweep closes an approval with no wait for 60 s.
   now.advance(60_001);
   store.sweep();
-  assert.equal(store.forSession('codex', 'seen'), null);
+  assert.equal(store.forSession('opencode', 'seen'), null);
 });
 
 test('the socket rule closes a record whose client left and keeps one that polls again in time', async () => {
@@ -182,9 +184,45 @@ test('the socket rule closes a record whose client left and keeps one that polls
   }
 });
 
-// A made-up engine: one Claude Code CLI session (`SESSION`) plus `extraRows` from other apps, and a registry record of this process
+test('Codex expires in 28 s on answer, poll, and list reads without waiting for a sweep', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const now = clock();
+  const store = createClaudeQuestions({ now });
+  const open = (provider = 'codex') => store.open({ provider, sessionKey: 's', approval: approval() }).requestId;
+  const decision = { decision: 'allow' };
+  assert.equal(CODEX_FIRST_MS, 28_000);
+  let id = open();
+  assert.equal(store.forSession('codex', 's').deadlineAtMs, now() + CODEX_FIRST_MS);
+  now.advance(27_900);
+  assert.equal(store.answer(id, decision), true);
+  assert.deepEqual(await store.wait(id, 0), { state: 'answered', ...decision });
+  id = open();
+  now.advance(28_100);
+  assert.equal(store.answer(id, decision), false); // No list read or sweep before the late answer.
+  assert.deepEqual(await store.wait(id, 0), { state: 'closed' });
+  id = open();
+  now.advance(28_100);
+  assert.deepEqual(await store.wait(id, 0), { state: 'closed' });
+  id = open();
+  now.advance(28_100);
+  assert.deepEqual(store.openRecords(), []);
+  assert.deepEqual(await store.wait(id, 0), { state: 'closed' });
+  id = open();
+  now.advance(27_900);
+  t.mock.timers.tick(27_900);
+  const held = store.wait(id, 25_000);
+  now.advance(101);
+  t.mock.timers.tick(101);
+  assert.deepEqual(await held, { state: 'closed' });
+  const other = open('opencode');
+  now.advance(28_100);
+  assert.equal(store.forSession('opencode', 's').deadlineAtMs, undefined);
+  assert.equal(store.answer(other, decision), true);
+});
+
+// A made-up engine: one Claude Code CLI session (`SESSION`) plus threads from other apps, and a registry record of this process
 // when `registry` is given.
-async function engine(t, { store = createClaudeQuestions(), extraRows = [], registry, onLoad, ...serverOptions } = {}) {
+async function engine(t, { store = createClaudeQuestions(), extraRows = [], codexThreads = [], registry, onLoad, ...serverOptions } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), 'asb-approvals-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const nowMs = Date.now();
@@ -200,12 +238,13 @@ async function engine(t, { store = createClaudeQuestions(), extraRows = [], regi
   const writeRegistry = (fields) => writeFile(path.join(sessions, `${process.pid}.json`), JSON.stringify({ pid: process.pid, procStart, sessionId: SESSION,
     name: 'synthetic', cwd: '/work/synthetic', entrypoint: 'cli', kind: 'interactive', startedAt: nowMs - 120_000, ...fields }), { mode: 0o600 });
   if (registry) await writeRegistry(registry);
+  if (codexThreads.length) await mkdir(path.join(home, '.codex'));
   const sources = new AppSourceRegistry({ homeDir: home, env: {}, platform: 'linux', discoverPersonal: false });
   const server = createSwitchboardServer({ sourceToken: TOKEN, pendingStatePath: false, palettePath: '', dashboardWatchPaths: [], sourceRegistry: sources,
     claudeQuestions: store, answerEnabled: () => true, approveEnabled: () => true, phonePaired: async () => true,
     loadDashboard: async (options) => {
       onLoad?.();
-      const board = await loadSwitchboardDashboard({ ...options, loadCodex: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) });
+      const board = await loadSwitchboardDashboard({ ...options, loadCodex: async () => ({ threads: codexThreads }), loadOpenCode: async () => ({ threads: [] }) });
       board.threads.push(...extraRows.map((row) => ({ ...board.threads[0], ...row })));
       return board;
     },
@@ -222,10 +261,136 @@ async function engine(t, { store = createClaudeQuestions(), extraRows = [], regi
 }
 
 const answerRoute = (row) => `/api/threads/${encodeURIComponent(row)}/answer`;
+const codexTool = (sessionKey) => ({ provider: 'codex', sessionKey, approval: approval() });
+const openWait = async (e, body) => (await e.post('/api/agent/wait', body)).json();
+
+test('Codex requires approval and a phone seen in the last 60 s; other providers still require pairing', async (t) => {
+  const now = clock();
+  let approve = false;
+  let devices = [{ lastSeenAtMs: now() }];
+  const e = await engine(t, { now, approveEnabled: () => approve, phoneGateway: { devices: async () => devices },
+    phonePaired: async () => devices.length > 0 });
+  for (const [on, seenAgo, codex, other] of [[false, 0, false, false], [true, null, false, false],
+    [true, 61_000, false, true], [true, 59_000, true, true], [true, 60_000, true, true]]) {
+    approve = on;
+    devices = seenAgo === null ? [] : [{ lastSeenAtMs: now() - seenAgo }];
+    for (const provider of PROVIDERS) {
+      const result = await openWait(e, { provider, sessionKey: SESSION, approval: approval() });
+      if (provider === 'codex' ? codex : other) assert.match(result.requestId, /^[a-f0-9]{32}$/);
+      else assert.deepEqual(result, { wait: false }, `${provider}, ${on}, ${seenAgo}`);
+    }
+    e.store.closeAll();
+  }
+});
+
+test('the first load closes Codex waits with no local row and schedules at most one follow-up', async (t) => {
+  let loads = 0;
+  const e = await engine(t, { serviceMode: true, dashboardWatchDebounceMs: 100, onLoad: () => { loads += 1; },
+    phoneSeenWithin: async () => true,
+    codexThreads: [{ id: 'local-row', externalId: 'local', provider: 'codex', lifecycleRunning: false }],
+    extraRows: [{ id: 'remote-row', externalId: 'elsewhere', provider: 'codex', remote: true, state: 'idle' }] });
+  await e.server.dashboardForRequest();
+  const before = loads;
+  const local = await openWait(e, codexTool('local'));
+  // The first command of a new session can come with no card if its thread is not yet in the reader.
+  const missing = await openWait(e, codexTool('not-listed-yet'));
+  const remote = await openWait(e, codexTool('elsewhere'));
+  const poll = async ({ requestId }) => (await e.post(`/api/agent/wait/${requestId}`)).json();
+  assert.deepEqual(await Promise.all([poll(missing), poll(remote)]), [{ state: 'closed' }, { state: 'closed' }]);
+  assert.equal(loads, before + 1);
+  assert.equal(e.store.forSession('codex', 'local')?.requestId, local.requestId);
+  await delay(500);
+  assert.ok(loads <= before + 2, `Expected at most two loads, got ${loads - before}.`);
+});
+
+test('the Codex phone hold gives the same row and input sound as a bridge approval wait', async (t) => {
+  const now = clock(Date.now());
+  const thread = { id: 'codex-row', externalId: 'codex-key', provider: 'codex-cli', source: 'cli', lifecycleRunning: true,
+    updatedAtMs: now() - 10_000, latestLifecycleAtMs: now() - 10_000, agentStartedAtMs: now() - 10_000 };
+  const bridgeThreads = [thread];
+  const phoneSounds = [], bridgeSounds = [];
+  const store = createClaudeQuestions({ now });
+  const phone = await engine(t, { store, phoneSeenWithin: async () => true, codexThreads: [thread], playSound: (kind) => phoneSounds.push(kind) });
+  const bridge = await engine(t, { codexThreads: bridgeThreads, playSound: (kind) => bridgeSounds.push(kind) });
+  const row = async (e) => (await e.server.dashboardForRequest({ force: true })).threads.find(({ id }) => id === thread.id);
+  const baseline = await row(phone);
+  assert.equal(baseline.state, 'working');
+  assert.deepEqual(await row(bridge), baseline);
+  const { requestId } = await openWait(phone, codexTool(thread.externalId));
+  bridgeThreads[0] = applyBridgeWaits(thread, { approvals: 1, approvalAtMs: now() });
+  const overlaid = await row(phone);
+  const expected = await row(bridge);
+  assert.deepEqual(overlaid, expected);
+  assert.deepEqual([overlaid.state, overlaid.pending, overlaid.actionRequired, overlaid.actionAttention], ['waiting', true, true, true]);
+  assert.equal(overlaid[ACTION_AT], expected[ACTION_AT]);
+  assert.equal(overlaid[ACTION_AT], now());
+  assert.deepEqual(phoneSounds, [BIT_INPUT]);
+  assert.deepEqual(phoneSounds, bridgeSounds);
+  assert.equal((await phone.post(answerRoute(thread.id), { requestId, decision: 'allow' })).status, 200);
+  bridgeThreads[0] = thread;
+  const ended = await row(phone);
+  assert.deepEqual(ended, await row(bridge));
+  assert.deepEqual(ended, baseline);
+  assert.equal(ended[ACTION_AT], baseline[ACTION_AT]);
+  assert.deepEqual(phoneSounds, [BIT_INPUT]);
+});
+
+test('Codex alone sends one soft invalidation per open, answer, and close', async (t) => {
+  const now = clock();
+  const store = createClaudeQuestions({ now, socketGraceMs: 20 });
+  const e = await engine(t, { store, phoneSeenWithin: async () => true,
+    codexThreads: [{ id: 'codex-key', provider: 'codex', lifecycleRunning: false }] });
+  let text = '';
+  const events = http.get(`${e.base}/api/events`, (response) => response.on('data', (chunk) => { text += chunk; }));
+  events.on('error', () => {});
+  t.after(() => events.destroy());
+  const waitFor = async (predicate) => {
+    const until = Date.now() + 3000;
+    while (!predicate() && Date.now() < until) await delay(5);
+    assert.ok(predicate(), text);
+  };
+  const changes = () => (text.match(/"reason":"asb-agent-wait"/g) || []).length;
+  const open = () => openWait(e, codexTool('codex-key'));
+  await waitFor(() => text.includes('event: connected'));
+  let expected = 1;
+  let { requestId } = await open();
+  await waitFor(() => changes() === expected);
+  assert.equal((await e.post(answerRoute('codex-key'), { requestId, decision: 'allow' })).status, 200);
+  expected += 1;
+  await waitFor(() => changes() === expected);
+  for (const close of [
+    (id) => { store.close(id); store.close(id); },
+    (id) => { now.advance(28_100); return store.wait(id, 0); },
+    async (id) => {
+      const left = new AbortController();
+      const held = store.wait(id, 25_000, left.signal);
+      left.abort();
+      await held;
+    },
+  ]) {
+    ({ requestId } = await open());
+    expected += 1;
+    await waitFor(() => changes() === expected);
+    await close(requestId);
+    expected += 1;
+    await waitFor(() => changes() === expected);
+    assert.deepEqual(await store.wait(requestId, 0), { state: 'closed' });
+  }
+  for (const provider of ['claude', 'opencode', 'antigravity']) {
+    const other = await openWait(e, { ...codexTool('unlisted'), provider });
+    assert.equal(other.wait, true);
+    store.close(other.requestId);
+  }
+  const barrier = () => text.includes('"reason":"test-barrier"');
+  e.server.invalidateDashboard('test-barrier', { hard: false, dirty: false });
+  await waitFor(barrier);
+  assert.equal(changes(), expected);
+});
 
 test('the contract: a record of each provider and kind gives the same row field and takes the same answer body', async (t) => {
   const others = { codex: 'codex', opencode: 'opencode', antigravity: 'antigravity' };
-  const e = await engine(t, { extraRows: Object.entries(others).map(([provider]) => ({ id: `row-${provider}`, provider, externalId: `key-${provider}` })) });
+  const e = await engine(t, { phoneSeenWithin: async () => true,
+    extraRows: Object.entries(others).map(([provider]) => ({ id: `row-${provider}`, provider, externalId: `key-${provider}` })) });
   // The made-up rows of other apps have no CLI session IDs: a record is for the row's own ID in that app.
   const rowOf = { claude: e.row, ...Object.fromEntries(Object.keys(others).map((provider) => [provider, `row-${provider}`])) };
   const keyOf = { claude: SESSION, ...Object.fromEntries(Object.keys(others).map((provider) => [provider, `key-${provider}`])) };

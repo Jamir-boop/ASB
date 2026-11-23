@@ -729,7 +729,7 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     },
     devices: () => serialize(async () => {
       await load();
-      return settings.devices.map(({ id, name, tokenSha256, createdAtMs }) => ({ id, name, tokenSha256, createdAtMs }));
+      return settings.devices.map(({ id, name, tokenSha256, createdAtMs, lastSeenAtMs }) => ({ id, name, tokenSha256, createdAtMs, lastSeenAtMs }));
     }),
     credentials: () => serialize(async () => ({ ...(await certificate()), fingerprint })),
   };

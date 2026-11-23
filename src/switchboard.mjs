@@ -2,7 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { promises as fs, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadCodexDashboard, invalidateCodexData, discoverCodexStateDatabase, querySqliteJson, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
+import { loadCodexDashboard, applyBridgeWaits, invalidateCodexData, discoverCodexStateDatabase, querySqliteJson, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, PERMISSION_WAIT, retainClaudeDataSources } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
@@ -503,6 +503,7 @@ export async function loadSwitchboardDashboard({
   workingStarts,
   rowCache = null,
   loaderCache = null,
+  codexWaits = null,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
@@ -567,10 +568,15 @@ export async function loadSwitchboardDashboard({
         : status === 'error' ? `Cannot read ${source.label} sessions. Check the local session store.`
         : status === 'warning' ? provider?.message || `Some ${source.label} session files cannot be read.` : '' };
   });
+  // Apply the current waits after the cached file reads, without changing any cached thread.
+  const waits = codexWaits?.();
   const threads = results.flatMap((result, index) => {
     if (result.status !== 'fulfilled' || !result.value) return [];
     const source = inputs[index];
     return (result.value.threads || []).map((thread) => {
+      const wait = waits?.size && source.provider === 'codex' && !thread.remote && isSwitchboardRoot(thread)
+        ? waits.get(thread.externalId || thread.id) : null;
+      if (wait) thread = applyBridgeWaits(thread, { approvals: 1, approvalAtMs: wait.createdAtMs });
       if (!sources) return thread;
       const scope = (id) => id && !source.builtin ? `${source.id}:${id}` : id;
       return { ...thread, id: scope(thread.id), parentThreadId: scope(thread.parentThreadId),
@@ -1147,10 +1153,16 @@ export function createSwitchboardServer(options = {}) {
   const activityMessages = createActivityMessages({ readSources: readMessageSources, claudeMessages,
     dashboard: () => server.dashboardForRequest(), machine: activityMachine, group, activityUsage, busy, changes });
   const claudeQuestions = options.claudeQuestions || createClaudeQuestions();
+  const openCodex = () => claudeQuestions.openRecords().filter((record) => record.provider === 'codex');
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     claudeQuestions,
     phonePaired: async () => ((await options.phoneGateway?.devices?.()) || []).length > 0,
+    phoneSeenWithin: async (ms) => {
+      const devices = await options.phoneGateway?.devices?.();
+      const since = (options.now ?? Date.now)() - ms;
+      return devices?.some(({ lastSeenAtMs }) => lastSeenAtMs > 0 && lastSeenAtMs >= since) ?? false;
+    },
     appVersion: APP_VERSION,
     rootDir: ROOT_DIR,
     sourcesPath: registry.configPath,
@@ -1179,7 +1191,8 @@ export function createSwitchboardServer(options = {}) {
       const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
       // Only the engine passes reader positions: the first scan waits for their load, and each scan can save them.
       await options.readerPositions?.ready();
-      const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts, rowCache, loaderCache });
+      const loaded = await load({ ...(sources ? { sources } : {}), machine, sourceScans, workingStarts, rowCache, loaderCache,
+        codexWaits: () => new Map(openCodex().map((record) => [record.sessionKey, record])) });
       const nextRows = new Map((loaded.threads || []).filter((row) => !row.remote)
         .map(({ id, state, updatedAtMs, archived }) => [id, [state, updatedAtMs, archived]]));
       if (nextRows.size !== localRows.size || [...nextRows].some(([id, values]) =>
@@ -1210,6 +1223,11 @@ export function createSwitchboardServer(options = {}) {
       // The pending questions close the phone questions that the PC answered; each row reads its open question live from the store.
       claudeQuestions.reconcile('claude', 'question', new Set(dashboard.threads.flatMap((row) => row[QUESTION_SESSIONS] || [])));
       claudeQuestions.reconcile('claude', 'approval', new Set(dashboard.threads.flatMap((row) => row[APPROVAL_SESSIONS] || [])));
+      const codexRecords = openCodex();
+      if (codexRecords.length) {
+        const localCodex = new Set(dashboard.threads.filter((row) => !row.remote && row.provider === 'codex').map((row) => row.externalId));
+        for (const { requestId, sessionKey } of codexRecords) if (!localCodex.has(sessionKey)) claudeQuestions.close(requestId);
+      }
       for (const row of dashboard.threads) {
         if (row.remote) continue;
         // A Claude record is for a CLI session ID; another app's record is for the row's own ID in that app.
