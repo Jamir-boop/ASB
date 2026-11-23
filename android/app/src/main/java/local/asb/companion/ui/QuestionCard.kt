@@ -44,7 +44,7 @@ data class QuestionCard(
     }
 
     fun type(question: PhoneQuestion, index: Int, text: String): QuestionCard {
-        if (locked) return this
+        if (locked || !question.questions[index].allowOther) return this
         var value = text.take(OTHER_LIMIT)
         // A cut between the two halves of a surrogate pair would send half a character.
         if (value.length < text.length && value.isNotEmpty() && Character.isHighSurrogate(value.last())) value = value.dropLast(1)
@@ -58,7 +58,7 @@ data class QuestionCard(
         if (question.requestId != requestId || question.questions.size != selected.size) return null
         return question.questions.mapIndexed { index, item ->
             val labels = selected[index]
-            val text = cleanOther(other[index]).takeIf { it.isNotBlank() }
+            val text = if (item.allowOther) cleanOther(other[index]).takeIf { it.isNotBlank() } else null
             val count = labels.size + if (text != null) 1 else 0
             if (if (item.multiSelect) count < 1 else count != 1) return null
             PhoneAnswer(labels, text)

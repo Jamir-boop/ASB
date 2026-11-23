@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Android: the question card hides **Other** when the question does not allow it.
 - OpenCode 2: paired phones can now answer OpenCode choice forms (1 to 4 single-choice or multi-select fields, 1 to 8 options each) on Linux with ASB Bridge and the phone answer switches on. Forms with a free-text field or other field kinds stay on the PC. Checked end to end on 2026-11-23 with OpenCode 2.4.0 through the phone answer route (the answer reached the model); not yet tapped on a phone.
 - Codex: paired phones can answer `request_user_input` questions in the app and CLI with ASB Bridge and a session on the shared Codex app-server. The question stays on the PC. The first answer wins. Checked end to end on 2026-11-23 with the Codex CLI 0.171.0 on the shared app-server in Plan mode, through the phone answer route (the answer reached the model); the Codex app was not checked.
 - Antigravity CLI: paired phones can now answer agy `ask_question` prompts on Linux when the agy hook, kitty remote control, and the phone answer switches are on. The form stays on the PC; ASB verifies the form on the kitty screen and types the phone answer into it.

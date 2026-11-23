@@ -306,10 +306,10 @@ When the PC has an open Claude Code question for the row (the PC switches
 the hook from `asb agent claude-hook install`), the inspector shows a question
 card: for each question the header, the text, and the options with their
 descriptions (one choice, or several for a multi-select question), one
-**Other** text field, and one **Send** for the whole card. Send stays off until
-each question has an answer, and while Offline. A tap on the Needs input
-notification of that row opens its inspector. After Send, `Answer sent` or
-`Answered on the PC` shows as a banner and the inspector closes;
+**Other** text field when allowed, and one **Send** for the whole card.
+Send stays off until each question has an answer, and while Offline. A tap on
+the Needs input notification of that row opens its inspector. After Send,
+`Answer sent` or `Answered on the PC` shows as a banner and the inspector closes;
 `Answers are off on the PC.` and `The PC did not take this answer.` stay on the
 card. `Answer sent` means that the hook on the PC has the answer, not that
 Claude took it: a PC answer at the same moment wins. The question and the

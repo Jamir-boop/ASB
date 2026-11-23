@@ -43,6 +43,13 @@ class QuestionCardTest {
         assertNull(row("""{"id":"one"}""").question)
     }
 
+    @Test fun allowOtherIsReadForEachQuestionAndDefaultsToTrue() {
+        val option = """"options":[{"label":"Yes"}]"""
+        val mixed = """{"requestId":"$id","questions":[{"question":"One?",$option,"allowOther":false},""" +
+            """{"question":"Two?",$option},{"question":"Three?",$option,"allowOther":true}]}"""
+        assertEquals(listOf(false, true, true), row("""{"id":"one","question":$mixed}""").question?.questions?.map { it.allowOther })
+    }
+
     @Test fun aMalformedQuestionIsNullAndTheRowStays() {
         val option = """{"label":"Yes"}"""
         fun item(options: String = "[$option]", extra: String = "") = """{"question":"Ask?","options":$options$extra}"""
@@ -59,6 +66,7 @@ class QuestionCardTest {
             """{"requestId":"$id","questions":[{"question":"","options":[$option]}]}""",
             """{"requestId":"$id","questions":[{"question":5,"options":[$option]}]}""",
             """{"requestId":"$id","questions":[${item(extra = ""","multiSelect":"true"""")}]}""",
+            """{"requestId":"$id","questions":[${item(extra = ""","allowOther":"false"""")}]}""",
             """{"requestId":"$id","questions":[${item(extra = ""","header":7""")}]}""",
             """{"requestId":"$id","questions":[${item("""[{"label":"Yes","description":false}]""")}]}""",
         )
@@ -166,6 +174,19 @@ class QuestionCardTest {
         val both = twoLabels.type(question, 1, "and the build")
         assertEquals(PhoneAnswer(listOf("Tests", "Lint"), "and the build"), both.answers(question)?.get(1))
         assertTrue(both.canSend(question, offline = false))
+    }
+
+    @Test fun aQuestionThatDisallowsOtherRequiresAnOptionAndSendsNoOtherText() {
+        val fixed = question.copy(questions = listOf(single.copy(allowOther = false), multi.copy(allowOther = false)))
+        val oneLabel = QuestionCard(fixed).choose(fixed, 0, "newest")
+        assertSame(oneLabel, oneLabel.type(fixed, 0, "Neither"))
+        assertSame(oneLabel, oneLabel.type(fixed, 1, "More checks"))
+        // A draft kept by the card cannot count or go out when Other is unavailable.
+        val draft = oneLabel.type(question, 1, "More checks")
+        assertFalse(draft.canSend(fixed, offline = false))
+        val ready = draft.choose(fixed, 1, "Docs")
+        assertTrue(ready.canSend(fixed, offline = false))
+        assertEquals(listOf(PhoneAnswer(listOf("newest")), PhoneAnswer(listOf("Docs"))), ready.answers(fixed))
     }
 
     @Test fun singleSelectOtherAndOptionClearEachOther() {

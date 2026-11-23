@@ -1,6 +1,7 @@
 package local.asb.companion
 
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import java.net.InetAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -10,6 +11,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -72,6 +74,7 @@ class SessionsViewModelTest {
     private val scheduler = TestCoroutineScheduler()
     private val dispatcher = StandardTestDispatcher(scheduler)
     private val models = ViewModelStore()
+    private val modelJobs = mutableListOf<Job>()
     private val polls = mutableListOf<Job>()
     private val baselines = mutableListOf<Map<String, Mark>>()
     private val palettes = mutableListOf<Palette>()
@@ -93,12 +96,15 @@ class SessionsViewModelTest {
         }
     }
 
-    @After fun stop() {
-        polls.forEach { it.cancel() }
-        models.clear()
-        scheduler.runCurrent()
-        server.shutdown()
-        Dispatchers.resetMain()
+    @After fun stop() = runBlocking {
+        try {
+            polls.forEach { it.cancel() }
+            models.clear()
+            // A canceled request on Dispatchers.IO can still dispatch to Main before its job completes.
+            await { polls.all { it.isCompleted } && modelJobs.all { it.isCompleted } }
+        } finally {
+            try { server.shutdown() } finally { Dispatchers.resetMain() }
+        }
     }
 
     private fun model(
@@ -114,7 +120,10 @@ class SessionsViewModelTest {
     ): SessionsViewModel {
         val api = AsbApi(paths, server.port, fingerprint, "t".repeat(43), engines) { revoked = true }
         return SessionsViewModel(api, "Test PC", initiallyRevoked, saveBaseline, mutex, loadBaseline, initialView, savePalette,
-            networkChanges = networks).also { models.put("sessions", it) }
+            networkChanges = networks).also {
+                models.put("sessions", it)
+                modelJobs += it.viewModelScope.coroutineContext.job
+            }
     }
 
     private fun poll(model: SessionsViewModel): Job = CoroutineScope(dispatcher).launch { model.poll() }
@@ -731,11 +740,13 @@ class SessionsViewModelTest {
             assertEquals(pin.take(16), model.state.value.engine)
             other.takeRequest()
             other.enqueue(MockResponse().setBody("""{"opened":true}"""))
-            other.enqueue(response(dashboard))
+            val refreshed = dashboard.copy(generatedAtMs = 2)
+            other.enqueue(response(refreshed))
             model.action("m:x:one", "open")
-            await { model.state.value.banner != null }
+            await { model.state.value.busyIds.isEmpty() }
             assertEquals("POST", other.takeRequest().method)
             assertEquals("Opened on workLP", model.state.value.banner)
+            assertEquals(refreshed, model.state.value.dashboard)
             assertEquals(0, server.requestCount)
         } finally { other.shutdown() }
     }
