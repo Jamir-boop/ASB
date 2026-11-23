@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Antigravity CLI: paired phones can now answer agy `ask_question` prompts on Linux when the agy hook, kitty remote control, and the phone answer switches are on. The form stays on the PC; ASB verifies the form on the kitty screen and types the phone answer into it.
 - Antigravity CLI: agy rows now have a session reference (`agy:<conversation-uuid>` in full `asb:1/...` references and `<host>/<conversation-uuid>` in short references), so the board Copy menu and `asb agent resolve-session` work for agy sessions.
 - Antigravity CLI: `asb agent agy-hook install` also sets agy's window title command (`title` in `~/.gemini/antigravity-cli/settings.json`) to `asb agent agy-title`, unless you have your own `title` setting. After you name a conversation with `/rename`, the board shows that name as the row title, and the kitty window title shows it too (`agy · <folder>` before a rename). `asb agent agy-hook remove` takes the setting out, and `asb doctor` shows the `agy title` state.
 - Docs: a Claude Code session in bypass mode holds an agy Bridge message for your review, and the Bridge row stays `socket-written`. `"crossSessionInbound": "accept"` in the Claude `settings.json` delivers messages from all your sessions in all modes.

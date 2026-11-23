@@ -411,3 +411,49 @@ test('agyTitle never stores or prints email, quota, or other extra fields', asyn
     assert.equal(out.join('').includes(leak), false, leak);
   }
 });
+
+test('PreToolUse ask_question posts mapped questions for one and two questions, skips other tools, and ignores POST failure', async (t) => {
+  const { homeDir, env, record } = await fixture(t);
+  const posted = [];
+  const callHook = async (event, fields, postQuestion = async (body) => { posted.push(body); }) => {
+    const out = [];
+    const hook = { hookEventName: event, conversationId: ID.toUpperCase(), workspacePaths: [path.join(homeDir, 'ws')], ...fields };
+    const code = await agyHook([event], { stdin: Readable.from([Buffer.from(JSON.stringify(hook))]), write: (text) => out.push(text),
+      env, homeDir, nowMs: 2_000, parentPid: 500, read: agyTree(), postQuestion });
+    return { code, output: out.join('') };
+  };
+  // One question
+  assert.deepEqual(await callHook('PreToolUse', {
+    toolCall: { id: 'c1', name: 'ask_question', args: { questions: [{ question: 'Pick a fruit', options: ['Kiwi', 'Plum'], is_multi_select: false }] } },
+  }), { code: 0, output: '{"decision":"ask"}\n' });
+  assert.deepEqual(posted[0], {
+    provider: 'antigravity',
+    sessionKey: ID,
+    question: { questions: [{ question: 'Pick a fruit', options: [{ label: 'Kiwi' }, { label: 'Plum' }], multiSelect: false }] },
+  });
+  // Two questions with multi-select
+  assert.deepEqual(await callHook('PreToolUse', {
+    toolCall: { id: 'c2', name: 'ask_question', args: { questions: [
+      { question: 'Pick a fruit', options: ['Kiwi', 'Plum'], is_multi_select: false },
+      { question: 'Pick toppings', options: ['Salt', 'Lime'], is_multi_select: true },
+    ] } },
+  }), { code: 0, output: '{"decision":"ask"}\n' });
+  assert.deepEqual(posted[1], {
+    provider: 'antigravity',
+    sessionKey: ID,
+    question: { questions: [
+      { question: 'Pick a fruit', options: [{ label: 'Kiwi' }, { label: 'Plum' }], multiSelect: false },
+      { question: 'Pick toppings', options: [{ label: 'Salt' }, { label: 'Lime' }], multiSelect: true },
+    ] },
+  });
+  // Other tools and PostToolUse do not POST
+  const countBefore = posted.length;
+  await callHook('PreToolUse', { toolCall: { id: 'c3', name: 'run_command', args: { CommandLine: 'ls' } } });
+  await callHook('PostToolUse', { toolCall: { id: 'c1', name: 'ask_question', args: {} } });
+  assert.equal(posted.length, countBefore);
+  // Failing POST still writes the record, replies neutral, and exits 0
+  assert.deepEqual(await callHook('PreToolUse', {
+    toolCall: { id: 'c4', name: 'ask_question', args: { questions: [{ question: 'Color?', options: ['Red', 'Blue'], is_multi_select: false }] } },
+  }, async () => { throw new Error('engine down'); }), { code: 0, output: '{"decision":"ask"}\n' });
+  assert.equal((await record()).state, 'question');
+});

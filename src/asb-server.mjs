@@ -118,7 +118,7 @@ export function createAsbServer({
   // The open phone questions and approvals (src/claude-questions.mjs); the answer switch (questions), the approve switch (approvals),
   // and the paired phones decide if a client waits.
   claudeQuestions = null, answerEnabled = () => false, approveEnabled = () => false, phonePaired = async () => false,
-  phoneSeenWithin = async () => false, claudeHookStatus = null, codexHookStatus = null,
+  phoneSeenWithin = async () => false, claudeHookStatus = null, codexHookStatus = null, answerAgy = null,
   claudeWaitMs = MAX_WAIT_MS, claudeQuestionTickMs = 5_000, claudeQuestionReloadMs = 30_000, ...snapshotOptions
 } = {}) {
   // The top-bar reply, and its short tag in each `dashboard` event: the tag changes exactly when the reply would change.
@@ -129,6 +129,7 @@ export function createAsbServer({
     return { panel: createHash('sha256').update(JSON.stringify(panelReply(dashboard, await panelMachines()))).digest('base64url').slice(0, 16) };
   } : null;
   const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions, dashboardEventFields });
+  const answeringRequests = new Set();
   const expectedSourceToken = Buffer.from(String(sourceToken || ''));
   const sourceTokenAllowed = (request) => {
     const given = Buffer.from(String(request.headers['x-asb-source-token'] || ''));
@@ -951,6 +952,17 @@ export function createAsbServer({
         const { requestId, ...decision } = body;
         const answers = kind === 'question' ? answersFor(open.questions, body.answers) : checkedDecision(open.approval, decision);
         if (!answers) { sendJson(response, 400, { error: 'Invalid answer.' }); return; }
+        if (kind === 'question' && thread.provider === 'antigravity') {
+          if (answeringRequests.has(requestId)) { sendJson(response, 409, { error: 'Cannot answer in agy now. Answer on the PC.' }); return; }
+          answeringRequests.add(requestId);
+          let typed = false;
+          try { typed = answerAgy ? await answerAgy(thread, open.questions, body.answers) : false; }
+          finally { answeringRequests.delete(requestId); }
+          if (typed !== true) {
+            sendJson(response, 409, { error: typed === null ? 'This question is closed.' : 'Cannot answer in agy now. Answer on the PC.' });
+            return;
+          }
+        }
         if (!claudeQuestions.answer(requestId, answers)) { sendJson(response, 409, { error: 'This question is closed.' }); return; }
         sendJson(response, 200, { answered: true });
       } catch { sendJson(response, 500, { error: 'Cannot save the answer.' }); }

@@ -163,7 +163,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
         };
         const aborted = () => {
           settle({ state: 'open' });
-          if (record.state !== 'open' || waiters.has(requestId)) return;
+          if (record.provider === 'antigravity' || record.state !== 'open' || waiters.has(requestId)) return;
           // A next poll clears this timer.
           record.socketTimer = setTimeout(() => { if (record.state === 'open' && !waiters.has(requestId)) end(record, 'closed'); }, socketGraceMs);
           record.socketTimer.unref?.();
@@ -208,7 +208,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
       prune();
     },
     sweep() {
-      for (const record of openList()) if (now() - record.lastWaitAtMs > WAIT_GAP_MS) end(record, 'closed');
+      for (const record of openList()) if (record.provider !== 'antigravity' && now() - record.lastWaitAtMs > WAIT_GAP_MS) end(record, 'closed');
       prune();
     },
   };

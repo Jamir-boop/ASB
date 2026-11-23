@@ -144,6 +144,113 @@ export async function focusAgyInKitty({ dataDir, id, procDir = '/proc', startOf 
   return { opened: true, method: 'antigravity-kitty-focus' };
 }
 
+const defaultKitty = (args) => new Promise((resolve, reject) => execFile('kitty', args, { timeout: 3000, maxBuffer: 512 * 1024 },
+  (error, stdout) => (error ? reject(error) : resolve(stdout))));
+const defaultWait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const compact = (value) => String(value).replace(/\s+/g, '');
+const cleanFormLine = (line) => line.replace(/^\s*(?:[>›❯]\s*)?/, '').trim();
+const MAX_AGY_OTHER_CHARS = 500;
+
+// Verifies the agy question form on the kitty screen and types the phone answer.
+// Returns true only when all steps were verified, null when the form is gone, or false on any mismatch or error.
+export async function answerAgyInKitty({ dataDir, id, questions, items, procDir = '/proc', startOf = processStart,
+  homeDir = os.homedir(), exec = defaultKitty, wait = defaultWait }) {
+  if (typeof id !== 'string' || !AGY_UUID.test(id) || !dataDir || !Array.isArray(questions) || !questions.length
+    || !Array.isArray(items) || items.length !== questions.length) return false;
+  for (const item of items) {
+    if (item?.other !== undefined && (typeof item.other !== 'string' || item.other.length < 1
+      || item.other.length > MAX_AGY_OTHER_CHARS || /[\x00-\x1f\x7f]/.test(item.other))) return false;
+  }
+  const record = await readRecord(path.join(dataDir, `${id}.json`));
+  if (!validAgyRecord(record, id, homeDir)) return false;
+  if (record.state !== 'question') return null;
+  if (record.agyPid === undefined || await startOf(record.agyPid) !== record.agyStartTicks) return false;
+  const target = await agyFocusTarget(record, { procDir });
+  if (!target) return false;
+
+  const cmd = (action, args = []) => exec(['@', '--to', target.listenOn, action, '--match', `id:${target.windowId}`, ...args]);
+  const getScreen = () => cmd('get-text', ['--extent', 'screen']);
+  const writeIn = async (text, digit) => {
+    await cmd('send-text', ['--', String(digit)]);
+    await wait(150);
+    if (!(await getScreen()).includes('Your answer:')) return false;
+    await cmd('send-text', ['--bracketed-paste=enable', '--', text]);
+    await wait(150);
+    if (!compact(await getScreen()).includes(compact(text))) return false;
+    await cmd('send-key', ['enter']);
+    return true;
+  };
+
+  try {
+    let screen = await getScreen();
+    const total = questions.length;
+    for (let i = 0; i < total; i += 1) {
+      const k = i + 1;
+      const q = questions[i];
+      const item = items[i];
+      const header = `Question ${k}/${total}:`;
+      const pos = screen.lastIndexOf(header);
+      if (pos < 0) return k === 1 ? null : false;
+      const form = screen.slice(pos);
+      const qStart = compact(q.question).slice(0, 60);
+      if (!qStart || !compact(form).startsWith(compact(header) + qStart)) return false;
+      const lines = form.split('\n').map(cleanFormLine);
+      let cursor = 0;
+      const findNext = (match) => {
+        for (let idx = cursor; idx < lines.length; idx += 1) {
+          if (match(lines[idx])) { cursor = idx + 1; return true; }
+        }
+        return false;
+      };
+      for (let opt = 0; opt < q.options.length; opt += 1) {
+        const d = opt + 1;
+        const label = q.options[opt].label;
+        const ok = q.multiSelect
+          ? findNext((line) => line === `${d}. [ ] ${label}` || line === `${d}. [x] ${label}`)
+          : findNext((line) => line === `${d}. ${label}`);
+        if (!ok) return false;
+      }
+      const writeInDigit = q.options.length + 1;
+      if (!findNext((line) => line === `${writeInDigit}. Write-in...`)) return false;
+
+      if (!q.multiSelect) {
+        if (item.other !== undefined) {
+          if (!await writeIn(item.other, writeInDigit)) return false;
+        } else {
+          const idx = q.options.findIndex((option) => option.label === item.selected?.[0]);
+          if (idx < 0) return false;
+          await cmd('send-text', ['--', String(idx + 1)]);
+        }
+      } else {
+        for (const label of item.selected || []) {
+          const idx = q.options.findIndex((option) => option.label === label);
+          if (idx < 0) return false;
+          const d = idx + 1;
+          await cmd('send-text', ['--', String(d)]);
+          await wait(150);
+          const after = await getScreen();
+          const afterPos = after.lastIndexOf(header);
+          if (afterPos < 0) return false;
+          const checked = after.slice(afterPos).split('\n').map(cleanFormLine).some((line) => line === `${d}. [x] ${label}`);
+          if (!checked) return false;
+        }
+        if (item.other !== undefined) {
+          if (!await writeIn(item.other, writeInDigit)) return false;
+        } else {
+          await cmd('send-key', ['enter']);
+        }
+      }
+
+      if (k < total) {
+        await wait(150);
+        screen = await getScreen();
+        if (screen.lastIndexOf(`Question ${k + 1}/${total}:`) < 0) return false;
+      }
+    }
+    return true;
+  } catch { return false; }
+}
+
 // asb doctor, only with kitty on PATH: the two remote control keys of kitty.conf (read only; no other line of the file is used).
 export async function agyKittyDoctor(add, advice, { env = process.env, read } = {}) {
   // A PC without kitty gets no line and no kitty.conf advice.

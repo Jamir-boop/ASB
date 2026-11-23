@@ -390,7 +390,7 @@ test('Codex alone sends one soft invalidation per open, answer, and close', asyn
 
 test('the contract: a record of each provider and kind gives the same row field and takes the same answer body', async (t) => {
   const others = { codex: 'codex', opencode: 'opencode', antigravity: 'antigravity' };
-  const e = await engine(t, { phoneSeenWithin: async () => true,
+  const e = await engine(t, { phoneSeenWithin: async () => true, answerAgy: async () => true,
     extraRows: Object.entries(others).map(([provider]) => ({ id: `row-${provider}`, provider, externalId: `key-${provider}` })) });
   // The made-up rows of other apps have no CLI session IDs: a record is for the row's own ID in that app.
   const rowOf = { claude: e.row, ...Object.fromEntries(Object.keys(others).map((provider) => [provider, `row-${provider}`])) };

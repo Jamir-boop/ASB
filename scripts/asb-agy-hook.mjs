@@ -1,5 +1,6 @@
 // `asb agent agy-hook <event>`: the Antigravity CLI (agy) hook client. It keeps one record per conversation with session metadata
-// and state, never prompt, answer, tool input, or error text. Stop can read its local mailbox; it never contacts the engine.
+// and state, never prompt, answer, tool input, or error text. Stop can read its local mailbox. Only PreToolUse of ask_question
+// contacts the local engine (POST /api/agent/wait) so a paired phone can answer the question.
 import { constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { AGY_LISTEN_ON, AGY_UUID, agyAbsolutePath as absolutePath, agyParentId, 
   readAgyTitle, validAgyAgentName, validAgyTitle } from '../src/antigravity-data.mjs';
 
 import { takeAgyMailbox } from '../src/agy-mailbox.mjs';
+import { readServiceRuntime, requestInstance } from './asb-instance.mjs';
 export { agyProcess };
 
 const MAX_STDIN = 256 * 1024;
@@ -112,6 +114,25 @@ export async function writeAgyRecord(hook, { env = process.env, homeDir = os.hom
   return record;
 }
 
+function agyQuestionPayload(hook) {
+  if (typeof hook.conversationId !== 'string' || !AGY_UUID.test(hook.conversationId)) return null;
+  const raw = hook.toolCall?.args?.questions;
+  if (!Array.isArray(raw) || !raw.length) return null;
+  const questions = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || typeof item.question !== 'string'
+      || !Array.isArray(item.options) || !item.options.every((option) => typeof option === 'string')) return null;
+    questions.push({ question: item.question, options: item.options.map((label) => ({ label })), multiSelect: item.is_multi_select === true });
+  }
+  return { provider: 'antigravity', sessionKey: hook.conversationId.toLowerCase(), question: { questions } };
+}
+
+async function postAgyQuestion(body, { env = process.env } = {}) {
+  const runtime = await readServiceRuntime(env);
+  if (!runtime) return;
+  await requestInstance(runtime, '/api/agent/wait', { method: 'POST', maxBytes: 4096, timeoutMs: 1500, body });
+}
+
 // The other hooks reply before reading stdin. Stop waits to see if it can continue the session.
 export async function agyHook(args, { stdin = process.stdin, write = (text) => process.stdout.write(text), exit = process.exit, ...options } = {}) {
   const event = typeof args[0] === 'string' ? args[0] : '';
@@ -130,6 +151,10 @@ export async function agyHook(args, { stdin = process.stdin, write = (text) => p
     const hook = JSON.parse(text);
     if (!hook || typeof hook !== 'object' || Array.isArray(hook) || hook.hookEventName !== event) return 0;
     await (options.writeRecord || writeAgyRecord)(hook, options);
+    if (event === 'PreToolUse' && hook.toolCall?.name === QUESTION_TOOL) {
+      const payload = agyQuestionPayload(hook);
+      if (payload) await (options.postQuestion || postAgyQuestion)(payload, options).catch(() => {});
+    }
     if (event === 'Stop') {
       const continuation = await takeAgyMailbox(hook, options.env);
       if (continuation !== null) reply(JSON.stringify({ decision: 'continue', reason: continuation }));

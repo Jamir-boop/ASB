@@ -7,7 +7,7 @@ import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData,
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
-import { agyRecordsDir, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
+import { agyRecordsDir, answerAgyInKitty, focusAgyInKitty, loadAntigravityDashboard } from './antigravity-data.mjs';
 import { loadOpenCodeDashboard, invalidateOpenCodeData, retainOpenCodeDataScopes, opencodeBridgeId, defaultOpenCodeStateDir, OPENCODE_APPROVAL_WAIT } from './opencode-data.mjs';
 import { createAsbServer } from './asb-server.mjs';
 import { claudeHookStatus, hookTargets, installedLauncher } from './claude-hook.mjs';
@@ -1161,6 +1161,10 @@ export function createSwitchboardServer(options = {}) {
   const server = createAsbServer({
     dashboardWatchDebounceMs: 250,
     claudeQuestions,
+    answerAgy: options.answerAgy || ((thread, questions, items) => answerAgyInKitty({
+      dataDir: thread[SOURCE_DIR] || agyRecordsDir(), id: thread.externalId, questions, items,
+      procDir: options.procDir, startOf: options.startOf,
+    })),
     phonePaired: async () => ((await options.phoneGateway?.devices?.()) || []).length > 0,
     phoneSeenWithin: async (ms) => {
       const devices = await options.phoneGateway?.devices?.();
@@ -1229,6 +1233,9 @@ export function createSwitchboardServer(options = {}) {
       claudeQuestions.reconcile('claude', 'question', new Set(dashboard.threads.flatMap((row) => row[QUESTION_SESSIONS] || [])));
       claudeQuestions.reconcile('claude', 'approval', new Set(dashboard.threads.flatMap((row) => row[APPROVAL_SESSIONS] || [])));
       claudeQuestions.reconcile('opencode', 'approval', new Set(dashboard.threads.flatMap((row) => row[OPENCODE_APPROVAL_SESSIONS] || [])));
+      claudeQuestions.reconcile('antigravity', 'question', new Set(
+        dashboard.threads.filter((row) => !row.remote && row.provider === 'antigravity'
+          && (row.userQuestionBlocking === true || (row.state === 'waiting' && row.questionPending === true))).map((row) => row.externalId)));
       const codexRecords = openCodex();
       if (codexRecords.length) {
         const localCodex = new Set(dashboard.threads.filter((row) => !row.remote && row.provider === 'codex').map((row) => row.externalId));

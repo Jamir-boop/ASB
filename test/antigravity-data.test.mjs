@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { loadAntigravityDashboard } from '../src/antigravity-data.mjs';
+import { answerAgyInKitty, loadAntigravityDashboard } from '../src/antigravity-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
 
@@ -224,4 +224,127 @@ test('loader uses valid .title, falls back on bad mode/symlink/size/content, ign
   const files = await readdir(dataDir);
   assert.equal(files.includes(`${id(7)}.json`), false);
   assert.equal(files.includes(`${id(7)}.title`), false);
+});
+
+test('answerAgyInKitty verifies screens and types single, multi-question, write-in, multi-select, and refuses mismatch/gone/newline', async (t) => {
+  const { homeDir, dataDir, put } = await fixture(t);
+  const procDir = path.join(homeDir, 'proc');
+  const writeProc = async (pid, comm, ppid) => {
+    const pdir = path.join(procDir, String(pid));
+    await mkdir(pdir, { recursive: true });
+    await writeFile(path.join(pdir, 'stat'), `${pid} (${comm}) S ${ppid} ${Array(17).fill('0').join(' ')} 1 0 0\n`);
+  };
+  await writeProc(300, 'kitty', 1);
+  await writeProc(400, 'agy', 300);
+  await put(1, { state: 'question', kittyPid: '300', kittyWindowId: '2', kittyListenOn: 'unix:@kitty-300' });
+
+  const qFruit = { question: 'ASB probe: pick a fruit', options: [{ label: 'Kiwi' }, { label: 'Plum' }], multiSelect: false };
+  const qSize = { question: 'ASB probe: pick a size', options: [{ label: 'Small' }, { label: 'Large' }], multiSelect: false };
+  const qToppings = { question: 'ASB probe: pick toppings', options: [{ label: 'Salt' }, { label: 'Pepper' }, { label: 'Lime' }], multiSelect: true };
+
+  const formSingle = (k, n, q) => `Question ${k}/${n}: ${q.question}\n\n> 1. ${q.options[0].label}\n  2. ${q.options[1].label}\n  3. Write-in...\n\n  ↑/↓ Navigate · enter Select · esc Skip`;
+  const formMulti = (checked = new Set()) => `Question 1/1: ${qToppings.question}\n\n${
+    qToppings.options.map((o, i) => `${i === 0 ? '> ' : '  '}${i + 1}. [${checked.has(i + 1) ? 'x' : ' '}] ${o.label}`).join('\n')
+  }\n  4. Write-in...\n\n  ↑/↓ Navigate · space Toggle · enter Submit`;
+
+  const runAnswer = (questions, items, handler) => {
+    const calls = [];
+    return answerAgyInKitty({
+      dataDir, id: id(1), questions, items, procDir, startOf, homeDir,
+      wait: async () => {},
+      exec: async (args) => { calls.push(args); return handler(args); },
+    }).then((result) => ({ result, calls }));
+  };
+
+  // 1. Single digit
+  {
+    const { result, calls } = await runAnswer([qFruit], [{ selected: ['Plum'] }], () => formSingle(1, 1, qFruit));
+    assert.equal(result, true);
+    assert.deepEqual(calls.map((c) => c[3]), ['get-text', 'send-text']);
+    assert.deepEqual(calls[1].slice(-2), ['--', '2']);
+  }
+
+  // 2. Two questions
+  {
+    let step = 1;
+    const { result, calls } = await runAnswer([qFruit, qSize], [{ selected: ['Kiwi'] }, { selected: ['Large'] }], (args) => {
+      if (args[3] === 'send-text') step += 1;
+      return step === 1 ? formSingle(1, 2, qFruit) : formSingle(2, 2, qSize);
+    });
+    assert.equal(result, true);
+    assert.deepEqual(calls.map((c) => c[3]), ['get-text', 'send-text', 'get-text', 'send-text']);
+    assert.deepEqual([calls[1].at(-1), calls[3].at(-1)], ['1', '2']);
+  }
+
+  // 3. Single select Write-in
+  {
+    let screen = formSingle(1, 1, qFruit);
+    const { result, calls } = await runAnswer([qFruit], [{ selected: [], other: 'Teal, with a comma' }], (args) => {
+      if (args[3] === 'send-text' && args.at(-1) === '3') screen = 'Your answer:\n';
+      else if (args[3] === 'send-text' && args.includes('--bracketed-paste=enable')) screen = `Your answer:\n${args.at(-1)}`;
+      return screen;
+    });
+    assert.equal(result, true);
+    assert.deepEqual(calls.map((c) => c[3]), ['get-text', 'send-text', 'get-text', 'send-text', 'get-text', 'send-key']);
+    assert.deepEqual(calls[3].slice(-3), ['--bracketed-paste=enable', '--', 'Teal, with a comma']);
+    assert.deepEqual(calls[5].slice(-1), ['enter']);
+  }
+
+  // 4. Multi-select without Write-in
+  {
+    const checked = new Set();
+    const { result, calls } = await runAnswer([qToppings], [{ selected: ['Salt', 'Lime'] }], (args) => {
+      if (args[3] === 'send-text') checked.add(Number(args.at(-1)));
+      return formMulti(checked);
+    });
+    assert.equal(result, true);
+    assert.deepEqual(calls.map((c) => c[3]), ['get-text', 'send-text', 'get-text', 'send-text', 'get-text', 'send-key']);
+    assert.deepEqual([calls[1].at(-1), calls[3].at(-1), calls[5].at(-1)], ['1', '3', 'enter']);
+  }
+
+  // 5. Multi-select with Write-in
+  {
+    const checked = new Set();
+    let mode = 'form';
+    let pasted = '';
+    const { result, calls } = await runAnswer([qToppings], [{ selected: ['Salt', 'Lime'], other: 'Chili' }], (args) => {
+      if (args[3] === 'send-text') {
+        const last = args.at(-1);
+        if (last === '4') mode = 'writein';
+        else if (args.includes('--bracketed-paste=enable')) { mode = 'pasted'; pasted = last; }
+        else checked.add(Number(last));
+      }
+      return mode === 'form' ? formMulti(checked) : mode === 'writein' ? 'Your answer:\n' : `Your answer:\n${pasted}`;
+    });
+    assert.equal(result, true);
+    assert.deepEqual(calls.map((c) => c[3]), ['get-text', 'send-text', 'get-text', 'send-text', 'get-text', 'send-text', 'get-text', 'send-text', 'get-text', 'send-key']);
+    assert.deepEqual(calls[7].slice(-3), ['--bracketed-paste=enable', '--', 'Chili']);
+  }
+
+  // 6. Mismatched screen types nothing
+  {
+    const wrong = formSingle(1, 1, qSize).replace('Question 1/1: ASB probe: pick a size', 'Question 1/1: ASB probe: pick a fruit');
+    const { result, calls } = await runAnswer([qFruit], [{ selected: ['Kiwi'] }], () => wrong);
+    assert.equal(result, false);
+    assert.deepEqual(calls.map((c) => c[3]), ['get-text']);
+  }
+
+  // 7. Gone form (no Question header on screen, or record state changed)
+  {
+    const { result, calls } = await runAnswer([qFruit], [{ selected: ['Kiwi'] }], () => 'normal prompt\n> ');
+    assert.equal(result, null);
+    assert.deepEqual(calls.map((c) => c[3]), ['get-text']);
+    await put(1, { state: 'working', kittyPid: '300', kittyWindowId: '2', kittyListenOn: 'unix:@kitty-300' });
+    const after = await runAnswer([qFruit], [{ selected: ['Kiwi'] }], () => formSingle(1, 1, qFruit));
+    assert.equal(after.result, null);
+    assert.equal(after.calls.length, 0);
+    await put(1, { state: 'question', kittyPid: '300', kittyWindowId: '2', kittyListenOn: 'unix:@kitty-300' });
+  }
+
+  // 8. Newline in other: refused before typing anything
+  {
+    const { result, calls } = await runAnswer([qFruit], [{ selected: [], other: 'line1\nline2' }], () => formSingle(1, 1, qFruit));
+    assert.equal(result, false);
+    assert.equal(calls.length, 0);
+  }
 });

@@ -13,7 +13,8 @@ import { answersFor, createClaudeQuestions } from '../src/claude-questions.mjs';
 import { createPhoneGateway } from '../src/phone-gateway.mjs';
 import { exportLocalSessions } from '../src/machine-peers.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
-import { createSwitchboardServer, loadSwitchboardDashboard, QUESTION_SESSIONS } from '../src/switchboard.mjs';
+import { agyThread } from '../src/antigravity-data.mjs';
+import { buildSwitchboardDashboard, createSwitchboardServer, loadSwitchboardDashboard, QUESTION_SESSIONS } from '../src/switchboard.mjs';
 
 // Made-up data only.
 const agentScript = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url));
@@ -595,4 +596,90 @@ test('a question text that is an object key name keeps its answer', () => {
   assert.equal(answers.__proto__, 'A');
   assert.deepEqual(JSON.parse(JSON.stringify(answers)), JSON.parse('{"__proto__":"A"}'));
   assert.ok(Object.hasOwn(JSON.parse(JSON.stringify(answers)), '__proto__'));
+});
+
+test('antigravity question records survive sweep(), close by reconcile(), and answer route types into kitty before settling', async (t) => {
+  let at = 1_000_000;
+  const store = createClaudeQuestions({ now: () => at });
+  const id = '9d482c79-a221-41ba-96c9-1c571ac0565b';
+  const questions = [{ question: 'Pick a fruit', options: [{ label: 'Kiwi' }, { label: 'Plum' }], multiSelect: false }];
+  const { requestId } = store.open({ provider: 'antigravity', sessionKey: id, questions });
+  // Survives sweep() well past WAIT_GAP_MS (60s)
+  at += 120_000;
+  store.sweep();
+  assert.equal(store.forSession('antigravity', id)?.requestId, requestId);
+  // Seen pending, then cleared -> reconcile closes it
+  store.reconcile('antigravity', 'question', new Set([id]));
+  assert.equal(store.forSession('antigravity', id)?.requestId, requestId);
+  store.reconcile('antigravity', 'question', new Set());
+  assert.equal(store.forSession('antigravity', id), null);
+
+  // Real switchboard server with agyThread -> buildSwitchboardDashboard, real CLAUDE_QUESTION getter (no provider field), and real reconcile
+  let agyState = 'question';
+  let agyResult = false;
+  let blockResolve = null;
+  let answerCalls = 0;
+  const agyBoard = () => buildSwitchboardDashboard([agyThread({
+    conversationId: id, workspace: '/tmp/ws', state: agyState, stateAtMs: Date.now(), createdAtMs: Date.now() - 1000,
+    agyPid: 400, agyStartTicks: '4377321',
+  }, { live: true })], [], Date.now());
+  const server = createSwitchboardServer({
+    pendingStatePath: false,
+    dashboardWatchPaths: [],
+    loadDashboard: async () => agyBoard(),
+    claudeQuestions: store,
+    answerEnabled: () => true,
+    phonePaired: async () => true,
+    answerAgy: async () => {
+      answerCalls += 1;
+      if (blockResolve) await new Promise((resolve) => { blockResolve.wait = resolve; });
+      return agyResult;
+    },
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const sendAnswer = async (reqId) => {
+    const reply = await fetch(`${base}/api/threads/${encodeURIComponent(`agy:${id}`)}/answer`, {
+      method: 'POST',
+      headers: { origin: base, 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: reqId, answers: [{ selected: ['Plum'] }] }),
+    });
+    return { status: reply.status, json: await reply.json() };
+  };
+
+  // Reconcile keeps open while agyThread is in state 'question', and closes when it moves to 'working'
+  const recOpen = store.open({ provider: 'antigravity', sessionKey: id, questions });
+  await fetch(`${base}/api/dashboard?force=1`);
+  assert.equal(store.forSession('antigravity', id)?.requestId, recOpen.requestId);
+  agyState = 'working';
+  await fetch(`${base}/api/dashboard?force=1`);
+  assert.equal(store.forSession('antigravity', id), null);
+
+  // Route test with real CLAUDE_QUESTION getter (no provider field on open)
+  agyState = 'question';
+  const opened = store.open({ provider: 'antigravity', sessionKey: id, questions });
+  await fetch(`${base}/api/dashboard?force=1`);
+  // Not verified -> 409, answerAgy was called, record stays open
+  agyResult = false;
+  assert.deepEqual(await sendAnswer(opened.requestId), { status: 409, json: { error: 'Cannot answer in agy now. Answer on the PC.' } });
+  assert.equal(answerCalls, 1);
+  assert.equal(store.forSession('antigravity', id)?.requestId, opened.requestId);
+  // Form gone -> 409 closed message, record stays open
+  agyResult = null;
+  assert.deepEqual(await sendAnswer(opened.requestId), { status: 409, json: { error: 'This question is closed.' } });
+  assert.equal(answerCalls, 2);
+  assert.equal(store.forSession('antigravity', id)?.requestId, opened.requestId);
+  // Concurrent request while typing -> 409; first finishes verified -> 200 and record closed
+  agyResult = true;
+  blockResolve = {};
+  const first = sendAnswer(opened.requestId);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const second = await sendAnswer(opened.requestId);
+  assert.deepEqual(second, { status: 409, json: { error: 'Cannot answer in agy now. Answer on the PC.' } });
+  blockResolve.wait();
+  blockResolve = null;
+  assert.deepEqual(await first, { status: 200, json: { answered: true } });
+  assert.equal(answerCalls, 3);
+  assert.equal(store.forSession('antigravity', id), null);
 });
