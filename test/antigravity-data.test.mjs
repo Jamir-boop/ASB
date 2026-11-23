@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { agyScreenInterrupted, answerAgyInKitty, loadAntigravityDashboard } from '../src/antigravity-data.mjs';
+import { agyScreenInterrupted, answerAgyInKitty, approveAgyInKitty, loadAntigravityDashboard, matchAgyApprovalScreen, watchAgyApproval } from '../src/antigravity-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
 
@@ -435,5 +435,107 @@ test('answerAgyInKitty verifies screens and types single, multi-question, write-
     const { result, calls } = await runAnswer([qFruit], [{ selected: [], other: 'line1\nline2' }], () => formSingle(1, 1, qFruit));
     assert.equal(result, false);
     assert.equal(calls.length, 0);
+  }
+});
+
+test('matchAgyApprovalScreen matches command, new file, edit, and rewritten commands, and refuses mismatches', () => {
+  const cmdApproval = (text) => ({ kind: 'tool', title: 'Allow a shell command?', display: [{ label: 'Command', text, mono: true }], note: false });
+  const writeApproval = (file) => ({ kind: 'tool', title: 'Allow a new file?', display: [{ label: 'File', text: file, mono: true }, { label: 'Size', text: '2 characters', mono: false }], note: false });
+  const editApproval = (file) => ({ kind: 'tool', title: 'Allow a file edit?', display: [{ label: 'File', text: file, mono: true }], note: false });
+  const cmdScreen = (shown) => `Requesting permission for:\n   ${shown}\nRun this command?\n> 1. Yes, run command\n  2. Yes, and always allow in this conversation for commands that start with 'touch'\n  3. Yes, and always allow for commands that start with 'touch' (Persist to settings.json)\n  4. No, cancel\n  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command`;
+  const writeScreen = `/home/.../ws/probe2.txt  +1\n  1  +  hi\nAllow creation of this file?\n> 1. Yes, allow creation\n  2. No, deny creation\n  ↑/↓ Navigate · f full diff`;
+  const editScreen = `/home/.../ws/probe2.txt  +1 -1\n  1  -  hi\n  1  +  hello\n  shift+tab to auto-approve file edits\nAccept this file edit?\n> 1. Yes, accept this change\n  2. No, reject this change\n  ↑/↓ Navigate · f full diff`;
+
+  assert.equal(matchAgyApprovalScreen(cmdScreen('touch asb-probe-ok.txt'), cmdApproval('touch asb-probe-ok.txt')), '4');
+  assert.equal(matchAgyApprovalScreen(cmdScreen('rtk ls -l'), cmdApproval('ls -l')), '4');
+  assert.equal(matchAgyApprovalScreen(cmdScreen('rm -rf /tmp/x'), cmdApproval('touch asb-probe-ok.txt')), null);
+  assert.equal(matchAgyApprovalScreen(cmdScreen('touch asb-probe-ok.txt').replace('  4. No, cancel\n', ''), cmdApproval('touch asb-probe-ok.txt')), null);
+  assert.equal(matchAgyApprovalScreen(writeScreen, writeApproval('/home/user/ws/probe2.txt')), '2');
+  assert.equal(matchAgyApprovalScreen(writeScreen, writeApproval('/home/user/ws/other.txt')), null);
+  assert.equal(matchAgyApprovalScreen(editScreen, editApproval('/home/user/ws/probe2.txt')), '2');
+  assert.equal(matchAgyApprovalScreen(editScreen.replace('  2. No, reject this change\n', ''), editApproval('/home/user/ws/probe2.txt')), null);
+});
+
+test('watchAgyApproval and approveAgyInKitty watch, type 1 or deny digit, and handle gone and stuck dialogs', async (t) => {
+  const { homeDir, dataDir, put } = await fixture(t);
+  const procDir = path.join(homeDir, 'proc');
+  const writeProc = async (pid, comm, ppid) => {
+    const pdir = path.join(procDir, String(pid));
+    await mkdir(pdir, { recursive: true });
+    await writeFile(path.join(pdir, 'stat'), `${pid} (${comm}) S ${ppid} ${Array(17).fill('0').join(' ')} 1 0 0\n`);
+  };
+  await writeProc(300, 'kitty', 1);
+  await writeProc(400, 'agy', 300);
+  await put(1, { state: 'working', kittyPid: '300', kittyWindowId: '2', kittyListenOn: 'unix:@kitty-300' });
+
+  const cmdApproval = { kind: 'tool', title: 'Allow a shell command?', display: [{ label: 'Command', text: 'touch a.txt', mono: true }], note: false };
+  const cmdScreen = `Requesting permission for:\n   touch a.txt\nRun this command?\n> 1. Yes, run command\n  2. Yes, and always allow\n  3. Yes, persist\n  4. No, cancel\n  ↑/↓ Navigate`;
+  const editApproval = { kind: 'tool', title: 'Allow a file edit?', display: [{ label: 'File', text: '/home/u/ws/p.txt', mono: true }], note: false };
+  const editScreen = `/home/.../ws/p.txt  +1 -1\nAccept this file edit?\n> 1. Yes, accept this change\n  2. No, reject this change`;
+
+  // watchAgyApproval: matches then goes away
+  {
+    let screen = cmdScreen;
+    let matched = 0, gone = 0;
+    const stop = watchAgyApproval({
+      dataDir, id: id(1), approval: cmdApproval, procDir, startOf, homeDir, intervalMs: 15, timeoutMs: 500,
+      exec: async () => screen,
+      onMatch: () => { matched += 1; screen = 'normal prompt\n> '; },
+      onGone: () => { gone += 1; },
+    });
+    t.after(stop);
+    for (let i = 0; i < 40 && gone === 0; i += 1) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual([matched, gone], [1, 1]);
+  }
+  // watchAgyApproval: never matches -> closes after timeoutMs
+  {
+    let clock = 1000, matched = 0, gone = 0;
+    const stop = watchAgyApproval({
+      dataDir, id: id(1), approval: cmdApproval, procDir, startOf, homeDir, intervalMs: 10, timeoutMs: 10_000,
+      now: () => clock,
+      exec: async () => { clock += 6000; return 'working...'; },
+      onMatch: () => { matched += 1; },
+      onGone: () => { gone += 1; },
+    });
+    t.after(stop);
+    for (let i = 0; i < 40 && gone === 0; i += 1) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual([matched, gone], [0, 1]);
+  }
+  // approveAgyInKitty: allow -> '1', deny command -> '4', deny file -> '2', gone -> null, stuck -> false
+  const runApprove = async (approval, decision, handler) => {
+    const calls = [];
+    const result = await approveAgyInKitty({
+      dataDir, id: id(1), approval, decision, procDir, startOf, homeDir,
+      wait: async () => {}, pollMs: 500, timeoutMs: 1500,
+      exec: async (args) => { calls.push(args); return handler(args); },
+    });
+    return { result, calls };
+  };
+  {
+    let open = true;
+    const { result, calls } = await runApprove(cmdApproval, 'allow', (args) => { if (args[3] === 'send-text') open = false; return open ? cmdScreen : 'done'; });
+    assert.equal(result, true);
+    assert.equal(calls.find((c) => c[3] === 'send-text').at(-1), '1');
+  }
+  {
+    let open = true;
+    const { result, calls } = await runApprove(cmdApproval, 'deny', (args) => { if (args[3] === 'send-text') open = false; return open ? cmdScreen : 'User declined'; });
+    assert.equal(result, true);
+    assert.equal(calls.find((c) => c[3] === 'send-text').at(-1), '4');
+  }
+  {
+    let open = true;
+    const { result, calls } = await runApprove(editApproval, 'deny', (args) => { if (args[3] === 'send-text') open = false; return open ? editScreen : 'User declined'; });
+    assert.equal(result, true);
+    assert.equal(calls.find((c) => c[3] === 'send-text').at(-1), '2');
+  }
+  {
+    const { result, calls } = await runApprove(cmdApproval, 'allow', () => 'normal prompt');
+    assert.equal(result, null);
+    assert.equal(calls.some((c) => c[3] === 'send-text'), false);
+  }
+  {
+    const { result } = await runApprove(cmdApproval, 'allow', () => cmdScreen);
+    assert.equal(result, false);
   }
 });

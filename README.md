@@ -70,7 +70,7 @@ Limits:
 - One card for each session: a newer request replaces the older one on the phone; the older one stays on the PC only.
 - The alert and the `Waiting` state come from the row's attention marks, not the card data. The card can appear before Waiting and before a phone alert. A permission dialog shows Waiting and can cause a Needs input sound and a phone alert only after it stays open 10 s. A request you answer at once does not alert. The phone alert was measured once: about 14 s after the dialog opened (the 10 s rule plus one phone read), with the app in the background. The app posts no alert while it is open on the screen. With no working row and no new request in the last 60 s, the phone reads the PC each 30 s, so the first card can be up to 30 s late; the time with the screen off is not proven.
 - Checked with Claude Code 2.1.330 on Linux: a CLI session end to end with a real Android phone (2026-11-23), and a desktop Code tab session for one tool allow and one tool deny (2026-11-22). The desktop Code tab is not checked for plans.
-- An older ASB build reads the `*` entry as `other launcher`. Not yet: Antigravity CLI. Not tested end to end on Windows.
+- An older ASB build reads the `*` entry as `other launcher`. For Antigravity CLI (agy) tool approvals on Linux (default mode only, kitty with remote control, with **Approve requests from phones** on), ASB verifies the agy permission dialog on the kitty screen and types `1` (allow once) or the deny digit (never an "always allow" option); a deny stops the agy turn, as on the PC. Not tested end to end on Windows or on a phone with a real agy session.
 - Each permission dialog waits about 70 ms for the hook, also with the switch off.
 - Claude Code sessions that already run keep the old hook entry until they start again (by the Claude Code docs; not tested).
 
@@ -120,7 +120,8 @@ Limits:
 - Without Stop, the hook record stays `working`. The Bridge does not type into kitty, and a message still waiting after 60 min is withdrawn with a drop receipt.
 - `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
 - Each agy hook call adds about 80 ms, and agy waits for it.
-- Not yet: phone approvals, Windows, and the Antigravity app and IDE.
+- Phone approvals work in agy's default mode only (in a kitty with remote control and **Approve requests from phones** on). Run `asb agent agy-hook install` again if you installed the hook earlier (`asb agent agy-hook status` shows `changed` until you do). ASB never chooses an "always allow" option. A deny on the phone stops the agy turn, as on the PC. Not tested end to end on a phone with a real agy session.
+- Not yet: Windows, and the Antigravity app and IDE.
 
 ### ASB Bridge for agy
 
@@ -143,7 +144,7 @@ Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty 
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
 | OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✗ Google: no event | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
+| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✓ Linux, with the hook and kitty remote control | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.

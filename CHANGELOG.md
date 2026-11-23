@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Antigravity CLI: paired phones can now approve or deny agy `run_command`, `write_file`, and `edit_file` permission dialogs on Linux (default mode only, kitty with remote control, and **Approve requests from phones** on). The dialog stays on the PC; ASB verifies the dialog on the kitty screen every second and types `1` (allow once) or the deny digit (never an "always allow" option; a deny stops the agy turn, as on the PC). Not tested end to end on a phone with a real agy session.
 - Android: the question card hides **Other** when the question does not allow it.
 - Windows: the Claude Code and Codex phone hooks now install, check their status, and remove with the same commands as on Linux. They use the npm launcher and keep the existing settings backups. OpenCode form replies can find the service file under the Windows profile when `XDG_STATE_HOME` is not set. Not tested end to end on Windows.
 - A phone paired with one PC can answer questions and decide approvals for sessions on current members of the same machine group. Both PCs need the phone switches for the request. Only the session PC needs the hook or Bridge. Not tested end to end between machines.

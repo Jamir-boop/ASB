@@ -572,7 +572,7 @@ test('Codex alone sends one soft invalidation per open, answer, and close', asyn
 
 test('the contract: a record of each provider and kind gives the same row field and takes the same answer body', async (t) => {
   const others = { codex: 'codex', opencode: 'opencode', antigravity: 'antigravity' };
-  const e = await engine(t, { phoneSeenWithin: async () => true, answerAgy: async () => true,
+  const e = await engine(t, { phoneSeenWithin: async () => true, answerAgy: async () => true, approveAgy: async () => true, watchAgy: () => () => {},
     extraRows: Object.entries(others).map(([provider]) => ({ id: `row-${provider}`, provider, externalId: `key-${provider}` })) });
   // The made-up rows of other apps have no CLI session IDs: a record is for the row's own ID in that app.
   const rowOf = { claude: e.row, ...Object.fromEntries(Object.keys(others).map((provider) => [provider, `row-${provider}`])) };
@@ -581,6 +581,10 @@ test('the contract: a record of each provider and kind gives the same row field 
   for (const provider of PROVIDERS) {
     const opened = await (await e.post('/api/agent/wait', { provider, sessionKey: keyOf[provider], approval: approval() })).json();
     assert.equal(opened.wait, true, provider);
+    if (provider === 'antigravity') {
+      assert.equal('approval' in (await e.rows()).find((item) => item.id === rowOf[provider]), false);
+      e.store.setOnScreen(opened.requestId, true);
+    }
     const row = (await e.rows()).find((item) => item.id === rowOf[provider]);
     assert.deepEqual(row.approval, { requestId: opened.requestId, ...approval() }, provider);
     assert.equal('question' in row, false);

@@ -92,7 +92,9 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
   const waiters = new Map();
   const codexListeners = new Set();
   const changed = (record) => {
-    if (record.provider === 'codex') for (const notify of codexListeners) notify();
+    if (record.provider === 'codex' || (record.provider === 'antigravity' && record.kind === 'approval' && record.onScreen === true)) {
+      for (const notify of codexListeners) notify();
+    }
   };
 
   const end = (record, state, answer) => {
@@ -143,6 +145,7 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
       do requestId = randomBytes(16).toString('hex'); while (records.has(requestId));
       const atMs = now();
       const record = { requestId, provider, sessionKey, kind, ...(kind === 'question' ? { questions: payload } : { approval: payload }),
+        ...(provider === 'antigravity' && kind === 'approval' ? { onScreen: false } : {}),
         createdAtMs: atMs, lastWaitAtMs: atMs, seenPending: false, state: 'open' };
       records.set(requestId, record);
       if (provider === 'codex' && kind === 'approval') {
@@ -203,9 +206,17 @@ export function createClaudeQuestions({ now = Date.now, randomBytes = cryptoRand
       for (const record of openList()) if (kind === undefined || record.kind === kind) end(record, 'closed');
       prune();
     },
+    setOnScreen(requestId, value) {
+      const record = records.get(requestId);
+      if (!isOpen(record) || record.onScreen === Boolean(value)) return false;
+      record.onScreen = Boolean(value);
+      changed(record);
+      return true;
+    },
     forSession(provider, sessionKey) {
       prune();
-      return openList().find((record) => record.provider === provider && record.sessionKey === sessionKey) || null;
+      return openList().find((record) => record.provider === provider && record.sessionKey === sessionKey
+        && !(record.provider === 'antigravity' && record.kind === 'approval' && record.onScreen !== true)) || null;
     },
     openRecords() { prune(); return openList(); },
     hasRecords() { prune(); return records.size > 0; },

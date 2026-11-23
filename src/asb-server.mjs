@@ -118,7 +118,7 @@ export function createAsbServer({
   // The open phone questions and approvals (src/claude-questions.mjs); the answer switch (questions), the approve switch (approvals),
   // and the paired phones decide if a client waits.
   claudeQuestions = null, answerEnabled = () => false, approveEnabled = () => false, phonePaired = async () => false,
-  phoneSeenWithin = async () => false, claudeHookStatus = null, codexHookStatus = null, answerAgy = null,
+  phoneSeenWithin = async () => false, claudeHookStatus = null, codexHookStatus = null, answerAgy = null, approveAgy = null, watchAgy = null,
   claudeWaitMs = MAX_WAIT_MS, claudeQuestionTickMs = 5_000, claudeQuestionReloadMs = 30_000, ...snapshotOptions
 } = {}) {
   // The top-bar reply, and its short tag in each `dashboard` event: the tag changes exactly when the reply would change.
@@ -130,6 +130,8 @@ export function createAsbServer({
   } : null;
   const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions, dashboardEventFields });
   const answeringRequests = new Set();
+  const agyWatchers = new Map();
+  const stopAgyWatcher = (requestId) => { agyWatchers.get(requestId)?.(); agyWatchers.delete(requestId); };
   const expectedSourceToken = Buffer.from(String(sourceToken || ''));
   const sourceTokenAllowed = (request) => {
     const given = Buffer.from(String(request.headers['x-asb-source-token'] || ''));
@@ -212,13 +214,21 @@ export function createAsbServer({
     const answer = kind === 'question' ? answersFor(open.questions, body.answers) : checkedDecision(open.approval, decision);
     if (!answer) return invalidAnswer;
     if (thread.remote) return machineGroup?.answerMember?.(thread, body) ?? closedAnswer;
-    if (kind === 'question' && thread.provider === 'antigravity') {
+    if (thread.provider === 'antigravity') {
       if (answeringRequests.has(requestId)) return agyUnavailable;
       answeringRequests.add(requestId);
       let typed = false;
-      try { typed = answerAgy ? await answerAgy(thread, open.questions, body.answers) : false; }
-      finally { answeringRequests.delete(requestId); }
-      if (typed !== true) return typed === null ? closedAnswer : agyUnavailable;
+      try {
+        typed = kind === 'question'
+          ? (answerAgy ? await answerAgy(thread, open.questions, body.answers) : false)
+          : (approveAgy ? await approveAgy(thread, open.approval, answer.decision) : false);
+      } finally { answeringRequests.delete(requestId); }
+      if (typed !== true) {
+        return typed === null
+          ? (kind === 'approval' ? { status: 409, body: { error: 'This request is closed.' } } : closedAnswer)
+          : agyUnavailable;
+      }
+      stopAgyWatcher(requestId);
     }
     return claudeQuestions.answer(requestId, answer) ? { status: 200, body: { answered: true } } : closedAnswer;
   }
@@ -578,6 +588,11 @@ export function createAsbServer({
         if (!ready || !answerSwitch(kind)) { sendJson(response, 200, { wait: false }); return; }
         if (checkApproval) { sendJson(response, 200, { wait: claudeQuestions.canOpen(wanted.provider, wanted.sessionKey) }); return; }
         const { requestId } = claudeQuestions.open(wanted);
+        if (wanted.provider === 'antigravity' && wanted.approval !== undefined && watchAgy) {
+          stopAgyWatcher(requestId);
+          const stop = watchAgy(requestId, wanted.sessionKey, wanted.approval);
+          if (typeof stop === 'function') agyWatchers.set(requestId, stop);
+        }
         startQuestionTimer();
         sendJson(response, 200, { wait: true, requestId });
       } catch (error) {
@@ -1008,7 +1023,13 @@ export function createAsbServer({
   });
   snapshot.attach(server);
   const stopCodexChanges = claudeQuestions?.onCodexChange(() => invalidateDashboard('asb-agent-wait', { hard: false }));
-  server.once('close', () => { clearInterval(questionTimer); questionTimer = null; stopCodexChanges?.(); });
+  server.once('close', () => {
+    clearInterval(questionTimer);
+    questionTimer = null;
+    stopCodexChanges?.();
+    for (const stop of agyWatchers.values()) stop();
+    agyWatchers.clear();
+  });
   server.boardOpen = () => { expireUiClients(); return uiClients.size > 0; };
   // The newest board plays the engine's sound (the same client choice as show-window).
   server.playBoardSound = (file) => {

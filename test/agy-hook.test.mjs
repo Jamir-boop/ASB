@@ -69,10 +69,14 @@ test('the installed line is the exact rule text for each event', () => {
   assert.equal(agyHookLine('/opt/x/asb', 'Stop'),
     `out=$(timeout 5 '/opt/x/asb' agent agy-hook Stop 2>/dev/null); if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s' '{}'; fi`);
   const plain = (event) => [{ type: 'command', command: agyHookLine(LAUNCHER, event), timeout: 10 }];
-  const tool = (event) => [{ matcher: '^ask_question$', hooks: plain(event) }];
+  const tool = (event) => [{ matcher: '^(ask_question|run_command|edit_file|write_file)$', hooks: plain(event) }];
   assert.deepEqual(agyHookEntry(LAUNCHER), { SessionStart: plain('SessionStart'), PreInvocation: plain('PreInvocation'), Stop: plain('Stop'),
     PreToolUse: tool('PreToolUse'), PostToolUse: tool('PostToolUse') });
   assert.deepEqual(Object.keys(agyHookEntry(LAUNCHER)), ['SessionStart', 'PreInvocation', 'Stop', 'PreToolUse', 'PostToolUse']);
+  // An entry with the old ^ask_question$ matcher reads as changed.
+  const oldEntry = { ...agyHookEntry(LAUNCHER), PreToolUse: [{ matcher: '^ask_question$', hooks: plain('PreToolUse') }],
+    PostToolUse: [{ matcher: '^ask_question$', hooks: plain('PostToolUse') }] };
+  assert.equal(agyHookState({ asb: oldEntry }, LAUNCHER), 'changed');
 });
 
 test('under dash and bash: a missing launcher, a kill after the reply, exit 1, a reply, and stdin each give one reply and exit 0', async (t) => {

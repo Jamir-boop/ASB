@@ -313,7 +313,7 @@ const cut = (value, max) => value.length > max ? `${value.slice(0, max - 1)}…`
 // A display text that the phone may see in part: the hidden characters removed, then cut to its limit.
 const shown = (value, max = 4_000) => cut(String(value).replace(new RegExp(HIDDEN, 'g'), ''), max);
 // A text that the phone user allows: shown whole and unchanged, or not at all.
-const whole = (value, max = 4_000) => typeof value === 'string' && value.length <= max && !HIDDEN.test(value);
+export const whole = (value, max = 4_000) => typeof value === 'string' && value.length <= max && !HIDDEN.test(value);
 
 // The approval that the phone shows for a Claude Code PermissionRequest (`{ kind, title, display, note }`), or null when the request
 // must stay on the PC only. The full tool input never leaves the client: never a file content, an old or a new string, or a fetch prompt.

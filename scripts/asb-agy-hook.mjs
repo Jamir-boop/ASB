@@ -1,6 +1,6 @@
 // `asb agent agy-hook <event>`: the Antigravity CLI (agy) hook client. It keeps one record per conversation with session metadata
-// and state, never prompt, answer, tool input, or error text. Stop can read its local mailbox. Only PreToolUse of ask_question
-// contacts the local engine (POST /api/agent/wait) so a paired phone can answer the question.
+// and state, never prompt, answer, tool input, or error text. Stop can read its local mailbox. Only PreToolUse of ask_question,
+// run_command, edit_file, or write_file contacts the local engine (POST /api/agent/wait) so a paired phone can answer or approve.
 import { constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +16,7 @@ const MAX_STDIN = 256 * 1024;
 const MAX_TITLE_STDIN = 64 * 1024;
 const MAX_RECORD = 16 * 1024;
 const QUESTION_TOOL = 'ask_question';
+const APPROVAL_TOOLS = new Set(['run_command', 'edit_file', 'write_file']);
 
 // A PreToolUse reply of `{}` denies the tool in agy; `ask` keeps agy's own flow.
 export const neutralReply = (event) => event === 'PreToolUse' ? '{"decision":"ask"}' : '{}';
@@ -127,6 +128,27 @@ function agyQuestionPayload(hook) {
   return { provider: 'antigravity', sessionKey: hook.conversationId.toLowerCase(), question: { questions } };
 }
 
+async function agyApprovalPayload(hook) {
+  if (typeof hook.conversationId !== 'string' || !AGY_UUID.test(hook.conversationId)) return null;
+  const tool = hook.toolCall?.name;
+  const args = hook.toolCall?.args;
+  if (!APPROVAL_TOOLS.has(tool) || !args || typeof args !== 'object' || Array.isArray(args)) return null;
+  const { whole } = await import('./asb-agent.mjs');
+  let approval = null;
+  if (tool === 'run_command') {
+    if (!whole(args.CommandLine) || !args.CommandLine) return null;
+    approval = { kind: 'tool', title: 'Allow a shell command?', display: [{ label: 'Command', text: args.CommandLine, mono: true }], note: false };
+  } else if (tool === 'write_file') {
+    if (!whole(args.Path) || !args.Path) return null;
+    const size = typeof args.Content === 'string' ? args.Content.length : 0;
+    approval = { kind: 'tool', title: 'Allow a new file?', display: [{ label: 'File', text: args.Path, mono: true }, { label: 'Size', text: `${size} characters`, mono: false }], note: false };
+  } else if (tool === 'edit_file') {
+    if (!whole(args.Path) || !args.Path) return null;
+    approval = { kind: 'tool', title: 'Allow a file edit?', display: [{ label: 'File', text: args.Path, mono: true }], note: false };
+  }
+  return approval ? { provider: 'antigravity', sessionKey: hook.conversationId.toLowerCase(), approval } : null;
+}
+
 async function postAgyQuestion(body, { env = process.env } = {}) {
   const runtime = await readServiceRuntime(env);
   if (!runtime) return;
@@ -151,9 +173,13 @@ export async function agyHook(args, { stdin = process.stdin, write = (text) => p
     const hook = JSON.parse(text);
     if (!hook || typeof hook !== 'object' || Array.isArray(hook) || hook.hookEventName !== event) return 0;
     await (options.writeRecord || writeAgyRecord)(hook, options);
+    const post = options.postWait || options.postQuestion || postAgyQuestion;
     if (event === 'PreToolUse' && hook.toolCall?.name === QUESTION_TOOL) {
       const payload = agyQuestionPayload(hook);
-      if (payload) await (options.postQuestion || postAgyQuestion)(payload, options).catch(() => {});
+      if (payload) await post(payload, options).catch(() => {});
+    } else if (event === 'PreToolUse' && APPROVAL_TOOLS.has(hook.toolCall?.name)) {
+      const payload = await agyApprovalPayload(hook);
+      if (payload) await post(payload, options).catch(() => {});
     }
     if (event === 'Stop') {
       const continuation = await takeAgyMailbox(hook, options.env);

@@ -713,3 +713,75 @@ test('opencode question records stay open while OPENCODE_QUESTION_WAIT is set an
   await fetch(`${base}/api/dashboard?force=1`);
   assert.equal(store.forSession('opencode', sessionId), null);
 });
+
+test('antigravity approval records stay hidden until onScreen, show waiting on the row, and route decisions through approveAgy', async (t) => {
+  let at = Date.now();
+  const store = createClaudeQuestions({ now: () => at });
+  const id = '9d482c79-a221-41ba-96c9-1c571ac0565b';
+  const approval = { kind: 'tool', title: 'Allow a shell command?', display: [{ label: 'Command', text: 'touch a.txt', mono: true }], note: false };
+  const { requestId } = store.open({ provider: 'antigravity', sessionKey: id, approval });
+  // Hidden until onScreen is true, and survives sweep()
+  assert.equal(store.forSession('antigravity', id), null);
+  at += 120_000;
+  store.sweep();
+  assert.equal(store.openRecords().some((r) => r.requestId === requestId), true);
+  assert.equal(store.forSession('antigravity', id), null);
+  store.setOnScreen(requestId, true);
+  assert.equal(store.forSession('antigravity', id)?.requestId, requestId);
+
+  let approveResult = false;
+  const decisions = [];
+  const tempAgy = await mkdtemp(path.join(os.tmpdir(), 'asb-agy-approve-'));
+  t.after(() => rm(tempAgy, { recursive: true, force: true }));
+  const { processStart } = await import('../src/claude-registry.mjs');
+  const agyStartTicks = await processStart(process.pid);
+  await writeFile(path.join(tempAgy, `${id}.json`), JSON.stringify({
+    conversationId: id, workspace: tempAgy, state: 'working', stateAtMs: at, createdAtMs: at - 1000,
+    agyPid: process.pid, agyStartTicks,
+  }), { mode: 0o600 });
+  const server = createSwitchboardServer({
+    pendingStatePath: false,
+    dashboardWatchPaths: [],
+    loadDashboard: async (opts) => loadSwitchboardDashboard({
+      ...opts,
+      nowMs: at,
+      sources: [{ id: 'antigravity', provider: 'antigravity', label: 'Antigravity CLI', dataDir: tempAgy, enabled: true, builtin: true, launcher: '' }],
+      loadCodex: async () => ({ threads: [] }),
+      loadClaude: async () => ({ threads: [] }),
+      loadOpenCode: async () => ({ threads: [] }),
+      agyWaits: () => new Map(store.openRecords().filter((r) => r.provider === 'antigravity' && r.kind === 'approval' && r.onScreen === true).map((r) => [r.sessionKey, r])),
+    }),
+    claudeQuestions: store,
+    answerEnabled: () => true,
+    approveEnabled: () => true,
+    phonePaired: async () => true,
+    approveAgy: async (_thread, _approval, decision) => { decisions.push(decision); return approveResult; },
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const board = await (await fetch(`${base}/api/dashboard?force=1&text=1`)).json();
+  const row = board.threads.find((item) => item.externalId === id);
+  assert.deepEqual([row.state, row.actionRequired, row.approval?.requestId], ['waiting', true, requestId]);
+
+  const sendDecision = async (reqId, decision) => {
+    const reply = await fetch(`${base}/api/threads/${encodeURIComponent(`agy:${id}`)}/answer`, {
+      method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: reqId, decision }),
+    });
+    return { status: reply.status, json: await reply.json() };
+  };
+  // Gone dialog -> 409 closed, record stays open
+  approveResult = null;
+  assert.deepEqual(await sendDecision(requestId, 'allow'), { status: 409, json: { error: 'This request is closed.' } });
+  assert.equal(store.forSession('antigravity', id)?.requestId, requestId);
+  // Stuck dialog -> 409 cannot answer, record stays open
+  approveResult = false;
+  assert.deepEqual(await sendDecision(requestId, 'deny'), { status: 409, json: { error: 'Cannot answer in agy now. Answer on the PC.' } });
+  assert.equal(store.forSession('antigravity', id)?.requestId, requestId);
+  // Verified -> 200 and record answered
+  approveResult = true;
+  assert.deepEqual(await sendDecision(requestId, 'allow'), { status: 200, json: { answered: true } });
+  assert.equal(store.forSession('antigravity', id), null);
+  assert.deepEqual(decisions, ['allow', 'deny', 'allow']);
+});
