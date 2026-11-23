@@ -1015,7 +1015,6 @@ fun SessionsScreen(
         busy = inspectorRow.id in state.busyIds,
         error = state.actionErrors[inspectorRow.id],
         offline = state.offline,
-        lastUpdateMs = state.lastUpdateMs,
         nowMs = nowMs,
         workingNowMs = workingNowMs,
         serverName = serverName,
@@ -1654,7 +1653,7 @@ private val INSPECTOR_MARGIN = 16.dp
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionInspector(
-    row: Thread, point: Offset, busy: Boolean, error: String?, offline: Boolean, lastUpdateMs: Long, nowMs: Long, workingNowMs: Long,
+    row: Thread, point: Offset, busy: Boolean, error: String?, offline: Boolean, nowMs: Long, workingNowMs: Long,
     serverName: String, viewModel: SessionsViewModel,
     windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
 ) {
@@ -1686,6 +1685,9 @@ private fun SessionInspector(
         if (pending && focused == key) refocus = key
         return pending
     }
+    var kept by remember(row.id) { mutableStateOf<PhoneQuestion?>(null) }
+    val questionCard = keptQuestion(kept, row.question)
+    SideEffect { row.question?.let { kept = it } }
     val controls = rowPanelControls(row)
     LaunchedEffect(row, busy, refocus) {
         if (!busy) {
@@ -1731,7 +1733,9 @@ private fun SessionInspector(
                     .semantics { paneTitle = title },
             ) {
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(12.dp)) {
-                    row.question?.let { QuestionCardPanel(row.id, it, offline, lastUpdateMs, viewModel, text, muted, group, onDismiss) }
+                    questionCard.question?.let {
+                        QuestionCardPanel(row.id, it, questionCard.closed, offline, viewModel, text, muted, group, onDismiss)
+                    }
                     Column(
                         Modifier.padding(start = 2.dp, end = 2.dp, bottom = 12.dp).semantics(mergeDescendants = true) { },
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -1905,13 +1909,12 @@ private fun SessionInspector(
 /** The question card at the top of the inspector; [QuestionCard] holds its logic, and its choices live in this screen only. */
 @Composable
 private fun QuestionCardPanel(
-    rowId: String, question: PhoneQuestion, offline: Boolean, lastUpdateMs: Long, viewModel: SessionsViewModel,
+    rowId: String, question: PhoneQuestion, closed: Boolean, offline: Boolean, viewModel: SessionsViewModel,
     text: Color, muted: Color, group: String, onDone: () -> Unit,
 ) {
     var card by remember(rowId, question.requestId) { mutableStateOf(QuestionCard(question)) }
-    if (!card.shownFor(question, lastUpdateMs)) return
     val keyboard = LocalSoftwareKeyboardController.current
-    val enabled = !card.locked
+    val enabled = !closed && !card.locked
     Column(
         Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(10.dp)).background(hexColor(group))
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -1956,7 +1959,7 @@ private fun QuestionCardPanel(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
             )
         }
-        card.note(offline)?.let {
+        card.note(offline, closed)?.let {
             Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         }
@@ -1967,16 +1970,18 @@ private fun QuestionCardPanel(
                     keyboard?.hide()
                     card = card.sending()
                     viewModel.answer(rowId, card.requestId, answers) { reply ->
-                        card = card.replied(reply, viewModel.state.value.lastUpdateMs)
-                        // The banner says the result; the card goes at the next read anyway.
+                        card = card.replied(reply)
+                        // The banner says the result after the inspector closes.
                         if (reply != null && answerBanner(reply) != null) onDone()
                     }
                 }
             },
-            enabled = card.canSend(question, offline),
+            enabled = card.canSend(question, offline, closed),
             shape = RoundedCornerShape(8.dp),
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                .then(if (enabled && answers == null) Modifier.semantics { contentDescription = SEND_NOT_READY } else Modifier),
+                .then(card.sendDescription(question, closed)?.let { description ->
+                    Modifier.semantics { contentDescription = description }
+                } ?: Modifier),
         ) {
             Text("Send", fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }

@@ -9,19 +9,24 @@ import local.asb.companion.net.AnswerReply
 const val OTHER_LIMIT = 2_000
 
 const val SEND_NOT_READY = "Send, answer each question first"
+const val QUESTION_CLOSED = "This question is closed."
+const val SEND_CLOSED = "Send, this question is closed"
+
+data class KeptCard(val question: PhoneQuestion?, val closed: Boolean)
+
+fun keptQuestion(kept: PhoneQuestion?, live: PhoneQuestion?): KeptCard =
+    KeptCard(live ?: kept, closed = live == null && kept != null)
 
 enum class CardStatus { Ready, Sending, Sent, Closed, Off, Refused }
 
 /**
- * The question card of the inspector: the chosen labels and the Other text of each question, in memory only. [repliedAtMs] is the
- * time of the dashboard read on screen when the reply came, so a Closed card goes at the next read.
+ * The question card of the inspector: the chosen labels and the Other text of each question, in memory only.
  */
 data class QuestionCard(
     val requestId: String,
     val selected: List<List<String>>,
     val other: List<String>,
     val status: CardStatus = CardStatus.Ready,
-    val repliedAtMs: Long = 0,
 ) {
     constructor(question: PhoneQuestion) : this(question.requestId, question.questions.map { emptyList() }, question.questions.map { "" })
 
@@ -61,12 +66,19 @@ data class QuestionCard(
         }
     }
 
-    fun canSend(question: PhoneQuestion, offline: Boolean): Boolean = !locked && !offline && answers(question) != null
+    fun canSend(question: PhoneQuestion, offline: Boolean, closed: Boolean = false): Boolean =
+        !closed && !locked && !offline && answers(question) != null
+
+    fun sendDescription(question: PhoneQuestion, closed: Boolean): String? = when {
+        closed -> SEND_CLOSED
+        !locked && answers(question) == null -> SEND_NOT_READY
+        else -> null
+    }
 
     fun sending(): QuestionCard = copy(status = CardStatus.Sending)
 
     /** [reply] is null after a network or other error: the card can send again, and the inspector shows the error. */
-    fun replied(reply: AnswerReply?, readMs: Long): QuestionCard = copy(repliedAtMs = readMs, status = when (reply) {
+    fun replied(reply: AnswerReply?): QuestionCard = copy(status = when (reply) {
         null -> CardStatus.Ready
         AnswerReply.Sent -> CardStatus.Sent
         AnswerReply.Closed -> CardStatus.Closed
@@ -74,12 +86,9 @@ data class QuestionCard(
         AnswerReply.Refused -> CardStatus.Refused
     })
 
-    /** False once the row has no question or another one, and for a Closed card after the next dashboard read. */
-    fun shownFor(question: PhoneQuestion?, lastUpdateMs: Long): Boolean =
-        question?.requestId == requestId && !(status == CardStatus.Closed && lastUpdateMs > repliedAtMs)
-
     /** The muted state line under the questions, or null. */
-    fun note(offline: Boolean): String? = when {
+    fun note(offline: Boolean, closed: Boolean = false): String? = when {
+        closed -> QUESTION_CLOSED
         status == CardStatus.Sending -> "Sending"
         status == CardStatus.Sent -> "Sent"
         status == CardStatus.Closed -> "Answered on the PC"

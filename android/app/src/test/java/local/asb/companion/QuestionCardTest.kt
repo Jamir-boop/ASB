@@ -7,12 +7,16 @@ import local.asb.companion.data.PhoneAnswer
 import local.asb.companion.data.PhoneQuestion
 import local.asb.companion.data.QuestionItem
 import local.asb.companion.data.QuestionOption
+import local.asb.companion.data.Store
 import local.asb.companion.data.Thread
 import local.asb.companion.net.AnswerReply
 import local.asb.companion.notify.BIT_INPUT
 import local.asb.companion.notify.notificationTag
 import local.asb.companion.notify.update
 import local.asb.companion.ui.CardStatus
+import local.asb.companion.ui.QUESTION_CLOSED
+import local.asb.companion.ui.SEND_CLOSED
+import local.asb.companion.ui.keptQuestion
 import local.asb.companion.ui.OTHER_LIMIT
 import local.asb.companion.ui.QuestionCard
 import local.asb.companion.ui.cleanOther
@@ -77,6 +81,74 @@ class QuestionCardTest {
         val saved = AsbJson.encodeToString(update(null, listOf(row("""{"id":"one","questionAttention":true,"question":$validJson}""")), 1000))
         assertFalse(saved.contains("Which order"))
         assertFalse(saved.contains("Oldest"))
+        val preferences = MemoryPreferences(mutableMapOf("token" to "paired"))
+        val store = Store(preferences)
+        val kept = keptQuestion(question, null)
+        val choices = QuestionCard(kept.question!!).type(question, 0, "Private Other answer")
+        store.saveBaselineIfPaired("paired", saved, "")
+        assertEquals(saved, Store(preferences).baseline)
+        assertSame(question, kept.question)
+        assertEquals("Private Other answer", choices.other[0])
+        val atRest = preferences.values.toString()
+        for (text in listOf("Which order", "Which checks", "Oldest", "First in, first out", "Private Other answer", id)) {
+            assertFalse(text, atRest.contains(text))
+        }
+    }
+
+    @Test fun aQuestionThatLeavesTheRowStaysClosedInPlace() {
+        val live = keptQuestion(null, question)
+        assertSame(question, live.question)
+        assertFalse(live.closed)
+        val kept = keptQuestion(live.question, null)
+        assertSame(question, kept.question)
+        assertTrue(kept.closed)
+        assertEquals(kept, keptQuestion(kept.question, null))
+    }
+
+    @Test fun theSameRequestBackMakesTheKeptChoicesLiveAgain() {
+        val choices = QuestionCard(question).choose(question, 0, "newest").type(question, 1, "More checks")
+        val kept = keptQuestion(question, null)
+        val back = keptQuestion(kept.question, question.copy())
+        assertFalse(back.closed)
+        assertEquals(choices.requestId, back.question!!.requestId)
+        assertEquals(listOf("newest"), choices.selected[0])
+        assertEquals("More checks", choices.other[1])
+        assertTrue(choices.canSend(back.question, offline = false, closed = back.closed))
+    }
+
+    @Test fun aNewRequestReplacesTheKeptQuestionAndStartsWithNewChoices() {
+        val choices = QuestionCard(question).choose(question, 0, "newest").type(question, 1, "More checks")
+        val next = question.copy(requestId = "f".repeat(32))
+        val replaced = keptQuestion(question, next)
+        assertSame(next, replaced.question)
+        assertFalse(replaced.closed)
+        assertFalse(choices.requestId == replaced.question!!.requestId)
+        val fresh = QuestionCard(replaced.question)
+        assertEquals(listOf(emptyList<String>(), emptyList<String>()), fresh.selected)
+        assertEquals(listOf("", ""), fresh.other)
+        assertNull(fresh.answers(next))
+    }
+
+    @Test fun noQuestionMeansNoCard() {
+        val empty = keptQuestion(null, null)
+        assertNull(empty.question)
+        assertFalse(empty.closed)
+    }
+
+    @Test fun aKeptClosedCardCannotSendAndItsNoteWinsOverOfflineAndReplyNotes() {
+        val ready = QuestionCard(question).choose(question, 0, "newest").choose(question, 1, "Docs")
+        val kept = keptQuestion(question, null)
+        assertFalse(ready.canSend(kept.question!!, offline = false, closed = kept.closed))
+        assertFalse(ready.canSend(kept.question, offline = true, closed = kept.closed))
+        assertEquals("Send, this question is closed", SEND_CLOSED)
+        assertEquals(SEND_CLOSED, ready.sendDescription(kept.question, kept.closed))
+        assertEquals("This question is closed.", QUESTION_CLOSED)
+        for (offline in listOf(false, true)) {
+            for (status in CardStatus.entries) assertEquals(QUESTION_CLOSED, ready.copy(status = status).note(offline, kept.closed))
+        }
+        assertEquals("Offline", ready.note(offline = true))
+        assertFalse(ready.canSend(question, offline = true))
+        assertNull(ready.sendDescription(question, closed = false))
     }
 
     @Test fun answerBodiesAndTheValidAnswerRule() {
@@ -128,33 +200,26 @@ class QuestionCardTest {
         assertEquals("Sending", sending.note(false))
         assertFalse(sending.canSend(question, false))
         assertSame(sending, sending.choose(question, 0, " Oldest "))
-        // Sent stays while the dashboard keeps the request ID, and goes once the row has no question.
-        val sent = sending.replied(AnswerReply.Sent, 100)
+        val sent = sending.replied(AnswerReply.Sent)
         assertEquals("Sent", sent.note(false))
-        assertTrue(sent.shownFor(question, 200))
-        assertFalse(sent.shownFor(null, 200))
-        // Closed goes at the next read, also while the PC still sends the question.
-        val closed = sending.replied(AnswerReply.Closed, 100)
+        val closed = sending.replied(AnswerReply.Closed)
         assertEquals("Answered on the PC", closed.note(false))
-        assertTrue(closed.shownFor(question, 100))
-        assertFalse(closed.shownFor(question, 101))
-        val off = sending.replied(AnswerReply.Off, 100)
+        val off = sending.replied(AnswerReply.Off)
         assertEquals("Answers are off on the PC.", off.note(false))
         assertTrue(off.canSend(question, false))
-        val refused = sending.replied(AnswerReply.Refused, 100)
+        val refused = sending.replied(AnswerReply.Refused)
         assertEquals("The PC did not take this answer.", refused.note(false))
         assertTrue(refused.canSend(question, false))
         // A network error: Send works again; the inspector shows the error.
-        val failed = sending.replied(null, 100)
+        val failed = sending.replied(null)
         assertEquals(CardStatus.Ready, failed.status)
         assertNull(failed.note(false))
         assertTrue(failed.canSend(question, false))
         // Offline blocks Send.
         assertFalse(ready.canSend(question, offline = true))
         assertEquals("Offline", ready.note(true))
-        // A new request ID on the same row: the old card does not show, and a new card starts empty.
+        // A new request ID on the same row: the old choices do not answer it, and a new card starts empty.
         val next = question.copy(requestId = "f".repeat(32))
-        assertFalse(ready.shownFor(next, 0))
         assertNull(ready.answers(next))
         assertEquals(QuestionCard(next.requestId, listOf(emptyList(), emptyList()), listOf("", "")), QuestionCard(next))
     }
