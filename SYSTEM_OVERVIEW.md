@@ -775,7 +775,7 @@ Limits: one card for each local root session. A card comes only when OpenCode it
 
 ### Answer Codex questions from the phone
 
-The Codex app and CLI need ASB Bridge and a session on the shared Codex app-server. Codex shows `request_user_input` in Plan mode, and in Default mode only when `default_mode_request_user_input` is on. Not tested end to end.
+The Codex app and CLI need ASB Bridge and a session on the shared Codex app-server. Codex shows `request_user_input` in Plan mode, and in Default mode only when `default_mode_request_user_input` is on. Checked end to end on 2026-11-23 with the Codex CLI 0.171.0 on the shared app-server in Plan mode, through the phone answer route (the answer reached the model); the Codex app was not checked.
 
 The Bridge subscribes with `thread/resume`. It handles the `item/tool/requestUserInput` server request for its thread, including a request that Codex sends again on subscription. The Bridge opens a question with `POST /api/agent/wait` and polls `POST /api/agent/wait/<requestId>`. The engine uses the question switches and pairing check, not the approval switch or the 28 s approval limit. The card needs one to four questions, with one to eight options for each and no secret questions. The Bridge maps `isOther` to `allowOther`. The Android app does not read this flag. If it is false, the engine refuses Other text with HTTP 400 before it saves an answer. The default for the other clients stays true.
 
