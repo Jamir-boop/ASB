@@ -302,7 +302,7 @@ function opencodeApproval(data: Record<string, unknown>, part: ToolPart | null, 
   }
   if (data.action === 'edit' && (part.name === 'write' || part.name === 'edit')) {
     const path = input.path;
-    if (!whole(path) || path !== resources[0]) return null;
+    if (!whole(path) || resources.length !== 1 || path !== resources[0]) return null;
     const length = (value: unknown) => typeof value === 'string' ? value.length : 0;
     const size = part.name === 'write' ? `${length(input.content)} characters` : `${length(input.oldString)} to ${length(input.newString)} characters`;
     const display = [item('File', path)];
@@ -331,9 +331,12 @@ function askPhone(co: Coordinator, receiver: Receiver, data: Record<string, unkn
   const controller = new AbortController();
   co.approvals.set(requestId, { controller, root: sessionKey, location: directory });
   void (async () => {
+    // No engine: no context read (it reads the whole session).
+    const runtime = engineRuntime();
+    if (!runtime) return;
     const approval = opencodeApproval(data, await toolPartOf(owner.ctx, data), directory, subagent);
     if (!approval || controller.signal.aborted) return;
-    const decided = await waitForDecision(engineRuntime(), 'opencode', sessionKey, approval, controller.signal);
+    const decided = await waitForDecision(runtime, 'opencode', sessionKey, approval, controller.signal);
     if (!decided || controller.signal.aborted) return;
     // A failed reply is not tried again: the TUI dialog stays for the PC.
     try { await owner.ctx.permission.reply(permissionReply(String(data.sessionID), requestId, decided)); }

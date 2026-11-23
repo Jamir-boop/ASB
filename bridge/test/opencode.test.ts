@@ -1286,6 +1286,7 @@ test('the file card shows the path and sizes only, with the folder for a relativ
   for (const [data, part, folder] of [
     [edit('b.txt'), { name: 'write', input: { path: 'sub/b.txt', content: '' } }, FOLDER],
     [edit('/work/b.txt'), { name: 'write', input: { path: 'b.txt', content: '' } }, FOLDER],
+    [{ ...edit('b.txt'), resources: ['b.txt', 'c.txt'] }, { name: 'write', input: { path: 'b.txt', content: '' } }, FOLDER],
     [edit('b.txt'), { name: 'patch', input: { path: 'b.txt' } }, FOLDER],
     [edit('/work/tree'), { name: 'worktree_remove', input: { directory: '/work/tree' } }, FOLDER],
     [edit('b.txt'), { name: 'write', input: { content: '' } }, FOLDER],
@@ -1373,13 +1374,15 @@ posix('no reply without an answered allow or deny, and no record without the exa
     expect(opens(run.engine)).toBe(0);
     expect(run.replies).toEqual([]);
   } finally { await run.done(); }
-  // No engine: no reply.
+  // No engine: no context read and no reply.
   const alone = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }));
   try {
     alone.engine.close();
+    let reads = 0;
+    (alone.instance.ctx as Record<string, any>).session.context = async () => { reads += 1; return []; };
     await alone.ask();
     await settle(100);
-    expect(alone.replies).toEqual([]);
+    expect([reads, alone.replies]).toEqual([0, []]);
   } finally { await alone.done(); }
 });
 
