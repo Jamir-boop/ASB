@@ -309,8 +309,12 @@ notification of that row opens its inspector. After Send, `Answer sent` or
 `Answers are off on the PC.` and `The PC did not take this answer.` stay on the
 card. `Answer sent` means that the hook on the PC has the answer, not that
 Claude took it: a PC answer at the same moment wins. The question and the
-answer stay in memory only. The card is checked by tests only (no device look
-yet).
+answer stay in memory only. When the question leaves the row while the
+inspector is open (answered on the PC, for example), the card stays in place
+with its controls off and the line `This question is closed.` until the
+inspector closes, so the controls below it do not move. The card is checked
+on a real phone (a test copy of the app) and end to end with a desktop Code
+session; TalkBack is not checked on a device.
 
 Settings > Card marks explains each card mark.
 
