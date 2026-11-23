@@ -1226,12 +1226,22 @@ export function createSwitchboardServer(options = {}) {
       }
       // Before the merge, the rows are local only: they set the scan interval of this engine.
       const localRefreshIntervalMs = switchboardRefreshInterval(loaded);
+      for (const row of loaded.threads) {
+        if (row.remote) continue;
+        // A Claude record is for a CLI session ID; another app's record is for the row's own ID in that app.
+        const keys = row[CLI_SESSION_IDS] ? row[CLI_SESSION_IDS].map((id) => ['claude', id]) : [[row.provider, row.externalId]];
+        Object.defineProperty(row, CLAUDE_QUESTION, { configurable: true, get: () => {
+          const record = keys.map(([provider, key]) => claudeQuestions.forSession(provider, key)).find(Boolean);
+          return !record ? null : record.kind === 'question' ? { kind: 'question', requestId: record.requestId, questions: record.questions }
+            : { kind: 'approval', requestId: record.requestId, approval: record.approval };
+        } });
+      }
       options.machineGroup?.merge(loaded);
       if (loaded.threads.some((row) => row[OFFLINE_MEMBER])) Object.defineProperty(loaded, 'nextStatusCheckAtMs',
         { value: Math.min(loaded.nextStatusCheckAtMs || Infinity, Date.now() + 30_000), configurable: true });
       const dashboard = await tracker.observe(loaded, options.machineGroup?.memberIds?.());
       dashboard.sourcesRevision = sources ? appSourcesRevision(sources) : null;
-      // The pending questions close the phone questions that the PC answered; each row reads its open question live from the store.
+      // Close the phone requests that the PC answered. The getters read the open record live, also for a cached member export.
       claudeQuestions.reconcile('claude', 'question', new Set(dashboard.threads.flatMap((row) => row[QUESTION_SESSIONS] || [])));
       claudeQuestions.reconcile('claude', 'approval', new Set(dashboard.threads.flatMap((row) => row[APPROVAL_SESSIONS] || [])));
       claudeQuestions.reconcile('opencode', 'approval', new Set(dashboard.threads.flatMap((row) => row[OPENCODE_APPROVAL_SESSIONS] || [])));
@@ -1243,16 +1253,6 @@ export function createSwitchboardServer(options = {}) {
       if (codexRecords.length) {
         const localCodex = new Set(dashboard.threads.filter((row) => !row.remote && row.provider === 'codex').map((row) => row.externalId));
         for (const { requestId, sessionKey } of codexRecords) if (!localCodex.has(sessionKey)) claudeQuestions.close(requestId);
-      }
-      for (const row of dashboard.threads) {
-        if (row.remote) continue;
-        // A Claude record is for a CLI session ID; another app's record is for the row's own ID in that app.
-        const keys = row[CLI_SESSION_IDS] ? row[CLI_SESSION_IDS].map((id) => ['claude', id]) : [[row.provider, row.externalId]];
-        Object.defineProperty(row, CLAUDE_QUESTION, { configurable: true, get: () => {
-          const record = keys.map(([provider, key]) => claudeQuestions.forSession(provider, key)).find(Boolean);
-          return !record ? null : record.kind === 'question' ? { kind: 'question', requestId: record.requestId, questions: record.questions }
-            : { kind: 'approval', requestId: record.requestId, approval: record.approval };
-        } });
       }
       // The sound baseline keeps the bits of an offline member's rows, so its return plays only what is new.
       sound?.({ ...dashboard, threads: dashboard.threads.filter((row) => !row[OFFLINE_MEMBER]) });

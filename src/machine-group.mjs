@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createPeerPoller, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, mergePeerRows, peerRequest, validActivity } from './machine-peers.mjs';
 import { phoneSettingsPath, privateIPv4, tailscaleIPv4 } from './phone-gateway.mjs';
-import { localMachineName } from './switchboard.mjs';
+import { CLAUDE_QUESTION, localMachineName } from './switchboard.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
 
 export const GROUP_SCHEMA = 1;
@@ -353,10 +353,33 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
     memberIds: () => started ? (group ? activeMembers(group).map((member) => member.machineId) : []) : null,
     // Decision D: the export comes from the loaded dashboard before the merge, while it has only local rows.
     merge: (dashboard, nowMs = now()) => {
-      exported = group ? exportBody(exportLocalSessions(dashboard, group.self, nowMs)) : null;
+      exported = group ? { data: exportLocalSessions(dashboard, group.self, nowMs), localRows: dashboard.threads } : null;
       return group ? mergePeerRows(dashboard, peerStates(), group.self, nowMs) : dashboard;
     },
     peerStates,
+    // Pairings already sync in group.json. The poll lets a newer phone PC prove that it can take the request now.
+    memberPhoneReady: (kind, recentlySeen) => Boolean(group) && activePhones(group).some(({ addedBy }) => {
+      const state = pollers.get(addedBy)?.state;
+      const phone = state?.sessions?.phoneAnswers;
+      return state?.online && now() - state.lastOkAtMs < 10_000 && phone
+        && (kind === 'question' || phone.approve) && (!recentlySeen || phone.recent);
+    }),
+    answerMember: async (thread, answer) => {
+      const state = pollers.get(thread.machineId)?.state;
+      const closed = () => reply(409, { error: 'This question is closed.' });
+      if (!state?.online) return closed();
+      try {
+        const threadId = thread.id.slice(`m:${state.member.machineId}:`.length);
+        // A fresh scan or agy typing can take longer than the default peer timeout.
+        const result = await request({ member: state.member, path: '/peer/v1/answer', method: 'POST', body: { threadId, answer },
+          tls: await tls(), lastAddress: state.lastAddress, timeoutMs: 25_000, maxBytes: 1024 });
+        if (result.status === 200 && result.body?.answered === true) return reply(200, { answered: true });
+        if (result.status === 400) return reply(400, { error: 'Invalid answer.' });
+        if ([404, 409, 410].includes(result.status)) return result.status === 409 && result.body?.error === 'Cannot answer in agy now. Answer on the PC.'
+          ? reply(409, { error: result.body.error }) : closed();
+      } catch {}
+      return reply(503, { error: 'Cannot save the answer on the session machine.' });
+    },
     // Contract 4, the asking side: the activity of each active member, asked in parallel (5 s timeout each), by name.
     activity: async (period) => {
       if (!ACTIVITY_PERIODS.includes(period)) throw new Error('Invalid period.');
@@ -502,11 +525,41 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
       }),
       group: async () => withoutSelf(group),
       sessions: async (ifNoneMatch) => {
-        await server()?.dashboardForRequest();
+        const asb = server();
+        await asb?.dashboardForRequest();
         // A cached dashboard from before the group has no export.
-        if (!exported) await server()?.dashboardForRequest({ force: true });
-        if (!exported) return { status: 503, etag: '', body: JSON.stringify({ error: 'ASB has no session list yet.' }) };
-        return ifNoneMatch === exported.etag ? { status: 304, etag: exported.etag, body: '' } : { status: 200, ...exported };
+        if (!exported) await asb?.dashboardForRequest({ force: true });
+        const recent = await asb?.phoneApprovalRecentlySeen?.() === true;
+        if (!group || !exported) return { status: 503, etag: '', body: JSON.stringify({ error: 'ASB has no session list yet.' }) };
+        const { data, localRows } = exported;
+        const phones = activePhones(group);
+        const answer = gateway().answerReady?.() === true;
+        const approve = gateway().approveReady?.() === true;
+        const phoneAnswers = answer && phones.some(({ addedBy }) => addedBy === group.self.machineId)
+          ? { approve, recent: approve && recent } : null;
+        const requests = new Map();
+        // Open records can change between dashboard scans. Add them only to the peer reply, not the cached export.
+        if (answer && phones.length && asb?.hasOpenPhoneRequests?.()) {
+          for (const row of localRows) {
+            const record = row[CLAUDE_QUESTION];
+            if (!row.remote && !row.remoteCache && !row.archived && record && (record.kind === 'question' || approve)) requests.set(row.id, record);
+          }
+        }
+        const payload = phoneAnswers ? { ...data, phoneAnswers } : data;
+        const flags = JSON.stringify(phoneAnswers);
+        if (exported.flags !== flags) {
+          exported.cached = exportBody(payload);
+          exported.flags = flags;
+        }
+        const current = requests.size ? exportBody({ ...payload,
+          rows: data.rows.map((row) => requests.has(row.id) ? { ...row, phoneRequest: requests.get(row.id) } : row) }) : exported.cached;
+        return ifNoneMatch === current.etag ? { status: 304, etag: current.etag, body: '' } : { status: 200, ...current };
+      },
+      answer: async (value) => {
+        if (!value || !fields(value, ['threadId', 'answer']) || typeof value.threadId !== 'string' || !value.threadId || value.threadId.length > 512) {
+          return reply(400, { error: 'Invalid answer.' });
+        }
+        return server()?.answerLocalThread?.(value.threadId, value.answer) ?? reply(409, { error: 'This question is closed.' });
       },
       // GET /peer/v1/activity (contract 4): this machine's local records only, never text.
       activity: async (period) => {

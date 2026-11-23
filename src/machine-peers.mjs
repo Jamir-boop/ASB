@@ -4,7 +4,8 @@ import https from 'node:https';
 import { createSecureContext } from 'node:tls';
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
-import { ACTION_AT, OFFLINE_MEMBER, QUESTION_AT, byRowTime, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
+import { ACTION_AT, CLAUDE_QUESTION, OFFLINE_MEMBER, QUESTION_AT, byRowTime, sessionKeyLookup, sessionMessageKeys, sortSessionMessages, switchboardRefreshInterval } from './switchboard.mjs';
+import { checkedApproval, checkedQuestions } from './claude-questions.mjs';
 import { SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
 import { rowReference, shortReference, validScopeTag } from './session-references.mjs';
 import { validSessions } from './usage-aggregation.mjs';
@@ -88,19 +89,39 @@ export function exportBody(exported) {
   return { body, etag: `"${sha256(JSON.stringify(content))}"` };
 }
 
+// Optional content from newer members. A bad request does not drop the row.
+function checkedPhoneRequest(value) {
+  if (typeof value?.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)) return null;
+  const { kind, requestId } = value;
+  if (kind === 'question') {
+    const questions = checkedQuestions(value.questions);
+    if (questions) return { kind, requestId, questions };
+  } else if (kind === 'approval') {
+    const approval = checkedApproval(value.approval);
+    if (approval) return { kind, requestId, approval };
+  }
+  return null;
+}
+
 // A reply from a member: only valid rows and the whitelisted fields.
 export function validExport(value, member) {
   if (!value || typeof value !== 'object' || value.api !== 1 || value.machineId !== member.machineId || !Array.isArray(value.rows)
     || value.rows.length > MAX_EXPORT_ROWS || !value.keys || typeof value.keys !== 'object' || Array.isArray(value.keys) || !Array.isArray(value.incoming)) return null;
   const rows = value.rows.filter((row) => row && typeof row === 'object' && typeof row.id === 'string' && row.id && row.id.length <= 512
-    && Object.keys(EXPORT_FIELDS).every((key) => row[key] === undefined || EXPORT_FIELDS[key](row[key]))).map(pick);
+    && Object.keys(EXPORT_FIELDS).every((key) => row[key] === undefined || EXPORT_FIELDS[key](row[key]))).map((row) => {
+    const phoneRequest = checkedPhoneRequest(row.phoneRequest);
+    return phoneRequest ? { ...pick(row), phoneRequest } : pick(row);
+  });
   const ids = new Set(rows.map((row) => row.id));
   const keys = Object.fromEntries(Object.entries(value.keys).filter(([id, list]) => ids.has(id) && Array.isArray(list))
     .map(([id, list]) => [id, list.filter((key) => typeof key === 'string' && key && key.length <= 300).slice(0, 64)]));
   const incoming = value.incoming.filter((message) => message && ids.has(message.to) && typeof message.from === 'string'
     && message.from && message.from.length <= 300 && NUMBER(message.atMs)).slice(0, MAX_EXPORT_INCOMING)
     .map(({ to, from, atMs }) => ({ to, from, atMs }));
-  return { refreshIntervalMs: value.refreshIntervalMs === 2_000 ? 2_000 : 5_000, rows, keys, incoming };
+  const phoneAnswers = value.phoneAnswers && BOOLEAN(value.phoneAnswers.approve) && BOOLEAN(value.phoneAnswers.recent)
+    ? { approve: value.phoneAnswers.approve, recent: value.phoneAnswers.recent } : null;
+  return { refreshIntervalMs: value.refreshIntervalMs === 2_000 ? 2_000 : 5_000, rows, keys, incoming,
+    ...(phoneAnswers ? { phoneAnswers } : {}) };
 }
 
 // Plan 13.4.3: add the rows of each member to this engine's dashboard, in place.
@@ -115,7 +136,7 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
     const offline = !peer.online;
     if (offline && nowMs - peer.lastOkAtMs >= OFFLINE_KEEP_MS) continue;
     const rowId = (id) => `m:${member.machineId}:${id}`;
-    for (const { referenceScope, referenceUnavailable, questionAtMs, actionAtMs, ...row } of sessions.rows) {
+    for (const { referenceScope, referenceUnavailable, questionAtMs, actionAtMs, phoneRequest, ...row } of sessions.rows) {
       // The machine comes only from the pinned member; a member with no scope tag is an older ASB.
       // A member-sent code only blocks: with no tag, 'ambiguous-source' (a shared CLI row) replaces 'old-peer'.
       const reference = !referenceScope && referenceUnavailable === 'ambiguous-source' ? { referenceUnavailable }
@@ -127,7 +148,8 @@ export function mergePeerRows(dashboard, peerStates, self, nowMs = Date.now()) {
         machineId: member.machineId, machineName: member.name, remote: true, globalId: `${member.machineId}:${row.id}`,
         remoteCache: false, canOpen: false, appDeepLink: '',
         ...(offline ? { state: 'unknown', reason: `${member.name} is not reachable.`, workingSinceMs: 0, [OFFLINE_MEMBER]: true } : {}) },
-      { [QUESTION_AT]: { value: questionAtMs || 0 }, [ACTION_AT]: { value: actionAtMs || 0 } }));
+      { [QUESTION_AT]: { value: questionAtMs || 0 }, [ACTION_AT]: { value: actionAtMs || 0 },
+        [CLAUDE_QUESTION]: { value: offline ? null : phoneRequest } }));
     }
     for (const [id, keys] of Object.entries(sessions.keys)) peerKeys.push([rowId(id), keys]);
     for (const message of sessions.incoming) peerIncoming.push({ ...message, to: rowId(message.to) });
