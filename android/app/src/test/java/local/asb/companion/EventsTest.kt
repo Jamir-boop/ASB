@@ -1,6 +1,8 @@
 package local.asb.companion
 
 import local.asb.companion.data.Mark
+import local.asb.companion.data.PhoneApproval
+import local.asb.companion.data.PhoneQuestion
 import local.asb.companion.data.Thread
 import local.asb.companion.notify.BIT_DONE
 import local.asb.companion.notify.BIT_FAILED
@@ -8,10 +10,14 @@ import local.asb.companion.notify.BIT_INPUT
 import local.asb.companion.notify.Cleared
 import local.asb.companion.notify.Event
 import local.asb.companion.notify.bits
+import local.asb.companion.notify.childSpec
 import local.asb.companion.notify.cleared
 import local.asb.companion.notify.diff
+import local.asb.companion.notify.notificationId
+import local.asb.companion.notify.notificationTag
 import local.asb.companion.notify.update
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class EventsTest {
@@ -55,6 +61,38 @@ class EventsTest {
         )) {
             assertEquals(listOf(Event(attention, kind)), diff(mapOf(row.id to Mark(0)), listOf(attention), now))
         }
+    }
+
+    private fun approval(id: String) = row.copy(actionRequired = true, approval = PhoneApproval(id, "tool", "Approve?"))
+
+    @Test fun aNewApprovalAlertsAgainOnTheSameNotification() {
+        val previous = approval("a")
+        val next = approval("b")
+        val event = diff(update(null, listOf(previous), now), listOf(next), now).single()
+        assertEquals(Event(next, BIT_INPUT), event)
+        assertEquals(notificationTag(previous.key, BIT_INPUT), notificationTag(event.row.key, event.kind))
+        assertEquals(notificationId(previous.key, BIT_INPUT), notificationId(event.row.key, event.kind))
+        assertFalse(childSpec(event.row, event.kind, "Test PC").onlyAlertOnce)
+        assertEquals(Mark(BIT_INPUT, requestId = "b"), update(null, listOf(next), now)[row.key])
+    }
+
+    @Test fun theSameOrEmptyApprovalIdDoesNotAlertAgain() {
+        val saved = update(null, listOf(approval("a")), now)
+        for (next in listOf(approval("a"), approval(""), row.copy(actionRequired = true))) {
+            assertEquals(emptyList<Event>(), diff(saved, listOf(next), now))
+        }
+        val read = approval("b").copy(actionAttention = false)
+        assertEquals(emptyList<Event>(), diff(saved, listOf(read), now))
+        assertEquals(Cleared(row.key, BIT_INPUT), cleared(saved, listOf(read), "", now).first())
+    }
+
+    @Test fun aNewQuestionOrAnApprovalAfterAQuestionAlertsAgain() {
+        val a = row.copy(questionAttention = true, question = PhoneQuestion("a", emptyList()))
+        val b = a.copy(question = PhoneQuestion("b", emptyList()))
+        assertEquals(listOf(Event(b, BIT_INPUT)), diff(update(null, listOf(a), now), listOf(b), now))
+        val next = approval("c").copy(question = b.question)
+        assertEquals(listOf(Event(next, BIT_INPUT)), diff(update(null, listOf(b), now), listOf(next), now))
+        assertEquals("c", update(null, listOf(next), now)[row.key]?.requestId)
     }
 
     @Test fun newRowsEmitInputThenFailedThenDone() {

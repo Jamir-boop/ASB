@@ -87,10 +87,10 @@ class NotificationActionsTest {
         assertNull(notificationRow(null, "key", ""))
     }
 
-    @Test fun actionMergeKeepsTheOldTimes() {
-        val old = mapOf("row" to Mark(BIT_DONE or BIT_FAILED, 100, 200))
+    @Test fun actionMergeKeepsTheOldTimesAndRequestId() {
+        val old = mapOf("row" to Mark(BIT_DONE or BIT_FAILED or BIT_INPUT, 100, 200, "request"))
         val read = Thread(id = "row", completionAtMs = 300, failedAtMs = 400)
-        assertEquals(mapOf("row" to Mark(0, 100, 200)), mergeActionBaseline(old, read, 1000))
+        assertEquals(mapOf("row" to Mark(0, 100, 200, "request")), mergeActionBaseline(old, read, 1000))
     }
 
     @Test fun actionBaselineMergesByKey() {

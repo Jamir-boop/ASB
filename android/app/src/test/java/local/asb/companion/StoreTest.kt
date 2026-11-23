@@ -230,7 +230,9 @@ class StoreTest {
         val store = Store(MemoryPreferences(mutableMapOf("token" to token)))
         store.saveBaselineIfPaired(token, """{"one":1,"two":6}""", "")
         assertEquals(mapOf("one" to Mark(1), "two" to Mark(6)), store.loadBaselineIfPaired(token, ""))
-        val marks = mapOf("one" to Mark(BIT_DONE, 100, 0), "two" to Mark(BIT_FAILED, 0, 200))
+        store.saveBaselineIfPaired(token, """{"one":{"bits":4,"doneAtMs":100}}""", "")
+        assertEquals(mapOf("one" to Mark(4, doneAtMs = 100, requestId = "")), store.loadBaselineIfPaired(token, ""))
+        val marks = mapOf("one" to Mark(BIT_DONE, 100, 0), "two" to Mark(BIT_FAILED, 0, 200, requestId = "request"))
         store.saveBaselineIfPaired(token, AsbJson.encodeToString(marks), "")
         assertEquals(marks, store.loadBaselineIfPaired(token, ""))
         for (value in listOf("[]", "{\"one\":\"x\"}", "{\"one\":{}}", "nope")) {

@@ -89,9 +89,25 @@ internal fun liveText(lines: List<String>): String = lines.joinToString(" · ")
 
 // Offline retries stay slow: each try can wait for every endpoint to time out. After a network change one retry
 // comes after 3 s, because a VPN that the user just turned on can need a few seconds.
-internal fun liveIntervalMs(threads: List<Thread>?, offline: Boolean, afterNetworkChange: Boolean = false): Long =
-    if (offline && afterNetworkChange) 3_000L
-    else if (!offline && threads.orEmpty().any { !it.archived && it.state == "working" }) 5_000L else 30_000L
+internal fun liveIntervalMs(
+    threads: List<Thread>?, offline: Boolean, afterNetworkChange: Boolean = false, requestAgeMs: Long? = null,
+): Long = if (offline && afterNetworkChange) 3_000L
+    else if (!offline && (requestAgeMs != null && requestAgeMs < 60_000L ||
+        threads.orEmpty().any { !it.archived && it.state == "working" })) 5_000L else 30_000L
+
+internal class LiveRequestWindow {
+    private var previousIds = emptySet<String>()
+    private var startedAtMs: Long? = null
+
+    fun observe(reply: DashboardResult, elapsedMs: Long) {
+        if (reply !is DashboardResult.Fetched) return
+        val ids = reply.dashboard.threads.mapNotNullTo(mutableSetOf()) { it.openRequestId().takeIf(String::isNotEmpty) }
+        if (ids.any { it !in previousIds }) startedAtMs = elapsedMs
+        previousIds = ids
+    }
+
+    fun ageMs(elapsedMs: Long): Long? = startedAtMs?.let { elapsedMs - it }
+}
 
 internal fun liveOfflineText(lastMs: Long, nowMs: Long): String =
     if (lastMs <= 0) "Offline"
@@ -229,6 +245,7 @@ class LiveService : Service() {
         var etagEngine = ""
         var seenNetwork = app.networkChanges.value
         var afterNetworkChange = false
+        val requestWindow = LiveRequestWindow()
         // The first good read also reads hello, so new PC addresses reach the phone.
         var learnAddresses = true
         while (scope.isActive) {
@@ -252,6 +269,7 @@ class LiveService : Service() {
                 try {
                     // Decoding a large dashboard stays off the main thread.
                     val reply = withContext(Dispatchers.Default) { current.dashboard(etag, etagEngine = etagEngine) }
+                    requestWindow.observe(reply, SystemClock.elapsedRealtime())
                     val nowMs = System.currentTimeMillis()
                     when (reply) {
                         is DashboardResult.Fetched -> {
@@ -289,7 +307,8 @@ class LiveService : Service() {
                     show()
                 }
             }
-            withTimeoutOrNull(liveIntervalMs(last?.threads, offline, afterNetworkChange)) {
+            val requestAgeMs = requestWindow.ageMs(SystemClock.elapsedRealtime())
+            withTimeoutOrNull(liveIntervalMs(last?.threads, offline, afterNetworkChange, requestAgeMs)) {
                 app.networkChanges.first { it != seenNetwork }
             }
             afterNetworkChange = app.networkChanges.value != seenNetwork

@@ -4,6 +4,7 @@ import kotlinx.serialization.encodeToString
 import local.asb.companion.data.ApprovalItem
 import local.asb.companion.data.AsbJson
 import local.asb.companion.data.Dashboard
+import local.asb.companion.data.Mark
 import local.asb.companion.data.PhoneApproval
 import local.asb.companion.data.PhoneQuestion
 import local.asb.companion.data.QuestionItem
@@ -91,7 +92,8 @@ class ApprovalCardTest {
 
     @Test fun theSavedBaselineHasNoApprovalText() {
         val saved = AsbJson.encodeToString(update(null, listOf(row("""{"id":"one","questionAttention":true,"approval":$toolJson}""")), 1000))
-        for (text in listOf("npm test", "made-up tests", "Command", id)) assertFalse(text, saved.contains(text))
+        assertEquals(id, AsbJson.decodeFromString<Map<String, Mark>>(saved).getValue("one").requestId)
+        for (text in listOf("npm test", "made-up tests", "Command")) assertFalse(text, saved.contains(text))
     }
 
     @Test fun theCardLinesOfAToolAndAPlan() {

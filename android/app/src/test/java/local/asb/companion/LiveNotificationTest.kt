@@ -1,8 +1,12 @@
 package local.asb.companion
 
+import local.asb.companion.data.Dashboard
+import local.asb.companion.data.PhoneApproval
 import local.asb.companion.data.Thread
+import local.asb.companion.net.DashboardResult
 import local.asb.companion.notify.LiveBadge
 import local.asb.companion.notify.LiveChip
+import local.asb.companion.notify.LiveRequestWindow
 import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.liveBadge
 import local.asb.companion.notify.liveIntervalMs
@@ -43,7 +47,7 @@ class LiveNotificationTest {
         assertEquals(listOf("Working: " + (1..6).joinToString(", ") { "Task $it" }), liveLines(many.take(6)))
     }
 
-    @Test fun intervalIsShortOnlyWhileAnUnarchivedSessionWorks() {
+    @Test fun intervalWithWorkingRowsAndNetworkChanges() {
         assertEquals(5_000L, liveIntervalMs(listOf(row("a", "working")), offline = false))
         assertEquals(30_000L, liveIntervalMs(listOf(row("a", "working", archived = true), row("b")), offline = false))
         assertEquals(30_000L, liveIntervalMs(null, offline = false))
@@ -51,6 +55,45 @@ class LiveNotificationTest {
         // One quick retry after a network change, for a VPN that needs a few seconds.
         assertEquals(3_000L, liveIntervalMs(null, offline = true, afterNetworkChange = true))
         assertEquals(5_000L, liveIntervalMs(listOf(row("a", "working")), offline = false, afterNetworkChange = true))
+    }
+
+    @Test fun intervalIsShortForLessThanAMinuteAfterANewRequest() {
+        val idle = listOf(row("a"))
+        assertEquals(5_000L, liveIntervalMs(idle, offline = false, requestAgeMs = 10_000))
+        assertEquals(5_000L, liveIntervalMs(idle, offline = false, requestAgeMs = 59_900))
+        assertEquals(30_000L, liveIntervalMs(idle, offline = false, requestAgeMs = 60_000))
+        assertEquals(30_000L, liveIntervalMs(idle, offline = false, requestAgeMs = 60_100))
+        assertEquals(30_000L, liveIntervalMs(idle, offline = true, requestAgeMs = 10_000))
+        assertEquals(3_000L, liveIntervalMs(idle, offline = true, afterNetworkChange = true, requestAgeMs = 10_000))
+    }
+
+    private fun fetched(vararg ids: String) = DashboardResult.Fetched(Dashboard(threads = ids.map {
+        row(it, "waiting", pending = true).copy(approval = PhoneApproval(it, "tool", "Approve?"))
+    }), etag = null)
+
+    @Test fun aNewIdInAnyRowRestartsTheWindow() {
+        val window = LiveRequestWindow()
+        window.observe(fetched("a"), 1_000)
+        window.observe(fetched("a", "b"), 51_000)
+        assertEquals(10_100L, window.ageMs(61_100))
+    }
+
+    @Test fun theWindowComparesOnlyWithTheLastGoodRead() {
+        val window = LiveRequestWindow()
+        window.observe(fetched("a"), 1_000)
+        window.observe(fetched("a"), 51_000)
+        assertEquals(60_100L, window.ageMs(61_100))
+        window.observe(fetched(), 71_000)
+        window.observe(fetched("a"), 81_000)
+        assertEquals(100L, window.ageMs(81_100))
+    }
+
+    @Test fun aNotModifiedReplyKeepsTheWindowAndThePreviousIds() {
+        val window = LiveRequestWindow()
+        window.observe(fetched("a"), 1_000)
+        window.observe(DashboardResult.NotModified, 51_000)
+        window.observe(fetched("a"), 56_000)
+        assertEquals(60_100L, window.ageMs(61_100))
     }
 
     @Test fun offlineTextUsesTheIdleAge() {

@@ -18,6 +18,8 @@ fun bits(row: Thread): Int {
         (if (row.questionAttention || actionNeedsAttention(row)) BIT_INPUT else 0)
 }
 
+internal fun Thread.openRequestId(): String = approval?.requestId ?: question?.requestId ?: ""
+
 data class Event(val row: Thread, val kind: Int)
 
 fun diff(
@@ -35,7 +37,9 @@ fun diff(
             val added = (now and old.bits.inv()) or
                 (if (now and BIT_DONE != 0 && old.doneAtMs > 0 && row.completionAtMs > old.doneAtMs) BIT_DONE else 0) or
                 (if (now and BIT_FAILED != 0 && old.failedAtMs > 0 && row.failedAtMs > old.failedAtMs) BIT_FAILED else 0)
-            if (added and BIT_INPUT != 0) add(Event(row, BIT_INPUT))
+            val requestId = row.openRequestId()
+            val newRequest = now and old.bits and BIT_INPUT != 0 && requestId.isNotEmpty() && requestId != old.requestId
+            if (added and BIT_INPUT != 0 || newRequest) add(Event(row, BIT_INPUT))
             if (added and BIT_FAILED != 0) add(Event(row, BIT_FAILED))
             if (added and BIT_DONE != 0) add(Event(row, BIT_DONE))
         }
@@ -73,5 +77,5 @@ fun update(
     threads: List<Thread>,
     nowMs: Long = System.currentTimeMillis(),
 ): Map<String, Mark> = (baseline ?: emptyMap()).toMutableMap().apply {
-    for (row in threads) put(row.key, Mark(bits(row), row.completionAtMs, row.failedAtMs))
+    for (row in threads) put(row.key, Mark(bits(row), row.completionAtMs, row.failedAtMs, row.openRequestId()))
 }

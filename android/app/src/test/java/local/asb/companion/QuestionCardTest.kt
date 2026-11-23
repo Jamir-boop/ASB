@@ -84,10 +84,11 @@ class QuestionCardTest {
         val choices = QuestionCard(kept.question!!).type(question, 0, "Private Other answer")
         store.saveBaselineIfPaired("paired", saved, "")
         assertEquals(saved, Store(preferences).baseline)
+        assertEquals(id, Store(preferences).loadBaselineIfPaired("paired", "")?.getValue("one")?.requestId)
         assertSame(question, kept.question)
         assertEquals("Private Other answer", choices.other[0])
         val atRest = preferences.values.toString()
-        for (text in listOf("Which order", "Which checks", "Oldest", "First in, first out", "Private Other answer", id)) {
+        for (text in listOf("Which order", "Which checks", "Oldest", "First in, first out", "Private Other answer")) {
             assertFalse(text, atRest.contains(text))
         }
     }

@@ -287,9 +287,14 @@ object ApprovalSerializer : KSerializer<PhoneApproval?> {
         encoder.encodeSerializableValue(PhoneApproval.serializer().nullable, value)
 }
 
-/** The saved attention bits of a row and its result times; a time of 0 is not known. */
+/** The saved attention bits, result times (0 when unknown), and open request ID of a row. */
 @Serializable
-data class Mark(val bits: Int, val doneAtMs: Long = 0, val failedAtMs: Long = 0)
+data class Mark(
+    val bits: Int,
+    val doneAtMs: Long = 0,
+    val failedAtMs: Long = 0,
+    val requestId: String = "",
+)
 
 @Serializable
 data class Provider(
