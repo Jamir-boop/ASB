@@ -11,8 +11,8 @@ const MATCHER = '*';
 // The matcher of the entry before phone approvals: it still answers questions, so install replaces it in place.
 const QUESTIONS_MATCHER = 'AskUserQuestion';
 export const QUESTIONS_ONLY = 'installed (questions only)';
-const MAX_SETTINGS_BYTES = 4 * 1024 * 1024;
-const object = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+export const MAX_SETTINGS_BYTES = 4 * 1024 * 1024;
+export const object = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 export const installedLauncher = (env) => typeof env.ASB_INSTALLED_LAUNCHER === 'string' && path.isAbsolute(env.ASB_INSTALLED_LAUNCHER)
   ? env.ASB_INSTALLED_LAUNCHER : '';
@@ -110,10 +110,10 @@ export async function claudeHookStatus(dirs, { launcher = '' } = {}) {
   }));
 }
 
-const CHANGED = Object.assign(new Error('Settings changed during the install. Run it again.'), { code: 'settings_changed' });
+export const CHANGED = Object.assign(new Error('Settings changed during the install. Run it again.'), { code: 'settings_changed' });
 
 // Writes the REAL file. A new file gets mode 0600 and is linked in place, so a file made at the same time stays.
-async function writeTarget(target, value, { beforeRename = async () => {} } = {}) {
+export async function writeTarget(target, value, { beforeRename = async () => {} } = {}) {
   const text = `${JSON.stringify(value, null, 2)}\n`;
   const mode = target.info ? target.info.mode & 0o7777 : 0o600;
   const temporary = path.join(path.dirname(target.file), `.${path.basename(target.file)}.${randomUUID()}.tmp`);

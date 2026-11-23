@@ -37,15 +37,24 @@ async function readProc(pid, name) {
 // The fields after the command name: [0] is field 3 (state), [1] field 4 (parent PID), [19] field 22 (start ticks).
 const statFields = (text) => text.slice(text.lastIndexOf(') ') + 2).split(' ');
 
-// The hook runs as agy -> sh -> this process.
+// The installed line runs the client as agy -> sh -> sh -> timeout -> sh (scripts/asb) -> node (shorter under bash):
+// the first ancestor above the parent with comm agy, at most 8 levels up.
+const AGY_LEVELS = 8;
 export async function agyProcess(parentPid = process.ppid, read = readProc) {
   try {
-    const agyPid = Number(statFields(await read(parentPid, 'stat'))[1]);
-    if (!Number.isInteger(agyPid) || agyPid <= 1 || (await read(agyPid, 'comm')).trim() !== 'agy') return null;
-    const ticks = statFields(await read(agyPid, 'stat'))[19];
-    return /^[0-9]{1,20}$/.test(ticks || '') ? { agyPid, agyStartTicks: ticks } : null;
+    let pid = parentPid;
+    for (let level = 0; level < AGY_LEVELS; level++) {
+      pid = Number(statFields(await read(pid, 'stat'))[1]);
+      if (!Number.isInteger(pid) || pid <= 1) return null;
+      if ((await read(pid, 'comm')).trim() !== 'agy') continue;
+      const ticks = statFields(await read(pid, 'stat'))[19];
+      return /^[0-9]{1,20}$/.test(ticks || '') ? { agyPid: pid, agyStartTicks: ticks } : null;
+    }
+    return null;
   } catch { return null; }
 }
+
+const HARD_EXIT_MS = 3000;
 
 async function readStdin(stdin) {
   const chunks = [];
@@ -98,16 +107,19 @@ export async function writeAgyRecord(hook, { env = process.env, homeDir = os.hom
   return record;
 }
 
-// Always the neutral reply first and exit code 0: a fault after the reply cannot deny a tool.
-export async function agyHook(args, { stdin = process.stdin, write = (text) => process.stdout.write(text), ...options } = {}) {
+// Always the neutral reply first and exit code 0: a fault after the reply cannot deny a tool. A stdin that never closes or a
+// slow write ends at 3 s, well before agy's hook timeout (10 s) that would deny the tool.
+export async function agyHook(args, { stdin = process.stdin, write = (text) => process.stdout.write(text), exit = process.exit, ...options } = {}) {
   const event = typeof args[0] === 'string' ? args[0] : '';
   try { write(`${neutralReply(event)}\n`); } catch {}
+  const timer = setTimeout(() => exit(0), HARD_EXIT_MS);
+  timer.unref();
   try {
     const text = await readStdin(stdin);
     if (text === null) return 0;
     const hook = JSON.parse(text);
     if (!hook || typeof hook !== 'object' || Array.isArray(hook) || hook.hookEventName !== event) return 0;
     await (options.writeRecord || writeAgyRecord)(hook, options);
-  } catch {}
+  } catch {} finally { clearTimeout(timer); }
   return 0;
 }

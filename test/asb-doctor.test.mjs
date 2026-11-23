@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { agyHookEntry } from '../src/agy-hook.mjs';
 import { collect, engineReady, firewallState, format, linuxFirewallLines, main, shellText } from '../scripts/asb-doctor.mjs';
 import { PYTHON_PROBE } from '../src/linux-system.mjs';
 
@@ -35,7 +36,7 @@ const XDG_MIME = ['codex', 'claude'].map((scheme) => ['xdg-mime', 'query', 'defa
 // The firewall fakes: `phone` is the /api/phone reply of the running engine (null: no engine), `firewalld` the --state output
 // (null: firewall-cmd is missing), and `zones` the zone of each interface.
 async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NODE24, ostree = false, files = {}, env = {}, phone = null,
-  firewalld = null, zones = {}, links = LINKS, claudeHook = async () => [], kitty = async () => {} }) {
+  firewalld = null, zones = {}, links = LINKS, claudeHook = async () => [], kitty = async () => {}, agy = async () => {} }) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, 'bin');
@@ -50,6 +51,8 @@ async function fakeSystem(t, { release, bins = ALL_BINS, values = {}, node = NOD
     ...(claudeHook ? { claudeHook } : {}),
     // The kitty check fake: `kitty: null` uses the real check (a temp HOME and the fake read only).
     ...(kitty ? { kitty } : {}),
+    // The agy check fake: `agy: null` uses the real check (a temp HOME only).
+    ...(agy ? { agy } : {}),
     find: async () => (phone ? runtime : null),
     api: async (record, route) => {
       requests.push([record, route]);
@@ -719,4 +722,36 @@ test('kitty remote control: reachable with kitty on PATH and the two kitty.conf 
   assert.equal(data.checks.some((item) => item.id === 'kitty-remote'), false);
   assert.equal(data.advice.some((line) => line.includes('kitty')), false);
   assert.equal(none.reads.includes(conf), false);
+});
+
+test('agy lines: found or not found and the hook state, the advice, no line without agy and the key, and no other line of hooks.json', async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-doctor-agy-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = path.join(home, '.gemini', 'config', 'hooks.json');
+  await mkdir(path.dirname(file), { recursive: true });
+  const launcher = '/opt/asb-test/bin/asb';
+  const advice = ['Install the agy hook:', '  asb agent agy-hook install'];
+  const check = async (bins, value) => {
+    await rm(file, { force: true });
+    if (value) await writeFile(file, JSON.stringify({ made: 'up-marker', ...value }));
+    const system = await fakeSystem(t, { release: 'debian13', agy: null, bins, env: { HOME: home, ASB_INSTALLED_LAUNCHER: launcher } });
+    const lines = await system.lines();
+    assert.ok(!lines.join('\n').includes('marker'));
+    return lines.filter((line) => line.includes('agy'));
+  };
+  const agyBins = [...ALL_BINS, 'agy'];
+  const installed = { asb: agyHookEntry(launcher) };
+  const changed = { asb: agyHookEntry('/other/asb') };
+  assert.deepEqual(await check(agyBins, null), ['  ok       agy: found', '  info     agy hook: not installed', ...advice]);
+  assert.deepEqual(await check(agyBins, {}), ['  ok       agy: found', '  info     agy hook: not installed', ...advice]);
+  assert.deepEqual(await check(agyBins, installed), ['  ok       agy: found', '  ok       agy hook: installed']);
+  assert.deepEqual(await check(agyBins, changed), ['  ok       agy: found', '  warn     agy hook: changed']);
+  assert.deepEqual(await check(ALL_BINS, installed), ['  info     agy: not found', '  ok       agy hook: installed']);
+  assert.deepEqual(await check(ALL_BINS, changed), ['  info     agy: not found', '  warn     agy hook: changed']);
+  assert.deepEqual(await check(ALL_BINS, null), []);
+  assert.deepEqual(await check(ALL_BINS, {}), []);
+  // The agy lines are in the Options group, after the kitty line.
+  const system = await fakeSystem(t, { release: 'debian13', agy: null, bins: agyBins, env: { HOME: home } });
+  const data = await collect(system.deps);
+  assert.deepEqual(data.checks.filter((item) => item.id.startsWith('agy')).map((item) => [item.id, item.group]), [['agy', 'Options'], ['agy-hook', 'Options']]);
 });

@@ -13,7 +13,7 @@ const editable = ['provider', 'label', 'dataDir', 'launcher', 'enabled', 'projec
 const revision = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const failure = (code, message, details = {}) => Object.assign(new Error(message), { code, ...details });
-const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait | agy-hook <event> | claude-hook install|remove|status [--config-dir <dir>] [--json]';
+const usage = 'Usage: asb agent status [--json] | peers [--json] | sources list [--json] | sources get <id|name> [--json] | sources add --file <json-file|-> [--json] | sources update <id|name> --file <json-file|-> [--json] | sources remove <id|name> [--json] | resolve-session <reference> [--source <source-id>] [--json] | claude-wait | agy-hook <event> | agy-hook install|remove|status [--file <path>] [--json] | claude-hook install|remove|status [--config-dir <dir>] [--json]';
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 function parseArgs(args) {
@@ -433,8 +433,40 @@ export async function claudeHook(args, { env = process.env, platform = process.p
   return targets.some((target) => REFUSED.includes(target.result)) ? 1 : 0;
 }
 
+// asb agent agy-hook install|remove|status [--file <path>] [--json]. Without --file: ~/.gemini/config/hooks.json.
+export async function agyHookSetup(args, { env = process.env, platform = process.platform, log = console.log, error = console.error, beforeRename } = {}) {
+  const json = args.includes('--json');
+  const rest = args.filter((arg) => arg !== '--json');
+  const [action, flag, given] = rest;
+  if (args.length - rest.length > 1 || !['install', 'remove', 'status'].includes(action) || !(rest.length === 1 || (rest.length === 3 && flag === '--file'))) {
+    error(usage);
+    return 2;
+  }
+  if (rest.length === 3 && (!path.isAbsolute(given) || /[\x00-\x1f\x7f]/.test(given))) { error('ASB agent: --file needs an absolute path.'); return 2; }
+  // Loaded here, so the hook client path loads no installer code.
+  const { NO_AGY, agyHome, agyHookStatus, agyHooksFile, agyLauncher, changeAgyHook, usableLauncher } = await import('../src/agy-hook.mjs');
+  const home = agyHome(env);
+  const file = given ? path.resolve(given) : agyHooksFile(home);
+  const launcher = await agyLauncher(env);
+  if (action === 'install' && platform === 'win32') { error('The agy hook works on Linux only for now.'); return 1; }
+  if (action === 'install' && !launcher) { error('Run agy-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).'); return 1; }
+  if (action === 'install' && !usableLauncher(launcher)) { error('The installed launcher path has a quote or a control character. The agy hook cannot use it.'); return 1; }
+  const where = `agy hook (${printable(homeForm(file, home))})`;
+  if (action === 'status') {
+    const state = await agyHookStatus(file, { launcher });
+    log(json ? JSON.stringify({ targets: [{ file, state }] }) : `${where}: ${state}`);
+    return 0;
+  }
+  const result = await changeAgyHook(action, file, { launcher, beforeRename });
+  if (result === NO_AGY) { error(`agy has not run for this user (no ${printable(homeForm(path.dirname(path.dirname(file)), home))}).`); return 1; }
+  log(json ? JSON.stringify({ targets: [{ file, result }] }) : `${where}: ${result}`);
+  if (result === 'settings changed') error(CHANGED_MESSAGE);
+  return REFUSED.includes(result) ? 1 : 0;
+}
+
 export async function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === 'claude-wait') { await claudeWait(); return 0; }
+  if (args[0] === 'agy-hook' && ['install', 'remove', 'status'].includes(args[1])) return agyHookSetup(args.slice(1));
   if (args[0] === 'agy-hook') return (await import('./asb-agy-hook.mjs')).agyHook(args.slice(1));
   if (args[0] === 'claude-hook') return claudeHook(args.slice(1));
   let runtime;

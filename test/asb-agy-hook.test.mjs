@@ -138,3 +138,45 @@ test('asb agent agy-hook prints the neutral reply and exits 0 as a real process'
   const saved = JSON.parse(await readFile(path.join(env.XDG_STATE_HOME, 'asb', 'agy', `${ID}.json`), 'utf8'));
   assert.deepEqual([saved.state, 'agyPid' in saved], ['working', false]);
 });
+
+// A made-up chain from the parent up: [pid, comm, parent PID]; a PID that is not in it gives a read error.
+const chain = (rows) => async (pid, name) => {
+  const row = rows.find(([id]) => id === pid);
+  if (!row) throw Object.assign(new Error('no such process'), { code: 'ENOENT' });
+  return name === 'comm' ? `${row[1]}\n` : stat22(row[0], row[1], row[2], `${row[0]}000`);
+};
+
+test('the client walk finds the first agy ancestor of the dash, bash, and old trees, and stops at 8 levels, PID 1, or a read error', async () => {
+  const agy = { agyPid: 400, agyStartTicks: '400000' };
+  // dash: agy -> sh -> sh (subshell) -> timeout -> sh (scripts/asb) -> node.
+  assert.deepEqual(await agyProcess(504, chain([[504, 'sh', 503], [503, 'timeout', 502], [502, 'sh', 501], [501, 'sh', 400], [400, 'agy', 300]])), agy);
+  // bash runs the last command of the subshell in place: agy -> bash -> timeout -> sh -> node.
+  assert.deepEqual(await agyProcess(503, chain([[503, 'sh', 502], [502, 'timeout', 501], [501, 'bash', 400], [400, 'agy', 300]])), agy);
+  assert.deepEqual(await agyProcess(500, chain([[500, 'sh', 400], [400, 'agy', 300]])), agy);
+  // agy eight levels above the parent is the last place that counts.
+  const deep = (levels) => chain([...Array.from({ length: levels }, (_, index) => [600 + index, 'sh', index === levels - 1 ? 400 : 601 + index]),
+    [400, 'agy', 300]]);
+  assert.deepEqual(await agyProcess(600, deep(8)), agy);
+  assert.equal(await agyProcess(600, deep(9)), null);
+  assert.equal(await agyProcess(502, chain([[502, 'sh', 501], [501, 'bash', 1], [1, 'agy', 0]])), null);
+  assert.equal(await agyProcess(502, chain([[502, 'sh', 501], [501, 'bash', 0]])), null);
+  assert.equal(await agyProcess(502, chain([[502, 'sh', 501], [501, 'bash', 450]])), null);
+  const tree = chain([[502, 'sh', 400], [400, 'agy', 300]]);
+  assert.equal(await agyProcess(502, async (pid, name) => {
+    if (pid === 400 && name === 'stat') throw new Error('read error');
+    return tree(pid, name);
+  }), null);
+});
+
+test('a client whose stdin never closes ends at 3 s with exit 0 and the neutral reply', { skip: process.platform === 'win32' }, async (t) => {
+  const { homeDir, env } = await fixture(t);
+  const started = Date.now();
+  const result = await new Promise((resolve) => {
+    const child = execFile(process.execPath, [path.join(ROOT, 'scripts', 'asb-agent.mjs'), 'agy-hook', 'PreToolUse'],
+      { env: { PATH: process.env.PATH, HOME: homeDir, XDG_STATE_HOME: env.XDG_STATE_HOME } }, (error, stdout) => resolve({ code: error?.code ?? 0, stdout }));
+    child.stdin.write('{"made-up":');
+  });
+  const ms = Date.now() - started;
+  assert.deepEqual(result, { code: 0, stdout: '{"decision":"ask"}\n' });
+  assert.ok(ms >= 2900 && ms < 3500, `${ms} ms`);
+});
