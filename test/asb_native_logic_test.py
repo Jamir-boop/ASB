@@ -3888,8 +3888,8 @@ class DataChecks(unittest.TestCase):
         self.assertFalse(window.syncing_unread_setting)
 
     def test_provider_icon_names_each_app_mark(self):
-        self.assertEqual([asb.provider_icon(provider) for provider in ("codex", "claude-desktop-code", "opencode", None)],
-                         ["asb-openai-symbolic", "asb-claude-symbolic", "asb-opencode-symbolic", "asb-claude-symbolic"])
+        self.assertEqual([asb.provider_icon(provider) for provider in ("codex", "claude-desktop-code", "opencode", "antigravity", None)],
+                         ["asb-openai-symbolic", "asb-claude-symbolic", "asb-opencode-symbolic", "asb-terminal-symbolic", "asb-claude-symbolic"])
 
     def test_filter_profiles_builds_machine_app_profile_model(self):
         dashboard = {

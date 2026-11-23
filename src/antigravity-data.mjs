@@ -76,7 +76,7 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
   if (state === 'done' || state === 'failed') Object.assign(thread, { lifecycleRunning: false, latestLifecycleKind: state === 'done' ? 'task_complete' : 'failed',
     latestLifecycleAtMs: stateAtMs, latestTaskEndedAtMs: stateAtMs });
   if (!live) {
-    thread.agyStatus = thread.lifecycleRunning ? { state: 'unknown', reason: 'The agy process ended during a task.', processEnded: true }
+    thread.agyStatus = thread.lifecycleRunning ? { state: 'unknown', reason: 'The agy process ended during a task.' }
       : { state: 'idle', reason: 'The agy process ended.' };
     return thread;
   }

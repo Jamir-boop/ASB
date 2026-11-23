@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadAntigravityDashboard } from '../src/antigravity-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
-import { buildSwitchboardDashboard, loadSwitchboardDashboard, switchboardWatchPaths } from '../src/switchboard.mjs';
+import { buildSwitchboardDashboard, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-11-22T12:00:00Z');
 const minute = 60_000;
@@ -52,7 +52,7 @@ test('each live state gives its row status', async (t) => {
 });
 
 test('a record whose agy ended, or whose PID was reused, is not live', async (t) => {
-  const { put, rows } = await fixture(t);
+  const { put, rows, load } = await fixture(t);
   await put(1, { state: 'working', agyPid: 401, agyStartTicks: '1' });
   await put(2, { state: 'question', agyStartTicks: '999' });
   await put(3, { state: 'idle', agyPid: undefined, agyStartTicks: undefined });
@@ -60,10 +60,22 @@ test('a record whose agy ended, or whose PID was reused, is not live', async (t)
   await put(5, { state: 'failed', agyPid: 401, agyStartTicks: '1' });
   const byId = new Map((await rows()).map((row) => [row.externalId, row]));
   for (const n of [1, 2]) {
-    assert.deepEqual([byId.get(id(n)).state, byId.get(id(n)).reason, byId.get(id(n)).processEnded], ['unknown', 'The agy process ended during a task.', true]);
+    assert.deepEqual([byId.get(id(n)).state, byId.get(id(n)).reason, byId.get(id(n)).processEnded, byId.get(id(n)).failedAtMs],
+      ['unknown', 'The agy process ended during a task.', undefined, 0]);
   }
   for (const n of [3, 4, 5]) assert.deepEqual([byId.get(id(n)).state, byId.get(id(n)).reason], ['idle', 'The agy process ended.']);
   assert.deepEqual([byId.get(id(4)).completionAtMs, byId.get(id(5)).lastOutcome], [now - minute, 'failed']);
+  // A quit during a turn (Esc then /exit gives no event) is not a failure for the tracker.
+  for (const state of ['working', 'question']) {
+    await put(6, { state, agyPid: 400, agyStartTicks: '4377321' });
+    const tracker = new PendingTracker(false);
+    const scan = async () => tracker.observe(buildSwitchboardDashboard((await load()).threads, [], now));
+    assert.notEqual((await scan()).threads.find((row) => row.externalId === id(6)).state, 'unknown');
+    await put(6, { state, agyPid: 401, agyStartTicks: '1' });
+    const ended = (await scan()).threads.find((row) => row.externalId === id(6));
+    assert.deepEqual([ended.state, ended.processEnded, ended.failedAtMs, ended.lastOutcome, Boolean(ended.failedAttention), tracker.records[ended.id]?.pendingKind || ''],
+      ['unknown', undefined, 0, '', false, ''], state);
+  }
 });
 
 test('ten quiet minutes give Unknown unless the transcript changed or a background command runs', async (t) => {

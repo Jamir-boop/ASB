@@ -187,7 +187,7 @@ def source_marker_color(row):
 
 
 def provider_icon(provider):
-    return {"codex": "asb-openai-symbolic", "opencode": "asb-opencode-symbolic"}.get(provider, "asb-claude-symbolic")
+    return {"codex": "asb-openai-symbolic", "opencode": "asb-opencode-symbolic", "antigravity": "asb-terminal-symbolic"}.get(provider, "asb-claude-symbolic")
 
 
 def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None,
