@@ -109,8 +109,11 @@ test('the installed command passes stdin and args through real Windows shells', 
       ? ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(hook.command, 'utf16le').toString('base64')]
       : ['/d', '/C', `"${hook.command}"`];
     const stdout = await new Promise((resolve, reject) => {
-      const child = execFile(shell, args, { env, cwd: home, timeout: 5000, windowsHide: true, windowsVerbatimArguments: shell === env.ComSpec },
-        (error, stdout, stderr) => error || stderr ? reject(error || new Error(stderr)) : resolve(stdout));
+      // A cold Windows PowerShell start on a CI runner can take several seconds.
+      const child = execFile(shell, args, { env, cwd: home, timeout: 30_000, windowsHide: true, windowsVerbatimArguments: shell === env.ComSpec },
+        (error, stdout, stderr) => error || stderr
+          ? reject(new Error(`${hook.shell || 'cmd'}: ${error?.killed ? 'killed at the timeout' : error?.message || 'stderr'}; stdout ${JSON.stringify(stdout)}; stderr ${JSON.stringify(stderr)}`))
+          : resolve(stdout));
       child.stdin.on('error', reject);
       child.stdin.end(input);
     });
