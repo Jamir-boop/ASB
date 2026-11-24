@@ -1,9 +1,9 @@
 // Ported from T3 Code (https://github.com/pingdotgg/t3code), apps/server/src/provider/Drivers/antigravityUsageReader.ts and AntigravityUsage.ts, commit 3cb16cf. MIT License, Copyright (c) 2026 T3 Tools Inc. See THIRD_PARTY_NOTICES.md.
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { loadNativeSqlite } from './codex-data.mjs';
 import { createYielder } from './usage-scan-cache.mjs';
 
-const nativeSqlite = import('node:sqlite').catch(() => null);
 // One frozen empty result without node:sqlite: the same array at each scan lets the usage engine keep its summed parts.
 const NO_USAGE = Object.freeze([]);
 
@@ -182,7 +182,7 @@ async function readDatabase(database, fallbackTimestamp, pause) {
 // The last result of each file cache, given again (the same array) when no database changed.
 const lastResults = new WeakMap();
 
-export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), native = nativeSqlite,
+export async function readAntigravityUsage(roots, sinceMs, { cache = new Map(), native = loadNativeSqlite(),
   open, pause = createYielder() } = {}) {
   const sqlite = await native;
   // shortcut: Antigravity needs node:sqlite (Node.js 22.13 or later); without it ASB reads no Antigravity usage.

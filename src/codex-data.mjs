@@ -11,7 +11,12 @@ import { enrichThreads, threadTree } from './insights.mjs';
 import { processStart } from './claude-registry.mjs';
 
 const execFileAsync = promisify(execFile);
-const nativeSqlite = import('node:sqlite').catch(() => null);
+let nativeSqlite;
+// Load node:sqlite only on first use: a CLI command that never reads a database must not print its experimental warning.
+export function loadNativeSqlite() {
+  nativeSqlite ??= import('node:sqlite').catch(() => null);
+  return nativeSqlite;
+}
 const DEFAULT_CODEX_DIR = path.join(os.homedir(), '.codex');
 const DEFAULT_SESSION_INDEX = path.join(DEFAULT_CODEX_DIR, 'session_index.jsonl');
 const DEFAULT_GLOBAL_STATE = path.join(DEFAULT_CODEX_DIR, '.codex-global-state.json');
@@ -85,7 +90,7 @@ function safeLimit(limit) {
 }
 
 // `native` and `run` are for tests: they cannot unload node:sqlite or run a real sqlite3.
-export async function querySqliteJson(databasePath, sql, { native = nativeSqlite, run = execFileAsync } = {}) {
+export async function querySqliteJson(databasePath, sql, { native = loadNativeSqlite(), run = execFileAsync } = {}) {
   const sqlite = await native;
   if (sqlite?.DatabaseSync) {
     const database = new sqlite.DatabaseSync(databasePath, { readOnly: true });

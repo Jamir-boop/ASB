@@ -2,10 +2,9 @@
 // JSON functions select token counts, model, and time, never the whole message data.
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { querySqliteJson } from './codex-data.mjs';
+import { loadNativeSqlite, querySqliteJson } from './codex-data.mjs';
 import { createYielder } from './usage-scan-cache.mjs';
 
-const nativeSqlite = import('node:sqlite').catch(() => null);
 // shortcut: node:sqlite is synchronous, so a page on a cold disk can still block the event loop for about 0.1 s (the largest row alone
 // is 3.7 MB); read in a worker thread if that matters.
 export const OPENCODE_PAGE_ROWS = 8;
@@ -35,7 +34,7 @@ export function openCodeUsageSql(sinceMs, { table = 'session_message', timeCreat
 }
 
 export async function readOpenCodeUsage(dataDir, sinceMs, { query = querySqliteJson,
-  native = query === querySqliteJson ? nativeSqlite : null, open, pause = createYielder(), stats = {} } = {}) {
+  native = query === querySqliteJson ? loadNativeSqlite() : null, open, pause = createYielder(), stats = {} } = {}) {
   const sqlite = await native;
   const records = [];
   const seen = new Set();

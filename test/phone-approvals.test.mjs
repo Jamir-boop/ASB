@@ -307,8 +307,13 @@ test('the phone answers questions and approvals on a group member with no local 
     app = await engine(t, { ...options, machineGroup: group, answerEnabled: answer, approveEnabled: approve });
     t.after(() => group.stop());
     return { ...app, group, poll: async () => {
-      const rounds = pending.splice(0);
-      for (const { run, ms } of rounds) if (ms < 30_000) run();
+      const rounds = pending.splice(0).filter(({ ms }) => ms < 30_000);
+      for (const { run } of rounds) run();
+      // A sessions round schedules the next round when it ends; under load that takes more than one turn.
+      const deadline = Date.now() + 5_000;
+      while (pending.filter(({ ms }) => ms < 30_000).length < rounds.length && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
       await settle();
     } };
   }

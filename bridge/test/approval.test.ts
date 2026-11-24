@@ -11,7 +11,7 @@ const REQUEST = 'a'.repeat(32);
 
 test('HIDDEN is the same character class as scripts/asb-agent.mjs', () => {
   const source = readFileSync(join(import.meta.dir, '..', '..', 'scripts', 'asb-agent.mjs'), 'utf8');
-  const line = source.split('\n').find(row => row.startsWith('const HIDDEN = '));
+  const line = source.split(/\r?\n/).find(row => row.startsWith('const HIDDEN = '));
   expect(line).toBe(`const HIDDEN = /${HIDDEN.source}/;`);
 });
 

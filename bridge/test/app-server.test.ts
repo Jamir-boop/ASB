@@ -12,6 +12,8 @@ import { engineRuntime } from '../src/engine';
 import { fakeEngine } from './engine-fixture';
 // POSIX only on Windows CI: the Unix socket file of the app-server fixture.
 const posix = test.skipIf(process.platform === 'win32');
+// The Bridge finds an ASB engine only on Linux and Windows (src/engine.ts engineRuntime).
+const linux = test.skipIf(process.platform !== 'linux');
 
 // A private listener killed with SIGKILL leaves its socket file with nobody behind it, as Codex does.
 async function staleSocket(path: string) {
@@ -212,7 +214,7 @@ async function untilQuestion(predicate: () => boolean) {
   expect(predicate()).toBe(true);
 }
 
-posix('the Codex watcher maps a replayed question and replies once with the server request and question IDs', async () => {
+linux('the Codex watcher maps a replayed question and replies once with the server request and question IDs', async () => {
   const server = await appServer();
   const engine = fakeEngine(process.env.XDG_RUNTIME_DIR!, route => route === '/api/agent/wait' ? { wait: true, requestId: QUESTION_REQUEST } : answered);
   const packet = questionPacket(server.threadId, 0, [available, freeText]);

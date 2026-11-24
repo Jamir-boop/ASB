@@ -95,7 +95,9 @@ test('the installed command passes stdin and args through real Windows shells', 
     "console.log(JSON.stringify([process.argv.slice(2), require('node:fs').readFileSync(0, 'utf8')]));\n");
   const root = process.env.SystemRoot || 'C:\\Windows';
   const system = path.join(root, 'System32');
-  const env = { SystemRoot: root, ComSpec: path.join(system, 'cmd.exe'), USERPROFILE: home, TEMP: home, TMP: home };
+  // Every Windows process has PATHEXT; without it Windows PowerShell 5.1 opens a .cmd path with the shell and does not run it.
+  const env = { SystemRoot: root, ComSpec: path.join(system, 'cmd.exe'), PATHEXT: process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD',
+    USERPROFILE: home, TEMP: home, TMP: home };
   const input = '{"hook_event_name":"PermissionRequest"}\n';
   for (const { run, folder, option, file, wait } of profiles) {
     const dir = path.join(home, folder);

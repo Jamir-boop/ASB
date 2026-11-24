@@ -1282,7 +1282,7 @@ test('the file card shows the matching absolute path and sizes only', () => {
   expect(JSON.stringify(relative)).not.toContain('test');
   expect(JSON.stringify(relative)).not.toContain('secret');
   const absolute = opencodeApproval(edit('/work/b.txt'), { name: 'edit', input: { path: '/work/b.txt', oldString: 'old', newString: 'newer' } }, FOLDER, true);
-  expect(absolute).toEqual({ kind: 'tool', title: 'Allow a file change for a subagent?', display: [{ label: 'File', text: '/work/b.txt', mono: true },
+  expect(absolute).toEqual({ kind: 'tool', title: 'Allow a file change for a subagent?', display: [{ label: 'File', text: resolve('/work/b.txt'), mono: true },
     { label: 'Size', text: '3 to 5 characters', mono: false }], note: true });
   expect(JSON.stringify(absolute)).not.toContain('newer');
   for (const folder of [undefined, '', 'relative', '/work/\u202e']) {
@@ -1347,7 +1347,7 @@ async function phoneSetup(answer: (poll: number) => unknown, reply?: (input: unk
     async done() { engine.close(); await resetCoordinator(co); rmSync(home.root, { recursive: true }); } };
 }
 
-posix('a phone allow replies once and a deny rejects with the note; the registration body is exact', async () => {
+linux('a phone allow replies once and a deny rejects with the note; the registration body is exact', async () => {
   for (const [answer, expected] of [
     [{ state: 'answered', decision: 'allow' }, { sessionID: 'ses_root', requestID: 'per_1', decision: 'once' }],
     [{ state: 'answered', decision: 'deny' }, { sessionID: 'ses_root', requestID: 'per_1', decision: 'reject', message: 'Denied from the phone.' }],
@@ -1364,7 +1364,7 @@ posix('a phone allow replies once and a deny rejects with the note; the registra
   }
 });
 
-posix('no reply without an answered allow or deny, and no record without the exact folder instance or a card', async () => {
+linux('no reply without an answered allow or deny, and no record without the exact folder instance or a card', async () => {
   for (const answer of [{ state: 'closed' }, { state: 'answered', decision: 'always' }, new Response('{}', { status: 404 })]) {
     const run = await phoneSetup(() => answer);
     try {
@@ -1430,7 +1430,7 @@ linux('the OpenCode plugin reads context only after the engine agrees to hold an
   } finally { await run.done(); }
 });
 
-posix('a subagent request registers for the root session and replies for its own session', async () => {
+linux('a subagent request registers for the root session and replies for its own session', async () => {
   const run = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }));
   try {
     await run.ask('ses_kid', 'per_kid');
@@ -1441,7 +1441,7 @@ posix('a subagent request registers for the root session and replies for its own
   } finally { await run.done(); }
 });
 
-posix('permission.replied, the turn end, and the stacked setups: one wait per request, aborted with no reply', async () => {
+linux('permission.replied, the turn end, and the stacked setups: one wait per request, aborted with no reply', async () => {
   let release: ((value: unknown) => void) | undefined;
   const run = await phoneSetup(() => new Promise(resolve => { release = resolve; }));
   try {
@@ -1470,7 +1470,7 @@ posix('permission.replied, the turn end, and the stacked setups: one wait per re
   } finally { await run.done(); }
 });
 
-posix('a reply that throws is counted and not tried again', async () => {
+linux('a reply that throws is counted and not tried again', async () => {
   let calls = 0;
   const run = await phoneSetup(() => ({ state: 'answered', decision: 'allow' }), async () => { calls += 1; throw new Error('PermissionNotFoundError'); });
   try {
@@ -1481,7 +1481,7 @@ posix('a reply that throws is counted and not tried again', async () => {
   } finally { await run.done(); }
 });
 
-posix('the plugin cleanup aborts its waits', async () => {
+linux('the plugin cleanup aborts its waits', async () => {
   const { root, configDir, stateDir } = tempHome();
   const co = ensureCoordinator(configDir, stateDir);
   const { default: plugin } = await import('../src/opencode');
@@ -1585,7 +1585,7 @@ test('opencodeService and replyForm read service.json for this PID and POST /api
   } finally { srv.stop(true); rmSync(dir, { recursive: true, force: true }); }
 });
 
-posix('form.created opens a phone question wait, replies on answer, and stops on form.replied and form.cancelled', async () => {
+linux('form.created opens a phone question wait, replies on answer, and stops on form.replied and form.cancelled', async () => {
   const formReplies: unknown[] = [];
   const run = await phoneSetup(() => ({ state: 'answered', answers: { 'Pick a fruit': 'Plum' } }));
   (run.instance.ctx as Record<string, any>).session.form = { async reply(input: unknown) { formReplies.push(input); } };
