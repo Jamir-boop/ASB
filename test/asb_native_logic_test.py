@@ -215,7 +215,8 @@ class ActivityHelperChecks(unittest.TestCase):
         self.assertEqual(asb.ACTIVITY_APP_LABELS, {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other",
                                                   "antigravity": "Antigravity", "grok": "Grok", "pi": "Pi"})
         self.assertEqual(asb.USAGE_OTHER_MAKER, "Other")
-        self.assertEqual([asb.ACTIVITY_APP_ICONS[app] for app in ("antigravity", "grok", "pi")], ["asb-terminal-symbolic"] * 3)
+        self.assertEqual(asb.ACTIVITY_APP_ICONS["antigravity"], "asb-antigravity-symbolic")
+        self.assertEqual([asb.ACTIVITY_APP_ICONS[app] for app in ("grok", "pi")], ["asb-terminal-symbolic"] * 2)
         self.assertEqual(asb.ACTIVITY_STATUSES, ("accepted", "written", "held", "not-sent", "unknown"))
         self.assertEqual([asb.ACTIVITY_STATUS_LABELS[key] for key in asb.ACTIVITY_STATUSES],
                          ["Accepted", "No receipt", "On hold", "Not sent", "Status unknown"])
@@ -3917,7 +3918,7 @@ class DataChecks(unittest.TestCase):
 
     def test_provider_icon_names_each_app_mark(self):
         self.assertEqual([asb.provider_icon(provider) for provider in ("codex", "claude-desktop-code", "opencode", "antigravity", None)],
-                         ["asb-openai-symbolic", "asb-claude-symbolic", "asb-opencode-symbolic", "asb-terminal-symbolic", "asb-claude-symbolic"])
+                         ["asb-openai-symbolic", "asb-claude-symbolic", "asb-opencode-symbolic", "asb-antigravity-symbolic", "asb-claude-symbolic"])
 
     def test_filter_profiles_builds_machine_app_profile_model(self):
         dashboard = {

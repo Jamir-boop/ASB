@@ -24,6 +24,7 @@ internal fun appMark(app: String): Int = when (usageAppKey(app)) {
     "codex" -> R.drawable.ic_provider_openai
     "claude" -> R.drawable.ic_provider_claude
     "opencode" -> R.drawable.ic_provider_opencode
+    "antigravity" -> R.drawable.ic_provider_antigravity
     "" -> R.drawable.ic_machine
     else -> R.drawable.ic_terminal
 }
@@ -163,7 +164,7 @@ val APP_FILTERS = listOf("all" to "All", "codex" to "Codex", "claude-desktop-cod
 fun providerIcon(provider: String): Int = when (provider) {
     "codex" -> R.drawable.ic_provider_openai
     "opencode" -> R.drawable.ic_provider_opencode
-    "antigravity" -> R.drawable.ic_terminal
+    "antigravity" -> R.drawable.ic_provider_antigravity
     else -> R.drawable.ic_provider_claude
 }
 

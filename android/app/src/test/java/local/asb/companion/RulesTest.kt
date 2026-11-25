@@ -124,7 +124,7 @@ class RulesTest {
         assertEquals("Antigravity", APP_FILTERS.toMap()["antigravity"])
         assertEquals(R.drawable.ic_provider_openai, providerIcon("codex"))
         assertEquals(R.drawable.ic_provider_opencode, providerIcon("opencode"))
-        assertEquals(R.drawable.ic_terminal, providerIcon("antigravity"))
+        assertEquals(R.drawable.ic_provider_antigravity, providerIcon("antigravity"))
         assertEquals(R.drawable.ic_provider_claude, providerIcon("claude-desktop-code"))
         assertEquals(R.drawable.ic_provider_claude, providerIcon(""))
     }

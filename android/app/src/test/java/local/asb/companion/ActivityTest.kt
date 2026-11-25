@@ -402,7 +402,8 @@ class ActivityTest {
         assertEquals(R.drawable.ic_provider_opencode, appMark("opencode"))
         assertEquals(R.drawable.ic_machine, appMark("x"))
         assertEquals(R.drawable.ic_machine, appMark(""))
-        for (app in listOf("antigravity", "grok", "pi")) assertEquals(R.drawable.ic_terminal, appMark(app))
+        assertEquals(R.drawable.ic_provider_antigravity, appMark("antigravity"))
+        for (app in listOf("grok", "pi")) assertEquals(R.drawable.ic_terminal, appMark(app))
     }
 
     private val makerUsage = ActivityUsage(machines = listOf(ActivityMachine(machineId = "m1"), ActivityMachine(machineId = "m2")),

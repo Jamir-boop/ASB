@@ -6,7 +6,7 @@ import {MACHINE_HUES, providerIcon} from '../gnome-shell/model.js';
 const read = async path => (await readFile(new URL(path, import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 test('GNOME symbolic icons are byte copies of the board icons', async () => {
-  for (const name of ['chat', 'claude', 'openai', 'opencode']) {
+  for (const name of ['chat', 'claude', 'openai', 'opencode', 'antigravity']) {
     const filename = `asb-${name}-symbolic.svg`;
     assert.deepEqual(await readFile(new URL(`../gnome-shell/icons/${filename}`, import.meta.url)),
       await readFile(new URL(`../assets/icons/${filename}`, import.meta.url)));
@@ -18,7 +18,7 @@ test('machine hues and provider file names match the native board rules', async 
   assert.deepEqual(MACHINE_HUES, [...board.match(/^MACHINE_HUES = \(([^\n]+)\)/m)[1].matchAll(/"(#[a-f0-9]{6})"/g)].map(m => m[1]));
   const rule = board.match(/def provider_icon\(provider\):\n\s+return \{([^\n]+)\}\.get\(provider, "([^"]+)"\)/);
   const providers = Object.fromEntries([...rule[1].matchAll(/"([^"]+)": "([^"]+)"/g)].map(m => [m[1], m[2]]));
-  for (const provider of ['codex', 'opencode', 'claude-desktop-code', 'unknown'])
+  for (const provider of ['codex', 'opencode', 'antigravity', 'claude-desktop-code', 'unknown'])
     assert.equal(providerIcon(provider), `${providers[provider] || rule[2]}.svg`);
 });
 
