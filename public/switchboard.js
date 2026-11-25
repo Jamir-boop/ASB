@@ -93,7 +93,7 @@ function sessionRow(thread) {
   }
   entry.thread = thread;
   const where = rowWhere(thread);
-  const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, where, thread.surface,
+  const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, thread.opensInKitty, where, thread.surface,
     thread.pinned, thread.archived, thread.actionRequired, thread.actionAttention, thread.muted, thread.drawer, thread.questionAttention, thread.alert, thread.unread,
     thread.lastOutcome, thread.failedAttention, thread.completionAttention, thread.limitResetsAtMs]);
   setText(entry.age, relativeTime(thread.updatedAtMs));
@@ -114,7 +114,7 @@ function sessionRow(thread) {
   row.disabled = entry.opening || !thread.canOpen;
   row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${stateText}.${viewOnly} ${attention} ${outcome}`.trim());
   row.title = thread.remote ? `On ${where}. Open it on ${where}.` : where ? `CLI session. ${thread.canFocus ? 'Opens its kitty window.' : 'ASB does not open CLI sessions.'}`
-    : thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
+    : thread.opensInKitty ? 'Opens in kitty.' : thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
   if (attention) row.title += ` ${attention}`;
   if (outcome) row.title += ` ${outcome}`;
   setText(title, thread.title);

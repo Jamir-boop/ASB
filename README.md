@@ -1,6 +1,6 @@
 # ASB
 
-**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita, for GNOME on Linux and for Windows. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app. It also shows your OpenCode 2, Claude Code CLI, and Codex CLI sessions (view only). ASB reads the app stores read-only and makes no model calls.
+**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita, for GNOME on Linux and for Windows. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app. It also shows your OpenCode 2, Claude Code CLI, and Codex CLI sessions. On Linux, an OpenCode 2 card opens the session in a new kitty window with `opencode --session`. It does not find a TUI that already shows the session. Claude Code CLI and Codex CLI sessions are view only. ASB reads the app stores read-only and makes no model calls.
 
 ![ASB banner](docs/media/asb-banner.png)
 
@@ -143,7 +143,7 @@ Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty 
 | Codex CLI | ✓ | ✓ | ✓ | ✓ with ASB Bridge, daemon tasks only | ✓ with ASB Bridge and the shared Codex app-server | ✗ ASB work: terminal tab | ✓ daemon tasks only | ✓ subagents only | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
-| OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ with ASB Bridge | ✗ ASB work: terminal tab | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
+| OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ Linux, opens in kitty | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
 | Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✓ Linux, with the hook and kitty remote control | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✗ Not checked | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
