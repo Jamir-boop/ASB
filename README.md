@@ -122,7 +122,7 @@ Limits:
 - Each agy hook call adds about 80 ms, and agy waits for it.
 - Phone approvals work in agy's default mode only (in a kitty with remote control and **Approve requests from phones** on). Run `asb agent agy-hook install` again if you installed the hook earlier (`asb agent agy-hook status` shows `changed` until you do). ASB never chooses an "always allow" option. A deny on the phone stops the agy turn, as on the PC. Checked end to end on 2026-11-23 with agy 1.5.15 in kitty through the phone answer route (allow, deny, and an answer on the PC first, which closes the phone card); not yet tapped on a phone.
 - Not yet: the Antigravity app and IDE. On Windows, only cards and status.
-- Checked on 2026-11-25 on Windows 10 with a stand-in `agy.exe` (a copy of `cmd.exe`) that ran the installed hook lines as agy 1.5.17 does: install, replies in about 140 ms, the agy PID in the record after 0.8 s, Waiting while it ran, and an ended process after it closed. Not checked with the real agy on Windows. If the process lookup fails, ASB shows the state from hook events. A quiet Working row shows Unknown after 10 minutes.
+- Checked on 2026-11-25 on Windows 10 with a stand-in `agy.exe` (a copy of `cmd.exe`) that ran the installed hook lines as agy 1.5.17 does: install, replies in about 140 ms, the agy PID in the record after 0.8 s, Waiting while it ran, and an ended process after it closed. Then checked with the real agy 1.5.17 on the same PC: a session wrote its record with the agy PID, and its card showed Done. agy reads the title command only when it starts: restart agy after `asb agent agy-hook install` to see session names. If the process lookup fails, ASB shows the state from hook events. A quiet Working row shows Unknown after 10 minutes.
 
 ### ASB Bridge for agy
 
@@ -145,7 +145,7 @@ Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty 
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
 | OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ Linux, opens in kitty | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✓ Linux, with the hook and kitty remote control | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✓ subagents only | ✓ | ✗ Not checked | ✗ Not checked | ✓ cards and status, with the hook; not checked with the real agy |
+| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✓ Linux, with the hook and kitty remote control | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✓ subagents only | ✓ | ✗ Not checked | ✗ Not checked | ✓ cards and status, with the hook |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.

@@ -4,7 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
-- Antigravity CLI: on Windows, `asb agent agy-hook install` adds cards and status. Focus, phone answers, and ASB Bridge still need Linux. Checked on Windows 10 with a stand-in `agy.exe`, not with the real agy. On main, not in a release yet.
+- Antigravity CLI: on Windows, `asb agent agy-hook install` adds cards and status. Focus, phone answers, and ASB Bridge still need Linux. Checked on Windows 10 with agy 1.5.17. On main, not in a release yet.
 
 ## ASB 1.17.0 - 2026-11-25
 
