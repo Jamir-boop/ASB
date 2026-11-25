@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { agyScreenInterrupted, agyThread, agyWorkingChildCounts, answerAgyInKitty, approveAgyInKitty, loadAntigravityDashboard, matchAgyApprovalScreen, watchAgyApproval } from '../src/antigravity-data.mjs';
-import { AppSourceRegistry } from '../src/app-sources.mjs';
+import { agyRecordsDir, agyScreenInterrupted, agyThread, agyWindowsProcess, agyWorkingChildCounts, answerAgyInKitty, approveAgyInKitty, loadAntigravityDashboard, matchAgyApprovalScreen, watchAgyApproval, windowsProcessStart } from '../src/antigravity-data.mjs';
+import { AppSourceRegistry, defaultAppSources } from '../src/app-sources.mjs';
 import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
 
 const now = Date.parse('2026-11-22T12:00:00Z');
@@ -29,6 +29,92 @@ async function fixture(t) {
   const rows = async (options) => buildSwitchboardDashboard((await load(options)).threads, [], options?.nowMs ?? now).threads;
   return { homeDir, dataDir, put, load, rows };
 }
+
+test('Windows stores agy records in LOCALAPPDATA, as the engine source does', () => {
+  const env = { LOCALAPPDATA: 'D:\\Local', XDG_STATE_HOME: '/ignored' };
+  const homeDir = 'C:\\Users\\test';
+  const dir = 'D:\\Local\\asb\\state\\agy';
+  assert.equal(agyRecordsDir(env, homeDir, 'win32'), dir);
+  assert.equal(defaultAppSources({ env, homeDir, platform: 'win32' }).find(({ id }) => id === 'antigravity').dataDir, dir);
+});
+
+test('Windows agy process lookup validates the PID and the one CIM reply', async () => {
+  let calls = 0;
+  const run = async (exe, args, options) => {
+    calls++;
+    assert.equal(exe, 'powershell.exe');
+    assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+    assert.deepEqual(options, { windowsHide: true, timeout: 2000, maxBuffer: 4096 });
+    const script = Buffer.from(args[3], 'base64').toString('utf16le');
+    assert.match(script, /^\$ProgressPreference='SilentlyContinue';\$p = 500\n/);
+    assert.match(script, /Get-CimInstance Win32_Process -Filter "ProcessId=\$p"/);
+    assert.match(script, /\$i -lt 4/);
+    assert.match(script, /-ieq 'agy\.exe'/);
+    assert.match(script, /CreationDate\.ToFileTimeUtc\(\)/);
+    return { stdout: '400 134085888000000001\r\n', stderr: 'progress' };
+  };
+  assert.deepEqual(await agyWindowsProcess(500, run), { agyPid: 400, agyStartTicks: '134085888000000001' });
+  for (const pid of [1, -5, 5.1, '500; bad caller text', Infinity]) assert.equal(await agyWindowsProcess(pid, run), null);
+  assert.equal(calls, 1);
+  for (const stdout of ['', 'garbage', '400 1340\nextra', '1 1340', ' 400 1340']) {
+    assert.equal(await agyWindowsProcess(500, async () => ({ stdout })), null);
+  }
+  assert.equal(await agyWindowsProcess(500, async () => { throw new Error('timeout'); }), null);
+});
+
+test('Windows start time checks liveness on each call and shares the 60 s cache and pending query', async () => {
+  const pid = 601;
+  const at = 1000;
+  let calls = 0;
+  let live = false;
+  let finish;
+  const kill = (value, signal) => {
+    assert.equal(value, pid);
+    assert.equal(signal, 0);
+    if (!live) throw new Error('process ended');
+  };
+  const run = async (exe, args, options) => {
+    calls++;
+    assert.equal(exe, 'powershell.exe');
+    assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
+    assert.deepEqual(options, { windowsHide: true, timeout: 2000, maxBuffer: 4096 });
+    assert.match(Buffer.from(args[3], 'base64').toString('utf16le'), /Get-CimInstance Win32_Process -Filter "ProcessId=601"/);
+    return new Promise((resolve) => { finish = resolve; });
+  };
+  const start = (nowMs) => windowsProcessStart(pid, { kill, run, nowMs });
+  assert.equal(await start(at), null);
+  assert.equal(calls, 0);
+  live = true;
+  const first = start(at);
+  const second = start(at);
+  assert.equal(calls, 1);
+  finish({ stdout: '134085888000000001\r\n' });
+  assert.deepEqual(await Promise.all([first, second]), ['134085888000000001', '134085888000000001']);
+  assert.equal(await start(at + 59_999), '134085888000000001');
+  assert.equal(calls, 1);
+  const next = start(at + 60_000);
+  assert.equal(calls, 2);
+  finish({ stdout: '134085888000000002\r\n' });
+  assert.equal(await next, '134085888000000002');
+  live = false;
+  assert.equal(await start(at + 60_001), null);
+  assert.equal(calls, 2);
+});
+
+test('Windows rows without a PID show hook state until quiet and are removed after seven days', async (t) => {
+  const { dataDir, put, load } = await fixture(t);
+  await put(1, { agyPid: undefined, agyStartTicks: undefined });
+  await writeFile(path.join(dataDir, `${id(1)}.title`), 'Windows title', { mode: 0o644 });
+  const windows = { platform: 'win32', startOf: async () => assert.fail('no PID to check') };
+  if (process.getuid) t.mock.method(process, 'getuid', () => { throw new Error('Windows has no getuid'); });
+  const [working] = (await load(windows)).threads;
+  assert.equal(working.title, 'Windows title');
+  assert.equal(working.lifecycleRunning, true);
+  assert.equal(working.agyStatus, undefined);
+  assert.equal((await load({ ...windows, nowMs: now + 11 * minute })).threads[0].agyStatus.state, 'unknown');
+  assert.deepEqual((await load({ ...windows, nowMs: now + 7 * day })).threads, []);
+  assert.deepEqual(await readdir(dataDir), []);
+});
 
 test('each live state gives its row status', async (t) => {
   const { homeDir, put, rows } = await fixture(t);

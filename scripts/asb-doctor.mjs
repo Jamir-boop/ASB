@@ -197,7 +197,7 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
   find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform,
   claudeHook = () => readClaudeHook(env, platform), codexHook = () => readCodexHook(env, platform),
   kitty = (add, advice) => agyKittyDoctor(add, advice, { env, read }),
-  agy = (add, advice) => agyHookDoctor(add, advice, { env }) } = {}) {
+  agy = (add, advice) => agyHookDoctor(add, advice, { env, platform }) } = {}) {
   if (platform === 'win32') return collectWindows({ env, execFile, exists: present, node, platform, claudeHook, codexHook, find, api, firewall });
   const release = parseOsRelease(await read('/etc/os-release'));
   const { family, mode } = detectFamily(release, { ostreeBooted: await present('/run/ostree-booted') });

@@ -100,7 +100,7 @@ The first command of a new session can get no card. The first command after a ti
 
 ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and shows their state. A live row in a kitty with remote control opens by focusing its kitty window. ASB counts each agy subagent on the card of the session that started it and does not show a separate card. agy hooks do not give the parent session, so ASB uses this rule: a new conversation that starts in the agy process of one working session is a subagent of that session.
 
-Run `asb agent agy-hook install` to add the hook. It writes one `asb` key into `~/.gemini/config/hooks.json`, keeps the old file as `hooks.json.asb-backup`, and leaves other hooks as they are. `asb agent agy-hook status` shows the state, and `asb agent agy-hook remove` takes the hook out. Linux only.
+Run `asb agent agy-hook install` to add the hook. It writes one `asb` key into `~/.gemini/config/hooks.json`, keeps the old file as `hooks.json.asb-backup`, and leaves other hooks as they are. `asb agent agy-hook status` shows the state, and `asb agent agy-hook remove` takes the hook out. On Windows, the hook gives cards and status; focus, phone answers, and ASB Bridge need Linux.
 
 `asb agent agy-hook install` also sets agy's window title command (`title` in `~/.gemini/antigravity-cli/settings.json`) to `asb agent agy-title`, unless you have your own `title` setting. After you name a conversation with `/rename`, the board shows that name as the row title, and the kitty window title shows it too (`agy · <folder>` before a rename). `remove` takes the setting out.
 
@@ -121,7 +121,8 @@ Limits:
 - `/exit` and a crash fire no hook event; ASB sees the end from the agy process. A crash during a task shows Unknown, with no Failed sound.
 - Each agy hook call adds about 80 ms, and agy waits for it.
 - Phone approvals work in agy's default mode only (in a kitty with remote control and **Approve requests from phones** on). Run `asb agent agy-hook install` again if you installed the hook earlier (`asb agent agy-hook status` shows `changed` until you do). ASB never chooses an "always allow" option. A deny on the phone stops the agy turn, as on the PC. Checked end to end on 2026-11-23 with agy 1.5.15 in kitty through the phone answer route (allow, deny, and an answer on the PC first, which closes the phone card); not yet tapped on a phone.
-- Not yet: Windows, and the Antigravity app and IDE.
+- Not yet: the Antigravity app and IDE. On Windows, only cards and status.
+- Windows support is not checked on a Windows PC. If the process lookup fails, ASB shows the state from hook events. A quiet Working row shows Unknown after 10 minutes.
 
 ### ASB Bridge for agy
 
@@ -144,7 +145,7 @@ Kitty typing is on after `asb bridge install --agy` for agy sessions in a kitty 
 | Claude Desktop Code | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✓ | ✓ | ✓ | ✓ | ✗ Anthropic: no entry point | ✗ Anthropic: no entry point | ✓ |
 | Claude Code CLI | ✓ | ✓ | ✓ | ✓ | ✓ with the hook | ✗ ASB work: terminal tab | ✓ | ✓ | ✓ | ✗ ASB work | ✗ Anthropic: no archive | ✓ |
 | OpenCode 2 | ✓ | ✓ | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ with ASB Bridge | ✓ Linux, opens in kitty | ✓ no reference sends to it | ✓ | ✓ | ✗ ASB work | ✗ ASB work | ✓ |
-| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✓ Linux, with the hook and kitty remote control | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✓ subagents only | ✓ | ✗ Not checked | ✗ Not checked | ✗ ASB work |
+| Antigravity CLI | ✓ with the hook | ✓ with the hook | ✓ with the hook | ✓ Linux, with the hook and kitty remote control | ✓ Linux, with the hook and kitty remote control | ✓ live kitty sessions, with remote control | ✓ ASB Bridge; idle kitty with a file socket or at Stop | ✓ subagents only | ✓ | ✗ Not checked | ✗ Not checked | ✓ cards and status, with the hook. Not checked on a Windows PC. If the process lookup fails, hook events give the state. A quiet Working row shows Unknown after 10 minutes. |
 | Claude Code on the web | ✓ Claude app cache | ✓ fresh cache only | ✓ one signal | ✓ one signal | ✗ Not planned: login | ✓ | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Anthropic: cloud only | ✗ Not planned: login | ✗ Not planned: login | ✗ ASB work: cache format |
 
 ✓ works. ✗ not yet: the note says what it waits on. "ASB work" means only ASB code is missing. Rename and Archive mean from the board.

@@ -5,7 +5,7 @@ import { constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AGY_LISTEN_ON, AGY_UUID, agyAbsolutePath as absolutePath, agyParentId, agyProcess, agyRecordsDir, agyTranscriptPath,
+import { AGY_LISTEN_ON, AGY_UUID, agyAbsolutePath as absolutePath, agyParentId, agyProcess, agyRecordsDir, agyTranscriptPath, agyWindowsProcess,
   readAgyTitle, validAgyAgentName, validAgyTitle } from '../src/antigravity-data.mjs';
 
 import { takeAgyMailbox } from '../src/agy-mailbox.mjs';
@@ -51,10 +51,15 @@ async function readStdin(stdin, limit = MAX_STDIN) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function oldRecord(file) {
+async function oldRecord(file, platform) {
   let handle;
   try {
-    handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const windows = platform === 'win32';
+    if (windows) {
+      const info = await fs.lstat(file);
+      if (!info.isFile() || info.size > MAX_RECORD) return null;
+    }
+    handle = await fs.open(file, windows ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await handle.stat();
     if (!info.isFile() || info.size > MAX_RECORD) return null;
     const { createdAtMs, parentConversationId, state, agyPid, agyStartTicks } = JSON.parse(await handle.readFile('utf8'));
@@ -65,35 +70,37 @@ async function oldRecord(file) {
 
 // agy hooks carry no parent ID. A subagent runs in the agy process of its parent and starts while that parent works,
 // so a new conversation's parent is the one working root conversation of the same agy process.
-async function agyProcessParent(dir, id, agy) {
+async function agyProcessParent(dir, id, agy, platform) {
   let names;
   try { names = await fs.readdir(dir); } catch { return ''; }
   const found = [];
   for (const name of names) {
     const other = name.slice(0, -5);
     if (!name.endsWith('.json') || !AGY_UUID.test(other) || other === id) continue;
-    const record = await oldRecord(path.join(dir, name));
+    const record = await oldRecord(path.join(dir, name), platform);
     if (record?.state === 'working' && !record.parentConversationId && record.agyPid === agy.agyPid
       && record.agyStartTicks === agy.agyStartTicks) found.push(other);
   }
   return found.length === 1 ? found[0] : '';
 }
 
-export async function writeAgyRecord(hook, { env = process.env, homeDir = os.homedir(), nowMs = Date.now(), parentPid = process.ppid, read } = {}) {
+export async function writeAgyRecord(hook, { env = process.env, homeDir = os.homedir(), nowMs = Date.now(), parentPid = process.ppid, read,
+  platform = process.platform, run, dir = agyRecordsDir(env, homeDir, platform) } = {}) {
   const next = agyNextState(hook);
   if (!next || typeof hook.conversationId !== 'string' || !AGY_UUID.test(hook.conversationId)) return null;
   const workspace = absolutePath(Array.isArray(hook.workspacePaths) ? hook.workspacePaths[0] : '') || absolutePath(hook.cwd);
   if (!workspace) return null;
-  const dir = agyRecordsDir(env, homeDir);
   const id = hook.conversationId.toLowerCase();
   const file = path.join(dir, `${id}.json`);
-  const agy = await agyProcess(parentPid, read);
+  let agy = platform === 'win32' ? null : await agyProcess(parentPid, read);
   const listenOn = typeof env.KITTY_LISTEN_ON === 'string' && env.KITTY_LISTEN_ON.length <= 300 && AGY_LISTEN_ON.test(env.KITTY_LISTEN_ON) ? env.KITTY_LISTEN_ON : '';
   const transcript = agyTranscriptPath(hook.transcriptPath, homeDir);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-  const previous = await oldRecord(file);
+  const previous = await oldRecord(file, platform);
+  if (platform === 'win32') agy = hook.hookEventName === 'SessionStart' || !previous?.agyPid
+    ? await agyWindowsProcess(parentPid, run) : { agyPid: previous.agyPid, agyStartTicks: previous.agyStartTicks };
   const parentConversationId = agyParentId(hook.parentConversationId === undefined ? previous?.parentConversationId : hook.parentConversationId, id)
-    || (!previous && agy ? agyParentId(await agyProcessParent(dir, id, agy), id) : '');
+    || (!previous && agy ? agyParentId(await agyProcessParent(dir, id, agy, platform), id) : '');
   const agentName = typeof hook.agentName === 'string' ? hook.agentName.trim() : '';
   const record = {
     conversationId: id, workspace, state: next.state, stateAtMs: nowMs, event: hook.hookEventName,
@@ -156,7 +163,8 @@ async function postAgyQuestion(body, { env = process.env } = {}) {
 }
 
 // The other hooks reply before reading stdin. Stop waits to see if it can continue the session.
-export async function agyHook(args, { stdin = process.stdin, write = (text) => process.stdout.write(text), exit = process.exit, ...options } = {}) {
+export async function agyHook(args, { stdin = process.stdin, write = (text) => process.stdout.write(text), exit = process.exit,
+  platform = process.platform, ...options } = {}) {
   const event = typeof args[0] === 'string' ? args[0] : '';
   let replied = false;
   const reply = (text = neutralReply(event)) => {
@@ -164,7 +172,7 @@ export async function agyHook(args, { stdin = process.stdin, write = (text) => p
     replied = true;
     try { write(`${text}\n`); } catch {}
   };
-  if (event !== 'Stop') reply();
+  if (event !== 'Stop' || platform === 'win32') reply();
   const timer = setTimeout(() => { reply(); exit(0); }, HARD_EXIT_MS);
   timer.unref();
   try {
@@ -172,7 +180,8 @@ export async function agyHook(args, { stdin = process.stdin, write = (text) => p
     if (text === null) return 0;
     const hook = JSON.parse(text);
     if (!hook || typeof hook !== 'object' || Array.isArray(hook) || hook.hookEventName !== event) return 0;
-    await (options.writeRecord || writeAgyRecord)(hook, options);
+    await (options.writeRecord || writeAgyRecord)(hook, { ...options, platform });
+    if (platform === 'win32') return 0;
     const post = options.postWait || options.postQuestion || postAgyQuestion;
     if (event === 'PreToolUse' && hook.toolCall?.name === QUESTION_TOOL) {
       const payload = agyQuestionPayload(hook);
@@ -191,7 +200,8 @@ export async function agyHook(args, { stdin = process.stdin, write = (text) => p
 
 // `asb agent agy-title`: agy window title command. Reads only conversation_id, conversation_title, workspace, and cwd;
 // saves a valid title to `<id>.title` when changed, and prints the window title with no newline.
-export async function agyTitle({ stdin = process.stdin, write = (t) => process.stdout.write(t), exit = process.exit, env = process.env, homeDir = os.homedir() } = {}) {
+export async function agyTitle({ stdin = process.stdin, write = (t) => process.stdout.write(t), exit = process.exit, env = process.env,
+  homeDir = os.homedir(), platform = process.platform } = {}) {
   let wrote = false;
   const output = (text = 'agy') => {
     if (wrote) return;
@@ -213,9 +223,9 @@ export async function agyTitle({ stdin = process.stdin, write = (t) => process.s
     const base = folder ? path.basename(folder) : '';
     label = title || (base ? `agy · ${base}` : 'agy');
     if (title) {
-      const dir = agyRecordsDir(env, homeDir);
+      const dir = agyRecordsDir(env, homeDir, platform);
       const file = path.join(dir, `${id.toLowerCase()}.title`);
-      if (await readAgyTitle(file) !== title) {
+      if (await readAgyTitle(file, platform) !== title) {
         await fs.mkdir(dir, { recursive: true, mode: 0o700 });
         const temporary = `${file}.${randomUUID()}.tmp`;
         try {
