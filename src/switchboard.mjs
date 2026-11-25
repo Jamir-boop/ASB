@@ -27,6 +27,7 @@ import { MEMBER_MESSAGE_KEYS, rowKeyLookup } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
 import { readLiveClaudeRegistry, liveClaudeProcessesChanged } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
+import { findOpenCodeKittyWindow, focusOpenCodeKittyWindow } from './opencode-kitty.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OPENCODE_ID = /^ses_[A-Za-z0-9]{1,64}$/;
@@ -663,6 +664,8 @@ export async function openSwitchboardThread(thread, options = {}) {
       if (openCodeKittyRow(thread, programs)) {
         const cwd = thread.cwd;
         if (!(await fs.stat(cwd).catch(() => null))?.isDirectory()) throw new Error('The session folder is gone.');
+        const target = await findOpenCodeKittyWindow({ id: thread.externalId, title: thread.title, cwd, procDir: options.procDir, exec: options.exec });
+        if (target && await focusOpenCodeKittyWindow(target, { exec: options.exec })) return { opened: true, method: 'opencode-kitty-focus' };
         const args = ['--directory', cwd, programs.opencode, '--session', thread.externalId];
         const start = options.spawn || spawn;
         await new Promise((resolve, reject) => {

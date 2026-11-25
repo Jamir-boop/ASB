@@ -1,6 +1,6 @@
 # ASB
 
-**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita, for GNOME on Linux and for Windows. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app. It also shows your OpenCode 2, Claude Code CLI, and Codex CLI sessions. On Linux, an OpenCode 2 card opens the session in a new kitty window with `opencode --session`. It does not find a TUI that already shows the session. Claude Code CLI and Codex CLI sessions are view only. ASB reads the app stores read-only and makes no model calls.
+**Agent Switch Board** is a native switch board with GTK 4 and Libadwaita, for GNOME on Linux and for Windows. It lists your Codex and Claude Desktop Code chats and opens a chat in its own app. It also shows your OpenCode 2, Claude Code CLI, and Codex CLI sessions. On Linux, an OpenCode 2 card first focuses a kitty window that runs the session, either a TUI started with `--session <id>`, or a TUI in the session folder whose window title shows the session title. Else it opens a new kitty window with `opencode --session`. Two sessions with the same title in the same folder can match the wrong one. Claude Code CLI and Codex CLI sessions are view only. ASB reads the app stores read-only and makes no model calls.
 
 ![ASB banner](docs/media/asb-banner.png)
 

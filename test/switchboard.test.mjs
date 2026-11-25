@@ -2357,7 +2357,10 @@ test('a local OpenCode row opens in a new kitty window only with kitty and openc
     const child = { once: (event, fn) => { if (event === 'spawn') fn(); return child; }, unref: () => {} };
     return child;
   };
-  const result = await openSwitchboardThread(row({}), { findPrograms: async () => ({ kitty: '/usr/bin/kitty', opencode: '/usr/bin/opencode' }), spawn });
+  // A fake empty /proc finds no kitty window, so the open starts a new window, not a focus.
+  const procDir = await temp(t);
+  const result = await openSwitchboardThread(row({}), { findPrograms: async () => ({ kitty: '/usr/bin/kitty', opencode: '/usr/bin/opencode' }),
+    spawn, procDir, exec: async () => { throw new Error('no kitty here'); } });
   assert.deepEqual([result.opened, result.method], [true, 'opencode-kitty']);
   assert.deepEqual(calls, [['/usr/bin/kitty', ['--directory', dir, '/usr/bin/opencode', '--session', 'ses_open'],
     { detached: true, stdio: 'ignore' }]]);
