@@ -153,7 +153,8 @@ export async function windowsProcessStart(pid, { kill = process.kill, run = exec
   const script = `$x = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction Stop
 if ($x) { $x.CreationDate.ToFileTimeUtc() }`;
   const pending = powershell(script, run).then((stdout) => /^(\d{1,20})\s*$/.exec(stdout)?.[1] ?? null).catch(() => null)
-    .then((ticks) => { windowsStarts.set(pid, { ticks, atMs: nowMs }); return ticks; });
+    // A failed or slow lookup is not kept: the next scan asks again.
+    .then((ticks) => { if (ticks) windowsStarts.set(pid, { ticks, atMs: nowMs }); else windowsStarts.delete(pid); return ticks; });
   windowsStarts.set(pid, { pending });
   return pending;
 }

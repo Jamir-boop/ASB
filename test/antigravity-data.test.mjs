@@ -96,9 +96,17 @@ test('Windows start time checks liveness on each call and shares the 60 s cache 
   assert.equal(calls, 2);
   finish({ stdout: '134085888000000002\r\n' });
   assert.equal(await next, '134085888000000002');
+  const failed = start(at + 120_000);
+  assert.equal(calls, 3);
+  finish({ stdout: '' });
+  assert.equal(await failed, null);
+  const again = start(at + 120_001);
+  assert.equal(calls, 4);
+  finish({ stdout: '134085888000000002\r\n' });
+  assert.equal(await again, '134085888000000002');
   live = false;
-  assert.equal(await start(at + 60_001), null);
-  assert.equal(calls, 2);
+  assert.equal(await start(at + 120_002), null);
+  assert.equal(calls, 4);
 });
 
 test('Windows rows without a PID show hook state until quiet and are removed after seven days', async (t) => {
