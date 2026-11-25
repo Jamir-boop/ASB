@@ -514,6 +514,16 @@ export function agyThread(record, { live, transcriptAtMs = 0, nowMs = Date.now()
   return thread;
 }
 
+// The subagent threads that work now, by parent thread ID: a running turn, and no status or Waiting.
+export function agyWorkingChildCounts(threads) {
+  const counts = new Map();
+  for (const thread of threads) {
+    if (!thread.isSubagent || !thread.lifecycleRunning || (thread.agyStatus && thread.agyStatus.state !== 'waiting')) continue;
+    counts.set(thread.parentThreadId, (counts.get(thread.parentThreadId) || 0) + 1);
+  }
+  return counts;
+}
+
 // Reads the hook records (at most 500 files of 16 KiB each); a bad file is skipped. Removes its own records that are not live and older than 7 days.
 export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), homeDir = os.homedir(), startOf = processStart,
   procDir = '/proc', exec = defaultKitty } = {}) {
@@ -542,5 +552,8 @@ export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), ho
     const check = await checkAgyInterrupt(file, record, target, Math.max(record.stateAtMs, transcriptAtMs), nowMs, exec);
     return agyThread(record, { live, nowMs, transcriptAtMs, canFocus: Boolean(target), title, ...check });
   }))).filter(Boolean);
+  // A root counts its direct subagent records that work now.
+  const counts = agyWorkingChildCounts(threads);
+  for (const thread of threads) if (!thread.isSubagent && counts.has(thread.id)) thread.backgroundAgents = counts.get(thread.id);
   return { generatedAtMs: nowMs, provider: { installed: true, status: 'ready', message: '', threadCount: threads.length }, threads };
 }

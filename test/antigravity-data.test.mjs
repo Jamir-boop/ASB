@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { agyScreenInterrupted, answerAgyInKitty, approveAgyInKitty, loadAntigravityDashboard, matchAgyApprovalScreen, watchAgyApproval } from '../src/antigravity-data.mjs';
+import { agyScreenInterrupted, agyThread, agyWorkingChildCounts, answerAgyInKitty, approveAgyInKitty, loadAntigravityDashboard, matchAgyApprovalScreen, watchAgyApproval } from '../src/antigravity-data.mjs';
 import { AppSourceRegistry } from '../src/app-sources.mjs';
 import { buildSwitchboardDashboard, isSwitchboardRoot, loadSwitchboardDashboard, PendingTracker, switchboardWatchPaths } from '../src/switchboard.mjs';
 
@@ -68,6 +68,38 @@ test('an agy subagent counts on its parent without changing the parent state or 
     assert.deepEqual((await rows()).map((row) => [row.externalId, row.subagentCount, row.state, row.lastOutcome]),
       [[id(1), 1, 'idle', '']], state);
   }
+});
+
+test('a root counts its working subagents in backgroundAgents', async (t) => {
+  const { put, load, rows } = await fixture(t);
+  await put(1, { state: 'idle' });
+  await put(2, { state: 'idle' });
+  const count = async (n) => (await load()).threads.find((thread) => thread.externalId === id(n))?.backgroundAgents;
+  assert.equal(await count(1), undefined, 'no child');
+  assert.equal('backgroundAgents' in (await rows()).find((row) => row.externalId === id(1)), false, 'absent at 0');
+  await put(10, { state: 'working', parentConversationId: id(1) });
+  assert.equal(await count(1), 1);
+  await put(11, { state: 'question', parentConversationId: id(1) });
+  assert.equal(await count(1), 2);
+  assert.equal(await count(2), undefined, 'a child of another root does not count');
+  await put(11, { state: 'done', parentConversationId: id(1) });
+  assert.equal(await count(1), 1, 'a done child does not count');
+  await put(11, { state: 'working', agyPid: 401, parentConversationId: id(1) });
+  assert.equal(await count(1), 1, 'a child that is not live does not count');
+  await put(12, { state: 'working', parentConversationId: id(1) });
+  assert.equal(await count(1), 2);
+  // An interrupted child has an idle status; a child that ended during a question has an unknown status. Neither counts.
+  const child = (n, state, options) => agyThread({ conversationId: id(n), workspace: '/w', state, stateAtMs: now,
+    createdAtMs: now - minute, parentConversationId: id(1) }, { live: true, nowMs: now, ...options });
+  const counts = agyWorkingChildCounts([child(12, 'working', { interrupted: true }), child(13, 'working', { live: false }),
+    child(14, 'question', {})]);
+  assert.deepEqual([child(12, 'working', { interrupted: true }).agyStatus.state, [...counts]],
+    ['idle', [[`agy:${id(1)}`, 1]]]);
+  const board = await rows();
+  assert.deepEqual([board.find((row) => row.externalId === id(1)).backgroundAgents,
+    'backgroundAgents' in board.find((row) => row.externalId === id(2))], [2, false]);
+  // A row that is not a card gets no count.
+  assert.equal('backgroundAgents' in (await load()).threads.find((thread) => thread.externalId === id(10)), false);
 });
 
 test('a record whose agy ended, or whose PID was reused, is not live', async (t) => {
