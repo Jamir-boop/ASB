@@ -5,6 +5,7 @@ These SVG paths come from the selected ASB Column Flow preview. The board loads 
 - OpenAI mark: [Simple Icons 13.0.0](https://raw.githubusercontent.com/simple-icons/simple-icons/13.0.0/icons/openai.svg).
 - Claude mark: [Simple Icons](https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/claude.svg).
 - OpenCode mark: the OpenCode logo, from [`packages/ui/src/assets/favicon/favicon.svg`](https://github.com/anomalyco/opencode/blob/v2.0.32/packages/ui/src/assets/favicon/favicon.svg) at tag `v2.0.32` of anomalyco/opencode.
+- Antigravity mark: [Lobe Icons](https://lobehub.com/icons) (MIT, Copyright (c) LobeHub), as copied in t3code commit `3cb16cf16509e74e2f483f541010996a9e6fac34` (`apps/marketing/public/harnesses/antigravity.svg`, the mask path). ASB changes only the size and the gray fill. Brand rights stay with the owner.
 - Machine glyph (`asb-machine-symbolic.svg`), terminal glyph (`asb-terminal-symbolic.svg`), drawer glyph (`asb-drawer-symbolic.svg`), and filter glyph (`asb-filter-symbolic.svg`): drawn for ASB, no outside source.
 - Mute glyph (`asb-muted-symbolic.svg`, an outline bell of 2 px lines on the 16 px grid with a 2 px slash from corner to corner): drawn for ASB, no outside source. The drawer glyph is also a tray of 2 px lines with a 2 px handle.
 - Messages glyph (`asb-chat-symbolic.svg`, an outline speech bubble; the top-bar extension has a byte copy): drawn for ASB, no outside source.

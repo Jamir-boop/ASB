@@ -45,7 +45,8 @@ export function machineHue(index) {
 
 export function providerIcon(provider) {
     return provider === 'codex' ? 'asb-openai-symbolic.svg'
-        : provider === 'opencode' ? 'asb-opencode-symbolic.svg' : 'asb-claude-symbolic.svg';
+        : provider === 'opencode' ? 'asb-opencode-symbolic.svg'
+        : provider === 'antigravity' ? 'asb-antigravity-symbolic.svg' : 'asb-claude-symbolic.svg';
 }
 
 export function runtimePath(env, home) {

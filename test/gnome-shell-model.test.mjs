@@ -35,6 +35,7 @@ test('the top bar and the board have the same six machine hues', () => {
 test('provider icons follow the board fallback', () => {
   assert.equal(model.providerIcon('codex'), 'asb-openai-symbolic.svg');
   assert.equal(model.providerIcon('opencode'), 'asb-opencode-symbolic.svg');
+  assert.equal(model.providerIcon('antigravity'), 'asb-antigravity-symbolic.svg');
   for (const value of ['claude-desktop-code', 'other', '', null]) assert.equal(model.providerIcon(value), 'asb-claude-symbolic.svg');
 });
 

@@ -193,7 +193,7 @@ def source_marker_color(row):
 
 
 def provider_icon(provider):
-    return {"codex": "asb-openai-symbolic", "opencode": "asb-opencode-symbolic", "antigravity": "asb-terminal-symbolic"}.get(provider, "asb-claude-symbolic")
+    return {"codex": "asb-openai-symbolic", "opencode": "asb-opencode-symbolic", "antigravity": "asb-antigravity-symbolic"}.get(provider, "asb-claude-symbolic")
 
 
 def source_form_body(provider, name, data_dir, launcher, enabled, identity="", projects_dir="", color=None, show_marker=None,
@@ -2212,7 +2212,7 @@ USAGE_APPS = ACTIVITY_APPS + ("antigravity", "grok", "pi")
 USAGE_OTHER_MAKER = "Other"
 ACTIVITY_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
 ACTIVITY_APP_LABELS = {"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "": "Other", "antigravity": "Antigravity", "grok": "Grok", "pi": "Pi"}
-ACTIVITY_APP_ICONS = {"codex": "asb-openai-symbolic", "claude": "asb-claude-symbolic", "opencode": "asb-opencode-symbolic", "": "asb-machine-symbolic", "antigravity": "asb-terminal-symbolic", "grok": "asb-terminal-symbolic", "pi": "asb-terminal-symbolic"}
+ACTIVITY_APP_ICONS = {"codex": "asb-openai-symbolic", "claude": "asb-claude-symbolic", "opencode": "asb-opencode-symbolic", "": "asb-machine-symbolic", "antigravity": "asb-antigravity-symbolic", "grok": "asb-terminal-symbolic", "pi": "asb-terminal-symbolic"}
 ACTIVITY_APP_COLORS = {"codex": "#c9ccd1", "claude": "#d97757", "opencode": "#7d848c", "": "#5d6268", "antigravity": "#4f8fe0", "grok": "#e8e46a", "pi": "#c678dd"}
 ACTIVITY_STATUSES = ("accepted", "written", "held", "not-sent", "unknown")
 ACTIVITY_STATUS_LABELS = {"accepted": "Accepted", "written": "No receipt", "held": "On hold", "not-sent": "Not sent", "unknown": "Status unknown"}

@@ -8609,6 +8609,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertEqual(file_icon(card.asb_mark), (None, "asb-claude-symbolic.svg", True))
         window.update_session_row(card, {**card.asb_thread, "provider": "codex"})
         self.assertEqual(file_icon(card.asb_mark), (None, "asb-openai-symbolic.svg", True))
+        window.update_session_row(card, {**card.asb_thread, "provider": "antigravity"})
+        self.assertEqual(file_icon(card.asb_mark), (None, "asb-antigravity-symbolic.svg", True))
 
     def rgba(self, widget):
         """The unpremultiplied RGBA rows of one widget (Cairo renderer): rows[y][x] is (r, g, b, a)."""

@@ -519,7 +519,7 @@ test('the npm package has the runtime files, the asb command, and no tests, docu
 
 
 const panelNames = ['metadata.json', 'extension.js', 'model.js', 'stylesheet.css', 'icons/asb-chat-symbolic.svg',
-  'icons/asb-claude-symbolic.svg', 'icons/asb-openai-symbolic.svg', 'icons/asb-opencode-symbolic.svg'].sort();
+  'icons/asb-claude-symbolic.svg', 'icons/asb-openai-symbolic.svg', 'icons/asb-opencode-symbolic.svg', 'icons/asb-antigravity-symbolic.svg'].sort();
 const panelFolder = (options) => path.join(options.dataDir, 'gnome-shell/extensions', PANEL_UUID);
 const panelOptions = async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'asb-panel-package-'));
