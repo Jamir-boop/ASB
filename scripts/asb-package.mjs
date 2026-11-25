@@ -35,7 +35,7 @@ export const RUNTIME_FILES = [
   'assets/sounds/opencode-LICENSE.txt',
   'src/switchboard.mjs', 'src/app-sources.mjs', 'src/asb-server.mjs', 'src/dashboard-snapshot.mjs', 'src/local-http.mjs', 'src/session-opener.mjs',
   'src/codex-data.mjs', 'src/claude-data.mjs', 'src/claude-registry.mjs', 'src/claude-cli-data.mjs', 'src/claude-remote-data.mjs', 'src/insights.mjs', 'src/data-cache.mjs',
-  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/machine-relay.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs', 'src/antigravity-data.mjs', 'src/agy-mailbox.mjs', 'src/agy-hook.mjs', 'src/platform-paths.mjs',
+  'src/thread-classification.mjs', 'src/phone-gateway.mjs', 'src/machine-group.mjs', 'src/machine-peers.mjs', 'src/machine-relay.mjs', 'src/asb-sounds.mjs', 'src/opencode-data.mjs', 'src/opencode-kitty.mjs', 'src/antigravity-data.mjs', 'src/agy-mailbox.mjs', 'src/agy-hook.mjs', 'src/platform-paths.mjs',
   'src/session-references.mjs', 'src/linux-system.mjs', 'src/linux-distros.mjs', 'scripts/asb-doctor.mjs',
   'src/session-targets.mjs',
   'src/reader-positions.mjs',

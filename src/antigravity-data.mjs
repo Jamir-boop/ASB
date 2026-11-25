@@ -105,7 +105,7 @@ export async function agyProcess(parentPid = process.ppid, read = readProc) {
 }
 
 // A process of this user that is not a zombie: its comm and parent PID, from `<procDir>/<pid>/stat`.
-async function procInfo(pid, procDir) {
+export async function procInfo(pid, procDir) {
   try {
     if ((await fs.stat(path.join(procDir, String(pid)))).uid !== process.getuid()) return null;
     const text = await fs.readFile(path.join(procDir, String(pid), 'stat'), 'utf8');
