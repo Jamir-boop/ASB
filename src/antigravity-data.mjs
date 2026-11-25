@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { processStart } from './claude-registry.mjs';
 import { findExecutable, stateDir } from './platform-paths.mjs';
 
@@ -28,7 +29,8 @@ export const AGY_FOCUS_ERROR = 'ASB could not focus this agy session in kitty.';
 export const AGY_QUIET_REASON = 'No news from the agy session for 10 minutes.';
 
 export const agyAbsolutePath = (value) => typeof value === 'string' && PATH_TEXT.test(value) && path.isAbsolute(value) ? path.resolve(value) : '';
-export const agyRecordsDir = (env = process.env, homeDir = os.homedir()) => path.join(stateDir(env, 'linux', homeDir), 'agy');
+export const agyRecordsDir = (env = process.env, homeDir = os.homedir(), platform = process.platform) =>
+  (platform === 'win32' ? path.win32 : path).join(stateDir(env, platform, homeDir), 'agy');
 
 export function validAgyTitle(value) {
   if (typeof value !== 'string') return '';
@@ -36,12 +38,18 @@ export function validAgyTitle(value) {
   return trimmed.length >= 1 && trimmed.length <= 200 && !BAD_TITLE_CHAR.test(trimmed) ? trimmed : '';
 }
 
-export async function readAgyTitle(file) {
+// Windows has no uid and no POSIX mode: lstat first, as readRecord in src/claude-registry.mjs does.
+export async function readAgyTitle(file, platform = process.platform) {
   let handle;
   try {
-    handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const windows = platform === 'win32';
+    if (windows) {
+      const info = await fs.lstat(file);
+      if (!info.isFile() || info.size > MAX_TITLE) return '';
+    }
+    handle = await fs.open(file, windows ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await handle.stat();
-    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o7777) !== 0o600 || info.size > MAX_TITLE) return '';
+    if (!info.isFile() || (!windows && (info.uid !== process.getuid() || (info.mode & 0o7777) !== 0o600)) || info.size > MAX_TITLE) return '';
     return validAgyTitle(await handle.readFile('utf8'));
   } catch { return ''; } finally { await handle?.close().catch(() => {}); }
 }
@@ -102,6 +110,52 @@ export async function agyProcess(parentPid = process.ppid, read = readProc) {
     }
     return null;
   } catch { return null; }
+}
+
+const execFileAsync = promisify(execFile);
+const START_CHECK_MS = 60_000;
+
+// PowerShell 5.1 drops the double quotes of a native argument, so the script goes as UTF-16LE base64.
+async function powershell(script, run) {
+  const command = Buffer.from(`$ProgressPreference='SilentlyContinue';${script}`, 'utf16le').toString('base64');
+  const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', command],
+    { windowsHide: true, timeout: 2000, maxBuffer: 4096 });
+  return stdout;
+}
+
+const windowsPid = (pid) => Number.isInteger(pid) && pid > 1 && pid <= 0xffffffff;
+
+// The Windows hook client is agy.exe -> cmd.exe -> node.exe. Find the first agy.exe, at most 4 levels from the parent.
+export async function agyWindowsProcess(parentPid, run = execFileAsync) {
+  if (!windowsPid(parentPid)) return null;
+  const script = `$p = ${parentPid}
+for ($i = 0; $i -lt 4 -and $p -gt 1; $i++) {
+  $x = Get-CimInstance Win32_Process -Filter "ProcessId=$p" -ErrorAction Stop
+  if (-not $x) { break }
+  if ($x.Name -ieq 'agy.exe') { "$($x.ProcessId) $($x.CreationDate.ToFileTimeUtc())"; break }
+  $p = $x.ParentProcessId
+}`;
+  try {
+    const match = /^(\d{1,10}) (\d{1,20})\s*$/.exec(await powershell(script, run));
+    return match && Number(match[1]) > 1 ? { agyPid: Number(match[1]), agyStartTicks: match[2] } : null;
+  } catch { return null; }
+}
+
+const windowsStarts = new Map();
+
+export async function windowsProcessStart(pid, { kill = process.kill, run = execFileAsync, nowMs = Date.now() } = {}) {
+  if (!windowsPid(pid)) return null;
+  try { if (kill(pid, 0) === false) return null; } catch { return null; }
+  // shortcut: a PID reused within 60 s can show a dead agy as live; check the start each scan if that shows up.
+  const known = windowsStarts.get(pid);
+  if (known?.pending) return known.pending;
+  if (known && nowMs - known.atMs < START_CHECK_MS) return known.ticks;
+  const script = `$x = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction Stop
+if ($x) { $x.CreationDate.ToFileTimeUtc() }`;
+  const pending = powershell(script, run).then((stdout) => /^(\d{1,20})\s*$/.exec(stdout)?.[1] ?? null).catch(() => null)
+    .then((ticks) => { windowsStarts.set(pid, { ticks, atMs: nowMs }); return ticks; });
+  windowsStarts.set(pid, { pending });
+  return pending;
 }
 
 // A process of this user that is not a zombie: its comm and parent PID, from `<procDir>/<pid>/stat`.
@@ -418,12 +472,17 @@ export async function agyKittyDoctor(add, advice, { env = process.env, read } = 
   if (!ready) advice.push('In kitty.conf:', '  allow_remote_control socket-only', '  listen_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}');
 }
 
-async function readRecord(file) {
+async function readRecord(file, platform = process.platform) {
   let handle;
   try {
-    handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const windows = platform === 'win32';
+    if (windows) {
+      const info = await fs.lstat(file);
+      if (!info.isFile() || info.size > MAX_RECORD) return null;
+    }
+    handle = await fs.open(file, windows ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await handle.stat();
-    if (!info.isFile() || info.uid !== process.getuid() || info.size > MAX_RECORD) return null;
+    if (!info.isFile() || (!windows && info.uid !== process.getuid()) || info.size > MAX_RECORD) return null;
     return JSON.parse(await handle.readFile('utf8'));
   } catch { return null; } finally { await handle?.close().catch(() => {}); }
 }
@@ -525,10 +584,13 @@ export function agyWorkingChildCounts(threads) {
 }
 
 // Reads the hook records (at most 500 files of 16 KiB each); a bad file is skipped. Removes its own records that are not live and older than 7 days.
-export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), homeDir = os.homedir(), startOf = processStart,
-  procDir = '/proc', exec = defaultKitty } = {}) {
+export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), homeDir = os.homedir(), platform = process.platform,
+  startOf = platform === 'win32' ? windowsProcessStart : processStart, procDir = '/proc', exec = defaultKitty } = {}) {
   interruptChecks ??= new Map();
   for (const [file, check] of interruptChecks) if (check.nextAtMs <= nowMs) interruptChecks.delete(file);
+  if (platform === 'win32') for (const [pid, check] of windowsStarts) {
+    if (!check.pending && nowMs - check.atMs >= START_CHECK_MS) windowsStarts.delete(pid);
+  }
   const names = await fs.readdir(dataDir).catch((error) => {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -538,17 +600,21 @@ export async function loadAntigravityDashboard({ dataDir, nowMs = Date.now(), ho
   const ids = names.filter((name) => name.endsWith('.json') && AGY_UUID.test(name.slice(0, -5))).sort().slice(0, MAX_FILES).map((name) => name.slice(0, -5));
   const threads = (await Promise.all(ids.map(async (id) => {
     const file = path.join(dataDir, `${id}.json`);
-    const record = await readRecord(file);
+    const record = await readRecord(file, platform);
     if (!validAgyRecord(record, id, homeDir)) return null;
-    const live = record.agyPid !== undefined && await startOf(record.agyPid) === record.agyStartTicks;
+    // Windows: a record without an agy process (the lookup failed) still shows its state from the hook events, and the
+    // 10-minute Unknown rule of a quiet Working row is its only liveness check.
+    const hasProcess = record.agyPid !== undefined;
+    const live = hasProcess ? await startOf(record.agyPid) === record.agyStartTicks : platform === 'win32';
     const titleFile = path.join(dataDir, `${id}.title`);
-    if (!live && nowMs - record.stateAtMs > KEEP_MS) {
+    if ((!hasProcess || !live) && nowMs - record.stateAtMs > KEEP_MS) {
       await fs.rm(file, { force: true }).catch(() => {});
       await fs.rm(titleFile, { force: true }).catch(() => {});
       return null;
     }
-    const [transcriptAtMs, target, title] = await Promise.all([live ? transcriptMtime(record.transcriptMtimePath) : 0,
-      live ? agyFocusTarget(record, { procDir }) : null, readAgyTitle(titleFile)]);
+    // kitty focus is Linux only.
+    const [transcriptAtMs, target, title] = await Promise.all([live && hasProcess ? transcriptMtime(record.transcriptMtimePath) : 0,
+      live && platform !== 'win32' ? agyFocusTarget(record, { procDir }) : null, readAgyTitle(titleFile, platform)]);
     const check = await checkAgyInterrupt(file, record, target, Math.max(record.stateAtMs, transcriptAtMs), nowMs, exec);
     return agyThread(record, { live, nowMs, transcriptAtMs, canFocus: Boolean(target), title, ...check });
   }))).filter(Boolean);

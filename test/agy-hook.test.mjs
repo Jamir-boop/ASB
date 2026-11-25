@@ -7,12 +7,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agyHookSetup } from '../scripts/asb-agent.mjs';
-import { agyHookEntry, agyHookLine, agyHookState, agySettingsFile, agyTitleEntry, agyTitleState, changeAgyTitle } from '../src/agy-hook.mjs';
+import { agyHookEntry, agyHookLine, agyHookState, agySettingsFile, agyTitleEntry, agyTitleState, changeAgyTitle, usableLauncher } from '../src/agy-hook.mjs';
 
 // Every run has a temp HOME with a made-up `.gemini` folder or a temp `--file`; no test reads or writes the real agy files.
 const agent = fileURLToPath(new URL('../scripts/asb-agent.mjs', import.meta.url));
 const launcherFile = fileURLToPath(new URL('../scripts/asb', import.meta.url));
 const LAUNCHER = '/opt/asb-test/bin/asb';
+const WIN_LAUNCHER = String.raw`C:\Users\A B\AppData\Roaming\npm\asb.cmd`;
 const ID = '9d482c79-a221-41ba-96c9-1c571ac0565b';
 const SHELLS = ['/bin/sh', '/bin/bash'];
 const EVENTS = [['PreToolUse', '{"decision":"ask"}'], ['Stop', '{}']];
@@ -226,7 +227,7 @@ test('a write between the read and the rename changes nothing and asks for a new
   }
 });
 
-test('a quote, a control character, or a relative launcher, win32, and no launcher are refused with no write', async (t) => {
+test('a quote, a control character, or a relative launcher, and no launcher are refused with no write', async (t) => {
   const { gemini, env } = await home(t);
   await mkdir(gemini);
   const before = await tree(gemini);
@@ -236,7 +237,6 @@ test('a quote, a control character, or a relative launcher, win32, and no launch
   const noLauncher = { code: 1, stdout: '', stderr: 'Run agy-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).' };
   assert.deepEqual(await local({ ...env, ASB_INSTALLED_LAUNCHER: 'relative/asb' }, ['install']), noLauncher);
   assert.deepEqual(await local({ HOME: env.HOME }, ['install']), noLauncher);
-  assert.deepEqual(await local(env, ['install'], { platform: 'win32' }), { code: 1, stdout: '', stderr: 'The agy hook works on Linux only for now.' });
   assert.deepEqual(await tree(gemini), before);
 });
 
@@ -334,4 +334,58 @@ test('agyHookSetup reports both targets in text and JSON and exits 1 on refused 
     stderr: '',
   });
   assert.ok(gemini);
+});
+
+test('Windows hook lines, entries, and state match the exact cmd forms', () => {
+  const launcher = WIN_LAUNCHER;
+  const pre = `"${launcher}" agent agy-hook PreToolUse 2>nul || echo {"decision":"ask"}`;
+  const stop = `"${launcher}" agent agy-hook Stop 2>nul || echo {}`;
+  assert.equal(agyHookLine(launcher, 'PreToolUse', 'win32'), pre);
+  assert.equal(agyHookLine(launcher, 'Stop', 'win32'), stop);
+  const plain = (command) => [{ type: 'command', command, timeout: 10 }];
+  const event = (name) => plain(`"${launcher}" agent agy-hook ${name} 2>nul || echo {}`);
+  const tool = (hooks) => [{ matcher: '^(ask_question|run_command|edit_file|write_file)$', hooks }];
+  const asb = agyHookEntry(launcher, 'win32');
+  const title = agyTitleEntry(launcher, 'win32');
+  assert.deepEqual(asb, { SessionStart: event('SessionStart'), PreInvocation: event('PreInvocation'), Stop: plain(stop),
+    PreToolUse: tool(plain(pre)), PostToolUse: tool(event('PostToolUse')) });
+  assert.deepEqual(title, { type: 'command', command: `"${launcher}" agent agy-title`, enabled: true });
+  assert.equal(agyHookState({ asb }, '', 'win32'), 'installed');
+  assert.equal(agyHookState({ asb }, launcher, 'win32'), 'installed');
+  assert.equal(agyHookState({ asb }, 'C:\\other\\asb.cmd', 'win32'), 'changed');
+  assert.equal(agyTitleState({ title }, '', 'win32'), 'installed');
+  assert.equal(agyTitleState({ title }, 'C:\\other\\asb.cmd', 'win32'), 'other');
+});
+
+test('Windows launcher paths need an absolute cmd, bat, or exe name without quotes, percent, or controls', () => {
+  for (const file of [WIN_LAUNCHER, 'C:\\other\\asb.BAT', 'C:\\other\\asb.EXE']) assert.equal(usableLauncher(file, 'win32'), true, file);
+  for (const file of ['C:\\a%b\\asb.cmd', 'C:\\a"b\\asb.cmd', 'C:\\a\nb\\asb.cmd', 'relative\\asb.cmd', 'C:\\other\\asb.ps1']) {
+    assert.equal(usableLauncher(file, 'win32'), false, file);
+  }
+});
+
+test('Windows install, status, and remove use the cmd entries under USERPROFILE', async (t) => {
+  const { dir, file, titleFile } = await home(t);
+  await mkdir(path.dirname(titleFile), { recursive: true });
+  const env = { USERPROFILE: dir, APPDATA: path.join(dir, 'roaming'), ASB_INSTALLED_LAUNCHER: WIN_LAUNCHER };
+  const windows = { platform: 'win32' };
+  const run = (action, from = env) => local(from, [action, '--json'], windows);
+  const before = await tree(dir);
+  assert.deepEqual(await run('install', { ...env, ASB_INSTALLED_LAUNCHER: '' }), {
+    code: 1, stdout: '', stderr: 'Run agy-hook install from the installed asb (no asb.cmd found).',
+  });
+  assert.deepEqual(await run('install', { ...env, ASB_INSTALLED_LAUNCHER: 'C:\\a%b\\asb.cmd' }), {
+    code: 1, stdout: '', stderr: 'The installed launcher path has a quote, a percent sign, or a control character. The agy hook cannot use it.',
+  });
+  assert.deepEqual(await tree(dir), before);
+  assert.equal((await run('install')).code, 0);
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(saved.asb.PreToolUse[0].hooks[0].command, `"${WIN_LAUNCHER}" agent agy-hook PreToolUse 2>nul || echo {"decision":"ask"}`);
+  assert.deepEqual(JSON.parse(await readFile(titleFile, 'utf8')), { title: agyTitleEntry(WIN_LAUNCHER, 'win32') });
+  const status = await run('status');
+  assert.equal(status.code, 0);
+  assert.deepEqual(JSON.parse(status.stdout).targets.map(({ state }) => state), ['installed', 'installed']);
+  assert.equal((await run('remove')).code, 0);
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), {});
+  assert.deepEqual(JSON.parse(await readFile(titleFile, 'utf8')), {});
 });

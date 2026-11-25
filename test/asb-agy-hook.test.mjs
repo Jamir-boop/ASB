@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { agyHook, agyNextState, agyProcess, agyTitle } from '../scripts/asb-agy-hook.mjs';
+import { agyHook, agyNextState, agyProcess, agyTitle, writeAgyRecord } from '../scripts/asb-agy-hook.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ID = '9d482c79-a221-41ba-96c9-1c571ac0565b';
@@ -42,6 +42,43 @@ async function fixture(t) {
 }
 
 const ask = (name, extra = {}) => ({ toolCall: { id: 'call-1', name, args: { questions: [{ question: `${MARKER} question` }], CommandLine: `${MARKER} cmd` } }, ...extra });
+
+test('Windows writes fresh agy identity at SessionStart or when the old record has no PID', async (t) => {
+  const { homeDir, dir, file, record } = await fixture(t);
+  const hook = { conversationId: ID, cwd: path.join(homeDir, 'ws') };
+  let calls = 0;
+  const run = async () => ({ stdout: `${400 + calls++} 134085888000000001\r\n` });
+  const options = { platform: 'win32', homeDir, dir, env: {}, parentPid: 500, run };
+  const write = async (hookEventName) => {
+    await writeAgyRecord({ ...hook, hookEventName }, options);
+    const { agyPid, agyStartTicks, kittyWindowId, kittyPid, kittyListenOn } = await record();
+    assert.deepEqual([kittyWindowId, kittyPid, kittyListenOn], [undefined, undefined, undefined]);
+    return [agyPid, agyStartTicks];
+  };
+  assert.deepEqual(await write('SessionStart'), [400, '134085888000000001']);
+  assert.deepEqual(await write('PreInvocation'), [400, '134085888000000001']);
+  assert.equal(calls, 1);
+  assert.deepEqual(await write('SessionStart'), [401, '134085888000000001']);
+  const { agyPid, agyStartTicks, ...noPid } = await record();
+  await writeFile(file, JSON.stringify(noPid));
+  assert.deepEqual(await write('PreInvocation'), [402, '134085888000000001']);
+  assert.equal(calls, 3);
+});
+
+test('Windows Stop replies before a failed process lookup and still writes the state', async (t) => {
+  const { homeDir, dir, record } = await fixture(t);
+  const hook = { hookEventName: 'Stop', conversationId: ID, cwd: path.join(homeDir, 'ws'), fullyIdle: true };
+  const output = [];
+  let replyAtLookup;
+  const code = await agyHook(['Stop'], { platform: 'win32', homeDir, dir, env: {}, parentPid: 500,
+    stdin: Readable.from([Buffer.from(JSON.stringify(hook))]), write: (text) => output.push(text),
+    run: async () => { replyAtLookup = output.join(''); throw new Error('timeout'); } });
+  assert.equal(code, 0);
+  assert.equal(replyAtLookup, '{}\n');
+  assert.deepEqual(output, ['{}\n']);
+  const { state, agyPid, agyStartTicks } = await record();
+  assert.deepEqual([state, agyPid, agyStartTicks], ['done', undefined, undefined]);
+});
 
 test('each event gives its state, keeps createdAtMs, and replies with the neutral reply', async (t) => {
   const { run, record, homeDir } = await fixture(t);

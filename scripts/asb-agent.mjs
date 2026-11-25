@@ -478,25 +478,28 @@ export async function agyHookSetup(args, { env = process.env, platform = process
   if (rest.length === 3 && (!path.isAbsolute(given) || /[\x00-\x1f\x7f]/.test(given))) { error('ASB agent: --file needs an absolute path.'); return 2; }
   // Loaded here, so the hook client path loads no installer code.
   const { NO_AGY, agyHome, agyHookStatus, agyHooksFile, agyLauncher, agySettingsFile, agyTitleStatus, changeAgyHook, changeAgyTitle, usableLauncher } = await import('../src/agy-hook.mjs');
-  const home = agyHome(env);
+  const home = agyHome(env, platform);
   const file = given ? path.resolve(given) : agyHooksFile(home);
   const titleFile = agySettingsFile(home);
-  const launcher = await agyLauncher(env);
-  if (action === 'install' && platform === 'win32') { error('The agy hook works on Linux only for now.'); return 1; }
-  if (action === 'install' && !launcher) { error('Run agy-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).'); return 1; }
-  if (action === 'install' && !usableLauncher(launcher)) { error('The installed launcher path has a quote or a control character. The agy hook cannot use it.'); return 1; }
+  const launcher = await agyLauncher(env, platform);
+  if (action === 'install' && !launcher) { error(platform === 'win32'
+    ? 'Run agy-hook install from the installed asb (no asb.cmd found).'
+    : 'Run agy-hook install from the installed asb (ASB_INSTALLED_LAUNCHER is not set).'); return 1; }
+  if (action === 'install' && !usableLauncher(launcher, platform)) { error(platform === 'win32'
+    ? 'The installed launcher path has a quote, a percent sign, or a control character. The agy hook cannot use it.'
+    : 'The installed launcher path has a quote or a control character. The agy hook cannot use it.'); return 1; }
   const where = `agy hook (${printable(homeForm(file, home))})`;
   const titleWhere = `agy title (${printable(homeForm(titleFile, home))})`;
   if (action === 'status') {
-    const state = await agyHookStatus(file, { launcher });
-    const titleState = await agyTitleStatus(titleFile, { launcher });
+    const state = await agyHookStatus(file, { launcher, platform });
+    const titleState = await agyTitleStatus(titleFile, { launcher, platform });
     log(json ? JSON.stringify({ targets: [{ file, state, kind: 'hooks' }, { file: titleFile, state: titleState, kind: 'title' }] })
       : `${where}: ${state}\n${titleWhere}: ${titleState}`);
     return 0;
   }
-  const result = await changeAgyHook(action, file, { launcher, beforeRename });
+  const result = await changeAgyHook(action, file, { launcher, beforeRename, platform });
   if (result === NO_AGY) { error(`agy has not run for this user (no ${printable(homeForm(path.dirname(path.dirname(file)), home))}).`); return 1; }
-  const titleResult = await changeAgyTitle(action, titleFile, { launcher, beforeRename });
+  const titleResult = await changeAgyTitle(action, titleFile, { launcher, beforeRename, platform });
   log(json ? JSON.stringify({ targets: [{ file, result, kind: 'hooks' }, { file: titleFile, result: titleResult, kind: 'title' }] })
     : `${where}: ${result}\n${titleWhere}: ${titleResult}`);
   if (result === 'settings changed' || titleResult === 'settings changed') error(CHANGED_MESSAGE);

@@ -4,7 +4,8 @@ import { constants, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { defaultClaudeAppDir } from './claude-data.mjs';
 import { discoverCodexStateDatabase } from './codex-data.mjs';
-import { configDir, stateDir } from './platform-paths.mjs';
+import { configDir } from './platform-paths.mjs';
+import { agyRecordsDir } from './antigravity-data.mjs';
 
 export const MAX_APP_SOURCES = 8;
 const PROVIDERS = ['codex', 'claude-desktop-code', 'opencode', 'antigravity'];
@@ -63,7 +64,7 @@ export function defaultAppSources({ homeDir = os.homedir(), env = process.env, p
       dataDir: path.join(env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share'), 'opencode'), launcher: '', enabled: true, builtin: true },
     // The records of the ASB agy hook (scripts/asb-agy-hook.mjs).
     { id: 'antigravity', provider: 'antigravity', label: 'Antigravity CLI',
-      dataDir: path.join(stateDir(env, platform, homeDir), 'agy'), launcher: '', enabled: true, builtin: true },
+      dataDir: agyRecordsDir(env, homeDir, platform), launcher: '', enabled: true, builtin: true },
   ].map((source) => ({ ...source, color: defaultSourceColor(source.id), showMarker: true }));
 }
 
