@@ -2,6 +2,19 @@
 
 ## Latest publication
 
+ASB [1.17.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.17.0) was published on `2026-11-25` (Lima). Its source and tag use commit [effd8a1](https://github.com/Jamir-boop/ASB/commit/effd8a10abee5a3e2092c1fa9659b428b4b79ee4). ASB Bridge is `0.11.0` in this release. The Android app is still `0.1.0` (version code 1), and the release has no APK file.
+
+- Uploaded `asb_1.17.0_all.deb`, `asb-1.17.0-1.noarch.rpm`, `asb-1.17.0-linux.tar.gz`, `PKGBUILD`, and `SHA256SUMS`. They are the `dist` artifact of the [Distros run](https://github.com/Jamir-boop/ASB/actions/runs/45709045852) of the release commit. All five downloads matched those CI files byte-for-byte, and `SHA256SUMS` passed. The `asb-linux` artifact of the [Test run](https://github.com/Jamir-boop/ASB/actions/runs/45709039897) was byte-equal to them, except the RPM line of `SHA256SUMS` (that job makes no RPM). A local build from a clean export made the same `.deb`, archive, and `PKGBUILD` bytes.
+- CI on the release commit passed: Test (6 jobs), Distros (32 jobs), and the [Bridge run](https://github.com/Jamir-boop/ASB/actions/runs/45709050645). CI on the tag passed: [Test](https://github.com/Jamir-boop/ASB/actions/runs/45713525062), [Bridge](https://github.com/Jamir-boop/ASB/actions/runs/45713525053), and [Distros](https://github.com/Jamir-boop/ASB/actions/runs/45713524990). CI also passed on `9a8a772`, the source before the version change.
+- Each package payload had 133 runtime files, all matching source bytes and modes, and the RPM had the same files as the `.deb`, except the license path. A disposable home installed the `1.16.0` CI archive, then the `1.17.0` archive of the local build: the upgrade kept the settings, and the uninstall removed the launcher and the release folder.
+- Local checks are in the [release notes](releases/v1.17.0.md). The 38 GTK tests that press real keys and buttons ran on a display that allows real input and passed. The npm pack of the release commit has 141 files.
+- After the publication, the Linux test machine installed the CI archive: its 133 runtime files matched the source, and its engine and board started from the `1.17.0` folder. `asb bridge status` showed ASB Bridge `0.11.0` as current in both Codex homes, OpenCode, and agy. Both Windows test machines were offline and did not get this release.
+- The test phone runs the Android build of `c6e7730`, which does not have the new Antigravity mark.
+- The release text is the notes file with its relative links made absolute at the `v1.17.0` tag. All 10 web links of the release page returned HTTP `200`.
+- A privacy scan of the lines added since `v1.16.0` found no private addresses, keys, or tokens. Its 10 hits are made-up values in tests.
+
+## Earlier publications
+
 ASB [1.16.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.16.0) was published on `2026-11-22` (Lima). Its source and tag use commit [f4849d3](https://github.com/Jamir-boop/ASB/commit/f4849d36c87ae326e579fe4a28046cf61989ef7c). ASB Bridge is `0.9.0` in this release. The Android app is still `0.1.0` (version code 1), and the release has no APK file.
 
 - Uploaded `asb_1.16.0_all.deb`, `asb-1.16.0-1.noarch.rpm`, `asb-1.16.0-linux.tar.gz`, `PKGBUILD`, and `SHA256SUMS`. They are the `dist` artifact of the [Distros run](https://github.com/Jamir-boop/ASB/actions/runs/45063754771) of the tag. All five downloads matched those CI files byte-for-byte, and `SHA256SUMS` passed. The `asb-linux` artifact of the [Test run](https://github.com/Jamir-boop/ASB/actions/runs/45063754828) was byte-equal to them. A local build from a clean export made the same `.deb`, archive, and `PKGBUILD` bytes.
@@ -15,8 +28,6 @@ ASB [1.16.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.16.0) was publish
 - A privacy scan of the lines added since `v1.15.0` found no private addresses, keys, or tokens. Its 11 hits are made-up addresses and zero IDs in tests.
 
 ASB [1.15.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.15.0) was published on `2026-11-10` (Lima) from commit [fb66845](https://github.com/Jamir-boop/ASB/commit/fb66845). See its [release notes](releases/v1.15.0.md) for its checks.
-
-## Earlier publications
 
 ASB [1.14.0](https://github.com/Jamir-boop/ASB/releases/tag/v1.14.0) was published on `2026-11-01` (Lima). Its source and tag use commit [7363780](https://github.com/Jamir-boop/ASB/commit/7363780ca8427f671775fba746fc8d9bd77c9206). ASB Bridge is `0.8.1` in this release. The Android app is still `0.1.0` (version code 1), and the release has no APK file.
 
