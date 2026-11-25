@@ -37,6 +37,7 @@ const BOOLEAN = (value) => typeof value === 'boolean';
 const POSITIVE_COUNT = (value) => Number.isSafeInteger(value) && value > 0;
 export const EXPORT_FIELDS = {
   id: STRING, externalId: STRING, provider: STRING, providerLabel: STRING, surface: (value) => ['app', 'cli'].includes(value),
+  inTerminal: (value) => value === true,
   title: STRING, cwd: STRING, projectName: STRING, archived: BOOLEAN, updatedAtMs: NUMBER, subagentCount: NUMBER,
   state: (value) => ['working', 'waiting', 'idle', 'unknown'].includes(value), reason: STRING, workingSinceMs: NUMBER,
   nativeUnread: (value) => value === null || BOOLEAN(value), readStatus: STRING, questionPending: BOOLEAN, questionAtMs: NUMBER, actionRequired: BOOLEAN, actionAtMs: NUMBER,

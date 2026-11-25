@@ -67,9 +67,9 @@ async function openSession(entry) {
   }
 }
 
-// Where a view-only session runs: the machine name for a remote row, `CLI` for a local CLI row, else ''.
+// Where a session runs: the machine name for a remote row, `CLI` for a local CLI row or an OpenCode row in a terminal, else ''.
 function rowWhere(thread) {
-  return thread.remote ? thread.machineName || 'another machine' : thread.surface === 'cli' ? 'CLI' : '';
+  return thread.remote ? thread.machineName || 'another machine' : thread.surface === 'cli' || thread.inTerminal ? 'CLI' : '';
 }
 
 function sessionRow(thread) {
@@ -93,7 +93,7 @@ function sessionRow(thread) {
   }
   entry.thread = thread;
   const where = rowWhere(thread);
-  const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, thread.opensInKitty, where, thread.surface,
+  const signature = JSON.stringify([thread.title, thread.providerLabel, thread.state, thread.reason, thread.canOpen, thread.opensInKitty, where, thread.surface, thread.inTerminal,
     thread.pinned, thread.archived, thread.actionRequired, thread.actionAttention, thread.muted, thread.drawer, thread.questionAttention, thread.alert, thread.unread,
     thread.lastOutcome, thread.failedAttention, thread.completionAttention, thread.limitResetsAtMs]);
   setText(entry.age, relativeTime(thread.updatedAtMs));
@@ -110,10 +110,12 @@ function sessionRow(thread) {
   const stateText = thread.state !== 'idle' ? labels[thread.state] || 'Unknown' : thread.lastOutcome === 'failed' ? 'Failed'
     : ['stopped', 'limit'].includes(thread.lastOutcome) ? 'Stopped' : labels.idle;
   const { row, title, meta, state, age } = entry;
-  const viewOnly = (thread.remote ? ` On ${where}.` : '') + (thread.surface === 'cli' ? ' CLI session.' : '') + (where ? ' View only.' : '');
+  const viewOnly = (thread.remote ? ` On ${where}.` : '') + (thread.surface === 'cli' || thread.inTerminal ? ' CLI session.' : '')
+    + (thread.remote || thread.surface === 'cli' ? ' View only.' : '');
   row.disabled = entry.opening || !thread.canOpen;
   row.setAttribute('aria-label', `Open ${thread.title} in ${thread.providerLabel}. ${stateText}.${viewOnly} ${attention} ${outcome}`.trim());
-  row.title = thread.remote ? `On ${where}. Open it on ${where}.` : where ? `CLI session. ${thread.canFocus ? 'Opens its kitty window.' : 'ASB does not open CLI sessions.'}`
+  row.title = thread.remote ? `On ${where}. Open it on ${where}.` : thread.inTerminal ? `CLI session. ${thread.opensInKitty ? 'Opens in kitty.' : thread.canFocus ? 'Opens its kitty window.' : ''}`.trim()
+    : where ? `CLI session. ${thread.canFocus ? 'Opens its kitty window.' : 'ASB does not open CLI sessions.'}`
     : thread.opensInKitty ? 'Opens in kitty.' : thread.canOpen ? `Open in ${thread.providerLabel}` : 'This session has no direct desktop link.';
   if (attention) row.title += ` ${attention}`;
   if (outcome) row.title += ` ${outcome}`;

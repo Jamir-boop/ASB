@@ -485,6 +485,21 @@ test('CLI and remote rows say where they run, say why they do not open, and send
   assert.equal(meta(h.row('synthetic-1')).length, 3);
 });
 
+test('an OpenCode row in a terminal shows the CLI marker and opens, without the view-only words', async () => {
+  const initial = board(3);
+  initial.providers.push({ id: 'opencode', label: 'OpenCode' });
+  Object.assign(initial.threads[1], { provider: 'opencode', providerLabel: 'OpenCode', inTerminal: true, opensInKitty: true, canOpen: true, appDeepLink: '' });
+  const h = harness(initial);
+  await settle();
+  const row = h.row('synthetic-1');
+  const meta = row.children[0].children[1].children.map((child) => child.textContent);
+  assert.deepEqual(meta.slice(1, 4), ['·', 'CLI', '·']);
+  assert.equal(row.title, 'CLI session. Opens in kitty.');
+  assert.equal(row.disabled, false);
+  assert.match(row.attributes['aria-label'], /in OpenCode\. \w+\. CLI session\.$/);
+  assert.doesNotMatch(row.attributes['aria-label'], /View only/);
+});
+
 test('a focusable agy row says it opens its kitty window and is not disabled', async () => {
   const initial = board(3);
   Object.assign(initial.threads[1], { surface: 'cli', providerLabel: 'Antigravity CLI', canOpen: true, canFocus: true, appDeepLink: '' });

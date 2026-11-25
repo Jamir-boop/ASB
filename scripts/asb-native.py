@@ -1790,10 +1790,10 @@ def is_view_only(row):
 
 
 def row_where(row):
-    """The (icon, text) that says where a view-only session runs; (None, "") for other rows."""
+    """The (icon, text) that says where a session runs: its machine, the CLI of a CLI session, or the terminal of an OpenCode session in one; (None, "") for other rows."""
     if row.get("remote"):
         return "asb-machine-symbolic", row.get("machineName") or "another machine"
-    if row.get("surface") == "cli":
+    if row.get("surface") == "cli" or row.get("inTerminal"):
         return "asb-terminal-symbolic", "CLI"
     return None, ""
 
@@ -1940,12 +1940,13 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, background
     flags += (" · " if flags and muted else "") + muted
     if is_view_only(row) or row.get("canFocus"):
         machine = row.get("machineName") or "another machine"
-        where = " · ".join(([f"On {machine}"] if row.get("remote") else []) + (["CLI session"] if row.get("surface") == "cli" else []))
+        where = " · ".join(([f"On {machine}"] if row.get("remote") else [])
+                           + (["CLI session"] if row.get("surface") == "cli" or row.get("inTerminal") else []))
         flags += (" · " if flags else "") + where
         flags += f". Open it on {machine}." if row.get("remote") else ". Opens its kitty window." if row.get("canFocus") \
             else ". Runs in a terminal. ASB does not open CLI sessions."
     elif row.get("canOpen") and row.get("opensInKitty"):
-        flags += (" · " if flags else "") + "Opens in kitty."
+        flags += (" · " if flags else "") + ("CLI session. " if row.get("inTerminal") else "") + "Opens in kitty."
     elif not row.get("canOpen"):
         flags += (" · " if flags else "") + "No direct link"
         flags += ". " + no_open_title(row)
@@ -12110,7 +12111,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         muted = " " + mute_flag + "." if mute_flag else ""
         limit = f" Usage limit. Resets in {spoken_limit(left)}." if left else ""
         where = (f" On {row.get('machineName') or 'another machine'}." if row.get("remote") else "") \
-            + (" CLI session." if row.get("surface") == "cli" else "") + (" View only." if is_view_only(row) else "") \
+            + (" CLI session." if row.get("surface") == "cli" or row.get("inTerminal") else "") + (" View only." if is_view_only(row) else "") \
             + (" Opens its kitty window." if row.get("canFocus") else "")
         widget.asb_accessible_label = f"{action} {row.get('title', 'Untitled session')} in {row.get('providerLabel', '')}. {state_text}.{limit}{manual}{native_unread}{pinned}{question}{retained}{outcome}{discard}{drawer}{muted}{where}"
         self.update_open_state(widget, now_ms)
@@ -12492,7 +12493,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if row.get("canFocus") and not open_caption:
             open_caption = "CLI session. Opens its kitty window."
         if row.get("opensInKitty") and not open_caption:
-            open_caption = "Opens in kitty."
+            open_caption = ("CLI session. " if row.get("inTerminal") else "") + "Opens in kitty."
         if not row.get("canOpen") and not open_caption:
             open_caption = f"Open it on {row.get('machineName') or 'another machine'}." if row.get("remote") else \
                 "ASB does not open CLI sessions." if row.get("surface") == "cli" else \
