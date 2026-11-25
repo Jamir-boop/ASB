@@ -39,7 +39,7 @@ The GNOME top bar and the Android app show the same counts, and Read on the phon
 
 ## Answer questions from the phone
 
-The Android app can answer questions from the Codex app, Codex CLI, Claude Desktop Code, Claude Code CLI, Antigravity CLI (agy), and OpenCode 2 on the paired PC or on another machine in its group. Antigravity CLI phone answers need Linux and kitty remote control. Not tested end to end on Windows. On main, not in a release yet.
+The Android app can answer questions from the Codex app, Codex CLI, Claude Desktop Code, Claude Code CLI, Antigravity CLI (agy), and OpenCode 2 on the paired PC or on another machine in its group. Antigravity CLI phone answers need Linux and kitty remote control. Not tested end to end on Windows.
 
 1. In Preferences > Phone, turn on **Send message text to phones**, then **Answer questions from phones** (off by default). Phone access must be on. Pair a phone with this PC or another machine in its group.
 2. Run `asb agent claude-hook install` for Claude, `asb agent agy-hook install` for agy, or `asb bridge install --opencode` for OpenCode 2. The Claude install adds one hook to the Claude settings of each Claude profile that ASB reads, and keeps the old file as `settings.json.asb-backup`. `asb agent claude-hook status` shows the state, and `asb agent claude-hook remove` takes the hook out.
@@ -55,7 +55,7 @@ For the Codex app and CLI, use ASB Bridge with a session on the shared Codex app
 
 ## Approve Claude Code requests from the phone
 
-On Linux and Windows, a paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. On main, not in a release yet. In Preferences > Phone, turn on **Approve requests from phones** (off by default, under **Answer questions from phones**). It needs phone access on, **Send message text to phones** on, **Answer questions from phones** on, and a paired phone on this PC or another machine in its group. Run `asb agent claude-hook install` again: it now writes one `PermissionRequest` entry with matcher `*` (it replaces the older `AskUserQuestion` entry), and keeps `settings.json.asb-backup`. Until you run it again, `asb agent claude-hook status`, the Phone page, and `asb doctor` say `questions only`.
+On Linux and Windows, a paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. In Preferences > Phone, turn on **Approve requests from phones** (off by default, under **Answer questions from phones**). It needs phone access on, **Send message text to phones** on, **Answer questions from phones** on, and a paired phone on this PC or another machine in its group. Run `asb agent claude-hook install` again: it now writes one `PermissionRequest` entry with matcher `*` (it replaces the older `AskUserQuestion` entry), and keeps `settings.json.asb-backup`. Until you run it again, `asb agent claude-hook status`, the Phone page, and `asb doctor` say `questions only`.
 
 The card shows the tool name and a few display lines (for Bash the command and its description, for Write or Edit the file, for an MCP tool the server name and only the input key names, never the values, and for each other tool its input key names). A plan card shows the plan text and `After approval: Bypass permissions mode, if this session allows it`. The note field says `Note for the agent (sent with Deny)` on a tool card and `Note for the agent (sent with Keep planning)` on a plan card. Allow runs the tool and closes the PC dialog. Deny does not run the tool, closes the PC dialog, and sends `Denied from the phone.` or `Denied from the phone: <note>`. `Approve plan` allows the plan and asks Claude Code to set bypassPermissions mode for the session; `Keep planning` sends `Keep planning.` or `Keep planning: <note>` and stays in plan mode.
 
@@ -76,7 +76,7 @@ Limits:
 
 ## Approve OpenCode requests from the phone
 
-On main, not in a release yet. Use ASB Bridge `0.11.0` with OpenCode 2 on Linux or Windows.
+Use ASB Bridge `0.11.0` with OpenCode 2 on Linux or Windows.
 
 1. Run `asb bridge install --opencode`. OpenCode loads the plugin by itself. In one observation (OpenCode 2.4.0) a session that ran took the new plugin with no restart. If a session shows no card, start OpenCode again.
 2. In Preferences > Phone, turn on **Allow phone access**, **Send message text to phones**, **Answer questions from phones**, and **Approve requests from phones**. Pair a phone with this PC or another machine in its group.
@@ -98,7 +98,7 @@ The first command of a new session can get no card. The first command after a ti
 
 ## Antigravity CLI
 
-ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and shows their state. On main, not in a release yet. A live row in a kitty with remote control opens by focusing its kitty window. ASB counts each agy subagent on the card of the session that started it and does not show a separate card. agy hooks do not give the parent session, so ASB uses this rule: a new conversation that starts in the agy process of one working session is a subagent of that session.
+ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and shows their state. A live row in a kitty with remote control opens by focusing its kitty window. ASB counts each agy subagent on the card of the session that started it and does not show a separate card. agy hooks do not give the parent session, so ASB uses this rule: a new conversation that starts in the agy process of one working session is a subagent of that session.
 
 Run `asb agent agy-hook install` to add the hook. It writes one `asb` key into `~/.gemini/config/hooks.json`, keeps the old file as `hooks.json.asb-backup`, and leaves other hooks as they are. `asb agent agy-hook status` shows the state, and `asb agent agy-hook remove` takes the hook out. Linux only.
 
@@ -176,7 +176,7 @@ For phone answers or approvals, run `asb.cmd agent claude-hook install` or `asb.
 ## Optional parts
 
 - [Android app](android/README.md): your sessions, notifications, message counts, and usage on your phone. Phone access is off by default.
-- [ASB Bridge](bridge/README.md): messages between Codex, Claude Code, and OpenCode sessions. The ASB `1.16.0` packages have ASB Bridge `0.9.0`. See [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
+- [ASB Bridge](bridge/README.md): messages between Codex, Claude Code, and OpenCode sessions. The ASB `1.17.0` packages have ASB Bridge `0.11.0`. See [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
 
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md) · [Install guide](docs/INSTALL.md)
 

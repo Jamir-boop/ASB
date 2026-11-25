@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.17.0 - 2026-11-25
+
 - Antigravity CLI: agy rows show the Antigravity mark as a one-color symbolic icon, as Codex, Claude, and OpenCode rows do. Grok and Pi rows keep the terminal glyph.
 - Antigravity CLI: an agy card shows the number of its subagents that work now (Working or Waiting), as the other apps show background agents. It needs Background counts on. The parent link comes from the hook record. A subagent that ends with no Stop event counts until the 10-minute Unknown rule clears it.
 - OpenCode 2: on Linux, a local card now first focuses a kitty window that already runs the session: a TUI started with `--session <id>`, or a TUI in the session folder whose window title shows the session title. Else it opens the session in a new kitty window with `opencode --session <id>` in the session folder. The card gets `canOpen` and `opensInKitty` only when kitty and opencode are on PATH, the row is not remote or archived, and the folder exists. Two sessions with the same title in the same folder can match the wrong one. The board and web caption say `Opens in kitty.`.
@@ -38,10 +40,12 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
   The first command of a new session can get no card. The first command after a time with no working session can reach the phone up to 30 s late, or not at all. Unlisted threads and subagent threads get no card. If two requests from one session overlap, only the newer one stays on the phone. The older one goes to the normal approval path. Until the phone app update that alerts again for a new request, a second card can come with no alert. The time with the screen off is not proven. The hook adds about 190 ms per Bash approval when it does not hold the command. A command over 4,000 characters gets no card. Codex app: the hook ran in the app's own build (`0.171.0-alpha.13`) with a loopback model fixture. The live app UI was not tested.
 
-- Antigravity CLI (agy) sessions appear as rows with their state, from the records of an agy hook. On main, not in a release yet. agy has no hook event for a command approval, so a row shows Working, not Waiting, while agy waits for one. Esc fires no event: after 10 minutes with no event and no transcript change, a Working row shows Unknown. `/exit` and a crash fire no event; ASB sees the end from the agy process (PID and start time), and a crash during a task shows Unknown with no Failed sound.
+- Antigravity CLI (agy) sessions appear as rows with their state, from the records of an agy hook. agy has no hook event for a command approval, so a row shows Working, not Waiting, while agy waits for one. Esc fires no event: after 10 minutes with no event and no transcript change, a Working row shows Unknown. `/exit` and a crash fire no event; ASB sees the end from the agy process (PID and start time), and a crash during a task shows Unknown with no Failed sound.
 - ASB counts agy subagents on their parent session cards and does not show separate cards for them. agy hooks give no parent ID, so the hook client takes the one working session in the same agy process as the parent.
 - A live agy row in a kitty with remote control opens by focusing its kitty window (`kitty @ focus-window`). It needs `allow_remote_control` and `listen_on` in `kitty.conf`; without them a row gets no focus action. Checked under GNOME Shell on X11; Wayland is not checked.
 - `asb agent agy-hook install|remove|status` writes one `asb` hook key into `~/.gemini/config/hooks.json` (backup `hooks.json.asb-backup`, other hooks stay), with a shell fallback that prints the neutral reply when the hook command fails. `asb doctor` has an agy group (agy found, hook state) and a kitty remote control check.
+
+See [ASB 1.17.0 release notes](docs/releases/v1.17.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.16.0 - 2026-11-22
 
