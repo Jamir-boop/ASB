@@ -1944,6 +1944,8 @@ def tooltip_model(row, now_ms, home_dir, error="", drawer_view=False, background
         flags += (" · " if flags else "") + where
         flags += f". Open it on {machine}." if row.get("remote") else ". Opens its kitty window." if row.get("canFocus") \
             else ". Runs in a terminal. ASB does not open CLI sessions."
+    elif row.get("canOpen") and row.get("opensInKitty"):
+        flags += (" · " if flags else "") + "Opens in kitty."
     elif not row.get("canOpen"):
         flags += (" · " if flags else "") + "No direct link"
         flags += ". " + no_open_title(row)
@@ -12489,6 +12491,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             else row.get("reason", "") if row.get("state") == "unknown" else ""
         if row.get("canFocus") and not open_caption:
             open_caption = "CLI session. Opens its kitty window."
+        if row.get("opensInKitty") and not open_caption:
+            open_caption = "Opens in kitty."
         if not row.get("canOpen") and not open_caption:
             open_caption = f"Open it on {row.get('machineName') or 'another machine'}." if row.get("remote") else \
                 "ASB does not open CLI sessions." if row.get("surface") == "cli" else \

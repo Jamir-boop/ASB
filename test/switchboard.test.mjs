@@ -2336,6 +2336,40 @@ test('OpenCode rows are list-only with OpenCode outcomes and unread, and opens a
   assert.equal(calls, 0);
 });
 
+test('a local OpenCode row opens in a new kitty window only with kitty and opencode on Linux PATH', async (t) => {
+  const dir = await temp(t);
+  const thread = (extra) => ({ id: 'ses_open', externalId: 'ses_open', provider: 'opencode', source: 'opencode-db',
+    title: 'Open me', cwd: dir, createdAtMs: now - 60_000, updatedAtMs: now - 1_000, lifecycleRunning: false, ...extra });
+  const row = (extra, programs = { kitty: '/usr/bin/kitty', opencode: '/usr/bin/opencode' }) =>
+    buildSwitchboardDashboard([thread(extra)], [], now, undefined, new Map(), null, programs).threads[0];
+  const flags = (extra, programs) => {
+    const built = row(extra, programs);
+    return [built.canOpen, built.opensInKitty === true];
+  };
+  assert.deepEqual(flags({}), [true, true]);
+  for (const extra of [{ remote: true }, { archived: true }, { externalId: 'nope' }, { externalId: `ses_${'a'.repeat(65)}` },
+    { cwd: 'relative/dir' }, { cwd: '' }]) assert.deepEqual(flags(extra), [false, false], JSON.stringify(extra));
+  assert.deepEqual(flags({}, null), [false, false]);
+  // The open spawns kitty with the folder, the opencode path, and the session ID, as an argv array with no shell.
+  const calls = [];
+  const spawn = (command, args, options) => {
+    calls.push([command, args, options]);
+    const child = { once: (event, fn) => { if (event === 'spawn') fn(); return child; }, unref: () => {} };
+    return child;
+  };
+  const result = await openSwitchboardThread(row({}), { findPrograms: async () => ({ kitty: '/usr/bin/kitty', opencode: '/usr/bin/opencode' }), spawn });
+  assert.deepEqual([result.opened, result.method], [true, 'opencode-kitty']);
+  assert.deepEqual(calls, [['/usr/bin/kitty', ['--directory', dir, '/usr/bin/opencode', '--session', 'ses_open'],
+    { detached: true, stdio: 'ignore' }]]);
+  // A missing folder and a non-Linux platform keep the old error, and spawn nothing.
+  calls.length = 0;
+  await assert.rejects(openSwitchboardThread(row({ cwd: path.join(dir, 'gone') }), {
+    findPrograms: async () => ({ kitty: '/usr/bin/kitty', opencode: '/usr/bin/opencode' }), spawn }), { message: 'The session folder is gone.' });
+  await assert.rejects(openSwitchboardThread(row({}), { platform: 'darwin', spawn }), { message: 'OpenCode cannot open one session from a link.' });
+  await assert.rejects(openSwitchboardThread(row({}), { findPrograms: async () => null, spawn }), { message: 'OpenCode cannot open one session from a link.' });
+  assert.equal(calls.length, 0);
+});
+
 test('the registered OpenCode source loads from its fixed folder, is watched there, and stays off when disabled', async (t) => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'asb-opencode-source-'));
   t.after(() => rm(homeDir, { recursive: true, force: true }));

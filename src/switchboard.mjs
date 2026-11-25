@@ -21,7 +21,7 @@ import { createUsageBackup } from './usage-backup.mjs';
 import { createSoundPlayer, createSoundWatcher, SOUND_FILES } from './asb-sounds.mjs';
 import { openThreadInCodex, scopedCommand } from './session-opener.mjs';
 import { AppSourceRegistry, appSourcesRevision, numberAppSources, sourceName, validateSourceLauncher } from './app-sources.mjs';
-import { cacheDir, stateDir } from './platform-paths.mjs';
+import { cacheDir, findExecutable, stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
 import { MEMBER_MESSAGE_KEYS, rowKeyLookup } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
@@ -29,6 +29,21 @@ import { readLiveClaudeRegistry, liveClaudeProcessesChanged } from './claude-reg
 import { spawn } from 'node:child_process';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const OPENCODE_ID = /^ses_[A-Za-z0-9]{1,64}$/;
+// One PATH lookup of kitty and opencode per engine: their paths when both exist on Linux, else null. Tests inject `findPrograms`.
+let openCodePrograms = null;
+async function openCodeProgramsFor({ platform = process.platform, env = process.env, findPrograms } = {}) {
+  if (platform !== 'linux') return null;
+  if (findPrograms) return findPrograms();
+  return (openCodePrograms ??= Promise.all([findExecutable('kitty', { platform, env }), findExecutable('opencode', { platform, env })])
+    .then(([kitty, opencode]) => (kitty && opencode ? { kitty, opencode } : null)));
+}
+// A local OpenCode row that opens in a new kitty window: Linux with kitty and opencode on PATH, not remote, not archived,
+// a session ID, and an absolute folder. `programs` is null when the earlier conditions do not hold.
+function openCodeKittyRow(thread, programs) {
+  return programs !== null && thread.remote !== true && !thread.archived && OPENCODE_ID.test(String(thread.externalId || ''))
+    && path.isAbsolute(thread.cwd || '');
+}
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const QUESTION_AT = Symbol('ASB question timestamp');
 // The question text of a pending Claude AskUserQuestion (only while the phone text switch is on): only `/api/dashboard?text=1` sends it.
@@ -256,7 +271,7 @@ function rowStatusTimes(thread, row) {
 // times did not pass, is a copy of that row. A kept Working row keeps its `workingStarts` entry, because each scan since its build kept it
 // Working. With no cache, each row is built.
 export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.now(),
-  machine = { machineId: '', machineName: localMachineName() }, workingStarts = new Map(), rowCache = null) {
+  machine = { machineId: '', machineName: localMachineName() }, workingStarts = new Map(), rowCache = null, opencodePrograms = null) {
   const normalizedThreads = normalizeDashboardThreads(threads);
   const byId = new Map(normalizedThreads.map((thread) => [thread.id, thread]));
   const roots = normalizedThreads.filter(isSwitchboardRoot).map((thread) => codexGroupLifecycle(thread, byId, nowMs));
@@ -289,6 +304,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       // A CLI session or a session on another machine shows as a card but never opens from ASB.
       const viewOnly = surface === 'cli' || thread.remote === true;
       const focusable = thread.provider === 'antigravity' && thread.canFocus === true && thread.remote !== true;
+      const opensInKitty = thread.provider === 'opencode' && openCodeKittyRow(thread, opencodePrograms);
       const status = switchboardStatus(thread, nowMs);
       const startedAtMs = Number(thread.lifecycleRunning === true ? thread.agentStartedAtMs
         : thread.provider === 'claude-desktop-code' ? thread.latestUserMessageAtMs : 0);
@@ -340,8 +356,10 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
           : Math.max(thread.latestLifecycleKind === 'task_complete' ? Number(thread.latestLifecycleAtMs || 0) : 0,
             Number(thread.latestAgentFinalAtMs || 0))),
         // A live agy row whose kitty passed rule 2 opens by a focus of its kitty window; the kitty data stays in the record.
-        canOpen: focusable || !viewOnly && Boolean(appDeepLink) && thread.sourceCanOpen !== false,
+        // A local OpenCode row on Linux with kitty and opencode on PATH opens in a new kitty window.
+        canOpen: focusable || opensInKitty || !viewOnly && Boolean(appDeepLink) && thread.sourceCanOpen !== false,
         ...(focusable ? { canFocus: true } : {}),
+        ...(opensInKitty ? { opensInKitty: true } : {}),
         appDeepLink: viewOnly ? '' : appDeepLink,
       };
       // A usage limit stopped the session, and its reset is still in the future.
@@ -510,6 +528,7 @@ export async function loadSwitchboardDashboard({
   rowCache = null,
   loaderCache = null,
   codexWaits = null, agyWaits = null,
+  findPrograms,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
@@ -611,7 +630,8 @@ export async function loadSwitchboardDashboard({
     const [listings, transcripts] = thread.source === 'claude-cli' ? cliCounts.get(thread.externalId) : [];
     return listings > 1 && transcripts !== 1 ? { ...thread, cliSharedSource: true } : thread;
   });
-  const board = buildSwitchboardDashboard(unique, providers, nowMs, machine, workingStarts, rowCache);
+  const board = buildSwitchboardDashboard(unique, providers, nowMs, machine, workingStarts, rowCache,
+    await openCodeProgramsFor({ findPrograms }));
   const active = new Set(board.threads.filter((row) => ['working', 'waiting'].includes(row.state) && !row.archived).map((row) => row.id));
   const claudeIds = new Set(unique.filter((thread) => active.has(thread.id)).flatMap((thread) =>
     [thread.cliSessionId, ...(thread.priorCliSessionIds || [])]).filter(Boolean));
@@ -635,7 +655,26 @@ export async function loadSwitchboardDashboard({
 }
 
 export async function openSwitchboardThread(thread, options = {}) {
-  if (thread.provider === 'opencode') throw new Error('OpenCode cannot open one session from a link.');
+  if (thread.provider === 'opencode') {
+    // A row that passed the row rule opens in a new kitty window: kitty --directory <cwd> <opencode> --session <id>.
+    // A detached spawn of kitty itself gives the window its own session, so no --detach is added.
+    if (thread.opensInKitty === true) {
+      const programs = await openCodeProgramsFor({ ...options, platform: options.platform ?? process.platform });
+      if (openCodeKittyRow(thread, programs)) {
+        const cwd = thread.cwd;
+        if (!(await fs.stat(cwd).catch(() => null))?.isDirectory()) throw new Error('The session folder is gone.');
+        const args = ['--directory', cwd, programs.opencode, '--session', thread.externalId];
+        const start = options.spawn || spawn;
+        await new Promise((resolve, reject) => {
+          const kitty = start(programs.kitty, args, { detached: true, stdio: 'ignore' });
+          kitty.once('error', reject);
+          kitty.once('spawn', () => { kitty.unref(); resolve(); });
+        });
+        return { opened: true, method: 'opencode-kitty' };
+      }
+    }
+    throw new Error('OpenCode cannot open one session from a link.');
+  }
   if (thread.provider === 'antigravity' && thread.canFocus === true && thread.remote !== true) {
     return focusAgyInKitty({ dataDir: thread[SOURCE_DIR] || agyRecordsDir(), id: thread.externalId, procDir: options.procDir, startOf: options.startOf });
   }

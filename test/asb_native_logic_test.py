@@ -6702,6 +6702,9 @@ class NativeLogicChecks(unittest.TestCase):
         # A focusable agy row opens its kitty window; a plain agy row keeps the CLI text.
         focus = {**base, "provider": "antigravity", "providerLabel": "Antigravity CLI", "surface": "cli", "canOpen": True, "canFocus": True}
         self.assertEqual(model(focus, 223_000, "/home/test")["flags"], "CLI session. Opens its kitty window.")
+        # A local OpenCode row that opens in kitty says so, and keeps the kitty text on a pinned row.
+        kitty = {**opencode, "canOpen": True, "opensInKitty": True}
+        self.assertEqual(model(kitty, 223_000, "/home/test")["flags"], "Pinned · Opens in kitty.")
         self.assertEqual(model({**focus, "canOpen": False, "canFocus": None}, 223_000, "/home/test")["flags"],
                          "CLI session. Runs in a terminal. ASB does not open CLI sessions.")
         for extra, flags in (({"surface": "cli", "pinned": True}, "Pinned · CLI session. Runs in a terminal. ASB does not open CLI sessions."),
