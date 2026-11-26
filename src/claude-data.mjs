@@ -1251,7 +1251,7 @@ export function validClaudeTailRecord(record) {
   return [record.dev, record.ino, record.size, record.offset, record.guardBytes, record.maxBytes].every(count)
     && record.offset <= record.size && record.guardBytes === Math.min(CLAUDE_APPEND_GUARD_BYTES, record.size)
     && record.maxBytes >= 1 && finiteNumber(record.atMs) && record.atMs >= 0 && finiteNumber(record.mtimeMs) && finiteNumber(record.ctimeMs)
-    && validClaudeTailPart(record.state) && validClaudeTailPart(record.signals);
+    && validClaudeTailPart(record.state) && (record.signals === 'state' || validClaudeTailPart(record.signals));
 }
 
 // A signal state as plain values: the row fields, the times, the lifecycle, and the pending tools as ID, tool name, and time.
@@ -1274,8 +1274,10 @@ export function claudeTailRecords() {
     if (newest.get(filePath)?.atMs > atMs) continue;
     if (signals.pendingTools.some((tool) => tool.title !== toolUseTitle({ name: tool.tool }))
       || (state.pendingToolsById && [...state.pendingToolsById.values()].some((tool) => tool.title !== toolUseTitle({ name: tool.tool })))) continue;
+    const encodedState = encodeClaudeTailSignals(state);
+    const encodedSignals = encodeClaudeTailSignals(signals);
     newest.set(filePath, { ...signature, atMs, offset, guard, guardBytes: guard.length, maxBytes: Number(cacheKey.slice(split + 1)),
-      state: encodeClaudeTailSignals(state), signals: encodeClaudeTailSignals(signals) });
+      state: encodedState, signals: JSON.stringify(encodedSignals) === JSON.stringify(encodedState) ? 'state' : encodedSignals });
   }
   return [...newest];
 }
@@ -1285,14 +1287,15 @@ export function claudeTailRecords() {
 // full read, because no record holds question text. An append then continues from the restored state and offset.
 async function savedClaudeTail(filePath, signature, maxBytes) {
   const record = claudeTailPositions.take(filePath);
-  if (!record || !validClaudeTailRecord(record) || record.maxBytes !== maxBytes || !sameFileSignature(record, signature)
-    || (keepQuestionText && record.signals.pending.some(([, tool]) => tool === 'AskUserQuestion'))) return null;
+  if (!record || !validClaudeTailRecord(record) || record.maxBytes !== maxBytes || !sameFileSignature(record, signature)) return null;
+  const visiblePart = record.signals === 'state' ? record.state : record.signals;
+  if (keepQuestionText && visiblePart.pending.some(([, tool]) => tool === 'AskUserQuestion')) return null;
   const guard = await readClaudeGuard(filePath, record.size, record.guardBytes);
   if (!guard || claudeTailPositions.digest(guard) !== record.guard) return null;
-  const { state, signals, offset } = record;
+  const { state, offset } = record;
   // A large log restores its lifecycle checkpoint from this record, so its own lifecycle record is not used as well.
   if (signature.size > maxBytes) claudePositions?.take(filePath);
-  return { state: decodeClaudeTailSignals(state), signals: finishClaudeSignals(decodeClaudeTailSignals(signals)), offset, guard,
+  return { state: decodeClaudeTailSignals(state), signals: finishClaudeSignals(decodeClaudeTailSignals(visiblePart)), offset, guard,
     tailResult: true, restoredTail: true };
 }
 

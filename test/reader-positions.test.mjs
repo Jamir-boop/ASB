@@ -1712,14 +1712,15 @@ test('a Claude tail record with an extra key, a long field, a control character,
     'a title of 1025 characters': (record) => { record.state.fields.customTitle = 'a'.repeat(1025); },
     'a model of 201 characters': (record) => { record.state.fields.model = 'a'.repeat(201); },
     'a control character': (record) => { record.state.fields.cwd = `/work/\u0007synthetic`; },
-    'a title with a hidden character': (record) => { record.signals.fields.customTitle = `a\u200bb`; },
+    'a title with a hidden character': (record) => { record.signals = structuredClone(record.state); record.signals.fields.customTitle = `a\u200bb`; },
+    'a bad signals string': (record) => { record.signals = 'other'; },
     'a pending tool name with a space': (record) => { record.state.pending = [['call_1', 'Bash echo', NOW_MS]]; },
     'a pending tool ID that is not plain': (record) => { record.state.pending = [['call 1', 'Bash', NOW_MS]]; },
     'wrong guard digest': (record) => { record.guard = '0'.repeat(32); },
     'another file size': (record) => { record.size += 1; },
     'another tail limit': (record) => { record.maxBytes = 8192; },
     'a lifecycle that is not a row': (record) => { record.state.lifecycle.messages = [['local_00000000-0000-4000-8000-000000000001', 1, 'MARKERPROMPT']]; },
-    'a missing pending tool time': (record) => { record.signals.pending = [['call_1', 'Bash']]; },
+    'a missing pending tool time': (record) => { record.signals = structuredClone(record.state); record.signals.pending = [['call_1', 'Bash']]; },
   };
   for (const [name, change] of Object.entries(changes)) await check(edit(change), name);
   // Another HMAC key: the whole file is foreign.
@@ -1736,7 +1737,8 @@ test('a Claude tail record with an extra key, a long field, a control character,
     'endKind', 'limitResetsAtMs', 'agents', 'agentTools', 'wrapUps', 'shells', 'shellEnds', 'messages']);
   for (const record of JSON.parse(good).claudeTail.records) {
     for (const key of Object.keys(record)) assert.ok(allowed.has(key), `record key ${key}`);
-    for (const part of [record.state, record.signals]) {
+    assert.ok(record.signals === 'state' || (record.signals && typeof record.signals === 'object'));
+    for (const part of record.signals === 'state' ? [record.state] : [record.state, record.signals]) {
       for (const key of Object.keys(part)) assert.ok(partKeys.has(key), `part key ${key}`);
       for (const key of Object.keys(part.fields)) assert.ok(['agentName', 'customTitle', 'cwd', 'entrypoint', 'gitBranch', 'model',
         'sessionId', 'version'].includes(key), `field ${key}`);
@@ -1750,7 +1752,7 @@ test('a Claude tail record with an extra key, a long field, a control character,
   const record = target(JSON.parse(good));
   assert.deepEqual(Object.keys(record).sort(), ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'k', 'maxBytes', 'mtimeMs',
     'offset', 'signals', 'size', 'state']);
-  for (const part of [record.state, record.signals]) {
+  for (const part of record.signals === 'state' ? [record.state] : [record.state, record.signals]) {
     assert.deepEqual(Object.keys(part).sort(), ['fields', 'lifecycle', 'pending', 'pendingToolAtMs', 'times']);
     assert.deepEqual(Object.keys(part.fields).sort(), ['agentName', 'customTitle', 'cwd', 'entrypoint', 'gitBranch', 'model', 'sessionId', 'version']);
   }
@@ -1911,4 +1913,59 @@ test('the UTF-8 file limit holds for non-ASCII Claude row fields, and the exact 
   assert.ok(getClaudeCacheStats().jsonlSignals.bytesRead - before <= 64, 'only the saved guard is read');
   assert.equal(signals.cwd, folder);
   assert.equal(signals.customTitle, title);
+});
+
+test('E1: newline-ending Claude logs save signals as "state", partial lines save both parts, and 224cca2 two-part records still restore', async (t) => {
+  const home = await temporaryDirectory(t);
+  const claude = await claudeSource(home, {
+    complete: [claudePrompt(NOW_MS - 600_000), ...claudeFiller(NOW_MS - 500_000, 8 * 1024), claudeReply(NOW_MS - 400_000)],
+    partial: [claudePrompt(NOW_MS - 600_000), ...claudeFiller(NOW_MS - 500_000, 8 * 1024)],
+  }, 64 * 1024);
+  // Append a trailing line without a newline so visible signals differ from committed state.
+  await fs.appendFile(claude.paths.partial, claudeReply(NOW_MS - 300_000));
+  const file = path.join(home, 'readers', 'positions.json');
+  const config = { claude: claude.options, claudeFiles: Object.values(claude.paths), nowMs: NOW_MS };
+  await engine({ ...config, file, key: KEY });
+  const saved = await readSaved(file);
+  const byPath = (name) => saved.claudeTail.records.find((record) => record.k === recordKey(claude.paths[name], KEY, 'claudeTail'));
+  assert.equal(byPath('complete').signals, 'state');
+  assert.equal(typeof byPath('partial').signals, 'object');
+  assert.notEqual(byPath('partial').signals, null);
+  assert.equal(validClaudeTailRecord(byPath('complete')), true);
+  assert.equal(validClaudeTailRecord(byPath('partial')), true);
+  const full = await engine(config);
+  const restart = await engine({ ...config, file, key: KEY });
+  assert.deepEqual(restart.claudeTailStats, { loaded: 2, taken: 2 });
+  assert.ok(restart.claudeFiles.every(({ bytes }) => bytes <= 64));
+  assert.deepEqual(restart.claudeFiles.map(({ signals }) => signals), full.claudeFiles.map(({ signals }) => signals));
+  assert.deepEqual(byId(restart.threads), byId(full.threads));
+  // A 224cca2-layout record (two full parts) still loads and restores with at most 64 guard bytes read.
+  const legacy = structuredClone(saved);
+  for (const record of legacy.claudeTail.records) if (record.signals === 'state') record.signals = structuredClone(record.state);
+  await fs.rm(file, { force: true });
+  await writeSaved(file, legacy);
+  const fromLegacy = await engine({ ...config, file, key: KEY });
+  assert.deepEqual(fromLegacy.claudeTailStats, { loaded: 2, taken: 2 });
+  assert.ok(fromLegacy.claudeFiles.every(({ bytes }) => bytes <= 64));
+  assert.deepEqual(fromLegacy.claudeFiles.map(({ signals }) => signals), full.claudeFiles.map(({ signals }) => signals));
+  assert.deepEqual(byId(fromLegacy.threads), byId(full.threads));
+  // Restored state and signals are separate objects: mutating a returned signal does not mutate the cached state.
+  const firstSignals = fromLegacy.claudeFiles[0].signals;
+  assert.notEqual(firstSignals, null);
+  const beforeRecords = JSON.stringify(saved.claudeTail.records);
+  firstSignals.lifecycle.running = !firstSignals.lifecycle.running;
+  assert.equal(JSON.stringify(saved.claudeTail.records), beforeRecords);
+  // Measure the positions file bytes on the mixedClaude near-0 fixture vs the two-part 224cca2 layout.
+  const mixedHome = await temporaryDirectory(t);
+  const mixed = await mixedClaude(mixedHome);
+  const mixedFile = path.join(mixedHome, 'readers', 'positions.json');
+  await engine({ claudeOnly: mixed.options, nowMs: NOW_MS, file: mixedFile, key: KEY });
+  const compactText = await fs.readFile(mixedFile, 'utf8');
+  const compactBytes = Buffer.byteLength(compactText);
+  const expanded = JSON.parse(compactText);
+  for (const record of expanded.claudeTail.records) if (record.signals === 'state') record.signals = structuredClone(record.state);
+  const expandedBytes = Buffer.byteLength(JSON.stringify(expanded));
+  const dropPercent = Math.round((1 - compactBytes / expandedBytes) * 1000) / 10;
+  t.diagnostic(`mixedClaude positions file: two-part ${expandedBytes} B -> compact ${compactBytes} B (-${dropPercent}%)`);
+  assert.ok(compactBytes <= expandedBytes * 0.7, `expected >= 30% drop: ${compactBytes} vs ${expandedBytes}`);
 });
