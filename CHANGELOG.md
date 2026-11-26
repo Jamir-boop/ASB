@@ -7,6 +7,12 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Codex: the engine keeps the result of each compressed Codex log (`*.jsonl.zst`) in its reader positions. A new engine with the same `.zst` file reads only its last 64 bytes and does not decompress the log. On a home with 1,220 compressed logs, the first engine still reads them all; each later engine skips them.
 - Engine performance: `performance.dashboard` has `firstLoadMs`, `firstLoadDoneMs`, `firstLoadBytes` (`codex` and `claude`), and `firstLoadDecompressions` of the first dashboard load after the engine start. They are `null` until that load ends and fixed after it.
 - Board: the board writes one line to stderr when its first cards show: `ASB board: first cards <n> ms after start`.
+- Engine: the engine saves its last session list in `~/.local/state/asb/last-list.json` (this machine's rows as the board gets them, with titles and folders, and no message or question text). After a restart, the board shows that list at once, with `Reading sessions…` above it, until the first scan ends; then the fresh list replaces it. A saved list plays no sound and changes no attention, Pending state, or phone reply. An older engine, or a list from another machine or other source settings, gives the old wait.
+- Board: the board shows `Reading sessions…` from its first frame until its first list, instead of an empty window.
+- Claude: the engine keeps the tail result of each unchanged Claude transcript in its reader positions (the row fields, times, lifecycle, and open tool IDs and names; no message, question, prompt, or tool text). A new engine reads only the last 64 bytes of such a transcript, not up to 8 MiB.
+- Engine: each kind of reader positions record has its own format version, so an ASB update keeps the saved positions unless a record format changed. The first engine after this update reads all logs once.
+- Launcher: `asb` loads the engine code only when it must start the engine, so showing an open board starts faster.
+- Claude: a kept sender ID of a message from another session no longer keeps the whole message text in memory.
 
 ## ASB 1.18.0 - 2026-11-25
 
