@@ -629,6 +629,60 @@ test('compressed Codex logs save their signals and read only the guard after an 
   assert.deepEqual(restart.files.map((item) => item.signals), full.files.map((item) => item.signals));
 });
 
+test('compressed Codex logs give the same dashboard rows after an engine restart as an uncached full read', zstd, async (t) => {
+  const directory = await temporaryDirectory(t);
+  const logs = path.join(directory, 'logs');
+  await fs.mkdir(logs, { recursive: true });
+  const at = (minutes) => NOW_MS - minutes * 60_000;
+  const question = { type: 'function_call', name: 'request_user_input', call_id: 'call_cq1',
+    arguments: JSON.stringify({ questions: [{ id: 'one', question: 'MARKERQUESTION?' }] }) };
+  const window = { type: 'token_count', rate_limits: { primary: { used_percent: 98, resets_at: (NOW_MS + 3_600_000) / 1000 } } };
+  const scenarios = {
+    working: [event(at(30), { type: 'user_message', message: 'MARKERPROMPT start' }), event(at(29), { type: 'task_started' }), ...filler(at(1), 8192)],
+    done: [event(at(90), { type: 'task_started' }), event(at(80), { type: 'agent_message', message: 'MARKERREPLY', phase: 'final_answer' }),
+      event(at(80), { type: 'task_complete' }), ...filler(at(70), 8192)],
+    failed: [event(at(90), { type: 'task_started' }), event(at(85), { type: 'task_complete', error: { message: 'MARKERREPLY' } }), ...filler(at(80), 8192)],
+    aborted: [event(at(90), { type: 'task_started' }), event(at(85), { type: 'turn_aborted' }), ...filler(at(80), 8192)],
+    question: [event(at(20), { type: 'task_started' }), event(at(19), question), ...filler(at(2), 8192)],
+    limited: [event(at(50), { type: 'task_started' }), event(at(49), window),
+      event(at(48), { type: 'task_complete', error: { codex_error_info: 'usage_limit_exceeded', message: 'MARKERREPLY' } }), ...filler(at(47), 8192)],
+  };
+  const databasePath = path.join(directory, 'state_5.sqlite');
+  const database = new DatabaseSync(databasePath);
+  database.exec(`create table threads(id text primary key, rollout_path text, cwd text, title text, source text,
+    created_at_ms integer, updated_at_ms integer, archived integer);`);
+  const insert = database.prepare('insert into threads values (?, ?, ?, ?, ?, ?, ?, 0)');
+  const entries = Object.entries(scenarios);
+  for (const [index, [name, lines]] of entries.entries()) {
+    const rolloutPath = path.join(logs, `rollout-${name}.jsonl`);
+    await fs.writeFile(`${rolloutPath}.zst`, zlib.zstdCompressSync(jsonl(lines)));
+    insert.run(`0000000${index}-0000-4000-8000-000000000001`, rolloutPath, path.join(directory, 'MARKERCWD', name),
+      `Synthetic ${name}`, 'vscode', at(100), at(index));
+  }
+  database.close();
+  const dashboard = { databasePath, sessionIndexPath: path.join(directory, 'session_index.jsonl'), globalStatePath: path.join(directory, 'global.json') };
+  const file = path.join(directory, 'readers', 'positions.json');
+  const first = await engine({ file, key: KEY, dashboard, nowMs: NOW_MS });
+  assert.equal(first.decompressions, entries.length);
+  assert.equal(first.threads.length, entries.length);
+  const restart = await engine({ file, key: KEY, dashboard, nowMs: NOW_MS });
+  assert.equal(restart.decompressions, 0);
+  assert.equal(restart.tailStats.taken, entries.length);
+  assert.ok(restart.dashboardBytes <= 64 * entries.length, `dashboardBytes ${restart.dashboardBytes}`);
+  const full = await engine({ dashboard, nowMs: NOW_MS });
+  assert.equal(full.decompressions, entries.length);
+  assert.deepEqual(byId(restart.threads), byId(full.threads));
+  assert.deepEqual(byId(first.threads), byId(full.threads));
+  assert.deepEqual(byId(restart.threads).map((row) => [row.title, row.state, row.lastOutcome, row.questionPending, row.limitResetsAtMs > 0]), [
+    ['Synthetic working', 'working', '', false, false],
+    ['Synthetic done', 'idle', '', false, false],
+    ['Synthetic failed', 'idle', 'failed', false, false],
+    ['Synthetic aborted', 'idle', 'stopped', false, false],
+    ['Synthetic question', 'waiting', '', true, false],
+    ['Synthetic limited', 'idle', 'limit', false, true],
+  ]);
+});
+
 test('a changed compressed Codex log is decompressed again and has the same signals as a full read', zstd, async (t) => {
   const directory = await temporaryDirectory(t);
   const files = await compressedRollouts(path.join(directory, 'logs'), 3);
