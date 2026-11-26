@@ -708,6 +708,19 @@ test('a bad member port rejects at once and leaves no timer that throws later', 
   await new Promise((resolve) => setTimeout(resolve, 50));
 });
 
+test('a member row keeps inTerminal only as true', () => {
+  const rows = (extra) => board([{ id: 'ses_peer', externalId: 'ses_peer', provider: 'opencode', title: 'Peer TUI', updatedAtMs: nowMs, ...extra }], B);
+  const exported = exportLocalSessions(rows({ inTerminal: true }), B, nowMs);
+  assert.equal(exported.rows[0].inTerminal, true);
+  assert.equal(validExport(JSON.parse(exportBody(exported).body), B).rows[0].inTerminal, true);
+  assert.equal('inTerminal' in exportLocalSessions(rows({}), B, nowMs).rows[0], false);
+  for (const value of [false, 1, 'true']) {
+    const body = JSON.parse(exportBody(exported).body);
+    body.rows[0].inTerminal = value;
+    assert.deepEqual(validExport(body, B).rows, [], JSON.stringify(value));
+  }
+});
+
 test('a member OpenCode bridge key resolves a message to a local Claude row', () => {
   const id = 'ses_asbTestOpenCode01', bridgeId = '18284f68-b2c6-5cca-8fb7-12d5973743f9';
   const exported = exportLocalSessions(board([{ id, externalId: id, provider: 'opencode', title: 'Synthetic OpenCode', updatedAtMs: nowMs }], B), B, nowMs);

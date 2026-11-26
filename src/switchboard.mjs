@@ -27,7 +27,7 @@ import { MEMBER_MESSAGE_KEYS, rowKeyLookup } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
 import { readLiveClaudeRegistry, liveClaudeProcessesChanged } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
-import { findOpenCodeKittyWindow, focusOpenCodeKittyWindow } from './opencode-kitty.mjs';
+import { findOpenCodeKittyWindow, focusOpenCodeKittyWindow, openCodeTerminalSessions, openCodeWindowTitle } from './opencode-kitty.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OPENCODE_ID = /^ses_[A-Za-z0-9]{1,64}$/;
@@ -44,6 +44,32 @@ async function openCodeProgramsFor({ platform = process.platform, env = process.
 function openCodeKittyRow(thread, programs) {
   return programs !== null && thread.remote !== true && !thread.archived && OPENCODE_ID.test(String(thread.externalId || ''))
     && path.isAbsolute(thread.cwd || '');
+}
+// One OpenCode terminal scan for 5 s, and one scan in flight at a time, so a dashboard build does not scan /proc more often.
+const OPENCODE_TERMINAL_MS = 5_000;
+let openCodeTerminal = null;
+async function openCodeTerminalFor({ platform = process.platform, procDir = '/proc', exec, nowMs }) {
+  if (platform !== 'linux') return null;
+  while (openCodeTerminal?.pending && openCodeTerminal.procDir !== procDir) await openCodeTerminal.result;
+  const cached = openCodeTerminal;
+  if (cached?.procDir === procDir && (cached.pending || nowMs - cached.atMs < OPENCODE_TERMINAL_MS)) return cached.result;
+  const entry = { atMs: nowMs, procDir, pending: true };
+  entry.result = openCodeTerminalSessions({ procDir, exec }).catch(() => null).finally(() => { entry.pending = false; });
+  openCodeTerminal = entry;
+  return entry.result;
+}
+// The OpenCode terminal scan marks each local, not archived OpenCode thread that a live TUI shows now: by its session ID,
+// or, else, by its folder and kitty window title when exactly one such thread in that folder has that title.
+function markOpenCodeTerminals(threads, scan) {
+  if (!scan) return threads;
+  const titled = (thread) => `${thread.cwd}\0${openCodeWindowTitle(String(thread.title || ''))}`;
+  const titleCount = new Map();
+  for (const thread of threads) {
+    if (thread.provider === 'opencode' && thread.remote !== true && !thread.archived) titleCount.set(titled(thread), (titleCount.get(titled(thread)) || 0) + 1);
+  }
+  const byTitle = new Set(scan.shown.filter(({ cwd, title }) => titleCount.get(`${cwd}\0${title}`) === 1).map(({ cwd, title }) => `${cwd}\0${title}`));
+  return threads.map((thread) => thread.provider === 'opencode' && thread.remote !== true && !thread.archived
+    && (scan.ids.has(String(thread.externalId || '')) || byTitle.has(titled(thread))) ? { ...thread, inTerminal: true } : thread);
 }
 const ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const QUESTION_AT = Symbol('ASB question timestamp');
@@ -361,6 +387,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
         canOpen: focusable || opensInKitty || !viewOnly && Boolean(appDeepLink) && thread.sourceCanOpen !== false,
         ...(focusable ? { canFocus: true } : {}),
         ...(opensInKitty ? { opensInKitty: true } : {}),
+        ...(thread.inTerminal === true ? { inTerminal: true } : {}),
         appDeepLink: viewOnly ? '' : appDeepLink,
       };
       // A usage limit stopped the session, and its reset is still in the future.
@@ -529,7 +556,7 @@ export async function loadSwitchboardDashboard({
   rowCache = null,
   loaderCache = null,
   codexWaits = null, agyWaits = null,
-  findPrograms,
+  findPrograms, platform, procDir, exec,
 } = {}) {
   const inputs = sources ? numberAppSources(sources) : [
     { id: 'codex', provider: 'codex', label: 'Codex', enabled: true },
@@ -631,8 +658,10 @@ export async function loadSwitchboardDashboard({
     const [listings, transcripts] = thread.source === 'claude-cli' ? cliCounts.get(thread.externalId) : [];
     return listings > 1 && transcripts !== 1 ? { ...thread, cliSharedSource: true } : thread;
   });
-  const board = buildSwitchboardDashboard(unique, providers, nowMs, machine, workingStarts, rowCache,
-    await openCodeProgramsFor({ findPrograms }));
+  const inTerminal = unique.some((thread) => thread.provider === 'opencode')
+    ? await openCodeTerminalFor({ platform, procDir, exec, nowMs }) : null;
+  const board = buildSwitchboardDashboard(markOpenCodeTerminals(unique, inTerminal), providers, nowMs, machine, workingStarts, rowCache,
+    await openCodeProgramsFor({ findPrograms, platform }));
   const active = new Set(board.threads.filter((row) => ['working', 'waiting'].includes(row.state) && !row.archived).map((row) => row.id));
   const claudeIds = new Set(unique.filter((thread) => active.has(thread.id)).flatMap((thread) =>
     [thread.cliSessionId, ...(thread.priorCliSessionIds || [])]).filter(Boolean));

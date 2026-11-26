@@ -10,6 +10,7 @@ const MAX_ENVIRON = 256 * 1024;
 const MAX_LS = 1024 * 1024;
 const KITTY_LEVELS = 8;
 const PID = /^[0-9]{1,20}$/;
+const SESSION_ID = /^ses_[A-Za-z0-9]{1,64}$/;
 
 const defaultKitty = (args, maxBuffer) => new Promise((resolve, reject) => execFile('kitty', args, { timeout: 3000, maxBuffer },
   (error, stdout) => (error ? reject(error) : resolve(stdout))));
@@ -45,17 +46,26 @@ async function kittyAncestor(pid, procDir) {
   return null;
 }
 
-const sessionArgument = (args, id) => {
-  for (let index = 0; index < args.length; index++) {
+function* sessionArguments(args) {
+  for (let index = 1; index < args.length; index++) {
     const arg = args[index];
-    if ((arg === '--session' || arg === '-s') && args[index + 1] === id) return true;
-    if (arg === `--session=${id}` || arg === `-s=${id}`) return true;
+    if ((arg === '--session' || arg === '-s') && index + 1 < args.length) yield args[index + 1];
+    else if (arg.startsWith('--session=')) yield arg.slice('--session='.length);
+    else if (arg.startsWith('-s=')) yield arg.slice('-s='.length);
   }
-  return false;
-};
+}
 
-// The candidate with the session argument, else the one in the folder whose kitty window title shows the row title.
-export async function findOpenCodeKittyWindow({ id, title, cwd, procDir = '/proc', exec = (args) => defaultKitty(args, MAX_LS) }) {
+async function kittyTarget(pid, procDir) {
+  try {
+    const env = await kittyEnv(pid, procDir);
+    const kittyPid = await kittyAncestor(pid, procDir);
+    return kittyPid ? await agyFocusTarget({ agyPid: pid, kittyWindowId: env.windowId, kittyPid: String(kittyPid), kittyListenOn: env.listenOn },
+      { procDir }) : null;
+  } catch { return null; }
+}
+
+// Every live `opencode` process of this user that is not `serve`, with its kitty target when it has one.
+async function openCodeCandidates(procDir) {
   const candidates = [];
   for (const entry of await fs.readdir(procDir, { withFileTypes: true }).catch(() => [])) {
     if (candidates.length >= MAX_CANDIDATES) break;
@@ -65,15 +75,48 @@ export async function findOpenCodeKittyWindow({ id, title, cwd, procDir = '/proc
       if ((await procInfo(pid, procDir))?.comm !== 'opencode') continue;
       const args = (await fs.readFile(path.join(procDir, entry.name, 'cmdline'))).toString('utf8').split('\0').filter(Boolean);
       if (args[1] === 'serve') continue;
-      const env = await kittyEnv(pid, procDir);
-      const kittyPid = await kittyAncestor(pid, procDir);
-      if (!kittyPid) continue;
-      const target = await agyFocusTarget({ agyPid: pid, kittyWindowId: env.windowId, kittyPid: String(kittyPid), kittyListenOn: env.listenOn },
-        { procDir });
-      if (!target) continue;
-      candidates.push({ pid, args, ...target });
+      candidates.push({ pid, args, target: await kittyTarget(pid, procDir) });
     } catch { /* skip this candidate */ }
   }
+  return candidates;
+}
+
+// The windows of one kitty socket by ID, from `kitty @ --to <listenOn> ls`: OS windows, then their tabs, then the windows.
+async function kittyWindowsByListenOn(listenOn, exec) {
+  const windows = new Map();
+  for (const osWindow of JSON.parse(await exec(['@', '--to', listenOn, 'ls']))) {
+    for (const tab of osWindow.tabs || []) for (const window of tab.windows || []) windows.set(String(window.id), window);
+  }
+  return windows;
+}
+
+// The ID of each session that a live OpenCode TUI shows now, and the folder and kitty window title of each other TUI in kitty.
+export async function openCodeTerminalSessions({ procDir = '/proc', exec = (args) => defaultKitty(args, MAX_LS) } = {}) {
+  const ids = new Set();
+  const shown = [];
+  const windowsByListenOn = new Map();
+  for (const { pid, args, target } of await openCodeCandidates(procDir)) {
+    const id = [...sessionArguments(args)].find((value) => SESSION_ID.test(value));
+    if (id !== undefined) { ids.add(id); continue; }
+    if (!target) continue;
+    try {
+      if (!windowsByListenOn.has(target.listenOn)) {
+        windowsByListenOn.set(target.listenOn, await kittyWindowsByListenOn(target.listenOn, exec).catch(() => null));
+      }
+      const window = windowsByListenOn.get(target.listenOn)?.get(String(target.windowId));
+      if (!window) continue;
+      shown.push({ cwd: await fs.readlink(path.join(procDir, String(pid), 'cwd')), title: window.title });
+    } catch { /* skip this socket or process */ }
+  }
+  return { ids, shown };
+}
+
+const sessionArgument = (args, id) => [...sessionArguments(args)].includes(id);
+
+// The candidate with the session argument, else the one in the folder whose kitty window title shows the row title.
+export async function findOpenCodeKittyWindow({ id, title, cwd, procDir = '/proc', exec = (args) => defaultKitty(args, MAX_LS) }) {
+  const candidates = (await openCodeCandidates(procDir)).filter((candidate) => candidate.target)
+    .map((candidate) => ({ pid: candidate.pid, args: candidate.args, ...candidate.target }));
   const bySession = candidates.find((candidate) => sessionArgument(candidate.args, id));
   if (bySession) return bySession;
   const expected = typeof title === 'string' && title.length > 0 && cwd ? openCodeWindowTitle(title) : null;

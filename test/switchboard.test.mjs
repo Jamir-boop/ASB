@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, symlink, utimes } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -2385,7 +2385,8 @@ test('the registered OpenCode source loads from its fixed folder, is watched the
     return { provider: { installed: true, status: 'ready' }, threads: [{ id: 'ses_one', externalId: 'ses_one', provider: 'opencode',
       source: 'opencode-db', title: 'One', lifecycleRunning: false, nativeUnread: true, readStatus: 'unread' }] };
   };
-  const load = (list) => loadSwitchboardDashboard({ sources: list, nowMs: now, loadOpenCode,
+  const procDir = await temp(t);
+  const load = (list) => loadSwitchboardDashboard({ sources: list, nowMs: now, loadOpenCode, procDir,
     loadCodex: async () => ({ threads: [] }), loadClaude: async () => ({ threads: [] }) });
   const missing = await load(sources);
   assert.equal(calls.length, 0);
@@ -2405,6 +2406,60 @@ test('the registered OpenCode source loads from its fixed folder, is watched the
   assert.deepEqual([spec.path, spec.optional], [dataDir, true]);
   assert.deepEqual(['opencode.db', 'opencode.db-wal', 'opencode.db-shm', 'auth.json', 'log', ''].map((name) => spec.acceptEvent(name)),
     [true, true, false, false, false, true]);
+});
+
+test('a local OpenCode row gets inTerminal from a live TUI, by session ID or by a unique folder and title, on Linux only', async (t) => {
+  const procDir = await temp(t);
+  const addProc = async (pid, comm, ppid, args, env = {}, cwd) => {
+    await mkdir(path.join(procDir, String(pid)));
+    await writeFile(path.join(procDir, String(pid), 'stat'), `${pid} (${comm}) S ${ppid} 1 1 0 -1 0 0 0 0 0 0 0 0 20 0 1 0 4377321 0\n`);
+    await writeFile(path.join(procDir, String(pid), 'cmdline'), args.map((arg) => `${arg}\0`).join(''));
+    await writeFile(path.join(procDir, String(pid), 'environ'), Object.entries(env).map(([key, value]) => `${key}=${value}\0`).join(''));
+    if (cwd) await symlink(cwd, path.join(procDir, String(pid), 'cwd'));
+  };
+  await addProc(200, 'kitty', 1, []);
+  await addProc(300, 'bash', 200, []);
+  await addProc(400, 'opencode', 300, ['/usr/bin/opencode', '--session', 'ses_terminal'],
+    { KITTY_WINDOW_ID: '7', KITTY_LISTEN_ON: 'unix:@kitty-200' }, '/work/folder');
+  const openCodeThread = (id, extra) => ({ id, externalId: id, provider: 'opencode', source: 'opencode-db', title: id, cwd: '/work/folder',
+    updatedAtMs: now, lifecycleRunning: false, ...extra });
+  const exec = async () => JSON.stringify([{ tabs: [{ windows: [{ id: 7, title: 'OC | Titled session' }] }] }]);
+  const calls = [];
+  const sources = [{ id: 'opencode', provider: 'opencode', label: 'OpenCode', enabled: true, builtin: true, dataDir: procDir }];
+  const load = (threads, options = {}) => loadSwitchboardDashboard({ nowMs: now, sources, loadCodex: async () => ({ threads: [] }),
+    loadClaude: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads }), procDir,
+    findPrograms: async () => ({ kitty: '/usr/bin/kitty', opencode: '/usr/bin/opencode' }),
+    exec: async (args) => { calls.push(args); return exec(args); }, ...options });
+  const rows = async (threads, options) => Object.fromEntries((await load(threads, options)).threads.map((row) => [row.externalId, row]));
+  const withTerminal = await rows([openCodeThread('ses_terminal'), openCodeThread('ses_desktop', { cwd: '/work/elsewhere' })]);
+  assert.deepEqual([withTerminal.ses_terminal.inTerminal, withTerminal.ses_terminal.surface, withTerminal.ses_terminal.canOpen,
+    withTerminal.ses_terminal.opensInKitty, withTerminal.ses_terminal.providerLabel], [true, 'app', true, true, 'OpenCode']);
+  assert.equal('inTerminal' in withTerminal.ses_desktop, false);
+  // A TUI with no session argument keeps its kitty window: its one `ls` per load gives the folder and the title.
+  assert.deepEqual(calls, []);
+  await addProc(401, 'opencode', 300, ['/usr/bin/opencode'], { KITTY_WINDOW_ID: '7', KITTY_LISTEN_ON: 'unix:@kitty-200' }, '/work/folder');
+  // A title match needs exactly one local, not archived thread with that folder and title; two give none.
+  const titleRows = await rows([openCodeThread('ses_one', { title: 'Titled session' }), openCodeThread('ses_two', { title: 'Titled session' }),
+    openCodeThread('ses_three', { title: 'Titled session', cwd: '/work/other' })], { nowMs: now + 10_000 });
+  assert.deepEqual(Object.keys(titleRows).filter((key) => titleRows[key].inTerminal), []);
+  assert.deepEqual(calls, [['@', '--to', 'unix:@kitty-200', 'ls']]);
+  const unique = await rows([openCodeThread('ses_one', { title: 'Titled session' }), openCodeThread('ses_two', { title: 'Another session' })],
+    { nowMs: now + 20_000 });
+  assert.deepEqual([unique.ses_one.inTerminal, 'inTerminal' in unique.ses_two], [true, false]);
+  // One scan for 5 s; the next load after that scans again.
+  const before = calls.length;
+  await load([openCodeThread('ses_terminal')], { nowMs: now + 20_000 + 4_000 });
+  assert.equal(calls.length, before);
+  await load([openCodeThread('ses_terminal')], { nowMs: now + 20_000 + 6_000 });
+  assert.equal(calls.length, before + 1);
+  // Non-Linux does not scan, and a scan error marks nothing.
+  const mac = await load([openCodeThread('ses_terminal')], { nowMs: now + 40_000, platform: 'darwin' });
+  assert.equal(mac.threads.some((row) => row.inTerminal), false);
+  const failing = await load([openCodeThread('ses_terminal'), openCodeThread('ses_title', { title: 'Titled session' })],
+    { nowMs: now + 50_000, exec: async () => { throw new Error('no kitty'); }, platform: 'linux' });
+  // A kitty error skips that socket: the session ID still marks, the title match does not.
+  assert.deepEqual(failing.threads.map((row) => [row.externalId, row.inTerminal === true]).sort(),
+    [['ses_terminal', true], ['ses_title', false]]);
 });
 
 test('the registered Claude source lists Claude Code CLI sessions when its app folder does not exist', async (t) => {

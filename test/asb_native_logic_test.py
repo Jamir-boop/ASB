@@ -3010,6 +3010,8 @@ class DataChecks(unittest.TestCase):
                                       ({**remote, "machineName": ""}, True, ("asb-machine-symbolic", "another machine")),
                                       ({"surface": "app", "remote": False}, False, (None, "")),
                                       ({"provider": "opencode", "surface": "app", "canOpen": False}, False, (None, "")),
+                                      ({"provider": "opencode", "surface": "app", "inTerminal": True, "canOpen": True, "opensInKitty": True},
+                                       False, ("asb-terminal-symbolic", "CLI")),
                                       ({}, False, (None, ""))):
             self.assertEqual((asb.is_view_only(row), asb.row_where(row)), (view_only, where))
         tone = asb.view_only_tone
@@ -6705,6 +6707,9 @@ class NativeLogicChecks(unittest.TestCase):
         # A local OpenCode row that opens in kitty says so, and keeps the kitty text on a pinned row.
         kitty = {**opencode, "canOpen": True, "opensInKitty": True}
         self.assertEqual(model(kitty, 223_000, "/home/test")["flags"], "Pinned · Opens in kitty.")
+        # An OpenCode row that a live TUI shows now adds the CLI words and keeps its open text.
+        tui = {**kitty, "inTerminal": True}
+        self.assertEqual(model(tui, 223_000, "/home/test")["flags"], "Pinned · CLI session. Opens in kitty.")
         self.assertEqual(model({**focus, "canOpen": False, "canFocus": None}, 223_000, "/home/test")["flags"],
                          "CLI session. Runs in a terminal. ASB does not open CLI sessions.")
         for extra, flags in (({"surface": "cli", "pinned": True}, "Pinned · CLI session. Runs in a terminal. ASB does not open CLI sessions."),

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { findOpenCodeKittyWindow, openCodeWindowTitle } from '../src/opencode-kitty.mjs';
+import { findOpenCodeKittyWindow, openCodeTerminalSessions, openCodeWindowTitle } from '../src/opencode-kitty.mjs';
 import { openSwitchboardThread } from '../src/switchboard.mjs';
 
 // A fake /proc: each entry is pid -> { comm, ppid, args, env, cwd }.
@@ -68,6 +68,39 @@ test('the caller sees only a match or null, never another environment key', asyn
   assert.deepEqual(Object.keys(result).sort(), ['args', 'listenOn', 'pid', 'windowId']);
   assert.equal(JSON.stringify(result).includes('SECRET_TOKEN'), false);
   assert.equal(JSON.stringify(result).includes('HOME'), false);
+});
+
+test('terminal sessions take the session argument in kitty or without, and other TUIs give their folder and window title', async (t) => {
+  const exec = async (args) => {
+    if (args[2] !== 'unix:@kitty-200') throw new Error('unexpected socket');
+    return JSON.stringify([{ tabs: [{ windows: [{ id: 7, title: 'OC | A' }, { id: 8, title: 'OC | B' }] }] }]);
+  };
+  let procDir = await fakeProc(t, {
+    400: tui(['/usr/bin/opencode', '--session', 'ses_a'], 200, '7'),
+    401: tui(['/usr/bin/opencode'], 200, '8', { cwd: '/work/b' }),
+    402: { comm: 'opencode', ppid: 1, args: ['/usr/bin/opencode', '-s=ses_c'], env: {}, cwd: '/work/c' },
+    ...chain(200),
+  });
+  const calls = [];
+  let result = await openCodeTerminalSessions({ procDir, exec: async (args) => { calls.push(args); return exec(args); } });
+  assert.deepEqual([...result.ids].sort(), ['ses_a', 'ses_c']);
+  assert.deepEqual(result.shown, [{ cwd: '/work/b', title: 'OC | B' }]);
+  assert.deepEqual(calls, [['@', '--to', 'unix:@kitty-200', 'ls']]);
+  // One ls per socket for two kitty windows, and a serve process, a bad ID, and a kitty error skip only those.
+  procDir = await fakeProc(t, {
+    400: tui(['/usr/bin/opencode'], 200, '7', { cwd: '/work/a' }),
+    401: tui(['/usr/bin/opencode'], 200, '8', { cwd: '/work/b' }),
+    402: tui(['/usr/bin/opencode', 'serve'], 200, '7'),
+    403: tui(['/usr/bin/opencode', '--session', 'not-a-session'], 200, '7'),
+    ...chain(200),
+  });
+  const sockets = [];
+  result = await openCodeTerminalSessions({ procDir, exec: async (args) => { sockets.push(args[2]); return exec(args); } });
+  assert.deepEqual([new Set(sockets).size, sockets.length], [1, 1]);
+  assert.deepEqual(result.ids.size, 0);
+  assert.deepEqual(result.shown.map(({ cwd }) => cwd).sort(), ['/work/a', '/work/b']);
+  const failing = await openCodeTerminalSessions({ procDir, exec: async () => { throw new Error('kitty refused'); } });
+  assert.deepEqual([failing.ids.size, failing.shown], [0, []]);
 });
 
 test('the open focuses a matching window, and starts a new one when the focus fails or nothing matches', async (t) => {

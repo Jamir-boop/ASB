@@ -139,7 +139,7 @@ test('the dashboard of frozen reader results is the same in each scan, with or w
     loadClaude: async ({ appDir }) => results[path.basename(appDir)],
     loadOpenCode: async () => results.opencode,
   };
-  const withSources = () => loadSwitchboardDashboard({ nowMs, sources, ...loaders });
+  const withSources = () => loadSwitchboardDashboard({ nowMs, sources, procDir: dir, ...loaders });
   const first = await withSources();
   // The rows are the roots. The Codex subagent and the Codex row with the subagent source are not rows. Two stores list one CLI session with
   // no transcript: one row stays, from the first store.
@@ -151,7 +151,7 @@ test('the dashboard of frozen reader results is the same in each scan, with or w
   assert.equal(first.threads.find((row) => row.id === 'ses_one').subagentCount, 2);
 
   // With no stores, the threads of the readers go to the dashboard as they are.
-  const plain = () => loadSwitchboardDashboard({ nowMs, loadCodex: async () => results.codex, loadClaude: async () => results.claude,
+  const plain = () => loadSwitchboardDashboard({ nowMs, procDir: dir, loadCodex: async () => results.codex, loadClaude: async () => results.claude,
     loadOpenCode: async () => results.opencode });
   const alone = await plain();
   assert.deepEqual(alone.threads.map((row) => row.id).sort(), [uuid(1), `local_${uuid(1)}`, 'cli:cli-session'].sort());
