@@ -153,7 +153,7 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
               and json_extract(${validJson('e.data')}, '$.metadata.shellID') = json_extract(p.value, '$.state.metadata.shellID'))
           group by root
           union all
-          select c.parent_id as root, 'agents' as kind, count(*) as n, min(p.started) as started
+          select c.parent_id as root, 'agents' as kind, count(distinct c.id) as n, min(p.started) as started
           from session_v2 c join tool_parts p on p.session_id = c.parent_id
           where c.parent_id is not null and c.time_suspended is not null
             and json_extract(p.value, '$.name') = 'subagent'

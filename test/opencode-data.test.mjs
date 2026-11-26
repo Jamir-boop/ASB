@@ -199,6 +199,7 @@ test('OpenCode counts background agents and shells from session_part tool rows',
   addSession(database, { ...base, id: 'ses_busy', parent_id: 'ses_main', time_suspended: now - minute });
   addSession(database, { ...base, id: 'ses_idle', parent_id: 'ses_none', time_idle: now - minute });
   part('ses_main', subagent('ses_busy'));
+  part('ses_main', subagent('ses_busy'), now - 2 * minute); // a resumed subagent: one child, two parts
   part('ses_main', subagent('ses_idle'));
   part('ses_shell', shell('sh_open'));
   part('ses_shell', shell('sh_ended'));
