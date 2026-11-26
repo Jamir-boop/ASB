@@ -4,9 +4,13 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
-- OpenCode 2: an idle root card now shows background agent and shell counts when OpenCode 2.4 stores tool parts in `session_part`. ASB still reads the old message content and supports databases without this table. On main, not in a release yet.
-- OpenCode 2: on Linux, a card shows the CLI badge (the terminal glyph and `CLI`) when a live OpenCode TUI shows the session now: a TUI started with `--session <id>`, or a TUI in the session folder whose kitty window title shows the session title, when only one session has that title there. The row stays `surface: 'app'` and keeps its open. The web view also shows `CLI`. Group members keep the new `inTerminal` flag. The Android companion shows the terminal glyph, `CLI`, and `CLI session` for these rows, and still opens them. On main, not in a release yet.
-- Antigravity CLI: on Windows, `asb agent agy-hook install` adds cards and status. Focus, phone answers, and ASB Bridge still need Linux. Checked on Windows 10 with agy 1.5.17. On main, not in a release yet.
+## ASB 1.18.0 - 2026-11-25
+
+- OpenCode 2: an idle root card now shows background agent and shell counts when OpenCode 2.4 stores tool parts in `session_part`. ASB still reads the old message content and supports databases without this table.
+- OpenCode 2: on Linux, a card shows the CLI badge (the terminal glyph and `CLI`) when a live OpenCode TUI shows the session now: a TUI started with `--session <id>`, or a TUI in the session folder whose kitty window title shows the session title, when only one session has that title there. The row stays `surface: 'app'` and keeps its open. The web view also shows `CLI`. Group members keep the new `inTerminal` flag. The Android companion shows the terminal glyph, `CLI`, and `CLI session` for these rows, and still opens them.
+- Antigravity CLI: on Windows, `asb agent agy-hook install` adds cards and status. Focus, phone answers, and ASB Bridge still need Linux. Checked on Windows 10 with agy 1.5.17.
+
+See [ASB 1.18.0 release notes](docs/releases/v1.18.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.17.0 - 2026-11-25
 
