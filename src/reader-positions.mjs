@@ -2,7 +2,7 @@
 // The file holds numbers, booleans, fixed kinds, IDs, keyed digests, and the Claude row fields (folders, titles, model, version,
 // entrypoint, agent name, branch): no message text, question text, prompt, or tool text. A missing, damaged, old, or foreign
 // file, or a record that does not agree with its log, gives the full read of a new engine.
-import { createHmac, createSecretKey, randomBytes } from 'node:crypto';
+import { createHash, createHmac, createSecretKey, randomBytes } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { CLAUDE_POSITION_VERSION, CLAUDE_TAIL_POSITION_VERSION, claudePositionRecords, claudeTailRecords,
@@ -53,7 +53,9 @@ async function readPrivateFile(file, platform, maxFileBytes) {
 // records; a code edit that keeps the meaning and the reader rules keeps the version, so the records stay.
 export function createReaderPositions({ file, key, platform = process.platform, now = Date.now, log = console.error,
   keyWaitMs = KEY_WAIT_MS, saveDelayMs = SAVE_DELAY_MS, maxFileBytes = MAX_POSITION_FILE_BYTES } = {}) {
-  let loading = null, hmacKey = null, off = false, written = '', writtenAtMs = null, write = Promise.resolve();
+  let loading = null, hmacKey = null, off = false, writtenDigest = null, writtenAtMs = null, write = Promise.resolve();
+  // The counts of the last serialize, for saveStats, and the last total of records that did not fit the file limit.
+  let savedStats = null, loggedFileLimit = null;
   // One section for each kind of saved result, in file order. Each has its own format version, record checks, and limit of
   // records. `codexTail` holds the tail signals of a plain Codex log or the whole-log signals of a compressed Codex log that has
   // not changed. `claudeTail` holds the tail signals of a Claude transcript of any size that has not changed. `remote` holds the
@@ -75,8 +77,10 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     off = true;
     for (const section of sections) section.use(null);
   };
-  const usable = (section, record, atMs) => record && typeof record === 'object' && HEX32.test(record.k) && HEX32.test(record.guard)
-    && Number.isFinite(record.atMs) && record.atMs >= 0 && atMs - record.atMs <= MAX_POSITION_AGE_MS && section.valid(record);
+  // The cheap checks. The full check of a record (`section.valid`) runs only when a reader takes it (see `take`), or before a
+  // record is written again.
+  const usable = (record, atMs) => record && typeof record === 'object' && HEX32.test(record.k) && HEX32.test(record.guard)
+    && Number.isFinite(record.atMs) && record.atMs >= 0 && atMs - record.atMs <= MAX_POSITION_AGE_MS;
 
   const load = async () => {
     let text;
@@ -94,7 +98,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
       const part = value[section.name];
       if (part?.version !== section.version || !Array.isArray(part.records)) continue;
       for (const record of part.records) {
-        if (usable(section, record, atMs) && !(section.saved.get(record.k)?.atMs > record.atMs)) section.saved.set(record.k, record);
+        if (usable(record, atMs) && !(section.saved.get(record.k)?.atMs > record.atMs)) section.saved.set(record.k, record);
       }
       section.loaded = section.saved.size;
     }
@@ -121,7 +125,8 @@ export function createReaderPositions({ file, key, platform = process.platform, 
           const k = recordKey(section, filePath);
           const record = section.saved.get(k) ?? null;
           section.saved.delete(k);
-          if (record) section.taken += 1;
+          if (!record || !section.valid(record)) return null;
+          section.taken += 1;
           return record;
         },
       });
@@ -131,15 +136,18 @@ export function createReaderPositions({ file, key, platform = process.platform, 
   const sectionText = (section, kept) => `,"${section.name}":{"version":"${section.version}","records":[${kept.join(',')}]}`;
   // One synchronous step: the cache entries do not change after they are saved, and a running scan cannot change this list.
   const serialize = (atMs) => {
-    const all = [];
+    const all = [], kept = new Map();
+    const counts = Object.fromEntries(sections.map((section) => [section.name, { written: 0, droppedByCount: 0,
+      droppedByRecordBytes: 0, droppedByFileLimit: 0 }]));
     for (const section of sections) {
-      const records = new Map(section.saved);
+      const records = new Map();
+      for (const [k, record] of section.saved) if (section.valid(record)) records.set(k, record);
       for (const [filePath, entry] of section.records()) {
         const record = { k: recordKey(section, filePath), ...entry, guard: digest(entry.guard) };
         // A record with an ID that is not a plain ID is not written: that log gets a full read at the next start.
-        if (usable(section, record, atMs)) records.set(record.k, record);
+        if (usable(record, atMs) && section.valid(record)) records.set(record.k, record);
       }
-      section.kept = [];
+      kept.set(section, []);
       for (const record of records.values()) all.push([section, record]);
     }
     const head = `{"version":${READER_POSITIONS_VERSION},"keyCheck":"${digest(KEY_CHECK)}"`;
@@ -147,16 +155,31 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     // The length comes from the same template as the text below, so a change of the format cannot make the count drift.
     let bytes = Buffer.byteLength(head) + 1 + sections.reduce((sum, section) => sum + Buffer.byteLength(sectionText(section, [])), 0);
     // The newest records of all sections share the file limit; each section keeps at most its own count.
+    let cut = false;
     for (const [section, record] of all.sort((a, b) => b[1].atMs - a[1].atMs)) {
-      if (section.kept.length >= MAX_POSITION_RECORDS) continue;
-      const text = JSON.stringify(record);
-      const recordBytes = Buffer.byteLength(text);
-      if (recordBytes > MAX_POSITION_RECORD_BYTES) continue;
-      if (bytes + recordBytes + 1 > maxFileBytes) break;
-      section.kept.push(text);
+      const count = counts[section.name];
+      if (cut) { count.droppedByFileLimit += 1; continue; }
+      if (count.written >= MAX_POSITION_RECORDS) { count.droppedByCount += 1; continue; }
+      const recordText = JSON.stringify(record);
+      const recordBytes = Buffer.byteLength(recordText);
+      if (recordBytes > MAX_POSITION_RECORD_BYTES) { count.droppedByRecordBytes += 1; continue; }
+      if (bytes + recordBytes + 1 > maxFileBytes) { count.droppedByFileLimit += 1; cut = true; continue; }
+      kept.get(section).push(recordText);
+      count.written += 1;
       bytes += recordBytes + 1;
     }
-    return `${head}${sections.map((section) => sectionText(section, section.kept)).join('')}}`;
+    const text = `${head}${sections.map((section) => sectionText(section, kept.get(section))).join('')}}`;
+    // The limit check reserves a comma for every record, including the first in each nonempty section.
+    const fileBytes = bytes - sections.filter((section) => counts[section.name].written > 0).length;
+    savedStats = { fileBytes, maxFileBytes, sections: counts };
+    const dropped = sections.reduce((sum, section) => sum + counts[section.name].droppedByFileLimit, 0);
+    if (dropped > 0 && dropped !== loggedFileLimit) {
+      loggedFileLimit = dropped;
+      const list = sections.filter((section) => counts[section.name].droppedByFileLimit > 0)
+        .map((section) => `${section.name} ${counts[section.name].droppedByFileLimit}`).join(', ');
+      log(`ASB reader positions: ${dropped} records did not fit in the ${maxFileBytes / 1048576} MiB file (${list}).`);
+    }
+    return text;
   };
 
   const writeFile = async (text) => {
@@ -186,9 +209,10 @@ export function createReaderPositions({ file, key, platform = process.platform, 
       // The step below is the cost of every record, so it runs at most once in 10 minutes, also when the text did not change.
       writtenAtMs = atMs;
       const text = serialize(atMs);
-      if (text === written) return;
+      const hash = createHash('sha256').update(text).digest('hex');
+      if (hash === writtenDigest) return;
       await writeFile(text);
-      written = text;
+      writtenDigest = hash;
     }).catch((error) => {
       if (error instanceof UnsafeFolder) turnOff();
       else log('ASB cannot save its reader positions. It keeps the old file.');
@@ -198,5 +222,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
   // The counts of all sections, or of one section by name.
   const stats = (name) => sections.filter((section) => !name || section.name === name)
     .reduce((sum, section) => ({ loaded: sum.loaded + section.loaded, taken: sum.taken + section.taken }), { loaded: 0, taken: 0 });
-  return { ready, scanDone: () => save(false), flush: () => save(true), stats };
+  // The counts of the last serialize, or null before the first one. Each serialize makes a new object, so this never changes under a caller.
+  const saveStats = () => savedStats;
+  return { ready, scanDone: () => save(false), flush: () => save(true), stats, saveStats };
 }

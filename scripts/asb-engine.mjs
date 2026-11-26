@@ -239,6 +239,8 @@ export async function runEngine({ env = process.env, platform = process.platform
   startup = (async () => {
     // The identity comes before the listen: a phone read right after it gets rows with a machine ID (the phone keys rows by it).
     machineId = await gateway.identity().catch(() => '');
+    // The positions need the identity key, so their load starts only after it. The first scan awaits this cached promise.
+    positions.ready();
     if (machineId) referenceScopes = await gateway.referenceScopes().catch(() => null);
     if (stopping) return;
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });

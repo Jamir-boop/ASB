@@ -93,6 +93,7 @@ out.decompressions = decompressions();
 if (positions) {
   await positions.flush();
   out.stats = positions.stats();
+  out.saveStats = positions.saveStats();
   out.codexStats = positions.stats('codex');
   out.claudeStats = positions.stats('claude');
   out.tailStats = positions.stats('codexTail');
@@ -742,9 +743,33 @@ test('a missing, damaged, old, or foreign positions file gives full reads, and a
     await fs.rm(file, { force: true });
     await writeSaved(file, edit((copy) => change(copy.codex.records.find((record) => record.k === recordKey(files[1].path)))));
     const run = await engine({ file, key: KEY, files: fileConfig(files) });
-    assert.deepEqual(run.codexStats, { loaded: 2, taken: 2 }, name);
+    assert.deepEqual(run.codexStats, { loaded: 3, taken: 2 }, name);
     assert.deepEqual(run.files.map((item) => item.signals), full.files.map((item) => item.signals), name);
     assert.ok(run.files[1].bytes > run.files[0].bytes * 4, name);
+  }
+});
+
+test('a saved record that fails its full check gives a full read and is not carried to the next file', async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await plainRollouts(directory, 2);
+  const file = path.join(directory, 'readers', 'positions.json');
+  await engine({ file, key: KEY, files: fileConfig(files) });
+  const saved = await readSaved(file);
+  for (const section of ['codex', 'codexTail']) {
+    assert.equal(saved[section].records.length, 2);
+    for (const record of saved[section].records) record.note = 'MARKERPROMPT';
+  }
+  await writeSaved(file, saved);
+  const [read] = fileConfig(files);
+  const full = await engine({ file: path.join(directory, 'full', 'positions.json'), key: KEY, files: [read] });
+  const run = await engine({ file, key: KEY, files: [read] });
+  assert.deepEqual(run.codexStats, { loaded: 2, taken: 0 });
+  assert.deepEqual(run.tailStats, { loaded: 2, taken: 0 });
+  assert.deepEqual(run.files, full.files);
+  const next = await fs.readFile(file, 'utf8');
+  assert.equal(next.includes('MARKERPROMPT'), false);
+  for (const section of ['codex', 'codexTail']) {
+    assert.deepEqual(JSON.parse(next)[section].records.map((record) => record.k), [recordKey(read.path, KEY, section)]);
   }
 });
 
@@ -776,6 +801,12 @@ test('the positions file keeps the newest 5000 records and at most 256 KiB for o
   assert.deepEqual(kept.map((record) => record.atMs), Array.from({ length: 5000 }, (_, index) => atMs - index * 1000));
   assert.ok(kept.every((record) => JSON.stringify(record).length <= MAX_POSITION_RECORD_BYTES));
   assert.deepEqual(value.claude.records.map((record) => record.atMs), Array.from({ length: 5000 }, (_, index) => atMs - (index + 0.5) * 1000));
+  assert.deepEqual(run.saveStats.sections.codex, { written: 5000, droppedByCount: 1000, droppedByRecordBytes: 1, droppedByFileLimit: 0 });
+  assert.deepEqual(run.saveStats.sections.claude, { written: 5000, droppedByCount: 50, droppedByRecordBytes: 0, droppedByFileLimit: 0 });
+  // At 224cca2 the serializer wrote this fixture as compact JSON, in this section, key, and record order.
+  saved.codex.records = saved.codex.records.slice(0, MAX_POSITION_RECORDS);
+  saved.claude.records = saved.claude.records.slice(0, MAX_POSITION_RECORDS);
+  assert.deepEqual(await fs.readFile(file), Buffer.from(JSON.stringify(saved)));
 });
 
 const resetPositions = () => { useRolloutPositions(null); useRolloutTailPositions(null); useRemotePositions(null); useClaudePositions(null);
@@ -818,14 +849,31 @@ async function inProcess(t, directory, options = {}) {
 test('the file limit drops the oldest records first', async (t) => {
   const directory = await temporaryDirectory(t);
   const files = await plainRollouts(directory, 30, 8 * 1024);
-  const { positions } = await inProcess(t, directory, { maxFileBytes: 6000 });
+  const { positions, logs } = await inProcess(t, directory, { maxFileBytes: 6000 });
+  assert.equal(positions.saveStats(), null);
   for (const rollout of files) await readRolloutSignals(rollout.path, { initialBytes: 4096, maxBytes: 4096 });
   await positions.flush();
   const file = path.join(directory, 'readers', 'positions.json');
   const { size } = await fs.stat(file);
-  const kept = (await readSaved(file)).codex.records;
+  const saved = await readSaved(file);
+  const kept = saved.codex.records;
   assert.ok(size <= 6000 && kept.length > 2 && kept.length < 30, `${size} bytes, ${kept.length} records`);
   assert.deepEqual(kept.map((record) => record.atMs), kept.map((record) => record.atMs).sort((a, b) => b - a));
+  const counts = (section, total) => ({ written: saved[section].records.length, droppedByCount: 0, droppedByRecordBytes: 0,
+    droppedByFileLimit: total - saved[section].records.length });
+  const sections = { codex: counts('codex', 30), claude: counts('claude', 0), codexTail: counts('codexTail', 30),
+    claudeTail: counts('claudeTail', 0), remote: counts('remote', 0) };
+  const expected = { fileBytes: size, maxFileBytes: 6000, sections };
+  const codex = sections.codex.droppedByFileLimit, tail = sections.codexTail.droppedByFileLimit;
+  assert.ok(codex > 0 && tail > 0);
+  const line = `ASB reader positions: ${codex + tail} records did not fit in the 0.0057220458984375 MiB file (codex ${codex}, codexTail ${tail}).`;
+  assert.deepEqual(positions.saveStats(), expected);
+  assert.deepEqual(logs, [line]);
+  await fs.rm(file);
+  await positions.flush();
+  assert.deepEqual(positions.saveStats(), expected);
+  assert.deepEqual(logs, [line]);
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
 });
 
 test('a file filled to the limit is not longer than the limit, and it loads back', async (t) => {
@@ -840,7 +888,8 @@ test('a file filled to the limit is not longer than the limit, and it loads back
     resetPositions();
     await fs.rm(file, { force: true });
     let clock = Date.now();
-    const positions = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), now: () => clock, saveDelayMs: 0, maxFileBytes: limit });
+    const positions = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), now: () => clock, saveDelayMs: 0,
+      maxFileBytes: limit, log: () => {} });
     await positions.ready();
     for (const rollout of files) await readRolloutSignals(rollout.path, { initialBytes: 4096, maxBytes: 4096 });
     await positions.flush();
@@ -1282,7 +1331,7 @@ test('a phase 1 file loads its Codex records; a bad Claude section or record dro
     'text in the lifecycle': (record) => { record.lifecycle.latestUserMessage = 'MARKERPROMPT'; },
   };
   for (const [name, change] of Object.entries(records)) {
-    await check(edit((copy) => change(copy.claude.records.find((record) => record.k === target))), { loaded: 2, taken: 2 }, name);
+    await check(edit((copy) => change(copy.claude.records.find((record) => record.k === target))), { loaded: 3, taken: 2 }, name);
   }
 });
 
@@ -1500,7 +1549,8 @@ test('a bad cache bucket record, or a section with another format version, is dr
     'guard with text': (record) => { record.guard = 'MARKERNAME'; },
   };
   for (const [name, change] of Object.entries(records)) {
-    const run = await check(edit((copy) => change(withNames(copy))), total - 1, name);
+    const run = await check(edit((copy) => change(withNames(copy))), name === 'guard with text' ? total - 1 : total, name);
+    assert.equal(run.remoteStats.taken, total - 1, name);
     assert.ok(run.keyReads < 20, `${name}: key reads ${run.keyReads}`);
   }
   // A bucket that does not agree with the folder: another count, and a wrong guard digest. Its names are read again, and no others.
@@ -1830,7 +1880,7 @@ test('the UTF-8 file limit holds for non-ASCII Claude row fields, and the exact 
   t.after(() => { retainClaudeDataSources([]); resetPositions(); });
   const file = path.join(home, 'readers', 'positions.json');
   const open = async (maxFileBytes) => {
-    const positions = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), maxFileBytes });
+    const positions = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), maxFileBytes, log: () => {} });
     await positions.ready();
     return positions;
   };
@@ -1842,6 +1892,7 @@ test('the UTF-8 file limit holds for non-ASCII Claude row fields, and the exact 
   assert.equal(claudeTail.records.length, 1);
   // Sweep the range where counting code units instead of bytes could admit a record that does not fit.
   const size = Buffer.byteLength(full);
+  assert.equal(positions.saveStats().fileBytes, size);
   assert.ok(size > full.length + 1);
   for (let limit = full.length; limit <= size + 1; limit += 1) {
     await fs.rm(file);
