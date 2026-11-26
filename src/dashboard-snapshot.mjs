@@ -126,6 +126,20 @@ export class DashboardSnapshot {
     });
     const dashboardSources = { codex: false, claude: false };
     const threadOpenPromises = new Map();
+    let firstLoad = null;
+    const finishFirstLoad = (startedAtMs) => {
+      if (firstLoad) return;
+      const codex = getCodexCacheStats();
+      const claude = getClaudeCacheStats();
+      const bytesRead = (stats) => Object.values(stats).filter((value) => value && typeof value === 'object')
+        .reduce((sum, value) => sum + (Number(value.bytesRead) || 0), 0);
+      firstLoad = {
+        firstLoadMs: durationSince(startedAtMs),
+        firstLoadDoneMs: Math.round(process.uptime() * 1000),
+        firstLoadBytes: { codex: bytesRead(codex), claude: bytesRead(claude) },
+        firstLoadDecompressions: codex.rolloutSignals.decompressions,
+      };
+    };
     const serverMetrics = {
       dashboardCacheHits: 0,
       dashboardCacheMisses: 0,
@@ -177,6 +191,10 @@ export class DashboardSnapshot {
           softInvalidations: serverMetrics.dashboardSoftInvalidations,
           hardInvalidations: serverMetrics.dashboardHardInvalidations,
           lastInvalidatedAtMs: serverMetrics.dashboardLastInvalidatedAtMs,
+          firstLoadMs: firstLoad?.firstLoadMs ?? null,
+          firstLoadDoneMs: firstLoad?.firstLoadDoneMs ?? null,
+          firstLoadBytes: firstLoad?.firstLoadBytes ?? null,
+          firstLoadDecompressions: firstLoad?.firstLoadDecompressions ?? null,
         },
         caches: {
           codex: getCodexCacheStats(),
@@ -252,6 +270,7 @@ export class DashboardSnapshot {
             return dashboard;
           })
           .then((dashboard) => {
+            finishFirstLoad(startedAtMs);
             serverMetrics.dashboardLoadCount += 1;
             serverMetrics.dashboardLastLoadMs = durationSince(startedAtMs);
             serverMetrics.dashboardLastLoadedAtMs = now();
@@ -277,6 +296,7 @@ export class DashboardSnapshot {
             return dashboard;
           })
           .catch((error) => {
+            finishFirstLoad(startedAtMs);
             dashboardDirty = true;
             dashboardWatchEpoch += 1;
             dashboardRetryAfterMs = now() + 5_000;

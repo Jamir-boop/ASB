@@ -41,6 +41,7 @@ if (config.file) {
   await positions.ready();
 }
 const bytes = () => { const stats = codex.getCodexCacheStats().rolloutSignals; return stats.lifecycleBytesRead + stats.bytesRead; };
+const decompressions = () => codex.getCodexCacheStats().rolloutSignals.decompressions;
 const out = { files: [], logs };
 for (const file of config.files || []) {
   const before = bytes();
@@ -71,6 +72,7 @@ if (config.remote) {
   out.keyReads = remote.getClaudeRemoteCacheStats().keyReads - before;
   await remote.shutdownClaudeRemoteParser();
 }
+out.decompressions = decompressions();
 if (positions) {
   await positions.flush();
   out.stats = positions.stats();
@@ -167,6 +169,34 @@ async function randomRollouts(directory, count, seedBase) {
 }
 
 const fileConfig = (files) => files.map((file) => ({ path: file.path, tail: file.tail }));
+
+const zstd = typeof zlib.zstdCompressSync === 'function' ? { skip: false } : { skip: 'Node has no zstd' };
+const compressedEvent = (type, atMs, extra = {}) => ({ type: 'event_msg', timestamp: new Date(atMs).toISOString(), payload: { type, ...extra } });
+
+// Made-up compressed logs with text that must not reach the positions file.
+async function compressedRollouts(directory, count) {
+  await fs.mkdir(directory, { recursive: true });
+  const files = [];
+  for (let index = 0; index < count; index += 1) {
+    const rolloutPath = path.join(directory, `rollout-${index}.jsonl`);
+    const start = NOW_MS - index * 60_000 - 1000;
+    const lines = [
+      compressedEvent('user_message', start, { message: 'MARKERPROMPT' }),
+      compressedEvent('task_started', start + 100),
+      ...(index % 3 === 0 ? [compressedEvent('task_complete', start + 200)] : []),
+      ...(index % 3 === 1 ? [compressedEvent('token_count', start + 200, {
+        rate_limits: { primary: { used_percent: 98, resets_at: (NOW_MS + 3_600_000) / 1000 } },
+      }), compressedEvent('task_complete', start + 300, { codex_error_info: { code: 'usage_limit_exceeded' } })] : []),
+      ...Array.from({ length: 80 }, (_, line) => compressedEvent('tool_output', start + 400 + line, {
+        text: `MARKEROUTPUT ${'x'.repeat(1024)}`,
+      })),
+    ];
+    const zstPath = `${rolloutPath}.zst`;
+    await fs.writeFile(zstPath, zlib.zstdCompressSync(jsonl(lines)));
+    files.push({ path: rolloutPath, zstPath, lines });
+  }
+  return files;
+}
 
 test('a new engine with saved reader positions shows the same rows as a full read', async (t) => {
   const home = await temporaryDirectory(t);
@@ -548,6 +578,107 @@ test('a saved Codex tail result that does not agree with its log gives a full re
   }
   // The result of the removed log is the result of a full read: unreadable.
   assert.deepEqual(b.files[files.indexOf(removed)].signals, c.files[files.indexOf(removed)].signals);
+});
+
+test('compressed Codex logs save their signals and read only the guard after an engine restart', zstd, async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await compressedRollouts(path.join(directory, 'logs'), 6);
+  const file = path.join(directory, 'readers', 'positions.json');
+  const config = fileConfig(files);
+  const first = await engine({ file, key: KEY, files: config });
+  const full = await engine({ files: config });
+  assert.equal(first.decompressions, 6);
+  assert.equal(first.tailStats.loaded, 0);
+  const saved = await readSaved(file);
+  assert.equal(saved.codexTail.records.length, 6);
+  assert.ok(saved.codexTail.records.every((record) => record.compressed === true));
+  for (const record of saved.codexTail.records) {
+    assert.equal(record.guardBytes, Math.min(64, record.size));
+    const stat = await fs.stat(files.find((item) => record.k === recordKey(item.path, KEY, 'codexTail')).zstPath);
+    assert.equal(record.size, stat.size);
+    assert.equal(record.mtimeMs, stat.mtimeMs);
+    assert.equal(record.ctimeMs, stat.ctimeMs);
+  }
+  const text = JSON.stringify(saved);
+  for (const marker of [...MARKERS, directory]) assert.equal(text.includes(marker), false, marker);
+  const restart = await engine({ file, key: KEY, files: config });
+  assert.equal(restart.decompressions, 0);
+  assert.equal(restart.tailStats.taken, 6);
+  assert.ok(restart.files.every((item) => item.bytes <= 64));
+  assert.ok(restart.files.reduce((sum, item) => sum + item.bytes, 0) <= 64 * files.length);
+  assert.deepEqual(restart.files.map((item) => item.signals), first.files.map((item) => item.signals));
+  assert.deepEqual(restart.files.map((item) => item.signals), full.files.map((item) => item.signals));
+});
+
+test('a changed compressed Codex log is decompressed again and has the same signals as a full read', zstd, async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await compressedRollouts(path.join(directory, 'logs'), 3);
+  const file = path.join(directory, 'readers', 'positions.json');
+  await engine({ file, key: KEY, files: fileConfig(files) });
+  const changed = files[1];
+  const before = await fs.stat(changed.zstPath);
+  await fs.utimes(changed.zstPath, before.atime, new Date(before.mtimeMs + 5000));
+  const grown = files[2];
+  const extra = compressedEvent('task_complete', NOW_MS, {});
+  await fs.writeFile(grown.zstPath, zlib.zstdCompressSync(jsonl([...grown.lines, extra])));
+  const restart = await engine({ file, key: KEY, files: fileConfig(files) });
+  const full = await engine({ files: fileConfig(files) });
+  assert.equal(restart.decompressions, 2);
+  assert.deepEqual(restart.files.map((item) => item.signals), full.files.map((item) => item.signals));
+  assert.ok(restart.files[0].bytes <= 64);
+});
+
+test('bad compressed Codex records and a plain log with the same path do not share saved results', zstd, async (t) => {
+  const directory = await temporaryDirectory(t);
+  const files = await compressedRollouts(path.join(directory, 'logs'), 4);
+  const file = path.join(directory, 'readers', 'positions.json');
+  await engine({ file, key: KEY, files: fileConfig(files) });
+  const saved = await readSaved(file);
+  const recordFor = (item) => saved.codexTail.records.find((record) => record.k === recordKey(item.path, KEY, 'codexTail'));
+  const [damaged, wrongGuard, foreign, control] = files;
+  const damagedRecord = recordFor(damaged);
+  damagedRecord.tail.awaitingUserInput = 'yes';
+  recordFor(wrongGuard).guard = '0'.repeat(32);
+  const foreignRecord = recordFor(foreign);
+  const foreignKey = foreignRecord.k;
+  foreignRecord.k = recordKey(control.path, KEY, 'codexTail');
+  await writeSaved(file, saved);
+  const bad = await engine({ file, key: KEY, files: fileConfig(files) });
+  assert.equal(bad.decompressions, 3);
+  // The shared key yields one record for the control log; the bad guard record is taken and fails.
+  assert.equal(bad.tailStats.taken, 2);
+  assert.notEqual(foreignKey, recordKey(control.path, KEY, 'codexTail'));
+
+  // The same plain path has a plain file now. Its signature cannot use the compressed record.
+  await fs.writeFile(control.path, jsonl(control.lines));
+  const cross = await engine({ file, key: KEY, files: fileConfig([control]) });
+  assert.equal(cross.decompressions, 0, 'the plain log is not decompressed');
+  // The compressed record is not used for the plain file: the full plain tail is read.
+  assert.ok(cross.files[0].bytes > 64, `plain bytes ${cross.files[0].bytes}`);
+  const plainFull = await engine({ files: fileConfig([control]) });
+  assert.deepEqual(cross.files[0].signals, plainFull.files[0].signals);
+
+  // The cross read saved its plain result under the same key, so the compressed log is read again, not used.
+  await fs.rm(control.path);
+  const compressedAgain = await engine({ file, key: KEY, files: fileConfig([control]) });
+  assert.equal(compressedAgain.decompressions, 1);
+  const compressedFull = await engine({ files: fileConfig([control]) });
+  assert.deepEqual(compressedAgain.files[0].signals, compressedFull.files[0].signals);
+});
+
+test('an unreadable compressed Codex log is not saved and is decompressed again', zstd, async (t) => {
+  const directory = await temporaryDirectory(t);
+  const file = path.join(directory, 'readers', 'positions.json');
+  const rolloutPath = path.join(directory, 'rollout-bad.jsonl');
+  const zstPath = `${rolloutPath}.zst`;
+  await fs.writeFile(zstPath, Buffer.from('not a zstd stream'));
+  const config = [{ path: rolloutPath, tail: 4096 }];
+  const first = await engine({ file, key: KEY, files: config });
+  assert.equal(first.decompressions, 1);
+  const saved = await readSaved(file);
+  assert.equal(saved.codexTail.records.length, 0);
+  const second = await engine({ file, key: KEY, files: config });
+  assert.equal(second.decompressions, 1);
 });
 
 test('a missing, damaged, old, or foreign positions file gives full reads, and a bad record is dropped alone', async (t) => {

@@ -25,6 +25,28 @@ from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 LOCAL_HTTP = build_opener(ProxyHandler({}))
+BOARD_START_NS = time.monotonic_ns()
+
+
+def process_start_ns():
+    """Linux process start in the CLOCK_BOOTTIME time base, else the import monotonic time."""
+    try:
+        fields = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+        ticks = int(fields[19])
+        return ticks * 1_000_000_000 // os.sysconf("SC_CLK_TCK") if sys.platform.startswith("linux") else BOARD_START_NS
+    except (OSError, ValueError, IndexError, ZeroDivisionError):
+        return BOARD_START_NS
+
+
+def print_first_cards_time():
+    """The one timing line for the first frame that has cards, never an error."""
+    try:
+        print(f"ASB board: first cards {max(0, (time.monotonic_ns() - process_start_ns()) // 1_000_000)} ms after start",
+              file=sys.stderr)
+    except Exception:
+        pass
+
+
 ROW_HEIGHT = 22
 COMFORTABLE_ROW_HEIGHT = 68
 # The hover pocket ends between title lines 1 and 2 (measured in Cascadia Code NF 11 and Cantarell 11).
@@ -8623,6 +8645,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if self.snapshot_pending:
             self.snapshot_pending = False
             self.add_tick_callback(SnapshotWatch(os.environ["ASB_SNAPSHOT"]).tick)
+        # A logic test has no GTK window: the check runs only when the frame clock exists.
+        if self.signature and not getattr(self, "first_cards_reported", False) and hasattr(self, "add_tick_callback"):
+            self.first_cards_reported = True
+            self.add_tick_callback(self.first_cards_frame)
+        return False
+
+    def first_cards_frame(self, _widget, _clock):
+        # A tick starts a frame, so this is the first frame with the first non-empty card list.
+        print_first_cards_time()
         return False
 
     def trim_heap(self):

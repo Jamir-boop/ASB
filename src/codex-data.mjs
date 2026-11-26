@@ -753,8 +753,8 @@ const ROLLOUT_LIFECYCLE_KEYS = [...ROLLOUT_LIFECYCLE_NAMES].sort().join();
 const ROLLOUT_TAIL_NAMES = ['awaitingUserInput', 'latestAgentFinalAtMs', 'latestBlockingQuestionAtMs', 'latestEventAtMs',
   'latestUserMessageAtMs', 'latestUserQuestionAtMs', 'userQuestionBlocking'];
 const ROLLOUT_TAIL_KEYS = [...ROLLOUT_TAIL_NAMES].sort().join();
-const ROLLOUT_TAIL_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'initialBytes', 'k', 'lifecycle', 'maxBytes',
-  'mtimeMs', 'size', 'tail'].sort().join();
+const ROLLOUT_TAIL_POSITION_KEYS = ['atMs', 'compressed', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'initialBytes', 'k', 'lifecycle',
+  'maxBytes', 'mtimeMs', 'size', 'tail'].sort().join();
 let rolloutPositions = null;
 let rolloutTailPositions = null;
 
@@ -817,7 +817,7 @@ export function validRolloutTailRecord(record) {
   const { lifecycle, tail } = record;
   if (![record.dev, record.ino, record.size, record.guardBytes, record.initialBytes, record.maxBytes].every(count) || record.size < 1
     || record.guardBytes !== Math.min(64, record.size) || !finiteNumber(record.mtimeMs) || !finiteNumber(record.ctimeMs)
-    || !validRolloutLifecycle(lifecycle)) return false;
+    || typeof record.compressed !== 'boolean' || !validRolloutLifecycle(lifecycle)) return false;
   return Boolean(tail) && typeof tail === 'object' && Object.keys(tail).sort().join() === ROLLOUT_TAIL_KEYS
     && [tail.latestAgentFinalAtMs, tail.latestUserMessageAtMs, tail.latestEventAtMs].every((value) => value === null || finiteNumber(value))
     && typeof tail.awaitingUserInput === 'boolean' && typeof tail.userQuestionBlocking === 'boolean'
@@ -832,8 +832,9 @@ export function rolloutTailRecords() {
     const [filePath, initialBytes, maxBytes] = cacheKey.split('\0');
     if (newest.get(filePath)?.atMs >= entry.atMs) continue;
     const { signals, signature } = entry;
-    newest.set(filePath, { atMs: entry.atMs, dev: signature.dev, ino: signature.ino, size: signature.size, mtimeMs: signature.mtimeMs,
-      ctimeMs: signature.ctimeMs, guard: entry.guard, guardBytes: entry.guard.length, initialBytes: Number(initialBytes), maxBytes: Number(maxBytes),
+    newest.set(filePath, { atMs: entry.atMs, compressed: Boolean(entry.compressed), dev: signature.dev, ino: signature.ino, size: signature.size,
+      mtimeMs: signature.mtimeMs, ctimeMs: signature.ctimeMs, guard: entry.guard, guardBytes: entry.guard.length,
+      initialBytes: Number(initialBytes), maxBytes: Number(maxBytes),
       lifecycle: { ...Object.fromEntries(ROLLOUT_LIFECYCLE_NAMES.map((name) => [name, signals[name]])),
         limitWindows: (signals.limitWindows || []).map((window) => [...window]) },
       tail: Object.fromEntries(ROLLOUT_TAIL_NAMES.map((name) => [name, signals[name]])) });
@@ -843,13 +844,14 @@ export function rolloutTailRecords() {
 
 // The saved signals of a log with no tail result in memory, or null. The log must be the same file with the same size and times,
 // the same tail limits, and the same last bytes. The result is new objects, so the cache entry never shares state with the record.
-async function savedRolloutTail(rolloutPath, stat, initialBytes, maxBytes) {
+async function savedRolloutTail(rolloutPath, stat, initialBytes, maxBytes, guardPath = rolloutPath, compressed = false) {
   const record = rolloutTailPositions.take(rolloutPath);
   const now = statSignature(stat);
-  if (!record || !validRolloutTailRecord(record) || record.initialBytes !== initialBytes || record.maxBytes !== maxBytes
+  if (!record || !validRolloutTailRecord(record) || record.compressed !== compressed
+    || record.initialBytes !== initialBytes || record.maxBytes !== maxBytes
     || ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some((name) => record[name] !== now[name])) return null;
   const guard = Buffer.alloc(record.guardBytes);
-  const handle = await fs.open(rolloutPath, 'r');
+  const handle = await fs.open(guardPath, 'r');
   try {
     const { bytesRead } = await handle.read(guard, 0, guard.length, record.size - guard.length);
     codexCacheMetrics.rolloutSignalBytesRead += bytesRead;
@@ -990,9 +992,9 @@ export async function readTail(filePath, maxBytes = DEFAULT_MAX_ROLLOUT_BYTES, f
 
 // The signals of a compressed log (Codex 0.169 compresses a log after 7 days with no use): parseRolloutSignals of its whole text, one
 // line at a time, so memory stays at one line. Throws when the zstd stream fails or when Node has no zstd (before 22.15).
-// A zstd stream cannot seek, so there is no tail read.
+// A zstd stream cannot seek, so there is no tail read. The compressed bytes do provide the guard of a saved whole-log result.
 // shortcut: a line longer than `lineLimit` is skipped (a huge tool output or pasted prompt), upgrade if a lifecycle line can be that long.
-async function readCompressedRolloutSignals(filePath, lineLimit = ROLLOUT_STREAM_LINE_BYTES) {
+async function readCompressedRolloutSignals(filePath, stat, lineLimit = ROLLOUT_STREAM_LINE_BYTES) {
   codexCacheMetrics.rolloutDecompressions += 1;
   const parser = rolloutSignalParser();
   let pending = [];
@@ -1014,7 +1016,7 @@ async function readCompressedRolloutSignals(filePath, lineLimit = ROLLOUT_STREAM
     pending = [];
     pendingBytes = 0;
   };
-  const input = createReadStream(filePath);
+  const input = createReadStream(filePath, { end: stat.size });
   input.on('data', (chunk) => { codexCacheMetrics.rolloutSignalBytesRead += chunk.length; });
   await pipeline(input, zlib.createZstdDecompress(), async (stream) => {
     for await (const chunk of stream) {
@@ -1029,7 +1031,18 @@ async function readCompressedRolloutSignals(filePath, lineLimit = ROLLOUT_STREAM
     }
   });
   end();
-  return parser.finish();
+  const signals = parser.finish();
+  let guard = null;
+  if (rolloutTailPositions) {
+    guard = Buffer.alloc(Math.min(64, stat.size));
+    const handle = await fs.open(filePath, 'r');
+    try {
+      const { bytesRead } = await handle.read(guard, 0, guard.length, stat.size - guard.length);
+      codexCacheMetrics.rolloutSignalBytesRead += bytesRead;
+      if (bytesRead !== guard.length) guard = null;
+    } finally { await handle.close(); }
+  }
+  return { signals, guard };
 }
 
 function hasTurnBoundary(signals) {
@@ -1070,14 +1083,22 @@ export async function readRolloutSignals(
       return cached.signals;
     }
     if (file !== rolloutPath) {
+      const saved = !cached && rolloutTailPositions ? await savedRolloutTail(rolloutPath, stat, initialBytes, maxBytes, file, true).catch(() => null) : null;
+      if (saved) {
+        rolloutSignalCache.remember(cacheKey, { signature, signals: saved.signals, file, atMs: Date.now(), guard: saved.guard, compressed: true },
+          cacheScope, cacheLimit, codexCacheMetrics, 'rolloutSignalWrites', 'rolloutSignalEvictions');
+        codexCacheMetrics.rolloutSignalHits += 1;
+        return saved.signals;
+      }
       codexCacheMetrics.rolloutSignalMisses += 1;
-      // The whole log is parsed, as the full-history scan of a plain log. A failure is kept too, so an unchanged log is not read again.
-      // No saved position: positions need a tail read with guard bytes.
-      const signals = await readCompressedRolloutSignals(file)
-        .catch(() => Object.assign(parseRolloutSignals(''), { [ROLLOUT_UNREADABLE]: true }));
+      // The whole log is parsed, as the full-history scan of a plain log. A failure is kept in memory but has no saved position.
+      const result = await readCompressedRolloutSignals(file, stat)
+        .catch(() => ({ signals: Object.assign(parseRolloutSignals(''), { [ROLLOUT_UNREADABLE]: true }), guard: null }));
+      const signals = result.signals;
       delete signals[QUESTION_HISTORY_COMPLETE];
-      rolloutSignalCache.remember(cacheKey, { signature, signals, file }, cacheScope, cacheLimit, codexCacheMetrics,
-        'rolloutSignalWrites', 'rolloutSignalEvictions');
+      rolloutSignalCache.remember(cacheKey, { signature, signals, file, compressed: true,
+        ...(rolloutTailPositions && result.guard ? { atMs: Date.now(), guard: result.guard } : {}) },
+        cacheScope, cacheLimit, codexCacheMetrics, 'rolloutSignalWrites', 'rolloutSignalEvictions');
       return signals;
     }
     // With no result in memory, the saved result of an unchanged log is this result: no tail is read.

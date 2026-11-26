@@ -377,6 +377,36 @@ test('real linux watches follow a new directory, a file written into it at once,
   await until(dirty);
 });
 
+test('performance dashboard keeps the first load result fixed after success or error', async (t) => {
+  for (const fails of [false, true]) {
+    let loads = 0;
+    const snapshot = new DashboardSnapshot({
+      async loadDashboard() {
+        loads += 1;
+        if (fails && loads === 1) throw new Error('Made-up scan failure');
+        return { threads: [] };
+      },
+    });
+    const fields = (value) => ({ firstLoadMs: value.firstLoadMs, firstLoadDoneMs: value.firstLoadDoneMs,
+      firstLoadBytes: value.firstLoadBytes, firstLoadDecompressions: value.firstLoadDecompressions });
+    assert.deepEqual(fields(snapshot.performanceSnapshot().dashboard), {
+      firstLoadMs: null, firstLoadDoneMs: null, firstLoadBytes: null, firstLoadDecompressions: null,
+    });
+    if (fails) await assert.rejects(snapshot.loadSharedDashboard(), /Made-up scan failure/);
+    else await snapshot.loadSharedDashboard();
+    const first = fields(snapshot.performanceSnapshot().dashboard);
+    assert.equal(Number.isInteger(first.firstLoadMs), true);
+    assert.equal(Number.isInteger(first.firstLoadDoneMs), true);
+    assert.equal(typeof first.firstLoadDecompressions, 'number');
+    assert.equal(Number.isInteger(first.firstLoadDecompressions), true);
+    assert.equal(Object.keys(first.firstLoadBytes).join(','), 'codex,claude');
+    assert.equal(Number.isInteger(first.firstLoadBytes.codex), true);
+    assert.equal(Number.isInteger(first.firstLoadBytes.claude), true);
+    await snapshot.loadSharedDashboard({ force: true });
+    assert.deepEqual(fields(snapshot.performanceSnapshot().dashboard), first);
+  }
+});
+
 test('60 scans reuse list text only for equal ordered list fields', async (t) => {
   let value = { generatedAtMs: 1, threads: [{ id: 'a', state: 'working' }, { id: 'b', state: 'idle' }],
     providers: [{ id: 'codex', status: 'ready' }], summary: { total: 2 }, refreshIntervalMs: 2_000 };

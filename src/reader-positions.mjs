@@ -60,7 +60,8 @@ export function createReaderPositions({ file, key, platform = process.platform, 
   remoteCode = () => readerCodeHash('./claude-remote-data.mjs', './data-cache.mjs') } = {}) {
   let loading = null, hmacKey = null, off = false, written = '', writtenAtMs = null, write = Promise.resolve();
   // One section for each kind of saved result, in file order. Each has its own code hash, record checks, and limit of records.
-  // `codexTail` holds the tail signals of a Codex log that has not changed, and `remote` the cache entries that are not a session list.
+  // `codexTail` holds the tail signals of a plain Codex log or the whole-log signals of a compressed Codex log that has not changed.
+  // `remote` holds the cache entries that are not a session list.
   // `saved` holds the records that no reader took in this run, by key; `loaded` and `taken` are counts for the tests.
   const sections = [
     { name: 'codex', codeOf: codexCode, valid: validRolloutRecord, records: rolloutPositionRecords, use: useRolloutPositions },
@@ -146,7 +147,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     }
     const head = `{"version":${READER_POSITIONS_VERSION},"keyCheck":"${digest(KEY_CHECK)}"`;
     let bytes = head.length + 1 + sections.reduce((sum, section) => sum + section.name.length + section.code.length + 28, 0);
-    // The newest records of both sections share the file limit; each section keeps at most its own count.
+    // The newest records of all sections share the file limit; each section keeps at most its own count.
     for (const [section, record] of all.sort((a, b) => b[1].atMs - a[1].atMs)) {
       if (section.kept.length >= MAX_POSITION_RECORDS) continue;
       const text = JSON.stringify(record);

@@ -4852,6 +4852,35 @@ class SignalHelperChecks(unittest.TestCase):
         self.assertEqual(imported, [])
 
 
+class FirstCardTimingChecks(unittest.TestCase):
+    def test_process_start_ns_reads_the_boot_time_start_and_falls_back(self):
+        start = SCOPE["process_start_ns"]
+        # /proc/self/stat: the fields after the command name; the process start is field 22 (index 19 there).
+        stat = "1 (python) S " + " ".join(["0"] * 18 + ["12345", "0", "0"])
+        path = SimpleNamespace(read_text=lambda: stat)
+        fallback = SCOPE["BOARD_START_NS"]
+        with patch.dict(SCOPE, {"sys": SimpleNamespace(platform="linux"), "os": SimpleNamespace(sysconf=lambda _name: 100),
+                                "Path": Mock(return_value=path)}):
+            self.assertEqual(start(), 12345 * 10_000_000)
+        with patch.dict(SCOPE, {"sys": SimpleNamespace(platform="win32"), "Path": Mock(side_effect=OSError("gone"))}):
+            self.assertEqual(start(), fallback)
+        with patch.dict(SCOPE, {"sys": SimpleNamespace(platform="linux"), "os": SimpleNamespace(sysconf=lambda _name: 100),
+                                "Path": Mock(return_value=SimpleNamespace(read_text=lambda: "broken"))}):
+            self.assertEqual(start(), fallback)
+
+    def test_print_first_cards_time_prints_the_one_line_and_never_raises(self):
+        buffer = io.StringIO()
+        with patch.dict(SCOPE, {"time": SimpleNamespace(monotonic_ns=lambda: 10_500_000_000),
+                                "process_start_ns": lambda: 10_000_000_000}, clear=False), \
+                patch.object(sys, "stderr", buffer):
+            SCOPE["print_first_cards_time"]()
+        self.assertEqual(buffer.getvalue(), "ASB board: first cards 500 ms after start\n")
+        buffer = io.StringIO()
+        with patch.dict(SCOPE, {"process_start_ns": lambda: 1 / 0}), patch.object(sys, "stderr", buffer):
+            self.assertIsNone(SCOPE["print_first_cards_time"]())
+        self.assertEqual(buffer.getvalue(), "")
+
+
 class MachinesDialogChecks(unittest.TestCase):
     def editor(self):
         editor = object.__new__(SCOPE["MachinesEditor"])
