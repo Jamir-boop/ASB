@@ -657,7 +657,7 @@ async function readTailText(filePath, maxBytes = DEFAULT_MAX_JSONL_BYTES, fileSt
     const length = stat.size - start;
     if (length <= 0) return { text: '', offset: 0, guard: Buffer.alloc(0) };
 
-    const buffer = Buffer.alloc(length);
+    const buffer = Buffer.allocUnsafe(length);
     const { bytesRead } = await handle.read(buffer, 0, length, start);
     claudeCacheMetrics.jsonlSignalBytesRead += bytesRead;
     const bytes = buffer.subarray(0, bytesRead);
