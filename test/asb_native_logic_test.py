@@ -4853,30 +4853,55 @@ class SignalHelperChecks(unittest.TestCase):
 
 
 class FirstCardTimingChecks(unittest.TestCase):
-    def test_process_start_ns_reads_the_boot_time_start_and_falls_back(self):
-        start = SCOPE["process_start_ns"]
+    def setUp(self):
         # /proc/self/stat: the fields after the command name; the process start is field 22 (index 19 there).
-        stat = "1 (python) S " + " ".join(["0"] * 18 + ["12345", "0", "0"])
-        path = SimpleNamespace(read_text=lambda: stat)
-        fallback = SCOPE["BOARD_START_NS"]
-        with patch.dict(SCOPE, {"sys": SimpleNamespace(platform="linux"), "os": SimpleNamespace(sysconf=lambda _name: 100),
-                                "Path": Mock(return_value=path)}):
-            self.assertEqual(start(), 12345 * 10_000_000)
-        with patch.dict(SCOPE, {"sys": SimpleNamespace(platform="win32"), "Path": Mock(side_effect=OSError("gone"))}):
-            self.assertEqual(start(), fallback)
-        with patch.dict(SCOPE, {"sys": SimpleNamespace(platform="linux"), "os": SimpleNamespace(sysconf=lambda _name: 100),
-                                "Path": Mock(return_value=SimpleNamespace(read_text=lambda: "broken"))}):
-            self.assertEqual(start(), fallback)
+        self.stat = "1 (python) S " + " ".join(["0"] * 18 + ["12345", "0", "0"])
+        self.boottime = 7
+        self.boot_ns = 20_000_000_000_000
+        self.monotonic_ns = 1_500_000_000
+        self.clock = SimpleNamespace(CLOCK_BOOTTIME=self.boottime,
+                                     clock_gettime_ns=Mock(return_value=self.boot_ns),
+                                     monotonic_ns=Mock(return_value=self.monotonic_ns))
 
-    def test_print_first_cards_time_prints_the_one_line_and_never_raises(self):
+    def linux(self, stat=None):
+        # The real sys module stays (the line goes to its stderr); only platform and the read helpers change.
+        return patch.dict(SCOPE, {"os": SimpleNamespace(sysconf=lambda _name: 100),
+                                  "Path": Mock(return_value=SimpleNamespace(read_text=lambda: self.stat if stat is None else stat)),
+                                  "time": self.clock})
+
+    def test_linux_start_uses_the_boot_time_clock(self):
+        with self.linux(), patch.object(SCOPE["sys"], "platform", "linux"):
+            start, now = SCOPE["first_cards_clock_pair"]()
+        self.assertEqual(start, 12345 * 10_000_000)
+        self.assertEqual(now(), self.boot_ns)
+        self.clock.clock_gettime_ns.assert_called_once_with(self.boottime)
+
+    def test_bad_proc_read_falls_back_to_the_monotonic_pair(self):
+        for system in ("linux", "win32"):
+            with self.subTest(system=system), self.linux("broken"), \
+                    patch.object(SCOPE["sys"], "platform", system):
+                start, now = SCOPE["first_cards_clock_pair"]()
+                self.assertEqual(start, SCOPE["BOARD_START_NS"])
+                self.assertEqual(now(), self.monotonic_ns)
+
+    def test_print_first_cards_time_uses_the_matching_clock(self):
         buffer = io.StringIO()
-        with patch.dict(SCOPE, {"time": SimpleNamespace(monotonic_ns=lambda: 10_500_000_000),
-                                "process_start_ns": lambda: 10_000_000_000}, clear=False), \
-                patch.object(sys, "stderr", buffer):
+        with self.linux(), patch.object(SCOPE["sys"], "platform", "linux"), patch.object(sys, "stderr", buffer):
             SCOPE["print_first_cards_time"]()
-        self.assertEqual(buffer.getvalue(), "ASB board: first cards 500 ms after start\n")
+        # The fake boottime clock is ahead of the process start, while monotonic is behind it. A base mix would clamp to 0.
+        self.assertEqual(buffer.getvalue(), f"ASB board: first cards {(self.boot_ns - 12345 * 10_000_000) // 1_000_000} ms after start\n")
+        self.clock.clock_gettime_ns.assert_called_once_with(self.boottime)
+
         buffer = io.StringIO()
-        with patch.dict(SCOPE, {"process_start_ns": lambda: 1 / 0}), patch.object(sys, "stderr", buffer):
+        with self.linux("broken"), patch.object(SCOPE["sys"], "platform", "linux"), patch.object(sys, "stderr", buffer):
+            SCOPE["print_first_cards_time"]()
+        fallback_start = SCOPE["BOARD_START_NS"]
+        elapsed = max(0, (self.monotonic_ns - fallback_start) // 1_000_000)
+        self.assertEqual(buffer.getvalue(), f"ASB board: first cards {elapsed} ms after start\n")
+
+    def test_print_first_cards_time_never_raises(self):
+        buffer = io.StringIO()
+        with patch.dict(SCOPE, {"first_cards_clock_pair": lambda: 1 / 0}), patch.object(sys, "stderr", buffer):
             self.assertIsNone(SCOPE["print_first_cards_time"]())
         self.assertEqual(buffer.getvalue(), "")
 

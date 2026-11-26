@@ -28,21 +28,25 @@ LOCAL_HTTP = build_opener(ProxyHandler({}))
 BOARD_START_NS = time.monotonic_ns()
 
 
-def process_start_ns():
-    """Linux process start in the CLOCK_BOOTTIME time base, else the import monotonic time."""
-    try:
-        fields = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
-        ticks = int(fields[19])
-        return ticks * 1_000_000_000 // os.sysconf("SC_CLK_TCK") if sys.platform.startswith("linux") else BOARD_START_NS
-    except (OSError, ValueError, IndexError, ZeroDivisionError):
-        return BOARD_START_NS
+def first_cards_clock_pair():
+    """The process start and a clock reader in the same time base, with a monotonic fallback."""
+    boottime = getattr(time, "CLOCK_BOOTTIME", None)
+    if sys.platform.startswith("linux") and boottime is not None:
+        try:
+            fields = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+            ticks = int(fields[19])
+            start = ticks * 1_000_000_000 // os.sysconf("SC_CLK_TCK")
+            return start, functools.partial(time.clock_gettime_ns, boottime)
+        except (OSError, ValueError, IndexError, ZeroDivisionError):
+            pass
+    return BOARD_START_NS, time.monotonic_ns
 
 
 def print_first_cards_time():
     """The one timing line for the first frame that has cards, never an error."""
     try:
-        print(f"ASB board: first cards {max(0, (time.monotonic_ns() - process_start_ns()) // 1_000_000)} ms after start",
-              file=sys.stderr)
+        start, now = first_cards_clock_pair()
+        print(f"ASB board: first cards {max(0, (now() - start) // 1_000_000)} ms after start", file=sys.stderr)
     except Exception:
         pass
 
