@@ -13,6 +13,11 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Engine: each kind of reader positions record has its own format version, so an ASB update keeps the saved positions unless a record format changed. The first engine after this update reads all logs once.
 - Launcher: `asb` loads the engine code only when it must start the engine, so showing an open board starts faster.
 - Claude: a kept sender ID of a message from another session no longer keeps the whole message text in memory.
+- Engine: `performance.positions` reports the last reader positions save (file bytes and, for each section, the records written and the records dropped by the record count, record size, or 8 MiB file limit). When records do not fit the file, the engine logs it once for each new total.
+- Engine: a Claude tail record saves its second part as `"state"` when it equals the first, so the positions file is smaller (36% on the test data); records of the earlier layout still load.
+- Engine: the engine keeps no copy of the positions file text after a save, checks a saved record only when a reader takes it, and starts loading the positions right after the machine identity is ready.
+- Codex: one read of a Codex or ASB Bridge database opens it once, not once for each statement.
+- Board: a saved list shows its age when it is older than 60 s, and a failed refresh keeps `Reading sessions…` visible while the rows are a saved list.
 
 ## ASB 1.18.0 - 2026-11-25
 
