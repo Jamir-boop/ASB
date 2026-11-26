@@ -14,15 +14,18 @@ const minute = 60 * 1000;
 const hour = 60 * minute;
 const SESSION_COLUMNS = ['id', 'project_id', 'parent_id', 'slug', 'directory', 'title', 'time_created', 'time_updated',
   'time_archived', 'time_suspended', 'time_idle', 'time_viewed', 'idle_outcome'];
+const PART_COLUMNS = ['message_id', 'session_id', 'ordinal', 'type', 'call_id', 'time_created', 'time_updated', 'data'];
 const SECRET = 'fake-token-do-not-read';
 const PROMPT = 'private prompt text';
 
-function createDatabase(databasePath, { sessionColumns = SESSION_COLUMNS, session = true, wal = false } = {}) {
+function createDatabase(databasePath, { sessionColumns = SESSION_COLUMNS, session = true, parts = false,
+  partColumns = PART_COLUMNS, wal = false } = {}) {
   const database = new DatabaseSync(databasePath);
   if (wal) database.exec('pragma journal_mode = wal');
   if (session) database.exec(`create table session_v2 (${sessionColumns.map((name) => `${name} ${name.startsWith('time_') ? 'integer' : 'text'}`).join(', ')})`);
   database.exec(`create table session_message (id text, session_id text, type text, seq integer, time_created integer,
     time_updated integer, data text)`);
+  if (parts) database.exec(`create table session_part (${partColumns.map((name) => `${name} ${name.startsWith('time_') ? 'integer' : 'text'}`).join(', ')})`);
   database.exec('create table account (id text, access_token text)');
   database.prepare('insert into account values (?, ?)').run('acc_1', SECRET);
   return database;
@@ -103,7 +106,7 @@ test('OpenCode roots map to threads and rows with states, outcomes, unread, arch
   // Only the background count query and the quota query read message data, inside SQLite: they return IDs, kinds, counts,
   // and one error type.
   for (const text of sql) assert.doesNotMatch(text, /\b(?:account|control_account|credential|kv)\b/i);
-  for (const text of sql.filter((text) => !/^select coalesce\(s\.parent_id, s\.id\) as root, 'commands' as kind, count\(\*\) as n, min\(m\.time_created\) as started\s/.test(text)
+  for (const text of sql.filter((text) => !/^with tool_parts as \(/.test(text)
     && !/^select s\.id as id, json_extract\(case when json_valid\(m\.data\) then m\.data end, '\$\.error\.type'\) as error_type\s/.test(text))) {
     assert.doesNotMatch(text, /\bdata\b/i);
   }
@@ -171,6 +174,67 @@ test('OpenCode rows count open background shells and busy background subagents',
     .map((row) => [row.id, [row.backgroundCommands, row.backgroundAgents]]));
   assert.deepEqual(counts, { ses_main: [3, 1], ses_quiet: [1, undefined], ses_old: [undefined, undefined] });
   assert.equal(JSON.stringify(threads).includes(PROMPT), false);
+});
+
+test('OpenCode counts background agents and shells from session_part tool rows', async (t) => {
+  invalidateOpenCodeData();
+  const { dataDir, databasePath } = await fixture(t);
+  const database = createDatabase(databasePath, { parts: true });
+  const shell = (shellID) => ({ type: 'tool', id: `call_${shellID}`, name: 'shell',
+    state: { status: 'completed', input: { command: PROMPT }, metadata: { shellID, status: 'running' } } });
+  const subagent = (sessionID) => ({ type: 'tool', id: `call_${sessionID}`, name: 'subagent',
+    state: { status: 'completed', input: { agent: 'build', description: PROMPT, prompt: PROMPT },
+      metadata: { sessionID, status: 'running' } } });
+  let seq = 0;
+  const part = (sessionId, value, atMs = now - minute) => database.prepare(`insert into session_part
+    (message_id, session_id, ordinal, type, call_id, time_created, time_updated, data) values (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(`msg_${seq += 1}`, sessionId, seq, 'tool', `call_${seq}`, atMs, atMs,
+      typeof value === 'string' ? value : JSON.stringify(value));
+  const end = (sessionId, shellID) => database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
+    .run(`msg_end_${shellID}`, sessionId, 'synthetic', seq += 1, now - minute, now - minute,
+      JSON.stringify({ metadata: { source: 'shell', shellID } }));
+  addSession(database, { ...base, id: 'ses_main', title: 'Main', time_idle: now - hour });
+  addSession(database, { ...base, id: 'ses_shell', title: 'Shell', time_idle: now - hour });
+  addSession(database, { ...base, id: 'ses_none', title: 'No busy child', time_idle: now - hour });
+  addSession(database, { ...base, id: 'ses_busy', parent_id: 'ses_main', time_suspended: now - minute });
+  addSession(database, { ...base, id: 'ses_idle', parent_id: 'ses_none', time_idle: now - minute });
+  part('ses_main', subagent('ses_busy'));
+  part('ses_main', subagent('ses_idle'));
+  part('ses_shell', shell('sh_open'));
+  part('ses_shell', shell('sh_ended'));
+  end('ses_shell', 'sh_ended');
+  part('ses_shell', shell('sh_old'), now - 25 * hour);
+  part('ses_shell', '{"type":"tool","name":"shell","state":{"metadata":{"shellID":"sh_bad"');
+  database.close();
+  const { threads } = await loadOpenCodeDashboard({ dataDir, nowMs: now });
+  const byId = Object.fromEntries(threads.map((row) => [row.id, row]));
+  assert.equal(byId.ses_main.backgroundAgents, 1);
+  assert.equal(byId.ses_shell.backgroundCommands, 1);
+  assert.equal('backgroundAgents' in byId.ses_none, false);
+  assert.equal('backgroundCommands' in byId.ses_none, false);
+  assert.equal(JSON.stringify(threads).includes(PROMPT), false);
+  invalidateOpenCodeData();
+});
+
+test('OpenCode uses old message parts when session_part is absent or lacks a used column', async (t) => {
+  const old = { type: 'tool', id: 'call_old', name: 'subagent', state: { status: 'running',
+    input: { prompt: PROMPT, background: true }, metadata: { sessionID: 'ses_busy' } } };
+  const shell = { type: 'tool', id: 'call_shell', name: 'shell', state: { status: 'completed',
+    input: { command: PROMPT }, metadata: { shellID: 'sh_old', status: 'running' } } };
+  for (const parts of [false, true]) {
+    invalidateOpenCodeData();
+    const { dataDir, databasePath } = await fixture(t);
+    const database = createDatabase(databasePath, { parts, partColumns: parts ? PART_COLUMNS.filter((name) => name !== 'time_created') : PART_COLUMNS });
+    addSession(database, { ...base, id: 'ses_main', title: 'Main', time_idle: now - hour });
+    addSession(database, { ...base, id: 'ses_busy', parent_id: 'ses_main', time_suspended: now - minute });
+    database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
+      .run('msg_old', 'ses_main', 'assistant', 1, now - minute, now - minute, JSON.stringify({ content: [old, shell] }));
+    database.close();
+    const { threads } = await loadOpenCodeDashboard({ dataDir, nowMs: now });
+    assert.equal(threads[0].backgroundAgents, 1);
+    assert.equal(threads[0].backgroundCommands, 1);
+  }
+  invalidateOpenCodeData();
 });
 
 test('OpenCode background counts end 24 hours after the earliest counted start with no database change', async (t) => {
