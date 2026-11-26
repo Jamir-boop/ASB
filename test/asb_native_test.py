@@ -9786,6 +9786,8 @@ class WidgetCheck(unittest.TestCase):
         self.assertIs(window.no_open_toast, shown)
 
     def test_no_open_toast_dismisses_on_another_card_focus_click_or_board_scroll(self):
+        # The real clicks below move the pointer; a pointer left on a card hovers the next test's window there.
+        self.addCleanup(subprocess.run, ["xdotool", "mousemove", "9999", "9999"], check=True)
         asb.gi.require_version("GdkX11", "4.0")
         from gi.repository import GdkX11
         row = self.card_row("cli", canOpen=False, surface="cli")
