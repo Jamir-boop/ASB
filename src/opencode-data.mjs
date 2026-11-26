@@ -144,7 +144,8 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
             and (instr(m.data, '"shellID"') > 0 or instr(m.data, '"sessionID"') > 0)
             and json_extract(t.value, '$.type') = 'tool'
           ${partSource})
-          select root, 'commands' as kind, count(*) as n, min(started) as started from tool_parts p
+          select root, 'commands' as kind, count(distinct json_extract(p.value, '$.state.metadata.shellID')) as n, min(started) as started
+          from tool_parts p
           where json_extract(p.value, '$.name') = 'shell'
             and json_extract(p.value, '$.state.status') = 'completed' and json_extract(p.value, '$.state.metadata.status') = 'running'
             and json_extract(p.value, '$.state.metadata.shellID') is not null
@@ -157,7 +158,7 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
           from session_v2 c join tool_parts p on p.session_id = c.parent_id
           where c.parent_id is not null and c.time_suspended is not null
             and json_extract(p.value, '$.name') = 'subagent'
-            and (json_extract(p.value, '$.state.metadata.status') = 'running'
+            and ((json_extract(p.value, '$.state.status') = 'completed' and json_extract(p.value, '$.state.metadata.status') = 'running')
               or json_extract(p.value, '$.state.input.background') = 1)
             and json_extract(p.value, '$.state.metadata.sessionID') = c.id
           group by c.parent_id;`),

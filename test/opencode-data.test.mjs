@@ -201,7 +201,15 @@ test('OpenCode counts background agents and shells from session_part tool rows',
   part('ses_main', subagent('ses_busy'));
   part('ses_main', subagent('ses_busy'), now - 2 * minute); // a resumed subagent: one child, two parts
   part('ses_main', subagent('ses_idle'));
+  // A foreground subagent that runs now: state.status running, so its busy child does not count.
+  addSession(database, { ...base, id: 'ses_fg', title: 'Foreground', time_idle: now - hour });
+  addSession(database, { ...base, id: 'ses_fg_child', parent_id: 'ses_fg', time_suspended: now - minute });
+  const foreground = subagent('ses_fg_child');
+  part('ses_fg', { ...foreground, state: { ...foreground.state, status: 'running' } });
   part('ses_shell', shell('sh_open'));
+  // The same shell also in the message content (a database that OpenCode moved to 2.4): it counts once.
+  database.prepare('insert into session_message values (?, ?, ?, ?, ?, ?, ?)')
+    .run('msg_both', 'ses_shell', 'assistant', seq += 1, now - minute, now - minute, JSON.stringify({ content: [shell('sh_open')] }));
   part('ses_shell', shell('sh_ended'));
   end('ses_shell', 'sh_ended');
   part('ses_shell', shell('sh_old'), now - 25 * hour);
@@ -213,6 +221,7 @@ test('OpenCode counts background agents and shells from session_part tool rows',
   assert.equal(byId.ses_shell.backgroundCommands, 1);
   assert.equal('backgroundAgents' in byId.ses_none, false);
   assert.equal('backgroundCommands' in byId.ses_none, false);
+  assert.equal('backgroundAgents' in byId.ses_fg, false);
   assert.equal(JSON.stringify(threads).includes(PROMPT), false);
   invalidateOpenCodeData();
 });
