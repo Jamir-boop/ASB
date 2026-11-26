@@ -9,6 +9,7 @@ const SCHEMA_WARNING = 'ASB reads OpenCode 2 sessions only. Update OpenCode.';
 const SESSION_COLUMNS = ['id', 'parent_id', 'title', 'slug', 'directory', 'time_created', 'time_updated',
   'time_suspended', 'time_idle', 'idle_outcome', 'time_viewed', 'time_archived'];
 const MESSAGE_COLUMNS = ['session_id', 'type', 'time_created', 'data'];
+const PART_COLUMNS = ['session_id', 'type', 'time_created', 'data'];
 // shortcut: only background shells and subagents started in the last 24 hours count, so the query reads few rows and a shell of an
 // OpenCode that quit stops counting after a day; widen it if longer background work matters.
 const BACKGROUND_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -46,11 +47,15 @@ const time = (value) => value == null ? null : Number(value);
 
 async function schemaReady(databasePath, query) {
   const tables = new Set((await query(databasePath,
-    "select name from sqlite_master where type = 'table' and name in ('session_v2', 'session_message');")).map((row) => row.name));
-  if (!tables.has('session_v2') || !tables.has('session_message')) return false;
+    "select name from sqlite_master where type = 'table' and name in ('session_v2', 'session_message', 'session_part');")).map((row) => row.name));
+  if (!tables.has('session_v2') || !tables.has('session_message')) return { ready: false, parts: false };
   const columns = async (table) => new Set((await query(databasePath, `pragma table_info(${table});`)).map((row) => row.name));
-  const [session, message] = await Promise.all([columns('session_v2'), columns('session_message')]);
-  return SESSION_COLUMNS.every((name) => session.has(name)) && MESSAGE_COLUMNS.every((name) => message.has(name));
+  const [session, message, part] = await Promise.all([columns('session_v2'), columns('session_message'),
+    tables.has('session_part') ? columns('session_part') : Promise.resolve(null)]);
+  return {
+    ready: SESSION_COLUMNS.every((name) => session.has(name)) && MESSAGE_COLUMNS.every((name) => message.has(name)),
+    parts: part != null && PART_COLUMNS.every((name) => part.has(name)),
+  };
 }
 
 function openCodeThread(row, subagents, activity, background = {}, quotaStop = false) {
@@ -104,11 +109,18 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
   let result = cached?.signature === signature && nowMs < cached.untilMs ? cached.result : null;
   let untilMs = Infinity;
   if (!result) {
-    if (!(await schemaReady(databasePath, query))) {
+    const schema = await schemaReady(databasePath, query);
+    if (!schema.ready) {
       result = { generatedAtMs: nowMs, provider: { installed: true, status: 'warning', message: SCHEMA_WARNING }, threads: [] };
     } else {
       const limit = Math.min(Math.max(Number.parseInt(maxCount, 10) || MAX_THREADS, 1), MAX_THREADS);
       const since = Math.floor(nowMs - BACKGROUND_WINDOW_MS);
+      const partSource = schema.parts ? `union all
+          select p.session_id, coalesce(s.parent_id, s.id) as root, p.time_created as started,
+            case when json_valid(p.data) then p.data end as value
+          from session_part p join session_v2 s on s.id = p.session_id
+          where p.time_created >= ${since} and p.type = 'tool'
+            and (instr(p.data, '"shellID"') > 0 or instr(p.data, '"sessionID"') > 0)` : '';
       const [roots, subagentRows, activityRows, backgroundRows, quotaRows] = await Promise.all([
         query(databasePath, `select id, title, slug, directory, time_created, time_updated,
           time_suspended, time_idle, idle_outcome, time_viewed, time_archived
@@ -121,28 +133,34 @@ export async function loadOpenCodeDashboard({ dataDir, stateDir = '', nowMs = Da
         // Background shells (a completed shell tool part whose metadata status is running and that has a shell ID, with no
         // synthetic shell end of that ID: OpenCode also moves a long foreground shell to the background with no input background)
         // and busy background subagents (a child session with time_suspended, the busy column of the roots, that a subagent tool
-        // part of its parent started with input background), as counts per parent session with the earliest counted start,
+        // part of its parent has metadata status running or input background), as counts per parent session with the earliest counted start,
         // never text. A message that is not valid JSON gives null to the JSON functions, so it cannot fail the load.
         // shortcut: ASB does not know whether OpenCode runs, so a shell of an OpenCode that quit with no end record counts until
         // the 24-hour window passes; gate the counts by a live OpenCode signal when ASB gets one.
-        query(databasePath, `select coalesce(s.parent_id, s.id) as root, 'commands' as kind, count(*) as n, min(m.time_created) as started
+        query(databasePath, `with tool_parts as (
+          select m.session_id, coalesce(s.parent_id, s.id) as root, m.time_created as started, t.value
           from session_message m join session_v2 s on s.id = m.session_id, json_each(${validJson('m.data')}, '$.content') t
-          where m.time_created >= ${since} and m.type = 'assistant' and instr(m.data, '"shellID"') > 0
-            and json_extract(t.value, '$.type') = 'tool' and json_extract(t.value, '$.name') = 'shell'
-            and json_extract(t.value, '$.state.status') = 'completed' and json_extract(t.value, '$.state.metadata.status') = 'running'
-            and json_extract(t.value, '$.state.metadata.shellID') is not null
-            and not exists (select 1 from session_message e where e.session_id = m.session_id and e.type = 'synthetic'
+          where m.time_created >= ${since} and m.type = 'assistant'
+            and (instr(m.data, '"shellID"') > 0 or instr(m.data, '"sessionID"') > 0)
+            and json_extract(t.value, '$.type') = 'tool'
+          ${partSource})
+          select root, 'commands' as kind, count(*) as n, min(started) as started from tool_parts p
+          where json_extract(p.value, '$.name') = 'shell'
+            and json_extract(p.value, '$.state.status') = 'completed' and json_extract(p.value, '$.state.metadata.status') = 'running'
+            and json_extract(p.value, '$.state.metadata.shellID') is not null
+            and not exists (select 1 from session_message e where e.session_id = p.session_id and e.type = 'synthetic'
               and instr(e.data, '"shellID"') > 0 and json_extract(${validJson('e.data')}, '$.metadata.source') = 'shell'
-              and json_extract(${validJson('e.data')}, '$.metadata.shellID') = json_extract(t.value, '$.state.metadata.shellID'))
-          group by coalesce(s.parent_id, s.id)
+              and json_extract(${validJson('e.data')}, '$.metadata.shellID') = json_extract(p.value, '$.state.metadata.shellID'))
+          group by root
           union all
-          select root, 'agents' as kind, count(*) as n, min(started) as started from (
-            select c.parent_id as root, (select min(p.time_created) from session_message p, json_each(${validJson('p.data')}, '$.content') u
-              where p.session_id = c.parent_id and p.time_created >= ${since} and p.type = 'assistant' and instr(p.data, c.id) > 0
-                and json_extract(u.value, '$.type') = 'tool' and json_extract(u.value, '$.name') = 'subagent'
-                and json_extract(u.value, '$.state.input.background') = 1 and json_extract(u.value, '$.state.metadata.sessionID') = c.id) as started
-            from session_v2 c where c.parent_id is not null and c.time_suspended is not null)
-          where started is not null group by root;`),
+          select c.parent_id as root, 'agents' as kind, count(distinct c.id) as n, min(p.started) as started
+          from session_v2 c join tool_parts p on p.session_id = c.parent_id
+          where c.parent_id is not null and c.time_suspended is not null
+            and json_extract(p.value, '$.name') = 'subagent'
+            and (json_extract(p.value, '$.state.metadata.status') = 'running'
+              or json_extract(p.value, '$.state.input.background') = 1)
+            and json_extract(p.value, '$.state.metadata.sessionID') = c.id
+          group by c.parent_id;`),
         // The error type of the newest assistant message of a failed idle root, never text: `provider.quota` is a usage-limit stop.
         // A later run sets time_suspended or a new idle outcome, so the stop clears.
         query(databasePath, `select s.id as id, json_extract(${validJson('m.data')}, '$.error.type') as error_type
