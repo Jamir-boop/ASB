@@ -782,6 +782,10 @@ function validRolloutLifecycle(life) {
     && life.limitWindows.every((window) => Array.isArray(window) && window.length === 2 && window.every(finiteNumber));
 }
 
+// Raise this when the meaning of a saved field or the reader rules that produced it change; a code edit that keeps both does not
+// raise it.
+export const CODEX_POSITION_VERSION = 'codex-1';
+
 // The checks of one saved record at save and at load: numbers, booleans, fixed kinds, and IDs, never text or paths.
 // reader-positions.mjs checks `k`, `guard`, and `atMs`.
 export function validRolloutRecord(record) {
@@ -809,6 +813,10 @@ export function rolloutPositionRecords() {
   }
   return records;
 }
+
+// Raise this when the meaning of a saved field or the reader rules that produced it change; a code edit that keeps both does not
+// raise it.
+export const CODEX_TAIL_POSITION_VERSION = 'codex-tail-1';
 
 // The checks of one saved tail result: the lifecycle and the other fields of the signals, with no text. The record is used only for a log with
 // the same file signature, the same tail limits, and the same guard bytes.

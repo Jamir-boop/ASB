@@ -1103,35 +1103,68 @@ async function readSignalsForFile(filePath, options = {}) {
   finally { if (claudeSignalReads.get(key) === read) claudeSignalReads.delete(key); }
 }
 
-// Reader positions on disk (src/reader-positions.mjs), only for transcripts larger than the tail. Only the engine sets them;
-// without them the reader keeps all state in memory. A record holds the committed lifecycle, never the text fields of the tail.
+// Reader positions on disk (src/reader-positions.mjs). Only the engine sets them; without them the reader keeps all state in
+// memory. The `claude` record holds the committed lifecycle of a transcript larger than the tail. The `claudeTail` record holds
+// the tail result of a transcript of any size: the same state, with the row fields (folder, titles, model, version, entrypoint,
+// agent name, branch) and the pending tools as IDs, names, and times. No record holds message text, question text, a prompt, or
+// tool text.
 const CLAUDE_POSITION_ID_RE = /^[A-Za-z0-9_:-]{1,160}$/;
 const CLAUDE_POSITION_KINDS = new Set(['', 'task_started', 'task_complete', 'failed', 'cancelled']);
 const CLAUDE_AGENT_KINDS = new Set(['', 'task_complete', 'failed', 'cancelled']);
 const CLAUDE_POSITION_KEYS = ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'k', 'lifecycle', 'mtimeMs', 'offset', 'size'].join();
+const CLAUDE_TAIL_KEYS = ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'k', 'maxBytes', 'mtimeMs', 'offset', 'signals',
+  'size', 'state'].join();
+const CLAUDE_TAIL_FIELDS = ['agentName', 'customTitle', 'cwd', 'entrypoint', 'gitBranch', 'model', 'sessionId', 'version'];
+const CLAUDE_TAIL_TIMES = ['latestAgentFinalAtMs', 'latestEventAtMs', 'latestUserMessageAtMs', 'oldestEventAtMs'];
+const CLAUDE_TAIL_LONG = new Set(['cwd', 'customTitle']);
+const CLAUDE_BAD_TEXT_CHAR = /[\x00-\x1f\x7f-\x9f\p{Cf}\u2028\u2029]/u;
 const CLAUDE_LIFECYCLE_KEYS = Object.keys(initialClaudeLifecycle()).sort().join();
 const CLAUDE_LIFECYCLE_TIMES = ['startedAtMs', 'promptStartedAtMs', 'activityAtMs', 'eventAtMs', 'finalAtMs', 'endedAtMs', 'limitResetsAtMs'];
 let claudePositions = null;
+let claudeTailPositions = null;
 
 // `source` is { take(filePath) -> saved record or null, digest(bytes) -> hex }, or null to turn the positions off.
 export function useClaudePositions(source) {
   claudePositions = source;
 }
 
+// The same for the saved tail results of unchanged transcripts.
+export function useClaudeTailPositions(source) {
+  claudeTailPositions = source;
+}
+
 const finiteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
 const count = (value) => Number.isInteger(value) && value >= 0;
 const positionId = (value) => typeof value === 'string' && CLAUDE_POSITION_ID_RE.test(value);
+const toolName = (value) => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(value) && !CLAUDE_BAD_TEXT_CHAR.test(value);
 const rows = (value, length, check) => Array.isArray(value) && value.every((row) => Array.isArray(row) && row.length === length && check(row))
   && new Set(value.map((row) => row[0])).size === value.length;
+// A row field: a string with no control or hidden character, at most 1024 characters for a folder or a title and 200 for the rest.
+const rowField = (name, value) => typeof value === 'string' && value.length <= (CLAUDE_TAIL_LONG.has(name) ? 1024 : 200)
+  && !CLAUDE_BAD_TEXT_CHAR.test(value);
 
-// The checks of one saved record at save and at load: numbers, booleans, fixed kinds, and IDs, never text or paths.
-// reader-positions.mjs checks `k`, `guard`, and `atMs`.
-export function validClaudeRecord(record) {
-  if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== CLAUDE_POSITION_KEYS) return false;
-  if (![record.dev, record.ino, record.size, record.offset, record.guardBytes].every(count) || record.offset > record.size
-    || record.guardBytes !== Math.min(CLAUDE_APPEND_GUARD_BYTES, record.size) || !finiteNumber(record.mtimeMs)
-    || !finiteNumber(record.ctimeMs)) return false;
-  const life = record.lifecycle;
+function decodeClaudeTailSignals(part) {
+  const value = { ...part.fields, ...part.times, lifecycle: decodeClaudeLifecycle(part.lifecycle), pendingToolAtMs: part.pendingToolAtMs };
+  value.pendingToolsById = new Map(part.pending.map(([id, tool, signalAtMs]) => [id,
+    { id, tool, title: toolUseTitle({ name: tool }), status: 'pending', kind: 'permission', signalAtMs }]));
+  return value;
+}
+
+// The lifecycle in the plain form of a saved record: numbers, booleans, fixed kinds, and rows of IDs and times.
+function encodeClaudeLifecycle(life) {
+  return { running: life.running, startedAtMs: life.startedAtMs, promptStartedAtMs: life.promptStartedAtMs,
+    activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
+    endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
+    agents: [...life.agents].map(([id, agent]) => [id, agent.launchedAtMs, agent.startedAtMs, agent.requestStartedAtMs,
+      agent.endedAtMs, agent.kind, agent.runId ?? null, agent.stoppedAtMs]),
+    agentTools: [...life.agentTools].map(([id, tool]) => [id, tool.startedAtMs, tool.requestStartedAtMs, tool.workflow ? 1 : 0]),
+    wrapUps: [...life.wrapUps].map(([id, ask]) => [id, ask ? 1 : 0]),
+    shells: [...life.shells].map(([id, shell]) => [id, shell.startedAtMs, shell.deadlineMs]),
+    shellEnds: [...life.shellEnds],
+    messages: life.messages.map((message) => [message.from, message.atMs]) };
+}
+
+function checkClaudeLifecycle(life) {
   return Boolean(life) && typeof life === 'object' && Object.keys(life).sort().join() === CLAUDE_LIFECYCLE_KEYS
     && [true, false, null].includes(life.running) && CLAUDE_LIFECYCLE_TIMES.every((name) => finiteNumber(life[name]))
     && CLAUDE_POSITION_KINDS.has(life.kind) && CLAUDE_POSITION_KINDS.has(life.endKind)
@@ -1147,6 +1180,35 @@ export function validClaudeRecord(record) {
     && life.messages.every((message) => Array.isArray(message) && message.length === 2 && positionId(message[0]) && finiteNumber(message[1]));
 }
 
+// New objects, so the cache entry never shares state with the record or with the map in memory.
+function decodeClaudeLifecycle(life) {
+  return { running: life.running, startedAtMs: life.startedAtMs, promptStartedAtMs: life.promptStartedAtMs,
+    activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
+    endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
+    agents: new Map(life.agents.map(([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId, stoppedAtMs]) => [id,
+      { launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, stoppedAtMs, ...(runId === null ? {} : { runId }) }])),
+    agentTools: new Map(life.agentTools.map(([id, startedAtMs, requestStartedAtMs, workflow]) => [id,
+      { startedAtMs, requestStartedAtMs, workflow: workflow === 1 }])),
+    wrapUps: new Map(life.wrapUps.map(([id, ask]) => [id, ask === 1])),
+    shells: new Map(life.shells.map(([id, startedAtMs, deadlineMs]) => [id, { startedAtMs, deadlineMs }])),
+    shellEnds: new Map(life.shellEnds),
+    messages: life.messages.map(([from, atMs]) => ({ from, atMs })) };
+}
+
+// Raise this when the meaning of a saved field or the reader rules that produced it change; a code edit that keeps both does not
+// raise it.
+export const CLAUDE_POSITION_VERSION = 'claude-1';
+
+// The checks of one saved record at save and at load: numbers, booleans, fixed kinds, and IDs, never text or paths.
+// reader-positions.mjs checks `k`, `guard`, and `atMs`.
+export function validClaudeRecord(record) {
+  if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== CLAUDE_POSITION_KEYS) return false;
+  if (![record.dev, record.ino, record.size, record.offset, record.guardBytes].every(count) || record.offset > record.size
+    || record.guardBytes !== Math.min(CLAUDE_APPEND_GUARD_BYTES, record.size) || !finiteNumber(record.mtimeMs)
+    || !finiteNumber(record.ctimeMs)) return false;
+  return checkClaudeLifecycle(record.lifecycle);
+}
+
 // The lifecycle checkpoints of large transcripts, as plain records with the raw guard bytes (memory only). Map order is kept,
 // because rememberBounded evicts by insertion order. Two tail limits of one file give one record: the larger offset.
 export function claudePositionRecords() {
@@ -1157,53 +1219,105 @@ export function claudePositionRecords() {
     if (!entry.state || !Buffer.isBuffer(entry.guard) || !finiteNumber(entry.atMs)
       || !(entry.signature.size > Number(cacheKey.slice(split + 1)))) continue;
     if (byPath.get(filePath)?.offset >= entry.offset) continue;
-    const life = entry.state.lifecycle;
     const { signature } = entry;
     byPath.set(filePath, { atMs: entry.atMs, dev: signature.dev, ino: signature.ino, size: signature.size,
       mtimeMs: signature.mtimeMs, ctimeMs: signature.ctimeMs, offset: entry.offset, guard: entry.guard, guardBytes: entry.guard.length,
-      lifecycle: { running: life.running, startedAtMs: life.startedAtMs, promptStartedAtMs: life.promptStartedAtMs,
-        activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
-        endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
-        agents: [...life.agents].map(([id, agent]) => [id, agent.launchedAtMs, agent.startedAtMs, agent.requestStartedAtMs,
-          agent.endedAtMs, agent.kind, agent.runId ?? null, agent.stoppedAtMs]),
-        agentTools: [...life.agentTools].map(([id, tool]) => [id, tool.startedAtMs, tool.requestStartedAtMs, tool.workflow ? 1 : 0]),
-        wrapUps: [...life.wrapUps].map(([id, ask]) => [id, ask ? 1 : 0]),
-        shells: [...life.shells].map(([id, shell]) => [id, shell.startedAtMs, shell.deadlineMs]),
-        shellEnds: [...life.shellEnds],
-        messages: life.messages.map((message) => [message.from, message.atMs]) } });
+      lifecycle: encodeClaudeLifecycle(entry.state.lifecycle) });
   }
   return [...byPath];
 }
 
-// A saved lifecycle for a transcript with no state in memory, after the full-read checks of the design (section 3, rules 2-6).
-// It returns new objects, so the cache entry made from it never shares state with the record.
-async function savedClaudePosition(filePath, stat) {
-  const record = claudePositions.take(filePath);
-  const now = statSignature(stat);
-  if (!record || !validClaudeRecord(record) || record.dev !== now.dev || record.ino !== now.ino || now.size < record.size
-    || (now.size === record.size && (record.mtimeMs !== now.mtimeMs || record.ctimeMs !== now.ctimeMs))) return null;
-  const guard = Buffer.alloc(record.guardBytes);
+// Raise this when the meaning of a saved field or the reader rules that produced it change; a code edit that keeps both does not
+// raise it.
+export const CLAUDE_TAIL_POSITION_VERSION = 'claude-tail-1';
+
+// The checks of one saved tail result: the state before the last partial line, and the visible result of a full read of the tail.
+// Both hold only the row fields, the times, and the pending tools as IDs, names, and times. reader-positions.mjs checks `k`,
+// `guard`, and `atMs`.
+function validClaudeTailPart(part) {
+  return Boolean(part) && typeof part === 'object' && Object.keys(part).sort().join() === 'fields,lifecycle,pending,pendingToolAtMs,times'
+    && Boolean(part.fields) && Object.keys(part.fields).sort().join() === [...CLAUDE_TAIL_FIELDS].sort().join()
+    && CLAUDE_TAIL_FIELDS.every((name) => rowField(name, part.fields[name]))
+    && Boolean(part.times) && Object.keys(part.times).sort().join() === [...CLAUDE_TAIL_TIMES].sort().join()
+    && CLAUDE_TAIL_TIMES.every((name) => part.times[name] === null || finiteNumber(part.times[name]))
+    && finiteNumber(part.pendingToolAtMs)
+    && rows(part.pending, 3, ([id, tool, atMs]) => positionId(id) && toolName(tool) && finiteNumber(atMs))
+    && part.pending.length <= MAX_ASB_SESSION_COUNT && checkClaudeLifecycle(part.lifecycle);
+}
+
+export function validClaudeTailRecord(record) {
+  if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== CLAUDE_TAIL_KEYS) return false;
+  return [record.dev, record.ino, record.size, record.offset, record.guardBytes, record.maxBytes].every(count)
+    && record.offset <= record.size && record.guardBytes === Math.min(CLAUDE_APPEND_GUARD_BYTES, record.size)
+    && record.maxBytes >= 1 && finiteNumber(record.atMs) && record.atMs >= 0 && finiteNumber(record.mtimeMs) && finiteNumber(record.ctimeMs)
+    && validClaudeTailPart(record.state) && validClaudeTailPart(record.signals);
+}
+
+// A signal state as plain values: the row fields, the times, the lifecycle, and the pending tools as ID, tool name, and time.
+// The question text and the title are not saved; a tool name gives the title back.
+function encodeClaudeTailSignals(signals) {
+  const pending = [...(signals.pendingToolsById?.values() ?? signals.pendingTools ?? [])].map((tool) => [tool.id, tool.tool, tool.signalAtMs]);
+  return { fields: pickFields(signals, CLAUDE_TAIL_FIELDS), times: pickFields(signals, CLAUDE_TAIL_TIMES),
+    lifecycle: encodeClaudeLifecycle(signals.lifecycle), pending, pendingToolAtMs: signals.pendingToolAtMs || 0 };
+}
+
+// The newest tail result of each transcript, as plain values: the state before the last partial line and the visible result.
+// A pending tool whose title does not come back from its name (an unusual tool record) keeps no record: that log reads in full.
+export function claudeTailRecords() {
+  const newest = new Map();
+  for (const [cacheKey, entry] of claudeJsonlSignalCache) {
+    const split = cacheKey.lastIndexOf('\0');
+    const filePath = cacheKey.slice(0, split);
+    const { state, signals, signature, offset, guard, atMs } = entry;
+    if (!entry.tailResult || !state || !Buffer.isBuffer(guard) || !finiteNumber(atMs)) continue;
+    if (newest.get(filePath)?.atMs > atMs) continue;
+    if (signals.pendingTools.some((tool) => tool.title !== toolUseTitle({ name: tool.tool }))
+      || (state.pendingToolsById && [...state.pendingToolsById.values()].some((tool) => tool.title !== toolUseTitle({ name: tool.tool })))) continue;
+    newest.set(filePath, { ...signature, atMs, offset, guard, guardBytes: guard.length, maxBytes: Number(cacheKey.slice(split + 1)),
+      state: encodeClaudeTailSignals(state), signals: encodeClaudeTailSignals(signals) });
+  }
+  return [...newest];
+}
+
+// The saved tail result of an unchanged transcript with no state in memory, or null. The file must be the same file with the same
+// size and times, the same tail limit, and the same last bytes. With the question-text switch on, a pending question needs the
+// full read, because no record holds question text. An append then continues from the restored state and offset.
+async function savedClaudeTail(filePath, signature, maxBytes) {
+  const record = claudeTailPositions.take(filePath);
+  if (!record || !validClaudeTailRecord(record) || record.maxBytes !== maxBytes || !sameFileSignature(record, signature)
+    || (keepQuestionText && record.signals.pending.some(([, tool]) => tool === 'AskUserQuestion'))) return null;
+  const guard = await readClaudeGuard(filePath, record.size, record.guardBytes);
+  if (!guard || claudeTailPositions.digest(guard) !== record.guard) return null;
+  const { state, signals, offset } = record;
+  // A large log restores its lifecycle checkpoint from this record, so its own lifecycle record is not used as well.
+  if (signature.size > maxBytes) claudePositions?.take(filePath);
+  return { state: decodeClaudeTailSignals(state), signals: finishClaudeSignals(decodeClaudeTailSignals(signals)), offset, guard,
+    tailResult: true, restoredTail: true };
+}
+
+async function readClaudeGuard(filePath, size, length) {
+  const guard = Buffer.alloc(length);
+  if (!length) return guard;
   const handle = await fs.open(filePath, 'r');
   try {
-    const { bytesRead } = await handle.read(guard, 0, guard.length, record.size - guard.length);
+    const { bytesRead } = await handle.read(guard, 0, length, size - length);
     claudeCacheMetrics.jsonlSignalBytesRead += bytesRead;
-    if (bytesRead !== guard.length || claudePositions.digest(guard) !== record.guard) return null;
+    return bytesRead === length ? guard : null;
   } finally {
     await handle.close();
   }
-  const life = record.lifecycle;
+}
+
+// A saved lifecycle for a transcript with no state in memory, after the full-read checks of the design (section 3, rules 2-6).
+// It returns new objects, so the cache entry made from it never shares state with the record.
+async function savedClaudePosition(filePath, signature) {
+  const record = claudePositions.take(filePath);
+  if (!record || !validClaudeRecord(record) || record.dev !== signature.dev || record.ino !== signature.ino || signature.size < record.size
+    || (signature.size === record.size && !sameFileSignature(record, signature))) return null;
+  const guard = await readClaudeGuard(filePath, record.size, record.guardBytes);
+  if (!guard || claudePositions.digest(guard) !== record.guard) return null;
   return { offset: record.offset, guardBefore: guard.subarray(0, Math.max(0, guard.length - (record.size - record.offset))),
-    lifecycle: { running: life.running, startedAtMs: life.startedAtMs, promptStartedAtMs: life.promptStartedAtMs,
-      activityAtMs: life.activityAtMs, eventAtMs: life.eventAtMs, kind: life.kind, finalAtMs: life.finalAtMs, endedAtMs: life.endedAtMs,
-      endKind: life.endKind, limitResetsAtMs: life.limitResetsAtMs,
-      agents: new Map(life.agents.map(([id, launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, runId, stoppedAtMs]) => [id,
-        { launchedAtMs, startedAtMs, requestStartedAtMs, endedAtMs, kind, stoppedAtMs, ...(runId === null ? {} : { runId }) }])),
-      agentTools: new Map(life.agentTools.map(([id, startedAtMs, requestStartedAtMs, workflow]) => [id,
-        { startedAtMs, requestStartedAtMs, workflow: workflow === 1 }])),
-      wrapUps: new Map(life.wrapUps.map(([id, ask]) => [id, ask === 1])),
-      shells: new Map(life.shells.map(([id, startedAtMs, deadlineMs]) => [id, { startedAtMs, deadlineMs }])),
-      shellEnds: new Map(life.shellEnds),
-      messages: life.messages.map(([from, atMs]) => ({ from, atMs })) } };
+    lifecycle: decodeClaudeLifecycle(record.lifecycle) };
 }
 
 async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYTES, cacheScope = '', fileScan = null } = {}) {
@@ -1224,23 +1338,22 @@ async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYT
     }
     claudeCacheMetrics.jsonlSignalMisses += 1;
 
-    let parsed;
+    let parsed, seed, warm = false;
     const previous = cached?.signature;
     if (cached?.state && signature.size > previous.size && signature.ino === previous.ino && signature.dev === previous.dev) {
-      const handle = await fs.open(filePath, 'r');
-      let unchanged = false;
-      try {
-        const guard = Buffer.alloc(cached.guard.length);
-        const { bytesRead } = await handle.read(guard, 0, guard.length, previous.size - guard.length);
-        claudeCacheMetrics.jsonlSignalBytesRead += bytesRead;
-        unchanged = bytesRead === guard.length && guard.equals(cached.guard);
-      } finally {
-        await handle.close();
-      }
+      const guard = await readClaudeGuard(filePath, previous.size, cached.guard.length);
       // shortcut: bytes before the guard stay unchanged on append; use full verification if writers edit earlier records.
-      if (unchanged) parsed = await scanClaudeSignalRecords(filePath, fileStat, structuredClone(cached.state), cached.offset,
-        cached.guard.subarray(0, Math.max(0, cached.guard.length - (previous.size - cached.offset))));
+      const guardBefore = guard?.subarray(0, Math.max(0, guard.length - (previous.size - cached.offset)));
+      if (guard?.equals(cached.guard)) {
+        if (cached.restoredTail) seed = { lifecycle: structuredClone(cached.state.lifecycle), offset: cached.offset, guardBefore };
+        else {
+          parsed = await scanClaudeSignalRecords(filePath, fileStat, structuredClone(cached.state), cached.offset, guardBefore);
+          warm = true;
+        }
+      }
     }
+    // A saved tail gives the result of the full read of an unchanged transcript: only the guard bytes are read.
+    if (!parsed && !cached && claudeTailPositions) parsed = await savedClaudeTail(filePath, signature, maxBytes).catch(() => null);
     if (!parsed) {
       const tail = await readTailText(filePath, maxBytes, fileStat);
       const state = initialSignals();
@@ -1248,10 +1361,12 @@ async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYT
       for (const line of tail.text.slice(0, lastNewline + 1).split('\n')) applyClaudeSignalLine(state, line);
       const visible = structuredClone(state);
       applyClaudeSignalLine(visible, tail.text.slice(lastNewline + 1));
-      parsed = { state, signals: finishClaudeSignals(visible), offset: tail.offset, guard: tail.guard };
+      // A warm append reads the lines after its offset, not the whole tail, so its result is not the tail result of a new
+      // engine: only a full read of the tail is saved. Its result stays in memory, with the lifecycle checkpoint of the log.
+      parsed = { state, signals: finishClaudeSignals(visible), offset: tail.offset, guard: tail.guard, ...(warm ? {} : { tailResult: true }) };
       if (fileStat.size > maxBytes) {
         // With no state in memory, a saved position that agrees with the file starts the lifecycle scan at its offset.
-        const seed = !cached && claudePositions ? await savedClaudePosition(filePath, fileStat).catch(() => null) : null;
+        if (!cached && claudePositions) seed = await savedClaudePosition(filePath, signature).catch(() => null);
         const recovery = seed
           ? await scanClaudeSignalRecords(filePath, fileStat, { ...initialSignals(), lifecycle: seed.lifecycle }, seed.offset, seed.guardBefore, true)
           : await scanClaudeSignalRecords(filePath, fileStat, initialSignals(), 0, Buffer.alloc(0), true);
@@ -1266,7 +1381,7 @@ async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYT
     // A read that started before a switch change is not kept, so no cached entry has text from the other switch value.
     if (textGeneration === questionTextGeneration) claudeJsonlSignalCache.remember(
       cacheKey,
-      { signature, ...parsed, ...(claudePositions ? { atMs: Date.now() } : {}) },
+      { signature, ...parsed, ...((claudePositions || claudeTailPositions) ? { atMs: Date.now() } : {}) },
       cacheScope,
       MAX_ASB_SESSION_COUNT,
       claudeCacheMetrics,

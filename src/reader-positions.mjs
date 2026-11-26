@@ -1,15 +1,17 @@
 // Reader positions on disk: a new engine resumes the Codex and Claude lifecycle scans where the last engine stopped.
-// The file holds numbers, booleans, fixed kinds, IDs, and keyed digests: no message text and no path.
-// A missing, damaged, old, or foreign file, or a record that does not agree with its log, gives the full read of a new engine.
-import { createHash, createHmac, createSecretKey, randomBytes } from 'node:crypto';
-import { constants, promises as fs, readFileSync } from 'node:fs';
+// The file holds numbers, booleans, fixed kinds, IDs, keyed digests, and the Claude row fields (folders, titles, model, version,
+// entrypoint, agent name, branch): no message text, question text, prompt, or tool text. A missing, damaged, old, or foreign
+// file, or a record that does not agree with its log, gives the full read of a new engine.
+import { createHmac, createSecretKey, randomBytes } from 'node:crypto';
+import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
-import { claudePositionRecords, useClaudePositions, validClaudeRecord } from './claude-data.mjs';
-import { remotePositionRecords, useRemotePositions, validRemoteRecord } from './claude-remote-data.mjs';
-import { rolloutPositionRecords, rolloutTailRecords, useRolloutPositions, useRolloutTailPositions, validRolloutRecord,
-  validRolloutTailRecord } from './codex-data.mjs';
+import { CLAUDE_POSITION_VERSION, CLAUDE_TAIL_POSITION_VERSION, claudePositionRecords, claudeTailRecords,
+  useClaudePositions, useClaudeTailPositions, validClaudeRecord, validClaudeTailRecord } from './claude-data.mjs';
+import { REMOTE_POSITION_VERSION, remotePositionRecords, useRemotePositions, validRemoteRecord } from './claude-remote-data.mjs';
+import { CODEX_POSITION_VERSION, CODEX_TAIL_POSITION_VERSION, rolloutPositionRecords, rolloutTailRecords, useRolloutPositions,
+  useRolloutTailPositions, validRolloutRecord, validRolloutTailRecord } from './codex-data.mjs';
 
-export const READER_POSITIONS_VERSION = 1;
+export const READER_POSITIONS_VERSION = 2;
 export const MAX_POSITION_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_POSITION_RECORDS = 5000;
 export const MAX_POSITION_RECORD_BYTES = 256 * 1024;
@@ -19,13 +21,6 @@ const KEY_WAIT_MS = 3_000;
 const SAVE_DELAY_MS = 100;
 const HEX32 = /^[0-9a-f]{32}$/;
 const KEY_CHECK = 'asb reader positions key check';
-
-// A change to the reader code can change what a byte means for the lifecycle, so it drops the records of that reader.
-export function readerCodeHash(...names) {
-  const hash = createHash('sha256');
-  for (const name of names) hash.update(readFileSync(new URL(name, import.meta.url)));
-  return hash.digest('hex');
-}
 
 class UnsafeFolder extends Error {}
 
@@ -54,21 +49,23 @@ async function readPrivateFile(file, platform, maxFileBytes) {
   } finally { await handle.close(); }
 }
 
+// Each section has a format version (next to its record check), so a change of the meaning of a saved field drops only its
+// records; a code edit that keeps the meaning and the reader rules keeps the version, so the records stay.
 export function createReaderPositions({ file, key, platform = process.platform, now = Date.now, log = console.error,
-  keyWaitMs = KEY_WAIT_MS, saveDelayMs = SAVE_DELAY_MS, maxFileBytes = MAX_POSITION_FILE_BYTES, codexCode = () => readerCodeHash('./codex-data.mjs', './data-cache.mjs'),
-  claudeCode = () => readerCodeHash('./claude-data.mjs', './data-cache.mjs'),
-  remoteCode = () => readerCodeHash('./claude-remote-data.mjs', './data-cache.mjs') } = {}) {
+  keyWaitMs = KEY_WAIT_MS, saveDelayMs = SAVE_DELAY_MS, maxFileBytes = MAX_POSITION_FILE_BYTES } = {}) {
   let loading = null, hmacKey = null, off = false, written = '', writtenAtMs = null, write = Promise.resolve();
-  // One section for each kind of saved result, in file order. Each has its own code hash, record checks, and limit of records.
-  // `codexTail` holds the tail signals of a plain Codex log or the whole-log signals of a compressed Codex log that has not changed.
-  // `remote` holds the cache entries that are not a session list.
+  // One section for each kind of saved result, in file order. Each has its own format version, record checks, and limit of
+  // records. `codexTail` holds the tail signals of a plain Codex log or the whole-log signals of a compressed Codex log that has
+  // not changed. `claudeTail` holds the tail signals of a Claude transcript of any size that has not changed. `remote` holds the
+  // cache entries that are not a session list.
   // `saved` holds the records that no reader took in this run, by key; `loaded` and `taken` are counts for the tests.
   const sections = [
-    { name: 'codex', codeOf: codexCode, valid: validRolloutRecord, records: rolloutPositionRecords, use: useRolloutPositions },
-    { name: 'claude', codeOf: claudeCode, valid: validClaudeRecord, records: claudePositionRecords, use: useClaudePositions },
-    { name: 'codexTail', codeOf: codexCode, valid: validRolloutTailRecord, records: rolloutTailRecords, use: useRolloutTailPositions },
-    { name: 'remote', codeOf: remoteCode, valid: validRemoteRecord, records: remotePositionRecords, use: useRemotePositions },
-  ].map((section) => ({ ...section, code: '', saved: new Map(), loaded: 0, taken: 0 }));
+    { name: 'codex', version: CODEX_POSITION_VERSION, valid: validRolloutRecord, records: rolloutPositionRecords, use: useRolloutPositions },
+    { name: 'claude', version: CLAUDE_POSITION_VERSION, valid: validClaudeRecord, records: claudePositionRecords, use: useClaudePositions },
+    { name: 'codexTail', version: CODEX_TAIL_POSITION_VERSION, valid: validRolloutTailRecord, records: rolloutTailRecords, use: useRolloutTailPositions },
+    { name: 'claudeTail', version: CLAUDE_TAIL_POSITION_VERSION, valid: validClaudeTailRecord, records: claudeTailRecords, use: useClaudeTailPositions },
+    { name: 'remote', version: REMOTE_POSITION_VERSION, valid: validRemoteRecord, records: remotePositionRecords, use: useRemotePositions },
+  ].map((section) => ({ ...section, saved: new Map(), loaded: 0, taken: 0 }));
   // A key object makes each digest about five times faster than the raw key, and a start makes thousands of them.
   let secret = null;
   const digest = (value) => createHmac('sha256', secret).update(value).digest().subarray(0, 16).toString('hex');
@@ -92,10 +89,10 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     try { value = JSON.parse(text); } catch { return; }
     if (value?.version !== READER_POSITIONS_VERSION || value.keyCheck !== digest(KEY_CHECK)) return;
     const atMs = now();
-    // A section with another code hash, or with no records (a file of phase 1 has no claude section), loads nothing.
+    // A section with another format version, or with no records (a file of phase 1 has no claude section), loads nothing.
     for (const section of sections) {
       const part = value[section.name];
-      if (part?.code !== section.code || !Array.isArray(part.records)) continue;
+      if (part?.version !== section.version || !Array.isArray(part.records)) continue;
       for (const record of part.records) {
         if (usable(section, record, atMs) && !(section.saved.get(record.k)?.atMs > record.atMs)) section.saved.set(record.k, record);
       }
@@ -114,7 +111,6 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     if (!Buffer.isBuffer(hmacKey) || !hmacKey.length) { hmacKey = null; return; }
     try {
       secret = createSecretKey(hmacKey);
-      for (const section of sections) section.code = section.codeOf();
       await load();
     } catch { hmacKey = null; return; }
     if (off) return;
@@ -146,7 +142,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
       for (const record of records.values()) all.push([section, record]);
     }
     const head = `{"version":${READER_POSITIONS_VERSION},"keyCheck":"${digest(KEY_CHECK)}"`;
-    let bytes = head.length + 1 + sections.reduce((sum, section) => sum + section.name.length + section.code.length + 28, 0);
+    let bytes = head.length + 1 + sections.reduce((sum, section) => sum + section.name.length + section.version.length + 30, 0);
     // The newest records of all sections share the file limit; each section keeps at most its own count.
     for (const [section, record] of all.sort((a, b) => b[1].atMs - a[1].atMs)) {
       if (section.kept.length >= MAX_POSITION_RECORDS) continue;
@@ -156,7 +152,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
       section.kept.push(text);
       bytes += text.length + 1;
     }
-    return `${head}${sections.map((section) => `,"${section.name}":{"code":"${section.code}","records":[${section.kept.join(',')}]}`).join('')}}`;
+    return `${head}${sections.map((section) => `,"${section.name}":{"version":"${section.version}","records":[${section.kept.join(',')}]}`).join('')}}`;
   };
 
   const writeFile = async (text) => {

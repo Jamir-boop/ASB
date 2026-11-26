@@ -6,15 +6,22 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import * as zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
-import { validClaudeRecord } from '../src/claude-data.mjs';
-import { useRemotePositions } from '../src/claude-remote-data.mjs';
-import { parseRolloutSignals, readRolloutSignals, useRolloutPositions, useRolloutTailPositions, validRolloutTailRecord } from '../src/codex-data.mjs';
+import { CLAUDE_POSITION_VERSION, CLAUDE_TAIL_POSITION_VERSION, DEFAULT_MAX_JSONL_BYTES, getClaudeCacheStats,
+  loadClaudeDesktopCodeThreads, useClaudePositions, useClaudeQuestionText, useClaudeTailPositions, validClaudeRecord,
+  validClaudeTailRecord } from '../src/claude-data.mjs';
+import { REMOTE_POSITION_VERSION, useRemotePositions } from '../src/claude-remote-data.mjs';
+import { CODEX_POSITION_VERSION, CODEX_TAIL_POSITION_VERSION, parseRolloutSignals, readRolloutSignals, useRolloutPositions,
+  useRolloutTailPositions, validRolloutTailRecord } from '../src/codex-data.mjs';
 import { createReaderPositions, MAX_POSITION_FILE_BYTES, MAX_POSITION_RECORD_BYTES, MAX_POSITION_RECORDS,
   POSITION_SAVE_INTERVAL_MS } from '../src/reader-positions.mjs';
 import { rolloutWriter, seededRandom } from './rollout-writer.mjs';
+
+const FORMAT_VERSIONS = new Set([CLAUDE_POSITION_VERSION, CLAUDE_TAIL_POSITION_VERSION, REMOTE_POSITION_VERSION,
+  CODEX_POSITION_VERSION, CODEX_TAIL_POSITION_VERSION]);
 
 const execFileAsync = promisify(execFile);
 const ROOT = new URL('..', import.meta.url).href;
@@ -42,27 +49,37 @@ if (config.file) {
 }
 const bytes = () => { const stats = codex.getCodexCacheStats().rolloutSignals; return stats.lifecycleBytesRead + stats.bytesRead; };
 const decompressions = () => codex.getCodexCacheStats().rolloutSignals.decompressions;
+if (config.text !== undefined) claude.useClaudeQuestionText(config.text);
 const out = { files: [], logs };
 for (const file of config.files || []) {
   const before = bytes();
   const signals = await codex.readRolloutSignals(file.path, { initialBytes: file.tail, maxBytes: file.tail });
   out.files.push({ signals, bytes: bytes() - before });
 }
-if (config.dashboard) {
+const beforeAll = claudeBytes();
+if (config.claudeFiles) {
+  out.claudeFiles = [];
+  for (const filePath of config.claudeFiles) {
+    const before = claudeBytes();
+    const signals = (await claude.readClaudeRootSignals({ filePath }, [], { nowMs: config.nowMs, maxBytes: config.claude.maxBytes })).signals;
+    out.claudeFiles.push({ signals, bytes: claudeBytes() - before });
+  }
+}
+if (config.dashboard || config.claudeFiles) {
   const { loadSwitchboardDashboard } = await import(new URL('src/switchboard.mjs', process.env.ASB_ROOT));
   const before = bytes(), beforeClaude = claudeBytes();
   const dashboard = await loadSwitchboardDashboard({ nowMs: config.nowMs, codexOptions: config.dashboard,
+    ...(config.dashboard ? {} : { loadCodex: async () => ({ provider: { installed: false }, threads: [] }) }),
     claudeOptions: config.claude, loadClaude: config.claude ? claude.loadClaudeDesktopCodeThreads
       : async () => ({ provider: { installed: false, status: 'missing' }, threads: [] }) });
   out.threads = dashboard.threads;
   out.providers = dashboard.providers;
   out.dashboardBytes = bytes() - before;
-  out.claudeBytes = claudeBytes() - beforeClaude;
+  out.claudeBytes = claudeBytes() - beforeAll;
 }
 if (config.claudeOnly) {
-  const before = claudeBytes();
   out.claudeThreads = (await claude.loadClaudeDesktopCodeThreads({ ...config.claudeOnly, nowMs: config.nowMs })).threads;
-  out.claudeBytes = claudeBytes() - before;
+  out.claudeBytes = claudeBytes() - beforeAll;
 }
 if (config.remote) {
   // The platform is fixed, so the Windows test run reads the cache folder too.
@@ -79,6 +96,7 @@ if (positions) {
   out.codexStats = positions.stats('codex');
   out.claudeStats = positions.stats('claude');
   out.tailStats = positions.stats('codexTail');
+  out.claudeTailStats = positions.stats('claudeTail');
   out.remoteStats = positions.stats('remote');
 }
 process.stdout.write(JSON.stringify(out));
@@ -300,7 +318,7 @@ test('a new engine with saved reader positions shows the same rows as a full rea
   // The four logs with appends resume at their checkpoint; the three logs that did not change use their saved tail result.
   assert.ok(b.codexStats.taken >= 4, `Codex taken: ${b.codexStats.taken}`);
   assert.equal(b.tailStats.taken, 7);
-  assert.equal(b.claudeStats.taken, 8);
+  assert.ok(b.claudeStats.taken + b.claudeTailStats.taken >= 8, `Claude taken ${b.claudeStats.taken} + ${b.claudeTailStats.taken}`);
   const total = (run) => run.dashboardBytes + run.claudeBytes;
   assert.ok(total(b) * 10 < total(c), `bytes B ${total(b)}, C ${total(c)}`);
   assert.ok(b.claudeBytes * 10 < c.claudeBytes, `Claude bytes B ${b.claudeBytes}, C ${c.claudeBytes}`);
@@ -695,10 +713,11 @@ test('a missing, damaged, old, or foreign positions file gives full reads, and a
     empty: '',
     'bad JSON': '{"version":1,',
     'cut JSON': good.slice(0, Math.floor(good.length / 2)),
-    'version 2': edit((copy) => { copy.version = 2; }),
+    'version 1': edit((copy) => { copy.version = 1; }),
+    'version 3': edit((copy) => { copy.version = 3; }),
     'other key check': edit((copy) => { copy.keyCheck = '0'.repeat(32); }),
-    // A change of the Codex reader drops both Codex sections.
-    'other code hash': edit((copy) => { copy.codex.code = '0'.repeat(64); copy.codexTail.code = '0'.repeat(64); }),
+    // A raised version drops both Codex sections.
+    'other format version': edit((copy) => { copy.codex.version = 'codex-0'; copy.codexTail.version = 'codex-tail-0'; }),
     'too large': good + ' '.repeat(MAX_POSITION_FILE_BYTES),
   };
   for (const [name, content] of Object.entries(whole)) {
@@ -759,7 +778,8 @@ test('the positions file keeps the newest 5000 records and at most 256 KiB for o
   assert.deepEqual(value.claude.records.map((record) => record.atMs), Array.from({ length: 5000 }, (_, index) => atMs - (index + 0.5) * 1000));
 });
 
-const resetPositions = () => { useRolloutPositions(null); useRolloutTailPositions(null); useRemotePositions(null); };
+const resetPositions = () => { useRolloutPositions(null); useRolloutTailPositions(null); useRemotePositions(null); useClaudePositions(null);
+  useClaudeTailPositions(null); useClaudeQuestionText(false); };
 
 test('the tail results and the cache buckets keep their newest 5000 records each, and records older than 30 days go', async (t) => {
   const directory = await temporaryDirectory(t);
@@ -931,7 +951,8 @@ test('the positions file has no message text, path, folder name, or raw guard by
   };
   walk(value);
   const kinds = new Set(['', 'agent', 'user', 'task_started', 'task_complete', 'turn_aborted', 'turn_cancelled', 'task_cancelled', 'cancelled', 'failed']);
-  for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item) || kinds.has(item) || /^call_[A-Za-z0-9_-]+$/.test(item), item);
+  for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item) || kinds.has(item) || FORMAT_VERSIONS.has(item)
+    || /^call_[A-Za-z0-9_-]+$/.test(item), item);
   assert.ok(strings.includes('call_ok'));
 });
 
@@ -1211,7 +1232,7 @@ test('a phase 1 file loads its Codex records; a bad Claude section or record dro
   };
   // A file of phase 1 has only the codex section.
   await check(edit((copy) => { delete copy.claude; }), { loaded: 0, taken: 0 }, 'phase 1 file');
-  await check(edit((copy) => { copy.claude.code = '0'.repeat(64); }), { loaded: 0, taken: 0 }, 'other Claude code hash');
+  await check(edit((copy) => { copy.claude.version = 'claude-0'; }), { loaded: 0, taken: 0 }, 'other Claude format version');
   await check(edit((copy) => { copy.claude.records = {}; }), { loaded: 0, taken: 0 }, 'Claude records not a list');
   const target = claudeKey(claude.paths.p1);
   const records = {
@@ -1235,7 +1256,7 @@ test('a phase 1 file loads its Codex records; a bad Claude section or record dro
   }
 });
 
-test('the Claude records have no message text, title, path, folder name, branch, or raw guard bytes', async (t) => {
+test('the Claude lifecycle records have no message text, path, or raw guard bytes; the tail records hold only the row fields', async (t) => {
   const home = path.join(await temporaryDirectory(t), 'MARKERFOLDER');
   const transcript = (toolId) => [claudePrompt(NOW_MS - 600_000), ...claudeTitles(NOW_MS - 599_000), claudeReply(NOW_MS - 598_000),
     claudePrompt(NOW_MS - 590_000), ...claudeLaunch(NOW_MS - 589_000, toolId, 'kid'), claudeMessage(NOW_MS - 580_000),
@@ -1249,14 +1270,26 @@ test('the Claude records have no message text, title, path, folder name, branch,
   assert.equal(run.claudeThreads.length, 3);
   const raw = await fs.readFile(file);
   const text = raw.toString('latin1');
-  for (const marker of [...CLAUDE_MARKERS, 'MARKERFOLDER', home, path.basename(home), '/', '\\']) assert.equal(text.includes(marker), false, marker);
-  for (const transcript of Object.values(claude.paths)) {
-    const guard = (await fs.readFile(transcript)).subarray(-64);
-    assert.equal(raw.includes(guard), false);
-    assert.equal(text.includes(guard.toString('hex')), false);
+  // The row fields of the record are a folder, titles, a model, a version, an entrypoint, an agent name, and a branch: they are
+  // the only text that the record holds, and no message, question, prompt, or tool text is among them.
+  for (const marker of ['MARKERPROMPT', 'MARKERREPLY', 'MARKERQUESTION', 'MARKEROUTPUT', 'MARKERFOLDER', path.basename(home), '/', '\\']) {
+    assert.equal(text.includes(marker), false, marker);
   }
+  assert.equal(text.includes(claude.paths.ok), false, 'a transcript path');
+  const guard = (await fs.readFile(claude.paths.ok)).subarray(-64);
+  assert.equal(raw.includes(guard), false);
+  assert.equal(text.includes(guard.toString('hex')), false);
   const value = JSON.parse(text);
   assert.deepEqual(value.claude.records.map((record) => record.k), [claudeKey(claude.paths.ok)]);
+  // The tail records of the same transcripts hold the allowed row fields and nothing else.
+  for (const record of value.claudeTail.records) {
+    assert.ok(validClaudeTailRecord(record));
+    for (const field of Object.values(record.state.fields)) {
+      for (const marker of ['MARKERPROMPT', 'MARKERREPLY', 'MARKERQUESTION', 'MARKEROUTPUT', 'MARKERFOLDER', '/', '\\']) {
+        assert.equal(field.includes(marker), false, `${marker} in ${field}`);
+      }
+    }
+  }
   const { lifecycle } = value.claude.records[0];
   assert.deepEqual([lifecycle.agents.length, lifecycle.agentTools.length, lifecycle.wrapUps.length, lifecycle.messages.length], [1, 1, 1, 1]);
   const strings = [];
@@ -1266,8 +1299,10 @@ test('the Claude records have no message text, title, path, folder name, branch,
   };
   walk(value.claude);
   const kinds = new Set(['', 'task_started', 'task_complete', 'failed', 'cancelled']);
-  const ids = new Set(['kid', 'launch', 'wrap', 'local_00000000-0000-4000-8000-000000000001']);
-  for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item) || kinds.has(item) || ids.has(item), item);
+  const ids = new Set(['kid', 'launch', 'wrap', 'local_00000000-0000-4000-8000-000000000001', 'Agent', 'TaskStop', 'SendMessage', 'Workflow',
+    'mcp__ccd_turn__wrap_up', 'Bash', 'AskUserQuestion', 'MARKERTITLE', 'MARKERNAME', 'MARKERBRANCH']);
+  for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item) || kinds.has(item) || ids.has(item)
+    || FORMAT_VERSIONS.has(item), item);
 });
 
 // The Claude Desktop cache folder (a Chromium simple cache) that the remote reader reads: an entry for each URL, named by the digest of its key.
@@ -1396,7 +1431,7 @@ test('a new engine with saved cache buckets gives the same remote rows when list
   assert.ok(b.keyReads * 10 < c.keyReads, `key reads B ${b.keyReads}, C ${c.keyReads}`);
 });
 
-test('a bad cache bucket record, or a section with another code hash, is dropped alone and gives the rows of a full read', async (t) => {
+test('a bad cache bucket record, or a section with another format version, is dropped alone and gives the rows of a full read', async (t) => {
   const home = await temporaryDirectory(t);
   const appDir = path.join(home, 'Claude');
   const root = path.join(appDir, 'Cache', 'Cache_Data');
@@ -1419,9 +1454,9 @@ test('a bad cache bucket record, or a section with another code hash, is dropped
     return run;
   };
   const withNames = (copy) => copy.remote.records.find((record) => record.count === 1);
-  await check(edit((copy) => { copy.remote.code = '0'.repeat(64); }), 0, 'other code hash');
-  // A change of the Codex reader does not drop the cache buckets.
-  assert.equal((await check(edit((copy) => { copy.codex.code = '0'.repeat(64); copy.codexTail.code = '0'.repeat(64); }), total, 'other Codex code hash')).keyReads < 20, true);
+  await check(edit((copy) => { copy.remote.version = 'remote-0'; }), 0, 'other remote format version');
+  // A raised Codex version does not drop the cache buckets.
+  assert.equal((await check(edit((copy) => { copy.codex.version = 'codex-0'; copy.codexTail.version = 'codex-tail-0'; }), total, 'other Codex format version')).keyReads < 20, true);
   await check(edit((copy) => { delete copy.remote; }), 0, 'a file with no remote section');
   await check(edit((copy) => { copy.remote.records = {}; }), 0, 'records not a list');
   const records = {
@@ -1468,11 +1503,286 @@ test('the cache bucket records have no URL, entry name, path, cursor, or title',
     else if (item && typeof item === 'object') Object.values(item).forEach(walk);
   };
   walk(value.remote);
-  for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item), item);
+  for (const item of strings) assert.ok(/^[0-9a-f]{32}$|^[0-9a-f]{64}$/.test(item) || FORMAT_VERSIONS.has(item), item);
   // Every record is a count and the positions of the entries that are read again.
   for (const record of value.remote.records) {
     assert.deepEqual(Object.keys(record).sort(), ['atMs', 'count', 'guard', 'k', 'open']);
     assert.ok(Number.isInteger(record.count) && record.open.every(Number.isInteger));
   }
   assert.equal(value.remote.records.reduce((sum, record) => sum + record.open.length, 0), 2);
+});
+
+// The Claude near-zero test: made-up logs of the owner's mix, a few over the tail and most under.
+async function mixedClaude(home, maxBytes = DEFAULT_MAX_JSONL_BYTES) {
+  const transcripts = {};
+  for (let index = 0; index < 2; index += 1) {
+    transcripts[`b${index}`] = [claudePrompt(NOW_MS - 600_000), ...claudeLaunch(NOW_MS - 599_000, `launch${index}`, `kid${index}`),
+      claudeMessage(NOW_MS - 598_000), claudeReply(NOW_MS - 590_000), ...claudeFiller(NOW_MS - 500_000, maxBytes + 1024 * 1024)];
+  }
+  for (let index = 0; index < 6; index += 1) {
+    transcripts[`s${index}`] = [claudePrompt(NOW_MS - 600_000 + index * 1000), ...claudeFiller(NOW_MS - 500_000, 16 * 1024),
+      ...claudeTitles(NOW_MS - 400_000)];
+  }
+  return claudeSource(home, transcripts, maxBytes);
+}
+
+test('Claude near-0 restart: a new engine reads only the guard bytes of each unchanged transcript', async (t) => {
+  const home = await temporaryDirectory(t);
+  const claude = await mixedClaude(home);
+  const file = path.join(home, 'readers', 'positions.json');
+  const count = Object.keys(claude.paths).length;
+  const rollouts = await plainRollouts(home, 6);
+  const config = { claude: claude.options, claudeFiles: Object.values(claude.paths), nowMs: NOW_MS, files: fileConfig(rollouts) };
+  const first = await engine({ ...config, file, key: KEY });
+  const restart = await engine({ ...config, file, key: KEY });
+  const full = await engine(config);
+  const signals = (run) => run.claudeFiles.map((item) => item.signals);
+  assert.equal(full.claudeBytes > 0, true);
+  assert.equal(first.threads.length, count);
+  assert.deepEqual(restart.claudeTailStats, { loaded: count, taken: count });
+  assert.ok(restart.claudeFiles.every(({ bytes }) => bytes <= 64));
+  assert.ok(restart.claudeBytes <= count * 64, `bytes ${restart.claudeBytes} for ${count} transcripts`);
+  assert.deepEqual(signals(restart), signals(full));
+  assert.deepEqual(byId(restart.threads), byId(full.threads));
+  const saved = await readSaved(file);
+  const sizes = (name) => saved[name].records.map((record) => Buffer.byteLength(JSON.stringify(record)));
+  const mean = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  const tail = sizes('claudeTail');
+  assert.equal(tail.length, count);
+  // An upper bound for the owner's mix: every one of 241 Claude logs gets both Claude records, and 1220 Codex logs get both Codex
+  // records. The one-record and file limits still apply to it.
+  const claudeLifecycle = mean(sizes('claude'));
+  const codex = [...sizes('codex'), ...sizes('codexTail')];
+  const estimated = Math.round(241 * (mean(tail) + claudeLifecycle + 2) + 1220 * (mean(codex) + 1) + 320);
+  t.diagnostic(`Claude read bytes: restart ${restart.claudeBytes}, full ${full.claudeBytes}; Claude tail record mean ${mean(tail)} B, max ${Math.max(...tail)} B; `
+    + `Claude lifecycle record mean ${claudeLifecycle} B; Codex record mean ${mean(codex)} B; estimated file ${estimated} B for 241 Claude logs and 1220 Codex records`);
+  assert.ok(estimated < MAX_POSITION_FILE_BYTES);
+});
+
+test('Claude tail differential: append, truncate, and same-size replacement match a full read under both file formats', async (t) => {
+  const home = await temporaryDirectory(t);
+  const small = [claudePrompt(NOW_MS - 600_000), ...claudeFiller(NOW_MS - 500_000, 8 * 1024), ...claudeTitles(NOW_MS - 490_000)];
+  const big = [claudePrompt(NOW_MS - 600_000), ...claudeFiller(NOW_MS - 500_000, DEFAULT_MAX_JSONL_BYTES + 1024)];
+  const claude = await claudeSource(home, { grown: small, shrunk: small, replaced: small, untouched: small, big, bigGrown: big }, DEFAULT_MAX_JSONL_BYTES);
+  const file = path.join(home, 'readers', 'positions.json');
+  const config = { claude: claude.options, claudeFiles: Object.values(claude.paths), nowMs: NOW_MS };
+  await engine({ ...config, file, key: KEY });
+  const saved = await readSaved(file);
+  assert.equal(saved.claudeTail.records.length, config.claudeFiles.length);
+  const append = jsonl([claudeReply(NOW_MS - 1000)]);
+  await fs.appendFile(claude.paths.grown, append);
+  await fs.appendFile(claude.paths.bigGrown, append);
+  await fs.truncate(claude.paths.shrunk, 4000);
+  const replacement = (await fs.readFile(claude.paths.replaced, 'utf8')).replace('MARKERTITLE', 'REPLACEMENT');
+  assert.equal(Buffer.byteLength(replacement), (await fs.stat(claude.paths.replaced)).size);
+  await fs.writeFile(`${claude.paths.replaced}.new`, replacement);
+  await fs.rename(`${claude.paths.replaced}.new`, claude.paths.replaced);
+  const full = await engine(config);
+  const check = (run) => {
+    assert.deepEqual(run.claudeFiles.map(({ signals }) => signals), full.claudeFiles.map(({ signals }) => signals));
+    assert.deepEqual(byId(run.threads), byId(full.threads));
+  };
+  const restart = await engine({ ...config, file, key: KEY });
+  check(restart);
+  const [grown, shrunk, replaced, untouched, stillBig, bigGrown] = restart.claudeFiles.map(({ bytes }) => bytes);
+  assert.ok([grown, shrunk, replaced].every((bytes) => bytes > 64), 'the changed small logs read their tails');
+  assert.ok(untouched <= 64 && stillBig <= 64, 'unchanged logs read only their guards');
+  assert.ok(bigGrown > DEFAULT_MAX_JSONL_BYTES && bigGrown < full.claudeFiles.at(-1).bytes, 'the large append reads its tail and resumes its lifecycle');
+  // A fixture of the f242cd2 envelope, including its Claude checkpoints, but no claudeTail section.
+  const old = { version: 1, keyCheck: saved.keyCheck };
+  for (const name of ['codex', 'claude', 'codexTail', 'remote']) old[name] = { code: '0'.repeat(64), records: saved[name].records };
+  // A lifecycle record of a large log from the previous format must not crash a load; its shape is the shape of version 1.
+  const bigRecord = saved.claude.records.find((record) => record.size > DEFAULT_MAX_JSONL_BYTES);
+  assert.ok(bigRecord && validClaudeRecord(bigRecord));
+  await writeSaved(file, old);
+  const oldRestart = await engine({ ...config, file, key: KEY });
+  assert.deepEqual(oldRestart.stats, { loaded: 0, taken: 0 });
+  assert.equal(oldRestart.claudeBytes, full.claudeBytes);
+  check(oldRestart);
+  assert.equal((await readSaved(file)).version, 2);
+});
+
+test('a Claude tail record with an extra key, a long field, a control character, a wrong guard, or a foreign key gives a full read', async (t) => {
+  const home = await temporaryDirectory(t);
+  const claude = await plainClaude(home, 4);
+  const file = path.join(home, 'readers', 'positions.json');
+  await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  const good = await fs.readFile(file, 'utf8');
+  const full = await engine({ claudeOnly: claude.options, nowMs: NOW_MS });
+  const target = (copy) => copy.claudeTail.records.find((record) => record.k === recordKey(claude.paths.p0, KEY, 'claudeTail'));
+  const check = async (content, name) => {
+    await fs.rm(file, { force: true });
+    await writeSaved(file, content);
+    const run = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+    // The record is taken before it is checked, so a bad guard, size, or limit counts as taken and falls back to the tail read.
+    assert.ok(run.claudeTailStats.taken >= 3, `${name}: the other records`);
+    if (!name.includes('guard digest') && !name.startsWith('another')) {
+      assert.equal(run.claudeTailStats.taken, 3, `${name}: the bad record is not loaded`);
+    }
+    // This transcript reads its tail of 4 KiB; each other one reads only its guard of 64 bytes.
+    assert.ok(run.claudeBytes > 4096, `${name}: the log of the bad record is read`);
+    assert.deepEqual(byId(run.claudeThreads), byId(full.claudeThreads), name);
+  };
+  assert.equal(JSON.parse(good).claudeTail.records.length, 4);
+  const edit = (change) => { const copy = JSON.parse(good); const record = target(copy); change(record); return copy; };
+  const changes = {
+    'an extra key': (record) => { record.note = 'MARKERPROMPT'; },
+    'an extra key in a part': (record) => { record.state.extra = 1; },
+    'a cwd of 1025 characters': (record) => { record.state.fields.cwd = `/${'a'.repeat(1024)}`; },
+    'a title of 1025 characters': (record) => { record.state.fields.customTitle = 'a'.repeat(1025); },
+    'a model of 201 characters': (record) => { record.state.fields.model = 'a'.repeat(201); },
+    'a control character': (record) => { record.state.fields.cwd = `/work/\u0007synthetic`; },
+    'a title with a hidden character': (record) => { record.signals.fields.customTitle = `a\u200bb`; },
+    'a pending tool name with a space': (record) => { record.state.pending = [['call_1', 'Bash echo', NOW_MS]]; },
+    'a pending tool ID that is not plain': (record) => { record.state.pending = [['call 1', 'Bash', NOW_MS]]; },
+    'wrong guard digest': (record) => { record.guard = '0'.repeat(32); },
+    'another file size': (record) => { record.size += 1; },
+    'another tail limit': (record) => { record.maxBytes = 8192; },
+    'a lifecycle that is not a row': (record) => { record.state.lifecycle.messages = [['local_00000000-0000-4000-8000-000000000001', 1, 'MARKERPROMPT']]; },
+    'a missing pending tool time': (record) => { record.signals.pending = [['call_1', 'Bash']]; },
+  };
+  for (const [name, change] of Object.entries(changes)) await check(edit(change), name);
+  // Another HMAC key: the whole file is foreign.
+  await fs.rm(file, { force: true });
+  await writeSaved(file, good);
+  const foreign = await engine({ file, key: 'b2'.repeat(32), claudeOnly: claude.options, nowMs: NOW_MS });
+  assert.equal(foreign.claudeTailStats.taken, 0);
+  assert.equal(foreign.claudeStats.taken, 0);
+  assert.equal(foreign.claudeBytes, full.claudeBytes);
+  // No key besides the fields of the brief (numbers, state, and the allowed row fields) may appear in a claudeTail record.
+  const allowed = new Set(['k', 'guard', 'atMs', 'dev', 'ino', 'size', 'mtimeMs', 'ctimeMs', 'guardBytes', 'maxBytes', 'offset', 'state', 'signals']);
+  const partKeys = new Set(['fields', 'times', 'lifecycle', 'pending', 'pendingToolAtMs']);
+  const lifecycleKeys = new Set(['running', 'startedAtMs', 'promptStartedAtMs', 'activityAtMs', 'eventAtMs', 'kind', 'finalAtMs', 'endedAtMs',
+    'endKind', 'limitResetsAtMs', 'agents', 'agentTools', 'wrapUps', 'shells', 'shellEnds', 'messages']);
+  for (const record of JSON.parse(good).claudeTail.records) {
+    for (const key of Object.keys(record)) assert.ok(allowed.has(key), `record key ${key}`);
+    for (const part of [record.state, record.signals]) {
+      for (const key of Object.keys(part)) assert.ok(partKeys.has(key), `part key ${key}`);
+      for (const key of Object.keys(part.fields)) assert.ok(['agentName', 'customTitle', 'cwd', 'entrypoint', 'gitBranch', 'model',
+        'sessionId', 'version'].includes(key), `field ${key}`);
+      for (const key of Object.keys(part.lifecycle)) assert.ok(lifecycleKeys.has(key), `lifecycle key ${key}`);
+      for (const row of part.lifecycle.agents) assert.equal(row.length, 8);
+      for (const row of part.lifecycle.messages) assert.equal(row.length, 2);
+      for (const row of part.pending) assert.equal(row.length, 3);
+    }
+  }
+  // The saved record has the fields that the reader builds, and its parts have the fields of a signal state.
+  const record = target(JSON.parse(good));
+  assert.deepEqual(Object.keys(record).sort(), ['atMs', 'ctimeMs', 'dev', 'guard', 'guardBytes', 'ino', 'k', 'maxBytes', 'mtimeMs',
+    'offset', 'signals', 'size', 'state']);
+  for (const part of [record.state, record.signals]) {
+    assert.deepEqual(Object.keys(part).sort(), ['fields', 'lifecycle', 'pending', 'pendingToolAtMs', 'times']);
+    assert.deepEqual(Object.keys(part.fields).sort(), ['agentName', 'customTitle', 'cwd', 'entrypoint', 'gitBranch', 'model', 'sessionId', 'version']);
+  }
+  assert.equal(validClaudeTailRecord(record), true);
+});
+
+test('no question, prompt, message, or tool text goes to the positions file, with the question-text switch off and on', async (t) => {
+  const home = path.join(await temporaryDirectory(t), 'MARKERFOLDER');
+  const lines = [claudePrompt(NOW_MS - 600_000), ...claudeTitles(NOW_MS - 599_000), claudeReply(NOW_MS - 598_000), claudeMessage(NOW_MS - 580_000),
+    claudeTool(NOW_MS - 570_000, 'ask', 'AskUserQuestion', { questions: [{ question: 'MARKERQUESTION?' }] }),
+    claudeTool(NOW_MS - 569_000, 'bash', 'Bash', { command: 'MARKERPROMPT' }), claudeResult(NOW_MS - 568_000, 'bash'),
+    ...claudeFiller(NOW_MS - 500_000, 64 * 1024)];
+  const claude = await claudeSource(home, { one: lines, two: [claudePrompt(NOW_MS - 600_000), ...claudeFiller(NOW_MS - 500_000, 8 * 1024)] }, 64 * 1024);
+  const file = path.join(home, 'cache', 'readers', 'positions.json');
+  for (const on of [false, true]) {
+    await fs.rm(file, { force: true });
+    const run = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS, text: on });
+    assert.equal(run.claudeThreads.length, 2);
+    const text = await fs.readFile(file, 'latin1');
+    for (const marker of ['MARKERQUESTION', 'MARKERPROMPT', 'MARKERREPLY', 'MARKEROUTPUT', 'MARKERFOLDER', home, path.basename(home), '/', '\\']) {
+      assert.equal(text.includes(marker), false, `${marker} (switch ${on})`);
+    }
+    const value = JSON.parse(text);
+    assert.equal(value.claudeTail.records.length, 2);
+    for (const record of value.claudeTail.records) assert.ok(validClaudeTailRecord(record));
+  }
+});
+
+test('a positions file survives an edit that keeps its format versions; a raised version drops only its section', async (t) => {
+  const home = await temporaryDirectory(t);
+  const claude = await mixedClaude(home, 64 * 1024);
+  const file = path.join(home, 'readers', 'positions.json');
+  const count = Object.keys(claude.paths).length;
+  await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  const good = await fs.readFile(file, 'utf8');
+  const full = await engine({ claudeOnly: claude.options, nowMs: NOW_MS });
+  const edit = (change) => { const copy = JSON.parse(good); change(copy); return copy; };
+  const check = async (content, sections, name, root = ROOT) => {
+    await fs.rm(file, { force: true });
+    await writeSaved(file, content);
+    const run = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS }, root);
+    assert.deepEqual([run.claudeStats.taken, run.claudeTailStats.taken], sections, name);
+    assert.deepEqual(byId(run.claudeThreads), byId(full.claudeThreads), name);
+    return run;
+  };
+  // The reader code is no input: a copy of src with a comment change in its readers loads the same file.
+  const copy = await fs.mkdtemp(path.join(os.tmpdir(), 'asb-reader-copy-'));
+  t.after(() => fs.rm(copy, { recursive: true, force: true }));
+  await fs.cp(new URL('src', ROOT), path.join(copy, 'src'), { recursive: true });
+  for (const reader of ['claude-data.mjs', 'codex-data.mjs']) {
+    await fs.appendFile(path.join(copy, 'src', reader), '\n// A comment that changes no meaning.\n');
+  }
+  const edited = await check(good, [2, count], 'an edit that keeps the versions', pathToFileURL(`${copy}${path.sep}`).href);
+  assert.ok(edited.claudeBytes <= count * 64, `bytes ${edited.claudeBytes}`);
+  // A raised version drops that section alone. The lifecycle record of a large log does not save bytes: the rows still come
+  // from the tail, so a raised tail version reads the rows again.
+  const raised = await check(edit((copy) => { copy.claudeTail.version = 'claude-tail-0'; }), [2, 0], 'a raised tail version');
+  assert.ok(raised.claudeBytes > count * 64);
+  // A raised lifecycle version alone changes no row: the tail record of every transcript is still used.
+  await check(edit((copy) => { copy.claude.version = 'claude-0'; }), [0, count], 'a raised lifecycle version');
+
+});
+
+test('a restored Claude entry with a pending question is evicted when the question-text switch turns on', async (t) => {
+  t.after(resetPositions);
+  const home = await temporaryDirectory(t);
+  const claude = await claudeSource(home, { q: [claudePrompt(NOW_MS - 600_000), ...claudeFiller(NOW_MS - 590_000, 8 * 1024),
+    claudeTool(NOW_MS - 500_000, 'ask', 'AskUserQuestion', { questions: [{ question: 'MARKERQUESTION?' }] })] }, 64 * 1024);
+  const file = path.join(home, 'readers', 'positions.json');
+  await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  const positions = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), saveDelayMs: 0 });
+  await positions.ready();
+  const run = async () => loadClaudeDesktopCodeThreads({ ...claude.options, nowMs: NOW_MS });
+  const questionOf = (threads) => threads[0].pendingTools.find((tool) => tool.tool === 'AskUserQuestion')?.question;
+  useClaudeQuestionText(false);
+  assert.equal(questionOf((await run()).threads), undefined);
+  assert.equal(positions.stats('claudeTail').taken, 1);
+  // The gateway turns the switch on after the first scan: the restored entry is evicted, so the next read keeps the text.
+  useClaudeQuestionText(true);
+  assert.equal(questionOf((await run()).threads), 'MARKERQUESTION?');
+});
+
+test('a warm append to a large transcript saves only a canonical tail, and the record equals a fresh tail', async (t) => {
+  t.after(resetPositions);
+  const home = await temporaryDirectory(t);
+  const maxBytes = 32 * 1024;
+  const claude = await claudeSource(home, { big: [claudePrompt(NOW_MS - 600_000), ...claudeFiller(NOW_MS - 590_000, 64 * 1024)] }, maxBytes);
+  const positions = createReaderPositions({ file: path.join(home, 'readers', 'positions.json'), key: async () => Buffer.from(KEY, 'hex'), saveDelayMs: 0 });
+  await positions.ready();
+  const read = async () => loadClaudeDesktopCodeThreads({ ...claude.options, nowMs: NOW_MS });
+  await read();
+  await positions.flush();
+  const file = path.join(home, 'readers', 'positions.json');
+  assert.equal((await readSaved(file)).claudeTail.records.length, 1, 'the first read is a full tail');
+  // A warm append slides the tail window: its result stays in memory and saves no tail record.
+  await fs.appendFile(claude.paths.big, jsonl([claudeReply(NOW_MS - 1000)]));
+  await fs.utimes(claude.paths.big, NOW_MS / 1000 + 1, NOW_MS / 1000 + 1);
+  const warm = await read();
+  await positions.flush();
+  await fs.rm(file, { force: true });
+  await positions.flush();
+  assert.equal(await fs.readFile(file, 'utf8').then((text) => JSON.parse(text).claudeTail.records.length, () => 0), 0,
+    'a warm append saves no tail record');
+  // A new engine reads the tail of the changed log; after that read, its record is the tail of a fresh read.
+  const restart = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  assert.deepEqual(byId(restart.claudeThreads), byId((await read()).threads));
+  assert.equal((await readSaved(file)).claudeTail.records.length, 1);
+  const saved = (await readSaved(file)).claudeTail.records[0];
+  const fresh = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS });
+  assert.equal(fresh.claudeTailStats.taken, 1);
+  assert.deepEqual(byId(fresh.claudeThreads), byId(restart.claudeThreads));
+  assert.equal(saved.size, (await fs.stat(claude.paths.big)).size);
+  assert.equal(saved.tailResult, undefined);
+  assert.ok(warm.threads.length === 1);
 });

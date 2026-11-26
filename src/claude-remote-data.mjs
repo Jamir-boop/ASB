@@ -340,6 +340,10 @@ export function useRemotePositions(source) {
   remotePositions = source;
 }
 
+// Raise this when the meaning of a saved field or the reader rules that produced it change; a code edit that keeps both does not
+// raise it.
+export const REMOTE_POSITION_VERSION = 'remote-1';
+
 // The checks of one saved bucket at save and at load: numbers only. reader-positions.mjs checks `k`, `guard`, and `atMs`.
 export function validRemoteRecord(record) {
   if (!record || typeof record !== 'object' || Object.keys(record).sort().join() !== 'atMs,count,guard,k,open') return false;
