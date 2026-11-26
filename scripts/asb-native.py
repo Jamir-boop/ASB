@@ -51,6 +51,19 @@ def print_first_cards_time():
         pass
 
 
+# One board start has one timing line: a second board window in the same process adds no callback.
+FIRST_CARDS_WATCH = {"added": False}
+
+
+def add_first_cards_watch(window):
+    """Add the first-cards frame callback once for the process. False when it is not added."""
+    if FIRST_CARDS_WATCH["added"] or not hasattr(window, "add_tick_callback"):
+        return False
+    FIRST_CARDS_WATCH["added"] = True
+    window.add_tick_callback(window.first_cards_frame)
+    return True
+
+
 ROW_HEIGHT = 22
 COMFORTABLE_ROW_HEIGHT = 68
 # The hover pocket ends between title lines 1 and 2 (measured in Cascadia Code NF 11 and Cantarell 11).
@@ -8650,9 +8663,8 @@ class SwitchboardWindow(Adw.ApplicationWindow):
             self.snapshot_pending = False
             self.add_tick_callback(SnapshotWatch(os.environ["ASB_SNAPSHOT"]).tick)
         # A logic test has no GTK window: the check runs only when the frame clock exists.
-        if self.signature and not getattr(self, "first_cards_reported", False) and hasattr(self, "add_tick_callback"):
-            self.first_cards_reported = True
-            self.add_tick_callback(self.first_cards_frame)
+        if self.signature:
+            add_first_cards_watch(self)
         return False
 
     def first_cards_frame(self, _widget, _clock):

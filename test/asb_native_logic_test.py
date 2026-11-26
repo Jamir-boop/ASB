@@ -4905,6 +4905,15 @@ class FirstCardTimingChecks(unittest.TestCase):
             self.assertIsNone(SCOPE["print_first_cards_time"]())
         self.assertEqual(buffer.getvalue(), "")
 
+    def test_a_second_board_window_adds_no_first_cards_callback(self):
+        with patch.dict(SCOPE, {"FIRST_CARDS_WATCH": {"added": False}}):
+            first = SimpleNamespace(add_tick_callback=Mock(), first_cards_frame=Mock())
+            second = SimpleNamespace(add_tick_callback=Mock(), first_cards_frame=Mock())
+            self.assertTrue(SCOPE["add_first_cards_watch"](first))
+            self.assertFalse(SCOPE["add_first_cards_watch"](second))
+        first.add_tick_callback.assert_called_once_with(first.first_cards_frame)
+        second.add_tick_callback.assert_not_called()
+
 
 class MachinesDialogChecks(unittest.TestCase):
     def editor(self):

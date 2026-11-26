@@ -2113,15 +2113,20 @@ class WidgetCheck(unittest.TestCase):
             self.assertNotIn("Cannot save the native GTK image", errors.getvalue())
 
     def test_the_snapshot_starts_one_frame_watch_only_when_asb_snapshot_is_set(self):
+        def snapshot_ticks(watch):
+            return [item.args[0] for item in watch.call_args_list
+                    if getattr(item.args[0], "__self__", None) is not None
+                    and isinstance(item.args[0].__self__, asb.SnapshotWatch)]
+
         with patch.object(asb.SwitchboardWindow, "add_tick_callback") as watch:
             with patch.dict(os.environ):
                 os.environ.pop("ASB_SNAPSHOT", None)
                 self.snapshot_window()
-            watch.assert_not_called()
+            self.assertEqual(snapshot_ticks(watch), [])
             with patch.dict(os.environ, {"ASB_SNAPSHOT": "board.png"}):
                 window = self.snapshot_window()
                 window.apply_dashboard(copy.deepcopy(FIXTURE), None)
-            watch.assert_called_once()
+            self.assertEqual(len(snapshot_ticks(watch)), 1)
 
     @unittest.skipUnless(shutil.which("xdotool") and os.environ.get("DISPLAY") in (":9", ":10"),
                          "Real keys and clicks need xdotool and DISPLAY=:9 or :10")
