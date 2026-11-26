@@ -132,6 +132,13 @@ class ModelsTest {
         assertFalse("key" in AsbJson.encodeToString(remote))
     }
 
+    @Test fun threadInTerminalReadsTrueAndAnOlderEngineSendsNone() {
+        assertTrue(AsbJson.decodeFromString<Thread>("""{"id":"one","inTerminal":true}""").inTerminal)
+        assertFalse(AsbJson.decodeFromString<Thread>("""{"id":"one"}""").inTerminal)
+        val row = AsbJson.decodeFromString<Thread>("""{"id":"one","inTerminal":true}""")
+        assertTrue("inTerminal" in AsbJson.encodeToString(row))
+    }
+
     @Test fun threadAlertReadsTrueAndAnOlderEngineSendsNone() {
         assertTrue(AsbJson.decodeFromString<Thread>("""{"id":"one","alert":true}""").alert)
         assertFalse(AsbJson.decodeFromString<Thread>("""{"id":"one"}""").alert)
