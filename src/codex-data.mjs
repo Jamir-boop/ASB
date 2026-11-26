@@ -90,22 +90,30 @@ function safeLimit(limit) {
 }
 
 // `native` and `run` are for tests: they cannot unload node:sqlite or run a real sqlite3.
-export async function querySqliteJson(databasePath, sql, { native = loadNativeSqlite(), run = execFileAsync } = {}) {
+// One database open serves every statement of `fn`: `query(sql)` returns the rows.
+export async function withSqliteDatabase(databasePath, fn, { native = loadNativeSqlite(), run = execFileAsync } = {}) {
   const sqlite = await native;
   if (sqlite?.DatabaseSync) {
     const database = new sqlite.DatabaseSync(databasePath, { readOnly: true });
     try {
-      return database.prepare(sql).all();
+      return await fn((sql) => database.prepare(sql).all());
     } finally {
       database.close();
     }
   }
-  // `-init` with the null device skips ~/.sqliterc, which can print text that is not JSON.
-  const { stdout } = await run('sqlite3', ['-init', os.devNull, '-readonly', '-json', databasePath, sql], {
-    maxBuffer: 20 * 1024 * 1024,
+  return await fn(async (sql) => {
+    // `-init` with the null device skips ~/.sqliterc, which can print text that is not JSON.
+    const { stdout } = await run('sqlite3', ['-init', os.devNull, '-readonly', '-json', databasePath, sql], {
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    const trimmed = stdout.trim();
+    return trimmed ? JSON.parse(trimmed) : [];
   });
-  const trimmed = stdout.trim();
-  return trimmed ? JSON.parse(trimmed) : [];
+}
+
+// `native` and `run` are for tests: they cannot unload node:sqlite or run a real sqlite3.
+export async function querySqliteJson(databasePath, sql, options = {}) {
+  return withSqliteDatabase(databasePath, (query) => query(sql), options);
 }
 
 export function parseSessionIndex(jsonlText = '') {
@@ -194,7 +202,7 @@ function sameBridgeSignature(a, b) {
 // The receiver view of ASB Bridge: one database for each receiving Codex thread. The message text is never selected.
 // The runtime row also gives the counts and times of the open approvals and questions (Bridge 0.9.0 and later), with the receiver
 // process that wrote them.
-async function readBridgeFile(filePath, to, sinceMs, cacheScope) {
+async function readBridgeFile(filePath, to, sinceMs, cacheScope, options) {
   const [main, wal] = await Promise.all([fs.stat(filePath), fs.stat(`${filePath}-wal`).catch(() => null)]);
   // A database with an old file time gives no messages, but a wait can be older than the message window.
   const fresh = Math.max(main.mtimeMs, wal?.mtimeMs || 0) >= sinceMs;
@@ -203,17 +211,21 @@ async function readBridgeFile(filePath, to, sinceMs, cacheScope) {
   const since = Math.floor(sinceMs / 1000);
   let entry = bridgeMessageCache.get(filePath, cacheScope);
   if (!entry || !sameBridgeSignature(entry.signature, signature) || since < entry.since) {
-    const columns = new Set((await querySqliteJson(filePath, 'pragma table_info(messages);')).map((row) => row.name));
-    let messages = [];
-    if (fresh && ['peer_id', 'direction', 'status', 'created_at'].every((name) => columns.has(name))) {
-      const hasKind = columns.has('kind');
-      const rows = await querySqliteJson(filePath, `select peer_id, status, created_at${hasKind ? ', kind' : ''}
+    // One open per read: the messages pragma, the messages select, the runtime pragma, and the runtime select.
+    entry = await withSqliteDatabase(filePath, async (query) => {
+      // The pragma result is used only for a fresh database.
+      const columns = fresh ? new Set((await query('pragma table_info(messages);')).map((row) => row.name)) : new Set();
+      let messages = [];
+      if (fresh && ['peer_id', 'direction', 'status', 'created_at'].every((name) => columns.has(name))) {
+        const hasKind = columns.has('kind');
+        const rows = await query(`select peer_id, status, created_at${hasKind ? ', kind' : ''}
         from messages where direction = 'in' and created_at >= ${since};`);
-      messages = rows.filter((row) => BRIDGE_DELIVERED_STATUSES.has(row.status) && (!hasKind || row.kind === 'message')
-        && typeof row.peer_id === 'string' && UUID_RE.test(row.peer_id) && Number.isFinite(Number(row.created_at)))
-        .map((row) => ({ to, from: row.peer_id, atMs: Number(row.created_at) * 1000 }));
-    }
-    entry = { signature, since, messages, waits: await readBridgeWaits(filePath) };
+        messages = rows.filter((row) => BRIDGE_DELIVERED_STATUSES.has(row.status) && (!hasKind || row.kind === 'message')
+          && typeof row.peer_id === 'string' && UUID_RE.test(row.peer_id) && Number.isFinite(Number(row.created_at)))
+          .map((row) => ({ to, from: row.peer_id, atMs: Number(row.created_at) * 1000 }));
+      }
+      return { signature, since, messages, waits: await readBridgeWaits(query) };
+    }, options);
     bridgeMessageCache.remember(filePath, entry, cacheScope);
   }
   // A process can end with no file change, so the receiver check runs at each read.
@@ -223,10 +235,10 @@ async function readBridgeFile(filePath, to, sinceMs, cacheScope) {
 
 const BRIDGE_WAIT_COLUMNS = ['approvals', 'questions', 'approval_at', 'question_at'];
 
-async function readBridgeWaits(filePath) {
-  const columns = new Set((await querySqliteJson(filePath, 'pragma table_info(runtime);')).map((row) => row.name));
+async function readBridgeWaits(query) {
+  const columns = new Set((await query('pragma table_info(runtime);')).map((row) => row.name));
   if (!BRIDGE_WAIT_COLUMNS.every((name) => columns.has(name))) return null;
-  const [row] = await querySqliteJson(filePath, `select r.approvals, r.questions, r.approval_at, r.question_at, c.pid, c.proc_start
+  const [row] = await query(`select r.approvals, r.questions, r.approval_at, r.question_at, c.pid, c.proc_start
     from runtime r left join receiver c on c.singleton = 1 where r.singleton = 1;`);
   const count = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : 0;
   const approvals = count(row?.approvals), questions = count(row?.questions);
@@ -244,14 +256,14 @@ async function bridgeReceiverLive({ pid, procStart }, platform = process.platfor
 }
 
 // The incoming messages of the last window and the open waits of live receivers, by receiving thread.
-export async function readBridgeMessages(codexDir, sinceMs, cacheScope = '') {
+export async function readBridgeMessages(codexDir, sinceMs, cacheScope = '', options) {
   const directory = path.join(codexDir, 'plugin-state', 'asb-bridge');
   const names = await fs.readdir(directory).catch(() => []);
   const results = await Promise.all(names.map((name) => {
     const to = name.endsWith('.sqlite') ? name.slice(0, -'.sqlite'.length) : '';
     if (!UUID_RE.test(to)) return { to, messages: [], waits: null };
     // A read error on one database skips only that database.
-    return readBridgeFile(path.join(directory, name), to, sinceMs, cacheScope).then((result) => ({ to, ...result }),
+    return readBridgeFile(path.join(directory, name), to, sinceMs, cacheScope, options).then((result) => ({ to, ...result }),
       () => ({ to, messages: [], waits: null }));
   }));
   return { messages: results.flatMap((result) => result.messages),
@@ -355,23 +367,24 @@ async function threadDatabaseSignature(databasePath) {
 }
 
 // The rows of the kept result. The list and the rows belong to the cache and are frozen: a write to them fails at once.
-export async function readThreadRows({ databasePath, limit = DEFAULT_THREAD_LIMIT } = {}) {
+export async function readThreadRows({ databasePath, limit = DEFAULT_THREAD_LIMIT, native, run } = {}) {
   databasePath ||= await discoverCodexStateDatabase();
   const cappedLimit = safeLimit(limit);
   // The stat comes before the queries, so a write during the queries changes the next signature.
   const signature = await threadDatabaseSignature(databasePath);
   const kept = threadQueryCache.get(databasePath);
   if (signature && kept?.signature === signature && kept.limit === cappedLimit) return kept.rows;
-  const columns = new Set((await querySqliteJson(databasePath, 'pragma table_info(threads);')).map((row) => row.name));
-  const sql = readThreadsSql(cappedLimit, { includeGoals: true, columns });
-
-  let rows;
-  try {
-    rows = await querySqliteJson(databasePath, sql);
-  } catch {
-    // Codex can drop or change thread_goals; read the threads without goals, and report only that error.
-    rows = await querySqliteJson(databasePath, readThreadsSql(cappedLimit, { includeGoals: false, columns }));
-  }
+  // One open serves the pragma, the select, and the fallback select.
+  const rows = await withSqliteDatabase(databasePath, async (query) => {
+    const columns = new Set((await query('pragma table_info(threads);')).map((row) => row.name));
+    const sql = readThreadsSql(cappedLimit, { includeGoals: true, columns });
+    try {
+      return await query(sql);
+    } catch {
+      // Codex can drop or change thread_goals; read the threads without goals, and report only that error.
+      return await query(readThreadsSql(cappedLimit, { includeGoals: false, columns }));
+    }
+  }, { native, run });
   for (const row of rows) Object.freeze(row);
   Object.freeze(rows);
   threadQueryCache.set(databasePath, { signature, limit: cappedLimit, rows });

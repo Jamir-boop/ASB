@@ -8,6 +8,8 @@ import {
   loadCodexDashboard,
   parseSessionIndex,
   parseRolloutSignals,
+  querySqliteJson,
+  readBridgeMessages,
   readThreads,
   readRolloutSignals,
 } from '../src/codex-data.mjs';
@@ -533,4 +535,114 @@ test('a Codex background agent counts only while its activity is in the 6-hour w
   assert.deepEqual(validExport(exported, { machineId: machine.machineId, name: machine.machineName }).rows.map((row) => row.backgroundAgents), [1, 1]);
   assert.deepEqual(counts(board(deadline - 1)).map((row) => row[2]), [1, 1]);
   assert.deepEqual(counts(board(deadline)), [['app', 'unknown', undefined, false], ['cli', 'unknown', undefined, false]]);
+});
+
+async function openCountingNative() {
+  const calls = { opens: 0, sql: [] };
+  class CountingDatabase extends DatabaseSync {
+    constructor(databasePath, options) {
+      super(databasePath, options);
+      calls.opens += 1;
+    }
+    prepare(sql) {
+      calls.sql.push(sql);
+      return super.prepare(sql);
+    }
+  }
+  return { calls, native: Promise.resolve({ DatabaseSync: CountingDatabase }) };
+}
+
+async function bridgeDb(t, threadId, sql) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-bridge-open-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const databasePath = path.join(dir, 'plugin-state', 'asb-bridge', `${threadId}.sqlite`);
+  await fs.mkdir(path.dirname(databasePath), { recursive: true });
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(sql);
+  } finally {
+    database.close();
+  }
+  return { dir, databasePath };
+}
+
+test('one database open serves the messages and waits statements of a fresh bridge read', async (t) => {
+  const seconds = Math.floor(Date.now() / 1000);
+  const threadId = '00000000-0000-4000-8000-0000000000aa';
+  const { dir } = await bridgeDb(t, threadId, `
+    create table messages (peer_id text, direction text, status text, kind text, created_at integer);
+    insert into messages values ('00000000-0000-4000-8000-000000000001', 'in', 'accepted', 'message', ${seconds - 10});
+    create table runtime (singleton integer, approvals integer, questions integer, approval_at integer, question_at integer);
+    create table receiver (singleton integer, pid integer, proc_start text);
+    insert into runtime values (1, 0, 0, 0, 0);
+    insert into receiver values (1, ${process.pid}, 'not-the-start-time');`);
+
+  const { calls, native } = await openCountingNative();
+  const result = await readBridgeMessages(dir, Date.now() - 120_000, '', { native });
+  assert.equal(calls.opens, 1);
+  assert.equal(calls.sql.length, 4);
+  assert.equal(calls.sql[0], 'pragma table_info(messages);');
+  assert.match(calls.sql[1], /^select peer_id, status, created_at, kind\n\s+from messages where direction = 'in' and created_at >= \d+;$/);
+  assert.equal(calls.sql[2], 'pragma table_info(runtime);');
+  assert.match(calls.sql[3], /^select r\.approvals, r\.questions, r\.approval_at, r\.question_at, c\.pid, c\.proc_start/);
+  assert.deepEqual(result.messages, [{ to: threadId, from: '00000000-0000-4000-8000-000000000001', atMs: (seconds - 10) * 1000 }]);
+  assert.equal(result.waits.size, 0);
+});
+
+test('a bridge read of an old database runs no messages pragma and still opens the database once', async (t) => {
+  const threadId = '00000000-0000-4000-8000-0000000000bb';
+  const { dir, databasePath } = await bridgeDb(t, threadId, `
+    create table messages (peer_id text, direction text, status text, kind text, created_at integer);
+    insert into messages values ('00000000-0000-4000-8000-000000000001', 'in', 'accepted', 'message', 1);
+    create table runtime (singleton integer);`);
+  const old = (Date.now() - 600_000) / 1000;
+  await fs.utimes(databasePath, old, old);
+
+  const { calls, native } = await openCountingNative();
+  const result = await readBridgeMessages(dir, Date.now() - 120_000, '', { native });
+  assert.equal(calls.opens, 1);
+  assert.deepEqual(calls.sql, ['pragma table_info(runtime);']);
+  assert.deepEqual(result, { messages: [], waits: new Map() });
+});
+
+test('one database open serves the thread pragma, select, and fallback select', async (t) => {
+  // No thread_goals table: the goals select throws, and the fallback runs on the same open.
+  const { databasePath } = await createSyntheticDb(t, `
+    create table threads (id text primary key, rollout_path text, title text, updated_at_ms integer);
+    insert into threads values ('thread-1', '/tmp/a.jsonl', 'First', 2), ('thread-2', '/tmp/b.jsonl', 'Second', 1);`);
+
+  const { calls, native } = await openCountingNative();
+  const rows = await readThreads({ databasePath, native });
+  assert.equal(calls.opens, 1);
+  assert.equal(calls.sql[0], 'pragma table_info(threads);');
+  assert.match(calls.sql[1], /left join thread_goals tg on tg\.thread_id = threads\.id/);
+  assert.doesNotMatch(calls.sql[2], /thread_goals/);
+  // The fallback rows are the same as a direct read of that statement.
+  assert.deepEqual(rows, (await querySqliteJson(databasePath, calls.sql[2])).map((row) => ({ ...row })));
+  assert.deepEqual(rows.map((row) => row.id), ['thread-1', 'thread-2']);
+});
+
+test('the sqlite3 fallback runs one command for each statement with the same arguments', async (t) => {
+  const { databasePath } = await createSyntheticDb(t, `
+    create table threads (id text primary key, rollout_path text, title text, updated_at_ms integer);
+    create table thread_goals (thread_id text, goal_id text, status text, token_budget integer, tokens_used integer,
+      time_used_seconds integer, created_at_ms integer, updated_at_ms integer);
+    insert into threads values ('thread-1', '/tmp/a.jsonl', 'First', 2);`);
+  const calls = [];
+  const run = async (command, args, options) => {
+    calls.push({ command, args, options });
+    const sql = args[5];
+    const stdout = sql === 'pragma table_info(threads);'
+      ? '[{"name":"id"},{"name":"rollout_path"},{"name":"title"},{"name":"updated_at_ms"}]'
+      : '[{"id":"thread-1","title":"First"}]';
+    return { stdout };
+  };
+  const rows = await readThreads({ databasePath, native: null, run });
+  assert.deepEqual(calls.map(({ command, args }) => [command, args.slice(0, 5)]),
+    [['sqlite3', ['-init', os.devNull, '-readonly', '-json', databasePath]],
+      ['sqlite3', ['-init', os.devNull, '-readonly', '-json', databasePath]]]);
+  assert.equal(calls[0].args[5], 'pragma table_info(threads);');
+  assert.match(calls[1].args[5], /left join thread_goals tg/);
+  assert.deepEqual(calls.map((call) => call.options.maxBuffer), [20 * 1024 * 1024, 20 * 1024 * 1024]);
+  assert.deepEqual(rows, [{ id: 'thread-1', title: 'First' }]);
 });
