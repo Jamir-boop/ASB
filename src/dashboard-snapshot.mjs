@@ -257,7 +257,8 @@ export class DashboardSnapshot {
       firstLoad = {
         firstLoadMs: durationSince(startedAtMs),
         firstLoadDoneMs: Math.round(process.uptime() * 1000),
-        firstLoadBytes: { codex: bytesRead(codex), claude: bytesRead(claude) },
+        // The Codex lifecycle scans count their bytes apart from the tail reads (`rolloutSignals.lifecycleBytesRead`).
+        firstLoadBytes: { codex: bytesRead(codex) + (Number(codex.rolloutSignals.lifecycleBytesRead) || 0), claude: bytesRead(claude) },
         firstLoadDecompressions: codex.rolloutSignals.decompressions,
       };
     };

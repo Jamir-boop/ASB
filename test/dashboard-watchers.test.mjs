@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
+import { getCodexCacheStats } from '../src/codex-data.mjs';
 
 // The snapshot imports stat and readdir by name: the counters replace the built-in exports for this test process.
 const calls = { stat: 0, readdir: 0 };
@@ -402,6 +403,10 @@ test('performance dashboard keeps the first load result fixed after success or e
     assert.equal(Object.keys(first.firstLoadBytes).join(','), 'codex,claude');
     assert.equal(Number.isInteger(first.firstLoadBytes.codex), true);
     assert.equal(Number.isInteger(first.firstLoadBytes.claude), true);
+    // The Codex total holds the tail reads and the lifecycle reads.
+    const codex = getCodexCacheStats();
+    assert.equal(first.firstLoadBytes.codex, Object.values(codex).filter((value) => value && typeof value === 'object')
+      .reduce((sum, value) => sum + (Number(value.bytesRead) || 0), 0) + codex.rolloutSignals.lifecycleBytesRead);
     await snapshot.loadSharedDashboard({ force: true });
     assert.deepEqual(fields(snapshot.performanceSnapshot().dashboard), first);
   }
