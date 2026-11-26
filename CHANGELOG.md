@@ -4,6 +4,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+## ASB 1.19.0 - 2026-11-26
+
 - Codex: the engine keeps the result of each compressed Codex log (`*.jsonl.zst`) in its reader positions. A new engine with the same `.zst` file reads only its last 64 bytes and does not decompress the log. On a home with 1,220 compressed logs, the first engine still reads them all; each later engine skips them.
 - Engine performance: `performance.dashboard` has `firstLoadMs`, `firstLoadDoneMs`, `firstLoadBytes` (`codex` and `claude`), and `firstLoadDecompressions` of the first dashboard load after the engine start. They are `null` until that load ends and fixed after it.
 - Board: the board writes one line to stderr when its first cards show: `ASB board: first cards <n> ms after start`.
@@ -18,6 +20,8 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 - Engine: the engine keeps no copy of the positions file text after a save, checks a saved record only when a reader takes it, and starts loading the positions right after the machine identity is ready.
 - Codex: one read of a Codex or ASB Bridge database opens it once, not once for each statement.
 - Board: a saved list shows its age when it is older than 60 s, and a failed refresh keeps `Reading sessions…` visible while the rows are a saved list.
+
+See [ASB 1.19.0 release notes](docs/releases/v1.19.0.md) for downloads, upgrades, and check limits.
 
 ## ASB 1.18.0 - 2026-11-25
 

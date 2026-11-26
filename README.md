@@ -177,7 +177,7 @@ For phone answers or approvals, run `asb.cmd agent claude-hook install` or `asb.
 ## Optional parts
 
 - [Android app](android/README.md): your sessions, notifications, message counts, and usage on your phone. Phone access is off by default.
-- [ASB Bridge](bridge/README.md): messages between Codex, Claude Code, and OpenCode sessions. The ASB `1.18.0` packages have ASB Bridge `0.11.0`. See [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
+- [ASB Bridge](bridge/README.md): messages between Codex, Claude Code, and OpenCode sessions. The ASB `1.19.0` packages have ASB Bridge `0.11.0`. See [setup and recovery](docs/INSTALL.md#asb-bridge-optional).
 
 [User guide](ASB.md) · [Privacy](docs/PRIVACY.md) · [Source setup](ASB.md#start-and-stop) · [Contributing](CONTRIBUTING.md) · [Install guide](docs/INSTALL.md)
 
