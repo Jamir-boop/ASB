@@ -1363,8 +1363,9 @@ async function readClaudeSignalFile(filePath, { maxBytes = DEFAULT_MAX_JSONL_BYT
       const state = initialSignals();
       const lastNewline = tail.text.lastIndexOf('\n');
       for (const line of tail.text.slice(0, lastNewline + 1).split('\n')) applyClaudeSignalLine(state, line);
-      const visible = structuredClone(state);
-      applyClaudeSignalLine(visible, tail.text.slice(lastNewline + 1));
+      const trailing = tail.text.slice(lastNewline + 1);
+      const visible = trailing ? structuredClone(state) : state;
+      if (trailing) applyClaudeSignalLine(visible, trailing);
       // A warm append reads the lines after its offset, not the whole tail, so its result is not the tail result of a new
       // engine: only a full read of the tail is saved. Its result stays in memory, with the lifecycle checkpoint of the log.
       parsed = { state, signals: finishClaudeSignals(visible), offset: tail.offset, guard: tail.guard, ...(warm ? {} : { tailResult: true }) };
