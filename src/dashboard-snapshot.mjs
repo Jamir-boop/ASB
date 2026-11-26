@@ -22,6 +22,27 @@ const contentText = (dashboard) => {
 const SAVED_LIST_VERSION = 1;
 const SAVED_LIST_MAX_BYTES = 16 * 1024 * 1024;
 const SAVED_LIST_WRITE_MS = 30_000;
+const SAVED_LIST_KEYS = new Set(['threads', 'summary', 'providers', 'messages', 'pinnedOrder', 'refreshIntervalMs', 'persistentUnread', 'sourcesRevision']);
+const SAVED_SUMMARY_KEYS = ['needs', 'working', 'total'];
+const plainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const nonNegativeInt = (value) => Number.isSafeInteger(value) && value >= 0;
+const validSavedList = (list) => {
+  if (!plainObject(list)) return false;
+  for (const key of Object.keys(list)) if (!SAVED_LIST_KEYS.has(key)) return false;
+  if (!Array.isArray(list.threads) || list.threads.some((row) => !plainObject(row) || typeof row.id !== 'string' || row.remote
+    || Object.hasOwn(row, 'questionText') || Object.hasOwn(row, 'question') || Object.hasOwn(row, 'approval'))) return false;
+  if (!plainObject(list.summary) || Object.keys(list.summary).length !== SAVED_SUMMARY_KEYS.length
+    || !SAVED_SUMMARY_KEYS.every((key) => Object.hasOwn(list.summary, key) && nonNegativeInt(list.summary[key]))) return false;
+  if (Object.hasOwn(list, 'providers') && (!Array.isArray(list.providers)
+    || list.providers.some((provider) => !plainObject(provider) || (Object.hasOwn(provider, 'message') && typeof provider.message !== 'string')))) return false;
+  if (Object.hasOwn(list, 'messages') && (!Array.isArray(list.messages) || list.messages.some((message) => !plainObject(message)))) return false;
+  if (Object.hasOwn(list, 'pinnedOrder') && (!Array.isArray(list.pinnedOrder) || list.pinnedOrder.some((id) => typeof id !== 'string'))) return false;
+  if (Object.hasOwn(list, 'refreshIntervalMs') && (typeof list.refreshIntervalMs !== 'number'
+    || !Number.isFinite(list.refreshIntervalMs) || list.refreshIntervalMs <= 0)) return false;
+  if (Object.hasOwn(list, 'persistentUnread') && typeof list.persistentUnread !== 'boolean') return false;
+  if (Object.hasOwn(list, 'sourcesRevision') && list.sourcesRevision !== null && typeof list.sourcesRevision !== 'string') return false;
+  return true;
+};
 const listHash = (text) => createHash('sha256').update(text).digest('base64url');
 // A regular file of this user with the exact mode. Windows has no mode bits and no user ID for the file.
 const privateEntry = (info, mode) => info.isFile() && (process.platform === 'win32' || info.uid === process.getuid() && (info.mode & 0o7777) === mode);
@@ -65,11 +86,10 @@ async function readSavedList(file) {
       }
       if (offset !== info.size) return null;
       const value = JSON.parse(bytes.toString('utf8', 0, offset));
-      if (!value || value.version !== SAVED_LIST_VERSION || typeof value.machineId !== 'string' || !value.machineId
+      if (!plainObject(value) || value.version !== SAVED_LIST_VERSION || typeof value.machineId !== 'string' || !value.machineId
         || !Number.isSafeInteger(value.savedAtMs) || value.savedAtMs <= 0
-        || !('sourcesRevision' in value) || value.list?.sourcesRevision !== value.sourcesRevision
-        || !Array.isArray(value.list.threads) || value.list.threads.some((row) => typeof row?.id !== 'string' || row.remote
-          || Object.hasOwn(row, 'questionText') || Object.hasOwn(row, 'question') || Object.hasOwn(row, 'approval'))) return null;
+        || !Object.hasOwn(value, 'sourcesRevision') || value.list?.sourcesRevision !== value.sourcesRevision
+        || !validSavedList(value.list)) return null;
       return value;
     } finally { await handle.close(); }
   } catch { return null; }

@@ -303,6 +303,14 @@ test('a damaged, wrong, open, too large, or symlinked file is ignored, and the p
     ['a symlink', async (root) => { const target = fileFor(root); await saveFile(root, before);
       const elsewhere = path.join(root, 'target.json'); await rename(target, elsewhere); await symlink(elsewhere, target); }],
     ['too large', async (root) => { await saveFile(root, before); await writeFile(fileFor(root), ' '.repeat(16 * 1024 * 1024 + 1)); }],
+    ['providers null', async (root) => saveFile(root, savedRecord({ ...before.list, providers: null }))],
+    ['a null provider entry', async (root) => saveFile(root, savedRecord({ ...before.list, providers: [null] }))],
+    ['a provider with numeric message', async (root) => saveFile(root, savedRecord({ ...before.list, providers: [{ id: 'codex', message: 42 }] }))],
+    ['messages object', async (root) => saveFile(root, savedRecord({ ...before.list, messages: {} }))],
+    ['pinnedOrder with number', async (root) => saveFile(root, savedRecord({ ...before.list, pinnedOrder: [1] }))],
+    ['negative summary.total', async (root) => saveFile(root, savedRecord({ ...before.list, summary: { needs: 0, working: 0, total: -1 } }))],
+    ['refreshIntervalMs string', async (root) => saveFile(root, savedRecord({ ...before.list, refreshIntervalMs: 'x' }))],
+    ['unknown top-level key', async (root) => saveFile(root, savedRecord({ ...before.list, unexpected: true }))],
   ];
   for (const [name, prepare] of cases) {
     const root = await stateFolder(t);
