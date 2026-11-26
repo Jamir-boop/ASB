@@ -955,6 +955,16 @@ test('a message from another session starts a turn only in an idle chat', async 
   assert.deepEqual([busy.lifecycleRunning, busy.latestTaskStartedAtMs, busy.agentStartedAtMs], [true, resumeNowMs - 30_000, resumeNowMs - 30_000]);
 });
 
+test('a scanned cross-session message keeps the exact sender ID string', async (t) => {
+  const sender = 'local_00000000-0000-4000-8000-000000000001';
+  const message = resumeEvent('user', -40_000, { isMeta: true, message: { content:
+    `Another session sent a message.\n<cross-session-message from-session="${sender}">${'x'.repeat(2048)}</cross-session-message>` } });
+  const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeEnd(-49_000), message]);
+  const thread = await fixture.load();
+  assert.equal(thread.incomingMessages.length, 1);
+  assert.strictEqual(thread.incomingMessages[0].from, sender);
+});
+
 test('a live Claude registry record in the waiting status shows a permission prompt or a question as Waiting', async (t) => {
   const fixture = await signalFixture(t, [resumePrompt(-50_000), resumeWork(-49_000)]);
   const sessions = path.join(path.dirname(fixture.projectsDir), 'sessions');

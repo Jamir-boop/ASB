@@ -229,7 +229,8 @@ export function parseCrossSessionEnvelope(text, maxIndex = 199) {
 }
 
 function crossSessionSender(text, maxIndex) {
-  return parseCrossSessionEnvelope(text, maxIndex)?.sender || '';
+  const sender = parseCrossSessionEnvelope(text, maxIndex)?.sender || '';
+  return sender ? flatId(sender) : '';
 }
 
 // shortcut: these patterns copy the Claude Code wording of the tool results in a subagent log, which has no toolUseResult;
