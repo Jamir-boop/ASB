@@ -11,8 +11,8 @@ import { promisify } from 'node:util';
 import * as zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import { CLAUDE_POSITION_VERSION, CLAUDE_TAIL_POSITION_VERSION, DEFAULT_MAX_JSONL_BYTES, getClaudeCacheStats,
-  loadClaudeDesktopCodeThreads, useClaudePositions, useClaudeQuestionText, useClaudeTailPositions, validClaudeRecord,
-  validClaudeTailRecord } from '../src/claude-data.mjs';
+  loadClaudeDesktopCodeThreads, readClaudeRootSignals, retainClaudeDataSources, useClaudePositions, useClaudeQuestionText,
+  useClaudeTailPositions, validClaudeRecord, validClaudeTailRecord } from '../src/claude-data.mjs';
 import { REMOTE_POSITION_VERSION, useRemotePositions } from '../src/claude-remote-data.mjs';
 import { CODEX_POSITION_VERSION, CODEX_TAIL_POSITION_VERSION, parseRolloutSignals, readRolloutSignals, useRolloutPositions,
   useRolloutTailPositions, validRolloutTailRecord } from '../src/codex-data.mjs';
@@ -1815,4 +1815,49 @@ test('a warm append to a large transcript saves only a canonical tail, and the r
   assert.equal(saved.size, (await fs.stat(claude.paths.big)).size);
   assert.equal(saved.tailResult, undefined);
   assert.ok(warm.threads.length === 1);
+});
+
+test('the UTF-8 file limit holds for non-ASCII Claude row fields, and the exact strings load back', async (t) => {
+  const home = await temporaryDirectory(t);
+  const folder = '/work/carpeta-ñandú-项目-🦀';
+  const title = 'Título de carpeta-ñandú-项目-🦀';
+  const claude = await claudeSource(home, { unicode: [claudeRecord('user', NOW_MS - 1000, { cwd: folder,
+    message: { role: 'user', content: 'MARKERPROMPT' } }), claudeRecord('custom-title', NOW_MS, { customTitle: title })] });
+  const read = async () => (await readClaudeRootSignals({ filePath: claude.paths.unicode }, [],
+    { maxBytes: claude.options.maxBytes, nowMs: NOW_MS })).signals;
+  // Remove other tests' cache entries, so only this claudeTail record is written.
+  retainClaudeDataSources([]);
+  t.after(() => { retainClaudeDataSources([]); resetPositions(); });
+  const file = path.join(home, 'readers', 'positions.json');
+  const open = async (maxFileBytes) => {
+    const positions = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), maxFileBytes });
+    await positions.ready();
+    return positions;
+  };
+  const positions = await open();
+  await read();
+  await positions.flush();
+  const full = await fs.readFile(file, 'utf8');
+  const { claudeTail } = JSON.parse(full);
+  assert.equal(claudeTail.records.length, 1);
+  // Sweep the range where counting code units instead of bytes could admit a record that does not fit.
+  const size = Buffer.byteLength(full);
+  assert.ok(size > full.length + 1);
+  for (let limit = full.length; limit <= size + 1; limit += 1) {
+    await fs.rm(file);
+    const capped = await open(limit);
+    await capped.flush();
+    assert.ok((await fs.stat(file)).size <= limit, `file exceeds the ${limit}-byte limit`);
+    const saved = await readSaved(file);
+    const back = await open(limit);
+    assert.equal(back.stats('claudeTail').loaded, saved.claudeTail.records.length);
+  }
+  retainClaudeDataSources([]);
+  const back = await open(size + 1);
+  const before = getClaudeCacheStats().jsonlSignals.bytesRead;
+  const signals = await read();
+  assert.equal(back.stats('claudeTail').taken, 1);
+  assert.ok(getClaudeCacheStats().jsonlSignals.bytesRead - before <= 64, 'only the saved guard is read');
+  assert.equal(signals.cwd, folder);
+  assert.equal(signals.customTitle, title);
 });

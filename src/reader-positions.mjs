@@ -143,17 +143,18 @@ export function createReaderPositions({ file, key, platform = process.platform, 
       for (const record of records.values()) all.push([section, record]);
     }
     const head = `{"version":${READER_POSITIONS_VERSION},"keyCheck":"${digest(KEY_CHECK)}"`;
-    // The bytes that the section envelopes and the closing brace take. The length comes from the same template as the text
-    // below, so a change of the format cannot make the count drift from the file.
-    let bytes = head.length + 1 + sections.reduce((sum, section) => sum + sectionText(section, []).length, 0);
+    // The limits are in bytes, and the file is UTF-8, so a title or a folder with other characters counts by its encoded size.
+    // The length comes from the same template as the text below, so a change of the format cannot make the count drift.
+    let bytes = Buffer.byteLength(head) + 1 + sections.reduce((sum, section) => sum + Buffer.byteLength(sectionText(section, [])), 0);
     // The newest records of all sections share the file limit; each section keeps at most its own count.
     for (const [section, record] of all.sort((a, b) => b[1].atMs - a[1].atMs)) {
       if (section.kept.length >= MAX_POSITION_RECORDS) continue;
       const text = JSON.stringify(record);
-      if (text.length > MAX_POSITION_RECORD_BYTES) continue;
-      if (bytes + text.length + 1 > maxFileBytes) break;
+      const recordBytes = Buffer.byteLength(text);
+      if (recordBytes > MAX_POSITION_RECORD_BYTES) continue;
+      if (bytes + recordBytes + 1 > maxFileBytes) break;
       section.kept.push(text);
-      bytes += text.length + 1;
+      bytes += recordBytes + 1;
     }
     return `${head}${sections.map((section) => sectionText(section, section.kept)).join('')}}`;
   };
