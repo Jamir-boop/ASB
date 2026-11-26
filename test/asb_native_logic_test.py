@@ -10345,6 +10345,8 @@ class NativeIOAuditChecks(unittest.TestCase):
         def reply(dashboard, error, tag=None):
             _base, route, callback, _dispatch, method, body, etag = requests.pop()
             self.assertEqual((method, body), ("GET", None))
+            # A read before the first fresh list also asks for the engine's saved list.
+            self.assertEqual(route, "/api/dashboard?stale=1" if window.dashboard is None else "/api/dashboard")
             sent, etag[0] = etag[0], tag if dashboard else etag[0]
             callback(dashboard, error)
             return route, sent
@@ -10352,7 +10354,7 @@ class NativeIOAuditChecks(unittest.TestCase):
         with patch.dict(SCOPE, {"request_async": lambda *args: requests.append(args), "GLib": glib}):
             first = {"threads": [{"id": "a", "state": "idle"}]}
             window.tick()
-            self.assertEqual(reply(first, None, '"one"'), ("/api/dashboard", None))
+            self.assertEqual(reply(first, None, '"one"'), ("/api/dashboard?stale=1", None))
             self.assertIs(window.dashboard, first)
             self.assertEqual(window.dashboard_etag, '"one"')
             window.render.assert_called_once_with()
@@ -10455,6 +10457,136 @@ class NativeIOAuditChecks(unittest.TestCase):
             window.refresh(True)
             requests.pop()[2]({"threads": []}, None)
             button.assert_called_once_with(False)
+
+
+class SavedListChecks(unittest.TestCase):
+    """The board with the engine's saved list: the loading line, no seen or Pending change, no sound, and the first
+    request asks with stale=1 until the first fresh list."""
+
+    def board(self):
+        window = object.__new__(Window)
+        window.preferences_window = None
+        window.base, window.dashboard, window.signature, window.dashboard_etag = "http://127.0.0.1:1", None, None, None
+        window.closed = window.loading = window.refresh_queued = window.refresh_force_queued = window.snapshot_pending = False
+        window.refresh_interval_ms, window.clock_interval, window.engine_generation = 5000, 60, 0
+        window.events = SimpleNamespace(connected=False)
+        window.sources_revision = None
+        window.loading = True
+        window.loading_line = SimpleNamespace(text="", set_label=lambda value: setattr(window.loading_line, "text", value),
+                                              set_visible=lambda value: setattr(window.loading_line, "shown", value),
+                                              set_vexpand=lambda value: None)
+        window.scroll = SimpleNamespace(set_visible=lambda value: None)
+        window.refresh_button = SimpleNamespace(set_sensitive=lambda value: None)
+        window.sync_unread_setting, window.set_notice, window.update_clock, window.render, window.report_ui = (Mock() for _ in range(5))
+        window.play_messages = Mock()
+        window.message_seen = None
+        window.heap_trim = None
+        return window
+
+    def reply(self, window, dashboard, error=None, tag=None):
+        window.apply_dashboard(dashboard, error, [tag], False)
+        self.assertFalse(window.loading)
+
+    def saved(self, **values):
+        return {"savedAtMs": time.time() * 1000 - 1_000, "stale": True, "threads": [{"id": "saved", "state": "idle", "pending": True}],
+                **values}
+
+    def test_the_loading_line_shows_with_no_list_and_hides_with_the_first_list(self):
+        window = self.board()
+        self.assertIsNone(window.dashboard)
+        self.reply(window, self.saved())
+        self.assertTrue(window.saved_dashboard())
+        self.assertTrue(window.loading_line.shown)
+        self.assertNotIn("list from", window.loading_line.text)
+        self.reply(window, {"threads": [{"id": "fresh", "state": "idle"}]})
+        self.assertFalse(window.saved_dashboard())
+        self.assertFalse(window.loading_line.shown)
+
+    def test_a_saved_list_from_more_than_a_day_shows_its_age_and_stays_registered(self):
+        window = self.board()
+        self.reply(window, self.saved(savedAtMs=time.time() * 1000 - 3 * 86_400_000))
+        self.assertTrue(window.saved_dashboard())
+        self.assertIn("(list from 3d ago)", window.loading_line.text)
+        # report_ui still goes for a saved list: it registers the window for the launcher.
+        window.report_ui.assert_called()
+
+    def test_a_saved_list_plays_no_sound_and_no_message_and_the_next_fresh_list_is_silent(self):
+        window = self.board()
+        window.ui_client_id = "made-up"
+        played = []
+        with patch.dict(SCOPE, {"play_board_sound": played.append}):
+            self.reply(window, self.saved())
+            # The message play and the board sound are both skipped for a saved list.
+            window.play_messages.assert_not_called()
+            window.sound_event("done.wav", "made-up")
+        self.assertEqual(played, [])
+        self.reply(window, {"threads": [{"id": "fresh", "state": "idle"}],
+                            "messages": [{"from": "fresh", "to": "fresh", "atMs": time.time() * 1000}]})
+        window.play_messages.assert_not_called()
+        # The first fresh list is the message baseline: the next list can play again.
+        self.assertIsNotNone(window.message_seen)
+        with patch.dict(SCOPE, {"play_board_sound": played.append}):
+            window.sound_event("done.wav", "made-up")
+        self.assertEqual(played, ["done.wav"])
+
+    def test_no_seen_or_read_report_from_a_saved_reply(self):
+        window = self.board()
+        posts = []
+        def request(_base, route, *_args, **kwargs):
+            posts.append(route)
+        with patch.dict(SCOPE, {"request_async": request}):
+            self.reply(window, self.saved())
+        # The reply registers the window (report_ui) and sends no mark-read, mark-unread, or row seen report.
+        self.assertIsNone(window.message_seen)
+        self.assertTrue(window.report_ui.called)
+        self.assertEqual(posts, [])
+
+    def test_a_stream_connection_after_the_first_scan_refreshes_a_saved_list_at_once(self):
+        window, requests = self.board(), []
+        window.loading = False
+        window.apply_dashboard = Mock(return_value=False)
+        window.source_changed = Window.source_changed.__get__(window)
+        window.sync_tick = Mock()
+        window.dashboard = self.saved()
+        with patch.dict(SCOPE, {"request_async": lambda *args: requests.append(args), "GLib": SimpleNamespace(idle_add=lambda callback, *args: None)}):
+            # The stream calls back after the first scan ended; a saved list then asks again at once with stale=1.
+            window.refresh_queued = False
+            window.dashboard_etag = '"stale-x"'
+            window.stream_connected()
+            self.assertIsNone(window.dashboard_etag)
+            # The read goes out at once; with the engine's scan in flight it would wait in the queue instead.
+            self.assertEqual(requests[-1][1], "/api/dashboard?stale=1")
+        # A fresh list keeps its tag and needs no read on the connection.
+        window2 = self.board()
+        window2.loading, window2.dashboard = False, {"threads": [{"id": "fresh"}]}
+        window2.dashboard_etag = '"fresh"'
+        window2.refresh_queued = False
+        window2.sync_tick = Mock()
+        reads = []
+        with patch.dict(SCOPE, {"request_async": lambda *args: reads.append(args), "GLib": SimpleNamespace(idle_add=lambda callback, *args: None)}):
+            window2.stream_connected()
+        # A fresh list keeps its tag and takes the usual read of a connection, with no stale query.
+        self.assertEqual((window2.dashboard_etag, reads[-1][1]), ('"fresh"', "/api/dashboard"))
+
+    def test_the_first_request_has_stale_and_a_later_one_does_not(self):
+        window, requests, pending = self.board(), [], []
+        window.loading = False
+        window.apply_dashboard = Mock(return_value=False)
+        with patch.dict(SCOPE, {"request_async": lambda *args: requests.append(args), "GLib": SimpleNamespace(idle_add=lambda callback, *args: None)}):
+            window.refresh()
+            self.assertEqual(requests[-1][1], "/api/dashboard?stale=1")
+            window.loading = False
+            window.dashboard = {"threads": [{"id": "fresh"}]}
+            window.refresh(True)
+            self.assertEqual(requests[-1][1], "/api/dashboard?force=1")
+            window.loading = False
+            window.dashboard = {"threads": [{"id": "fresh"}]}
+            window.refresh()
+            self.assertEqual(requests[-1][1], "/api/dashboard")
+            window.loading = False
+            window.dashboard = self.saved()
+            window.refresh()
+            self.assertEqual(requests[-1][1], "/api/dashboard?stale=1")
 
 
 class BoardStartChecks(unittest.TestCase):
@@ -10772,7 +10904,8 @@ class BoardStartChecks(unittest.TestCase):
             self.assertEqual(start.address(), self.BASE)
             self.assertEqual(SCOPE["SOURCE_TOKEN"], self.TOKEN)
             self.assertEqual(self.outcome(start), [({"threads": [{"id": "a"}]}, None, ['"tag"'])])
-            start.fetch.assert_called_once_with(self.BASE, "/api/dashboard", etag=['"tag"'])
+            # The first request also asks for the engine's saved list; an older engine ignores the query.
+            start.fetch.assert_called_once_with(self.BASE, "/api/dashboard?stale=1", etag=['"tag"'])
             # The result is for one window and is not kept: a later delivery gets nothing, so that its window asks for itself.
             self.assertIsNone(start.outcome)
             self.assertFalse(start.deliver(Mock(), Mock()))

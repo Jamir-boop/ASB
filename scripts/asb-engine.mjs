@@ -165,7 +165,8 @@ export async function runEngine({ env = process.env, platform = process.platform
   let referenceScopes = null;
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, claudeQuestions, answerEnabled: () => gateway.answerReady() === true,
     approveEnabled: () => gateway.approveReady() === true, machineGroup: group, machineRelay: relay, serviceMode: true, platform, env,
-    readerPositions: positions, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform), usageBackupFile: usageBackupPath(env, platform),
+    readerPositions: positions, savedListFile: path.join(stateDir(env, platform), 'last-list.json'),
+    savedListMachineId: () => machineId, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform), usageBackupFile: usageBackupPath(env, platform),
     playSound: createSoundPlayer({ platform }),
     machineIdentity: () => ({ machineId, machineName: group.selfName() }), referenceScopes: () => referenceScopes,
     // ASB Bridge status uses blocking calls, so it runs in a child process.

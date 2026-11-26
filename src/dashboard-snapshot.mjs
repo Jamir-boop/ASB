@@ -1,5 +1,6 @@
-import { watch } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { constants, watch } from 'node:fs';
+import { chmod, lstat, mkdir, open, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getClaudeCacheStats } from './claude-data.mjs';
 import { getCodexCacheStats } from './codex-data.mjs';
@@ -17,6 +18,80 @@ const contentText = (dashboard) => {
   const { generatedAtMs: _, performance: __, ...rows } = dashboard;
   return JSON.stringify({ ...rows, summary: { ...(rows.summary || {}) } });
 };
+
+const SAVED_LIST_VERSION = 1;
+const SAVED_LIST_MAX_BYTES = 16 * 1024 * 1024;
+const SAVED_LIST_WRITE_MS = 30_000;
+const listHash = (text) => createHash('sha256').update(text).digest('base64url');
+// A regular file of this user with the exact mode. Windows has no mode bits and no user ID for the file.
+const privateEntry = (info, mode) => info.isFile() && (process.platform === 'win32' || info.uid === process.getuid() && (info.mode & 0o7777) === mode);
+const privateFolder = (info) => info.isDirectory() && (process.platform === 'win32' || info.uid === process.getuid() && (info.mode & 0o7777) === 0o700);
+
+// The content of the saved last list: the same list text, without member rows, their pins, or their messages. The live
+// dashboard has no summary counts, so the saved list gets counts of the local rows only.
+const savedListText = (dashboard) => {
+  const threads = dashboard.threads.filter((row) => !row.remote);
+  const ids = new Set(threads.map((row) => row.id));
+  const summary = { needs: 0, working: 0, total: 0 };
+  for (const row of threads) {
+    if (row.archived) continue;
+    summary.total += 1;
+    if (row.pending === true) summary.needs += 1;
+    if (row.state === 'working') summary.working += 1;
+  }
+  return contentText({ ...dashboard, threads,
+    ...(dashboard.messages && { messages: dashboard.messages.filter(({ from, to }) => ids.has(from) && ids.has(to)) }),
+    ...(dashboard.pinnedOrder && { pinnedOrder: dashboard.pinnedOrder.filter((id) => !id.startsWith('m:')) }),
+    ...(dashboard.localRefreshIntervalMs && { refreshIntervalMs: dashboard.localRefreshIntervalMs }),
+    summary });
+};
+
+async function readSavedList(file) {
+  try {
+    if (!privateFolder(await lstat(path.dirname(file)))) return null;
+    const info = await lstat(file);
+    if (!privateEntry(info, 0o600) || info.size > SAVED_LIST_MAX_BYTES) return null;
+    // O_NOFOLLOW: a path that was replaced by a symlink after the check is not read. O_NONBLOCK: a pipe cannot make the start wait.
+    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+    try {
+      const opened = await handle.stat();
+      if (!privateEntry(opened, 0o600) || opened.size !== info.size) return null;
+      const bytes = Buffer.allocUnsafe(info.size + 1);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+        if (!bytesRead) break;
+        offset += bytesRead;
+      }
+      if (offset !== info.size) return null;
+      const value = JSON.parse(bytes.toString('utf8', 0, offset));
+      if (!value || value.version !== SAVED_LIST_VERSION || typeof value.machineId !== 'string' || !value.machineId
+        || !Number.isSafeInteger(value.savedAtMs) || value.savedAtMs <= 0
+        || !('sourcesRevision' in value) || value.list?.sourcesRevision !== value.sourcesRevision
+        || !Array.isArray(value.list.threads) || value.list.threads.some((row) => typeof row?.id !== 'string' || row.remote
+          || Object.hasOwn(row, 'questionText') || Object.hasOwn(row, 'question') || Object.hasOwn(row, 'approval'))) return null;
+      return value;
+    } finally { await handle.close(); }
+  } catch { return null; }
+}
+
+// Writes one list. The folder is 0700 and the file 0600; the content goes to a temporary file that a rename replaces, so a
+// reader sees one complete list.
+async function writeSavedList(file, text) {
+  const directory = path.dirname(file);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const info = await lstat(directory);
+  if (!privateFolder(info)) {
+    if (!info.isDirectory() || process.platform === 'win32' || info.uid !== process.getuid()) return false;
+    await chmod(directory, 0o700);
+  }
+  const temporary = `${file}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await writeFile(temporary, text, { mode: 0o600, flag: 'wx' });
+    await rename(temporary, file);
+    return true;
+  } finally { await unlink(temporary).catch(() => {}); }
+}
 
 // Equal ordered JSON fields let a scan keep the text. A shared object can have changed in place, so it does not count as equal.
 const sameListValue = (a, b) => {
@@ -74,6 +149,9 @@ export class DashboardSnapshot {
     serviceMode = false,
     loadDashboard,
     openThread,
+    savedListFile = '',
+    savedListMachineId = () => '',
+    readSourcesRevision = async () => null,
     // Extra fields of each `dashboard` event (the panel tag); the events keep their order.
     dashboardEventFields = null,
   } = {}) {
@@ -92,6 +170,47 @@ export class DashboardSnapshot {
     // The list content of the cached dashboard at one revision; an in-place change moves the revision, so the text is made again.
     let listState = null;
     let dashboardListReusable = true;
+    let hasFreshList = false;
+    const savedListPath = serviceMode ? savedListFile : '';
+    let savedStartup = null;
+    let startupList = null;
+    let lastSavedHash = '';
+    let lastWriteAtMs = -Infinity;
+    let saving = false;
+    const loadLastList = async () => {
+      const value = await readSavedList(savedListPath);
+      const revision = await readSourcesRevision();
+      if (!value || value.machineId !== savedListMachineId() || (value.sourcesRevision ?? null) !== (revision ?? null)) return;
+      const text = JSON.stringify(value.list);
+      if (!hasFreshList && !dashboardClosed) startupList = { text, savedAtMs: value.savedAtMs };
+      lastWriteAtMs = Math.min(now(), value.savedAtMs);
+      lastSavedHash = listHash(text);
+    };
+    const saveLastList = (dashboard) => {
+      if (!savedListPath || dashboardClosed || saving || now() - lastWriteAtMs < SAVED_LIST_WRITE_MS) return;
+      const machineId = savedListMachineId();
+      if (!machineId) return;
+      saving = true;
+      // Do the work after the scan and its clients can use the fresh list. Never make a scan wait on this file.
+      setImmediate(async () => {
+        try {
+          await savedStartup;
+          // The revision that the scan used; without one on the list, the revision now.
+          const sourcesRevision = dashboard.sourcesRevision ?? (await readSourcesRevision()) ?? null;
+          const savedAtMs = now();
+          if (dashboardClosed || savedAtMs - lastWriteAtMs < SAVED_LIST_WRITE_MS) return;
+          const text = savedListText(dashboard);
+          if (Buffer.byteLength(text) > SAVED_LIST_MAX_BYTES) return;
+          const hash = listHash(text);
+          if (hash === lastSavedHash) return;
+          const header = JSON.stringify({ version: SAVED_LIST_VERSION, machineId, sourcesRevision, savedAtMs });
+          const record = `${header.slice(0, -1)},"list":${text}}`;
+          if (Buffer.byteLength(record) > SAVED_LIST_MAX_BYTES) return;
+          lastWriteAtMs = savedAtMs;
+          if (await writeSavedList(savedListPath, record)) lastSavedHash = hash;
+        } catch {} finally { saving = false; }
+      });
+    };
     const listText = (dashboard) => {
       if (listState?.dashboard === dashboard && listState.revision === dashboardRevision) return listState.text;
       const text = contentText(dashboard);
@@ -291,6 +410,9 @@ export class DashboardSnapshot {
               serverMetrics.dashboardSoftInvalidations += 1;
               announceDashboard(reason);
             } else dashboardSources.codex = dashboardSources.claude = false;
+            hasFreshList = true;
+            startupList = null;
+            saveLastList(dashboard);
             // A scan that starts the work brings a 5 min timer of the rest forward; the poll's own scan sets its timer itself.
             if (dashboardServiceTimer && !dashboardClosed && now() + serviceDelay(dashboard) < dashboardServiceDueAtMs) armServiceTimer(serviceDelay(dashboard));
             return dashboard;
@@ -633,6 +755,14 @@ export class DashboardSnapshot {
     Object.assign(this, {
       dashboardForRequest, loadSharedDashboard, invalidateDashboard, performanceSnapshot, openThreadOnce,
       cachedDashboard: () => dashboardCache?.dashboard,
+      // The startup list is separate from the fresh cache and never comes back after the first successful scan.
+      staleList: async () => {
+        if (hasFreshList || !savedStartup) return null;
+        await savedStartup;
+        if (!startupList || hasFreshList || dashboardClosed) return null;
+        if (!dashboardLoadPromise) loadSharedDashboard().catch(() => {});
+        return startupList;
+      },
       listText,
       revision: () => dashboardRevision,
       broadcastEvent: (event, payload) => broadcastDashboardEvent(event, payload),
@@ -652,6 +782,7 @@ export class DashboardSnapshot {
         });
       },
       attach: (server) => {
+        if (savedListPath) server.once('listening', () => { savedStartup = loadLastList().catch(() => {}); });
         if (serviceMode) server.once('listening', pollServiceDashboard);
         if (typeof dashboardWatchPaths === 'function' || dashboardWatchPaths?.length) server.once('listening', retryAdaptiveWatchers);
 

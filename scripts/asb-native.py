@@ -3196,6 +3196,10 @@ MESSAGE_STATUS_HEADS = {
 MESSAGE_NEXT_PERIOD = {"24h": "7d", "7d": "30d"}
 
 
+# The start asks for the engine's saved list too: a restarted engine answers at once, and an older engine ignores the query.
+EARLY_STALE = "?stale=1"
+
+
 class LauncherStart:
     """The engine address when the launcher starts the board before the engine is ready (the address argument is "-").
     The launcher writes JSON address lines to stdin when the engine is ready or restarts. A thread reads it and then loads the first
@@ -3313,7 +3317,8 @@ class LauncherStart:
         # The placeholder is delivered when the request raises more than RuntimeError: the window then tries again by itself.
         outcome = (None, "Cannot load sessions.", etag)
         try:
-            outcome = (self.fetch(self.base, "/api/dashboard", etag=etag), None, etag)
+            # stale=1: a restarted engine answers at once with its saved list, or waits for the first scan as before.
+            outcome = (self.fetch(self.base, "/api/dashboard" + EARLY_STALE, etag=etag), None, etag)
         except RuntimeError as error:
             outcome = (None, str(error), etag)
         except Exception:
@@ -7363,6 +7368,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
     filter_model = ()
     filter_popover_signature = None
     message_seen = None
+    dashboard = loading_line = None
     pending_messages = ()
     engine_generation = 0
     number_hold = number_idle = number_scroll = number_pressed = None
@@ -7758,6 +7764,13 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.notice.add_css_class("warning")
         self.notice.set_visible(False)
         body.append(self.notice)
+        self.loading_line = label("Reading sessions…", "caption")
+        self.loading_line.add_css_class("dim-label")
+        self.loading_line.set_xalign(.5)
+        self.loading_line.set_halign(Gtk.Align.CENTER)
+        self.loading_line.set_valign(Gtk.Align.CENTER)
+        self.loading_line.set_vexpand(True)
+        self.loading_line.set_wrap(True)
         self.list_body = SessionStrip(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
                                       margin_start=4, margin_end=4, margin_bottom=4)
         self.scroll = ColumnScroll(vexpand=True, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
@@ -7792,7 +7805,11 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         scrollbar_press.connect("pressed", self.hide_numbers)
         self.scroll.get_hscrollbar().add_controller(scrollbar_press)
         # The no-open toast shows at the bottom center of the board (show_no_open_toast).
-        self.toast_overlay = Adw.ToastOverlay(child=self.scroll)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
+        content.append(self.loading_line)
+        self.scroll.set_visible(False)
+        content.append(self.scroll)
+        self.toast_overlay = Adw.ToastOverlay(child=content)
         body.append(self.toast_overlay)
         wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES,
                                           propagation_phase=Gtk.PropagationPhase.CAPTURE)
@@ -7886,11 +7903,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
 
     def sound_event(self, file, client_id):
         # Only the Board that reported last plays the sound, so two Boards do not both play it.
-        if client_id == self.ui_client_id and not self.closed:
+        if client_id == self.ui_client_id and not self.closed and not self.saved_dashboard():
             play_board_sound(file)
         return False
 
     def stream_connected(self):
+        # A first scan that ended before this stream opened sent its event to no one: a saved list then asks again at once.
+        if self.dashboard is None or self.saved_dashboard():
+            self.dashboard_etag = None
+            self.message_seen = None
         self.source_changed()
         self.sync_tick()
         return False
@@ -8586,6 +8607,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.refresh(queue=True)
         return False
 
+    def saved_dashboard(self):
+        return self.dashboard is not None and self.dashboard.get("stale") is True
+
     def refresh(self, force=False, queue=False):
         if self.closed:
             return
@@ -8598,14 +8622,17 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         self.loading = True
         etag = [self.dashboard_etag]
         base, generation = self.base, self.engine_generation
+        # Until the first fresh list arrives, every read also asks for the engine's saved list; an older engine ignores the query.
+        stale = self.dashboard is None or self.saved_dashboard()
+        params = [item for item in ("force=1" if force else "", "stale=1" if stale else "") if item]
+        route = "/api/dashboard" + ("?" + "&".join(params) if params else "")
         def finished(dashboard, error):
             if generation != self.engine_generation:
                 self.loading = False
                 self.refresh(force, queue=True)
                 return False
             return self.apply_dashboard(dashboard, error, etag, force)
-        request_async(base, "/api/dashboard?force=1" if force else "/api/dashboard",
-                      finished, GLib.idle_add, "GET", None, etag)
+        request_async(base, route, finished, GLib.idle_add, "GET", None, etag)
 
     def apply_dashboard(self, dashboard, error, etag=None, forced=False):
         if self.closed:
@@ -8620,11 +8647,15 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if error:
             # A later 304 changes no widget, so it must not keep this notice.
             self.dashboard_etag = None
+            if self.loading_line is not None:
+                self.loading_line.set_visible(False)
             self.set_notice(error)
             return False
+        previous_stale = self.saved_dashboard()
         if dashboard is not None:
             self.dashboard, self.dashboard_etag = dashboard, etag and etag[0]
-            self.sources_revision = source_revision(dashboard.get("sourcesRevision"))
+            if not self.saved_dashboard():
+                self.sources_revision = source_revision(dashboard.get("sourcesRevision"))
             model = filter_profiles(dashboard)
             if model != self.filter_model:
                 self.filter_model = model
@@ -8636,8 +8667,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                     self.signature = None
                 self.filter_popover_signature = None
         preferences = self.preferences_window
-        if preferences and preferences.profiles_editor:
+        if preferences and preferences.profiles_editor and not self.saved_dashboard():
             preferences.profiles_editor.observe_revision(self.sources_revision)
+        # The report also goes for a saved list: it registers the window, so the launcher focuses it instead of opening a second.
         self.report_ui()
         if dashboard is None:
             return False
@@ -8652,12 +8684,27 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 self.timer = GLib.timeout_add(interval, self.tick)
         self.sync_unread_setting(dashboard.get("persistentUnread", True))
         self.set_notice(" ".join(provider.get("message", "") for provider in dashboard.get("providers", []) if provider.get("message")), temporary=True)
+        if self.loading_line is not None:
+            self.scroll.set_visible(True)
+            self.loading_line.set_vexpand(False)
+            self.loading_line.set_visible(self.saved_dashboard())
+            if self.saved_dashboard():
+                now = time.time() * 1000
+                saved_at = dashboard.get("savedAtMs")
+                age = row_meta({"updatedAtMs": saved_at}, now).split(" · ", 1)[1] \
+                    if type(saved_at) in (int, float) and now - saved_at > 86_400_000 else ""
+                self.loading_line.set_label("Reading sessions…" + (f" (list from {age})" if age else ""))
         signature = dashboard.get("threads", [])
         if signature != self.signature or any(type(row.get("sourceCount")) is not type(previous.get("sourceCount"))
                                                for row, previous in zip(signature, self.signature or [])):
             self.signature = signature
             self.render()
-        self.play_messages(dashboard.get("messages"))
+        # The first fresh list is the message baseline. No light or pet plays while a saved list shows or when it leaves.
+        if not self.saved_dashboard():
+            if previous_stale:
+                self.message_seen = new_messages(dashboard.get("messages"), None, {}, 0, 0)[1]
+            else:
+                self.play_messages(dashboard.get("messages"))
         self.update_clock()
         if self.snapshot_pending:
             self.snapshot_pending = False

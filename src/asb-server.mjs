@@ -128,7 +128,7 @@ export function createAsbServer({
     if (!dashboard) return {};
     return { panel: createHash('sha256').update(JSON.stringify(panelReply(dashboard, await panelMachines()))).digest('base64url').slice(0, 16) };
   } : null;
-  const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions, dashboardEventFields });
+  const snapshot = new DashboardSnapshot({ serviceMode, now, ...snapshotOptions, readSourcesRevision, dashboardEventFields });
   const answeringRequests = new Set();
   const agyWatchers = new Map();
   const stopAgyWatcher = (requestId) => { agyWatchers.get(requestId)?.(); agyWatchers.delete(requestId); };
@@ -939,6 +939,21 @@ export function createAsbServer({
 
     if (url.pathname === '/api/dashboard') {
       try {
+        // Only `stale=1` takes the saved last list while the first scan has not ended. The phone gateway never asks with it.
+        if (url.searchParams.get('stale') === '1') {
+          const stale = await snapshot.staleList();
+          if (stale) {
+            const entry = listEntry(stale.text, palette, stale.text, 'stale\0');
+            const headers = { etag: entry.etag, 'cache-control': 'no-store' };
+            const gzip = acceptsGzip(request.headers['accept-encoding']);
+            if (gzip && !entry.gzip) entry.gzip = gzipHead(`${entry.list.slice(0, -1)},`);
+            const rest = JSON.stringify({ stale: true, savedAtMs: stale.savedAtMs });
+            response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers,
+              ...(gzip ? { 'content-encoding': 'gzip', vary: 'Accept-Encoding' } : {}) });
+            response.end(gzip ? gzipWithTail(entry.gzip, rest.slice(1)) : `${rest.slice(0, -1)},${entry.list.slice(1)}`);
+            return;
+          }
+        }
         const dashboard = await loadSharedDashboard({ force: parseBooleanSearchParam(url.searchParams.get('force')) });
         // The rows can change in place between scans, and each such change moves the snapshot revision, so the snapshot makes the list
         // text again. The saved list and its tag are for one list text and one palette: a scan with the same content keeps them.

@@ -266,8 +266,9 @@ class BoardProcessCheck(unittest.TestCase):
         self.assertIsNone(board.poll())
         self.assertGreater((self.directory / "board.png").stat().st_size, 0)
         dashboards = [item for item in self.received if item[0] == "GET" and item[1].split("?")[0] == "/api/dashboard"]
-        # The early request is the only dashboard request until the next poll. Dashboard reads send no token.
-        self.assertEqual(dashboards, [("GET", "/api/dashboard", None)])
+        # The early request is the only dashboard request until the next poll. It asks for the saved list too (stale=1);
+        # an older engine ignores the query. Dashboard reads send no token.
+        self.assertEqual(dashboards, [("GET", "/api/dashboard?stale=1", None)])
         # The token of the line is the token of later requests: the board shares its palette with it.
         for _attempt in range(50):
             if any(item[:2] == ("POST", "/api/palette") for item in self.received):
@@ -2059,12 +2060,27 @@ class WidgetCheck(unittest.TestCase):
 
     def test_a_window_that_finds_the_early_result_taken_asks_for_the_first_dashboard_itself(self):
         window, requests, waiting = self.early_window(taken=True)
-        self.assertEqual([(route, method) for route, _callback, method, _body, _etag in requests], [("/api/dashboard", "GET")])
+        # No list yet, so the first request also asks for the engine's saved list.
+        self.assertEqual([(route, method) for route, _callback, method, _body, _etag in requests], [("/api/dashboard?stale=1", "GET")])
         self.assertTrue(window.loading)
         requests[0][1](copy.deepcopy(FIXTURE), None)
         self.drain(.2)
         self.assertIn("second", window.row_order)
         self.assertFalse(window.loading)
+
+    def test_the_first_list_asks_with_stale_and_a_later_one_does_not(self):
+        # The window waits for the early request; its own reads use the real refresh with the test request.
+        window, requests, _waiting = self.early_window(taken=True)
+        window.loading, window.dashboard = False, None
+        window.refresh(False)
+        self.assertEqual(requests[-1][0], "/api/dashboard?stale=1")
+        window.loading, window.dashboard = False, copy.deepcopy(FIXTURE)
+        window.refresh(False)
+        self.assertEqual(requests[-1][0], "/api/dashboard")
+        window.loading, window.dashboard = False, {**copy.deepcopy(FIXTURE), "stale": True}
+        window.refresh(False)
+        self.assertEqual(requests[-1][0], "/api/dashboard?stale=1")
+        window.loading = False
 
     def test_a_failed_early_dashboard_shows_no_notice_and_the_normal_first_refresh_asks_again(self):
         window, requests, waiting = self.early_window()
@@ -2072,7 +2088,7 @@ class WidgetCheck(unittest.TestCase):
         dispatch(callback, None, "Cannot load sessions. Check that ASB is running, then refresh.", [None])
         self.drain(.2)
         self.assertEqual(window.notice.get_visible(), False)
-        self.assertEqual([(route, method) for route, _callback, method, _body, _etag in requests], [("/api/dashboard", "GET")])
+        self.assertEqual([(route, method) for route, _callback, method, _body, _etag in requests], [("/api/dashboard?stale=1", "GET")])
         self.assertTrue(window.loading)
         requests[0][1](copy.deepcopy(FIXTURE), None)
         self.drain(.2)
@@ -2089,6 +2105,41 @@ class WidgetCheck(unittest.TestCase):
         window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", mock_dashboard(), theme_path=False, layout_path=False)
         self.addCleanup(window.close)
         return window
+
+    def test_the_loading_line_shows_from_the_first_frame_and_hides_with_a_list(self):
+        for target, name, value in ((asb, "EventStream", lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None, connected=False)),
+                                    (asb.SwitchboardWindow, "refresh", lambda *_args, **_kwargs: None)):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window = asb.SwitchboardWindow(self.application, "http://127.0.0.1:1", theme_path=False, layout_path=False)
+        self.addCleanup(window.close)
+        window.present()
+        self.drain(.2)
+        # No list yet: the content area shows one centered dim line; the list is empty and hidden.
+        self.assertIsNone(window.dashboard)
+        self.assertTrue(window.loading_line.get_visible())
+        self.assertEqual(window.loading_line.get_label(), "Reading sessions…")
+        self.assertTrue(window.loading_line.has_css_class("dim-label"))
+        self.assertEqual(window.loading_line.get_xalign(), .5)
+        self.assertFalse(window.scroll.get_visible())
+        # The first list hides the line and shows the list; a saved list shows it again above the rows.
+        window.apply_dashboard(copy.deepcopy(FIXTURE), None)
+        self.drain(.2)
+        self.assertFalse(window.loading_line.get_visible())
+        self.assertTrue(window.scroll.get_visible())
+        self.assertIn("second", window.row_order)
+        saved = copy.deepcopy(FIXTURE)
+        saved.update(stale=True, savedAtMs=time.time() * 1000 - 1_000)
+        window.apply_dashboard(saved, None)
+        self.drain(.2)
+        self.assertTrue(window.loading_line.get_visible())
+        self.assertEqual(window.loading_line.get_label(), "Reading sessions…")
+        self.assertIn("second", window.row_order)
+        # A fresh list after the saved one hides the line again.
+        window.apply_dashboard(copy.deepcopy(FIXTURE), None)
+        self.drain(.2)
+        self.assertFalse(window.loading_line.get_visible())
 
     def test_the_snapshot_waits_for_a_drawn_frame_and_saves_one_image(self):
         with tempfile.TemporaryDirectory(prefix="asb-snapshot-") as temporary:
