@@ -1969,3 +1969,127 @@ test('E1: newline-ending Claude logs save signals as "state", partial lines save
   t.diagnostic(`mixedClaude positions file: two-part ${expandedBytes} B -> compact ${compactBytes} B (-${dropPercent}%)`);
   assert.ok(compactBytes <= expandedBytes * 0.7, `expected >= 30% drop: ${compactBytes} vs ${expandedBytes}`);
 });
+
+test('E3: Claude record format matches the expected encoding for the current format versions', async (t) => {
+  const home = await temporaryDirectory(t);
+  const claude = await claudeSource(home, {
+    plain: [claudePrompt(NOW_MS - 600_000), claudeReply(NOW_MS - 590_000), ...claudeTitles(NOW_MS - 580_000)],
+    question: [claudePrompt(NOW_MS - 600_000),
+      claudeTool(NOW_MS - 590_000, 'call-ask', 'AskUserQuestion', { questions: [{ question: 'MARKERQUESTION?' }] })],
+    bg: [claudePrompt(NOW_MS - 600_000), ...claudeLaunch(NOW_MS - 595_000, 'call-agent', 'agent-01'),
+      claudeTool(NOW_MS - 590_000, 'call-bash', 'Bash', { command: 'MARKERPROMPT', run_in_background: true }),
+      claudeResult(NOW_MS - 589_900, 'call-bash', { toolUseResult: { backgroundTaskId: 'bash-01' } }),
+      claudeReply(NOW_MS - 580_000)],
+    msg: [claudePrompt(NOW_MS - 600_000), claudeReply(NOW_MS - 590_000), claudeMessage(NOW_MS - 580_000)],
+    big: [claudePrompt(NOW_MS - 600_000), ...claudeLaunch(NOW_MS - 595_000, 'call-big', 'agent-big'),
+      claudeReply(NOW_MS - 580_000), ...claudeFiller(NOW_MS - 500_000, 8 * 1024)],
+  }, 4096);
+  const file = path.join(home, 'readers', 'positions.json');
+  await engine({ claudeOnly: claude.options, nowMs: NOW_MS, file, key: KEY });
+  const saved = await readSaved(file);
+  const strip = ({ k, guard, atMs, dev, ino, mtimeMs, ctimeMs, ...rest }) => rest;
+  const pick = (section) => Object.fromEntries(Object.entries(claude.paths).flatMap(([name, filePath]) => {
+    const record = saved[section].records.find((item) => item.k === recordKey(filePath, KEY, section));
+    return record ? [[name, strip(record)]] : [];
+  }));
+  const expectedByVersion = {
+    'claude-1': {
+      big: {
+        size: 9851, offset: 9851, guardBytes: 64,
+        lifecycle: {
+          running: false, startedAtMs: 1791460200000, promptStartedAtMs: 1791460200000, activityAtMs: 1791460205100,
+          eventAtMs: 1791460220000, kind: 'task_complete', finalAtMs: 1791460220000, endedAtMs: 1791460220000,
+          endKind: 'task_complete', limitResetsAtMs: 0,
+          agents: [['agent-big', 1791460205100, 1791460205000, 1791460200000, 0, '', null, 0]],
+          agentTools: [['call-big', 1791460205000, 1791460200000, 0]],
+          wrapUps: [], shells: [], shellEnds: [], messages: [],
+        },
+      },
+    },
+    'claude-tail-1': {
+      plain: {
+        size: 537, offset: 537, guardBytes: 64, maxBytes: 4096,
+        state: {
+          fields: { agentName: 'MARKERNAME', customTitle: 'MARKERTITLE', cwd: '', entrypoint: '', gitBranch: 'MARKERBRANCH', model: '', sessionId: '', version: '' },
+          times: { latestAgentFinalAtMs: 1791460210000, latestEventAtMs: 1791460210000, latestUserMessageAtMs: 1791460200000, oldestEventAtMs: 1791460200000 },
+          lifecycle: {
+            running: false, startedAtMs: 1791460200000, promptStartedAtMs: 1791460200000, activityAtMs: 1791460200000,
+            eventAtMs: 1791460210000, kind: 'task_complete', finalAtMs: 1791460210000, endedAtMs: 1791460210000,
+            endKind: 'task_complete', limitResetsAtMs: 0,
+            agents: [], agentTools: [], wrapUps: [], shells: [], shellEnds: [], messages: [],
+          },
+          pending: [], pendingToolAtMs: 0,
+        },
+        signals: 'state',
+      },
+      question: {
+        size: 360, offset: 360, guardBytes: 64, maxBytes: 4096,
+        state: {
+          fields: { agentName: '', customTitle: '', cwd: '', entrypoint: '', gitBranch: 'MARKERBRANCH', model: '', sessionId: '', version: '' },
+          times: { latestAgentFinalAtMs: null, latestEventAtMs: 1791460210000, latestUserMessageAtMs: 1791460200000, oldestEventAtMs: 1791460200000 },
+          lifecycle: {
+            running: true, startedAtMs: 1791460200000, promptStartedAtMs: 1791460200000, activityAtMs: 1791460210000,
+            eventAtMs: 1791460210000, kind: 'task_started', finalAtMs: 0, endedAtMs: 0,
+            endKind: '', limitResetsAtMs: 0,
+            agents: [], agentTools: [], wrapUps: [], shells: [], shellEnds: [], messages: [],
+          },
+          pending: [['call-ask', 'AskUserQuestion', 1791460210000]], pendingToolAtMs: 1791460210000,
+        },
+        signals: 'state',
+      },
+      bg: {
+        size: 1239, offset: 1239, guardBytes: 64, maxBytes: 4096,
+        state: {
+          fields: { agentName: '', customTitle: '', cwd: '', entrypoint: '', gitBranch: 'MARKERBRANCH', model: '', sessionId: '', version: '' },
+          times: { latestAgentFinalAtMs: 1791460220000, latestEventAtMs: 1791460220000, latestUserMessageAtMs: 1791460200000, oldestEventAtMs: 1791460200000 },
+          lifecycle: {
+            running: false, startedAtMs: 1791460200000, promptStartedAtMs: 1791460200000, activityAtMs: 1791460210100,
+            eventAtMs: 1791460220000, kind: 'task_complete', finalAtMs: 1791460220000, endedAtMs: 1791460220000,
+            endKind: 'task_complete', limitResetsAtMs: 0,
+            agents: [['agent-01', 1791460205100, 1791460205000, 1791460200000, 0, '', null, 0]],
+            agentTools: [['call-agent', 1791460205000, 1791460200000, 0]],
+            wrapUps: [], shells: [['bash-01', 1791460210100, 0]], shellEnds: [], messages: [],
+          },
+          pending: [], pendingToolAtMs: 0,
+        },
+        signals: 'state',
+      },
+      msg: {
+        size: 560, offset: 560, guardBytes: 64, maxBytes: 4096,
+        state: {
+          fields: { agentName: '', customTitle: '', cwd: '', entrypoint: '', gitBranch: 'MARKERBRANCH', model: '', sessionId: '', version: '' },
+          times: { latestAgentFinalAtMs: 1791460210000, latestEventAtMs: 1791460220000, latestUserMessageAtMs: 1791460200000, oldestEventAtMs: 1791460200000 },
+          lifecycle: {
+            running: true, startedAtMs: 1791460220000, promptStartedAtMs: 1791460220000, activityAtMs: 1791460220000,
+            eventAtMs: 1791460220000, kind: 'task_started', finalAtMs: 1791460210000, endedAtMs: 1791460210000,
+            endKind: 'task_complete', limitResetsAtMs: 0,
+            agents: [], agentTools: [], wrapUps: [], shells: [], shellEnds: [],
+            messages: [['local_00000000-0000-4000-8000-000000000001', 1791460220000]],
+          },
+          pending: [], pendingToolAtMs: 0,
+        },
+        signals: 'state',
+      },
+      big: {
+        size: 9851, offset: 9851, guardBytes: 64, maxBytes: 4096,
+        state: {
+          fields: { agentName: '', customTitle: '', cwd: '', entrypoint: '', gitBranch: 'MARKERBRANCH', model: '', sessionId: '', version: '' },
+          times: { latestAgentFinalAtMs: null, latestEventAtMs: null, latestUserMessageAtMs: null, oldestEventAtMs: 1791460300000 },
+          lifecycle: {
+            running: false, startedAtMs: 1791460200000, promptStartedAtMs: 1791460200000, activityAtMs: 1791460205100,
+            eventAtMs: 1791460220000, kind: 'task_complete', finalAtMs: 1791460220000, endedAtMs: 1791460220000,
+            endKind: 'task_complete', limitResetsAtMs: 0,
+            agents: [['agent-big', 1791460205100, 1791460205000, 1791460200000, 0, '', null, 0]],
+            agentTools: [['call-big', 1791460205000, 1791460200000, 0]],
+            wrapUps: [], shells: [], shellEnds: [], messages: [],
+          },
+          pending: [], pendingToolAtMs: 0,
+        },
+        signals: 'state',
+      },
+    },
+  };
+  const message = 'A Claude record format changed: raise CLAUDE_POSITION_VERSION or CLAUDE_TAIL_POSITION_VERSION, and update this expected record.';
+  assert.deepEqual(pick('claude'), expectedByVersion[CLAUDE_POSITION_VERSION], message);
+  assert.deepEqual(pick('claudeTail'), expectedByVersion[CLAUDE_TAIL_POSITION_VERSION], message);
+});
