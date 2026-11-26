@@ -179,6 +179,8 @@ data class Thread(
     val machineName: String = "",
     val remote: Boolean = false,
     val surface: String = "app",
+    // A local OpenCode row that a live TUI shows now; it still opens, in kitty. An older engine sends none.
+    val inTerminal: Boolean = false,
     val globalId: String = "",
 ) {
     /** The ID that is the same on every engine of a machine group; older PCs send no globalId. */

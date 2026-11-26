@@ -230,6 +230,14 @@ class CardRulesTest {
         assertEquals(null to "", rowWhere(idle))
     }
 
+    @Test fun anOpenCodeRowOpenInATerminalSaysCliAndStillOpens() {
+        val tui = idle.copy(surface = "app", inTerminal = true, canOpen = true)
+        assertEquals(R.drawable.ic_terminal to "CLI", rowWhere(tui))
+        assertFalse(isViewOnly(tui))
+        assertEquals(R.drawable.ic_machine to "homeLP", rowWhere(remote.copy(surface = "app", inTerminal = true)))
+        assertEquals(null to "", rowWhere(idle.copy(surface = "app", inTerminal = false)))
+    }
+
     @Test fun viewOnlyToneIsQuietWithNoAttention() {
         assertEquals("", viewOnlyTone(idle))
         assertEquals("rest", viewOnlyTone(remote))

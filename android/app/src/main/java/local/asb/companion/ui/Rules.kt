@@ -368,7 +368,7 @@ fun isViewOnly(row: Thread): Boolean = row.remote || row.surface == "cli"
 // Port of row_where: the glyph and the text that say where a view-only session runs.
 fun rowWhere(row: Thread): Pair<Int?, String> = when {
     row.remote -> R.drawable.ic_machine to row.machineName.ifEmpty { "another machine" }
-    row.surface == "cli" -> R.drawable.ic_terminal to "CLI"
+    row.surface == "cli" || row.inTerminal -> R.drawable.ic_terminal to "CLI"
     else -> null to ""
 }
 

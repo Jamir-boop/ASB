@@ -1241,7 +1241,7 @@ private fun SessionCard(
         if (!row.canOpen && !viewOnly) "No direct link" else "",
         // As the board label: On homeLP. CLI session. View only.
         if (row.remote) "On ${row.machineName.ifEmpty { "another machine" }}" else "",
-        if (row.surface == "cli") "CLI session" else "",
+        if (row.surface == "cli" || row.inTerminal) "CLI session" else "",
         if (viewOnly) "View only" else "",
         if (opening) "Opening" else "",
     ).let(::joinSentences)
@@ -1300,7 +1300,7 @@ private fun SessionCard(
             fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.state), maxLines = 1,
             modifier = Modifier.clearAndSetSemantics { })
         BackgroundCounts(row, tones.caption, comfortable = false, shown = showBackground)
-        if (viewOnly) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
+        if (where.isNotEmpty()) Text("· $where", fontSize = 11.sp, lineHeight = 14.sp, color = hexColor(tones.caption), maxLines = 1,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = with(density) { 66.sp.toDp() }).clearAndSetSemantics { })
     } else Box(card.semantics { contentDescription = description }) {
         val slots = cornerSlots(cornerControls(row, drawerView, confirmed, nowMs))
@@ -1343,7 +1343,7 @@ private fun SessionCard(
                     if (whereGlyph != null) Icon(painterResource(whereGlyph), contentDescription = null, tint = hexColor(tones.caption),
                         modifier = Modifier.size(11.dp))
                     // About 12 characters of the 11 sp caption; the machine name ellipsizes before the age.
-                    if (viewOnly) Text(if (limited) where else "$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
+                    if (where.isNotEmpty()) Text(if (limited) where else "$where ·", fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = hexColor(tones.caption),
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.widthIn(max = with(density) { 80.sp.toDp() }))
                     // While the countdown runs, the bottom line has one phrase at the left and no age at the right.
