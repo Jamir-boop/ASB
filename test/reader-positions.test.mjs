@@ -828,6 +828,36 @@ test('the file limit drops the oldest records first', async (t) => {
   assert.deepEqual(kept.map((record) => record.atMs), kept.map((record) => record.atMs).sort((a, b) => b - a));
 });
 
+test('a file filled to the limit is not longer than the limit, and it loads back', async (t) => {
+  t.after(resetPositions);
+  const directory = await temporaryDirectory(t);
+  const files = await plainRollouts(directory, 12, 4 * 1024);
+  const file = path.join(directory, 'readers', 'positions.json');
+  // The head and the five section envelopes are about 500 bytes. Each limit from a few bytes above that to larger values must
+  // give a file of at most that limit, also when only a few bytes of a record fit.
+  let filled = 0;
+  for (let limit = 520; limit <= 1400; limit += 1) {
+    resetPositions();
+    await fs.rm(file, { force: true });
+    let clock = Date.now();
+    const positions = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), now: () => clock, saveDelayMs: 0, maxFileBytes: limit });
+    await positions.ready();
+    for (const rollout of files) await readRolloutSignals(rollout.path, { initialBytes: 4096, maxBytes: 4096 });
+    await positions.flush();
+    const { size } = await fs.stat(file);
+    assert.ok(size <= limit, `${size} bytes for a ${limit}-byte limit`);
+    if (size > limit - 40) filled += 1;
+    // The file loads back in a new instance, and the records it holds are the newest ones.
+    resetPositions();
+    const kept = JSON.parse(await fs.readFile(file, 'utf8'));
+    const back = createReaderPositions({ file, key: async () => Buffer.from(KEY, 'hex'), maxFileBytes: limit });
+    await back.ready();
+    assert.equal(back.stats('codex').loaded, kept.codex.records.length);
+    assert.equal(back.stats('codexTail').loaded, kept.codexTail.records.length);
+  }
+  assert.ok(filled > 10, `${filled} near-full files`);
+});
+
 test('positions are saved once after the first scan, then at most once in 10 minutes when they changed, and at flush', async (t) => {
   const directory = await temporaryDirectory(t);
   const files = await plainRollouts(directory, 2);

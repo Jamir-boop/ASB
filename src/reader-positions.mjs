@@ -128,6 +128,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
     }
   })();
 
+  const sectionText = (section, kept) => `,"${section.name}":{"version":"${section.version}","records":[${kept.join(',')}]}`;
   // One synchronous step: the cache entries do not change after they are saved, and a running scan cannot change this list.
   const serialize = (atMs) => {
     const all = [];
@@ -142,7 +143,9 @@ export function createReaderPositions({ file, key, platform = process.platform, 
       for (const record of records.values()) all.push([section, record]);
     }
     const head = `{"version":${READER_POSITIONS_VERSION},"keyCheck":"${digest(KEY_CHECK)}"`;
-    let bytes = head.length + 1 + sections.reduce((sum, section) => sum + section.name.length + section.version.length + 30, 0);
+    // The bytes that the section envelopes and the closing brace take. The length comes from the same template as the text
+    // below, so a change of the format cannot make the count drift from the file.
+    let bytes = head.length + 1 + sections.reduce((sum, section) => sum + sectionText(section, []).length, 0);
     // The newest records of all sections share the file limit; each section keeps at most its own count.
     for (const [section, record] of all.sort((a, b) => b[1].atMs - a[1].atMs)) {
       if (section.kept.length >= MAX_POSITION_RECORDS) continue;
@@ -152,7 +155,7 @@ export function createReaderPositions({ file, key, platform = process.platform, 
       section.kept.push(text);
       bytes += text.length + 1;
     }
-    return `${head}${sections.map((section) => `,"${section.name}":{"version":"${section.version}","records":[${section.kept.join(',')}]}`).join('')}}`;
+    return `${head}${sections.map((section) => sectionText(section, section.kept)).join('')}}`;
   };
 
   const writeFile = async (text) => {
