@@ -947,7 +947,7 @@ export function createAsbServer({
             const headers = { etag: entry.etag, 'cache-control': 'no-store' };
             const gzip = acceptsGzip(request.headers['accept-encoding']);
             if (gzip && !entry.gzip) entry.gzip = gzipHead(`${entry.list.slice(0, -1)},`);
-            const rest = JSON.stringify({ stale: true, savedAtMs: stale.savedAtMs });
+            const rest = JSON.stringify({ stale: true, savedAtMs: stale.savedAtMs, performance: performanceSnapshot() });
             response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', ...headers,
               ...(gzip ? { 'content-encoding': 'gzip', vary: 'Accept-Encoding' } : {}) });
             response.end(gzip ? gzipWithTail(entry.gzip, rest.slice(1)) : `${rest.slice(0, -1)},${entry.list.slice(1)}`);

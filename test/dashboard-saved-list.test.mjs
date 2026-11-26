@@ -7,6 +7,10 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DashboardSnapshot } from '../src/dashboard-snapshot.mjs';
 import { createAsbServer } from '../src/asb-server.mjs';
+import { AppSourceRegistry } from '../src/app-sources.mjs';
+import { useClaudeQuestionText } from '../src/claude-data.mjs';
+import { createClaudeQuestions } from '../src/claude-questions.mjs';
+import { createSwitchboardServer, loadSwitchboardDashboard } from '../src/switchboard.mjs';
 
 const REVISION = 'a'.repeat(64);
 const MACHINE = '0123456789abcdef';
@@ -56,14 +60,18 @@ async function snapshot(t, root, { machine = MACHINE, revision = REVISION, load 
   return { instance, loads, file: fileFor(root) };
 }
 
+async function listen(t, server) {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
 async function serveServer(t, root, { serviceMode = true, playSound, panelMachines, load } = {}) {
   const sounds = [];
   const server = createAsbServer({ serviceMode, now, dashboardWatchPaths: [], savedListFile: fileFor(root),
     savedListMachineId: () => MACHINE, readSourcesRevision: async () => REVISION, playSound: playSound || ((kind) => sounds.push(kind)),
     panelMachines, loadDashboard: load || (async () => dashboard()) });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
-  return { server, base: `http://127.0.0.1:${server.address().port}`, sounds };
+  return { server, base: await listen(t, server), sounds };
 }
 
 // A saved file exactly as the engine writes it, for the tests that do not need a first scan.
@@ -78,6 +86,101 @@ async function saveFile(root, value, { mode = 0o600, folderMode = 0o700 } = {}) 
 const savedRecord = (list, overrides = {}) => ({ version: 1, machineId: MACHINE, sourcesRevision: REVISION, savedAtMs: now() - 5_000,
   list: list || { providers: [{ id: 'codex', label: 'Codex', status: 'ok' }], threads: [{ id: 'saved-1', title: 'Saved', state: 'idle', pending: true }],
     summary: { needs: 1, working: 0, total: 1 }, sourcesRevision: REVISION }, ...overrides });
+
+test('fresh and stale dashboard replies carry positions counters or null', async (t) => {
+  const stats = { fileBytes: 120, maxFileBytes: 1024,
+    sections: { claude: { written: 1, droppedByCount: 2, droppedByRecordBytes: 3, droppedByFileLimit: 4 } } };
+  const scanning = { ready: async () => {}, scanDone() {} };
+  for (const readerPositions of [undefined, scanning, { ...scanning, saveStats: () => stats }]) {
+    const root = await stateFolder(t);
+    await saveFile(root, savedRecord());
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const base = await listen(t, createSwitchboardServer({ serviceMode: true, readerPositions, pendingStatePath: false,
+      palettePath: '', savedListFile: fileFor(root), savedListMachineId: () => MACHINE, readSourcesRevision: async () => REVISION,
+      loadDashboard: async () => { await gate; return dashboard(); } }));
+    const expected = readerPositions?.saveStats ? stats : null;
+    try {
+      const stale = await (await fetch(`${base}/api/dashboard?stale=1`)).json();
+      assert.equal(stale.stale, true);
+      assert.deepEqual(stale.performance.positions, expected);
+    } finally { release(); }
+    const fresh = await (await fetch(`${base}/api/dashboard`)).json();
+    assert.equal('stale' in fresh, false);
+    assert.deepEqual(fresh.performance.positions, expected);
+  }
+});
+
+// The same pending AskUserQuestion transcript and Desktop session metadata as the question-text tests.
+async function questionSource(root) {
+  const atMs = now();
+  const cliSessionId = 'cccccccc-dddd-4eee-8fff-000000000001';
+  const sessionId = 'local_00000000-0000-4000-8000-000000000001';
+  const sourceRegistry = new AppSourceRegistry({ homeDir: root, env: {}, platform: 'linux', discoverPersonal: false });
+  const source = (await sourceRegistry.read()).find(({ id }) => id === 'claude-desktop-code');
+  const project = path.join(source.projectsDir, 'synthetic-project');
+  const sessions = path.join(source.dataDir, 'claude-code-sessions');
+  await mkdir(project, { recursive: true });
+  await mkdir(sessions, { recursive: true });
+  const iso = (offset) => new Date(atMs + offset).toISOString();
+  const cwd = path.join(root, 'synthetic-work');
+  await writeFile(path.join(project, `${cliSessionId}.jsonl`), [
+    { type: 'user', timestamp: iso(-60_000), sessionId: cliSessionId, cwd, entrypoint: 'cli', message: { role: 'user', content: 'Synthetic task' } },
+    { type: 'assistant', timestamp: iso(-30_000), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'ask-1', name: 'AskUserQuestion',
+      input: { questions: [{ question: 'MARKERQUESTION' }] } }] } },
+  ].map(JSON.stringify).join('\n') + '\n');
+  await writeFile(path.join(sessions, `${sessionId}.json`), JSON.stringify({ sessionId, cliSessionId, cwd, title: 'Synthetic chat',
+    createdAt: atMs - 120_000, lastActivityAt: atMs }));
+  const options = { serviceMode: true, sourceRegistry, dashboardWatchPaths: [], pendingStatePath: false, palettePath: '',
+    savedListFile: fileFor(root), savedListMachineId: () => MACHINE, now: () => atMs,
+    loadDashboard: (args) => loadSwitchboardDashboard({ ...args, nowMs: atMs }) };
+  return { cliSessionId, options };
+}
+
+test('a restarted snapshot serves the same local rows as the scan that saved them', async (t) => {
+  const root = await stateFolder(t);
+  const { options } = await questionSource(root);
+  const base = await listen(t, createSwitchboardServer(options));
+  const full = await (await fetch(`${base}/api/dashboard`)).json();
+  const local = full.threads.filter((row) => !row.remote);
+  assert.equal(local.length, 1);
+  assert.equal(local[0].questionPending, true);
+  await until(() => readFile(fileFor(root), 'utf8').catch(() => ''));
+
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const restarted = await listen(t, createSwitchboardServer({ ...options,
+    loadDashboard: async (args) => { await gate; return options.loadDashboard(args); } }));
+  try {
+    const saved = await (await fetch(`${restarted}/api/dashboard?stale=1`)).json();
+    assert.equal(saved.stale, true);
+    assert.deepEqual(saved.threads, local);
+  } finally { release(); }
+  await (await fetch(`${restarted}/api/dashboard`)).json();
+});
+
+test('the saved list contains neither pending question nor approval text with the phone text switch off or on', async (t) => {
+  t.after(() => useClaudeQuestionText(false));
+  for (const sendText of [false, true]) {
+    useClaudeQuestionText(sendText);
+    const root = await stateFolder(t);
+    const { cliSessionId, options } = await questionSource(root);
+    const claudeQuestions = createClaudeQuestions({ now: options.now });
+    const { requestId } = claudeQuestions.open({ provider: 'claude', sessionKey: cliSessionId,
+      approval: { kind: 'tool', title: 'Allow a shell command?', display: [{ label: 'Command', text: 'MARKERAPPROVAL', mono: true }], note: false } });
+    const base = await listen(t, createSwitchboardServer({ ...options, claudeQuestions }));
+    const live = await (await fetch(`${base}/api/dashboard?text=1`)).json();
+    const [row] = live.threads;
+    assert.equal(row.questionPending, true);
+    assert.equal(row.questionText, sendText ? 'MARKERQUESTION' : undefined);
+    assert.equal(row.approval?.requestId, requestId);
+    assert.equal(row.approval.display[0].text, 'MARKERAPPROVAL');
+    let saved;
+    await until(async () => (saved = await readFile(fileFor(root), 'utf8').catch(() => '')));
+    assert.deepEqual(JSON.parse(saved).list.threads.map(({ id }) => id), [row.id]);
+    assert.doesNotMatch(saved, /MARKERQUESTION|MARKERAPPROVAL/);
+  }
+});
 
 test('a scan saves the private list: 0600 in 0700, with the version, machine, revision, and no member rows', async (t) => {
   const root = await stateFolder(t);
@@ -174,7 +277,7 @@ test('the stale reply has its own tag, and its tag never gives a 304 for the fre
   const first = await fetch(`${base}/api/dashboard?stale=1`);
   const staleTag = first.headers.get('etag');
   const body = await first.json();
-  const { stale, savedAtMs, ...list } = body;
+  const { stale, savedAtMs, performance, ...list } = body;
   const ownTag = `"${createHash('sha256').update('stale\0' + JSON.stringify({ ...list, palette: body.palette })).digest('base64url')}"`;
   assert.equal(staleTag, ownTag);
   assert.equal(first.headers.get('cache-control'), 'no-store');

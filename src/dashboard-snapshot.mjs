@@ -154,6 +154,8 @@ export class DashboardSnapshot {
     readSourcesRevision = async () => null,
     // Extra fields of each `dashboard` event (the panel tag); the events keep their order.
     dashboardEventFields = null,
+    // The counters of the reader position saves, or null; it is not part of the list.
+    readerPositionStats = () => null,
   } = {}) {
     const getWatchPaths = async () => typeof dashboardWatchPaths === 'function' ? await dashboardWatchPaths() : dashboardWatchPaths || [];
     let dashboardLoadPromise = null;
@@ -319,6 +321,7 @@ export class DashboardSnapshot {
           codex: getCodexCacheStats(),
           claude: getClaudeCacheStats(),
         },
+        positions: readerPositionStats(),
       };
     };
 

@@ -8647,8 +8647,9 @@ class SwitchboardWindow(Adw.ApplicationWindow):
         if error:
             # A later 304 changes no widget, so it must not keep this notice.
             self.dashboard_etag = None
+            # A refresh error keeps the loading line while the saved rows stay on screen.
             if self.loading_line is not None:
-                self.loading_line.set_visible(False)
+                self.loading_line.set_visible(self.saved_dashboard())
             self.set_notice(error)
             return False
         previous_stale = self.saved_dashboard()
@@ -8692,7 +8693,7 @@ class SwitchboardWindow(Adw.ApplicationWindow):
                 now = time.time() * 1000
                 saved_at = dashboard.get("savedAtMs")
                 age = row_meta({"updatedAtMs": saved_at}, now).split(" · ", 1)[1] \
-                    if type(saved_at) in (int, float) and now - saved_at > 86_400_000 else ""
+                    if type(saved_at) in (int, float) and now - saved_at > 60_000 else ""
                 self.loading_line.set_label("Reading sessions…" + (f" (list from {age})" if age else ""))
         signature = dashboard.get("threads", [])
         if signature != self.signature or any(type(row.get("sourceCount")) is not type(previous.get("sourceCount"))

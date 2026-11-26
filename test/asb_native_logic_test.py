@@ -10502,6 +10502,29 @@ class SavedListChecks(unittest.TestCase):
         self.assertFalse(window.saved_dashboard())
         self.assertFalse(window.loading_line.shown)
 
+    def test_loading_line_stays_visible_after_a_saved_list_refresh_error(self):
+        window = self.board()
+        saved = self.saved()
+        self.reply(window, saved, tag='"saved"')
+        self.reply(window, None, "Cannot load sessions")
+        self.assertIs(window.dashboard, saved)
+        self.assertIsNone(window.dashboard_etag)
+        self.assertTrue(window.loading_line.shown)
+        window.set_notice.assert_called_with("Cannot load sessions")
+        self.reply(window, {"threads": [{"id": "fresh", "state": "idle"}]})
+        self.assertFalse(window.loading_line.shown)
+
+    def test_loading_line_shows_the_saved_list_age_after_sixty_seconds(self):
+        now = time.time()
+        with patch.object(time, "time", return_value=now):
+            for seconds, suffix in ((30, ""), (60, ""), (61, " (list from 1m ago)"),
+                                    (300, " (list from 5m ago)"), (10800, " (list from 3h ago)"),
+                                    (172800, " (list from 2d ago)")):
+                with self.subTest(seconds=seconds):
+                    window = self.board()
+                    self.reply(window, self.saved(savedAtMs=now * 1000 - seconds * 1000))
+                    self.assertEqual(window.loading_line.text, "Reading sessions…" + suffix)
+
     def test_a_saved_list_from_more_than_a_day_shows_its_age_and_stays_registered(self):
         window = self.board()
         self.reply(window, self.saved(savedAtMs=time.time() * 1000 - 3 * 86_400_000))

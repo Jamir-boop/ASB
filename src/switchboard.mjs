@@ -1286,6 +1286,7 @@ export function createSwitchboardServer(options = {}) {
         })];
     },
     ...options,
+    readerPositionStats: () => options.readerPositions?.saveStats?.() ?? null,
     loadDashboard: async ({ sourceScans } = {}) => {
       const sources = registeredLoad ? await registry.read() : null;
       const machine = options.machineIdentity?.() || { machineId: '', machineName: localMachineName() };
