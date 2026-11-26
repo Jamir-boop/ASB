@@ -16,8 +16,12 @@ import { cachedBoardCheck as realCachedBoardCheck, forgetBoardCheck as realForge
 
 const launcherUrl = new URL('../scripts/asb-desktop.mjs', import.meta.url);
 // The script body runs in a context with fake modules; its main() is called as the file entry would.
-const launcher = (await readFile(launcherUrl, 'utf8')).replace(/^import[^\n]*\n/gm, '').replace(/^export /gm, '')
-  .replace(/\nif \(process\.argv\[1\][^\n]*\n$/, '\nmain();\n').replaceAll('import.meta.url', 'launcherUrl');
+const launcherSource = await readFile(launcherUrl, 'utf8');
+const launcher = launcherSource.replace(/^import[^\n]*\n/gm, '').replace(/^export /gm, '')
+  .replace(/\nif \(process\.argv\[1\][^\n]*\n$/, '\nmain();\n').replaceAll('import.meta.url', 'launcherUrl')
+  .replace("import('./asb-engine.mjs')", "loadEngine('./asb-engine.mjs')");
+const runLauncher = ({ startEngine, startWindowsEngine,
+  loadEngine = async () => ({ startEngine, startWindowsEngine }), ...context }) => vm.runInNewContext(launcher, { ...context, loadEngine });
 const engine = { pid: 12, port: 23456, sourceToken: 'service-token' };
 // No test runs the real Python probe. As the real check does, an absolute ASB_PYTHON is the only candidate.
 const cachedBoardCheck = async ({ env }) => ({ ok: true, python: env.ASB_PYTHON || '/opt/python3' });
@@ -52,7 +56,7 @@ test('the window gets the engine URL and token on stdin, never in its arguments 
   let starts = 0;
   const native = fakeWindow();
   const spawnCalls = [];
-  await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => { starts += 1; return engine; },
     registerAppIcon: async () => { registered += 1; return {}; },
     console: { log() {}, error() {}, warn() {} },
@@ -101,11 +105,13 @@ for (const shown of [true, false]) {
     owner.platform = 'linux';
     owner.env = { HOME: home, XDG_RUNTIME_DIR: home, ASB_OPEN_WINDOW: 'messages' };
     let starts = 0;
+    const loaded = [];
+    const loadEngine = async (specifier) => { loaded.push(specifier); starts += 1; return { startEngine: async () => engine }; };
     const native = fakeWindow();
     const spawned = [];
-    await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+    await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
       findRunningService: instance.findRunningService, requestInstance: instance.requestInstance,
-      startEngine: async () => { starts += 1; return engine; },
+      loadEngine,
       registerAppIcon: async () => ({}),
       console: { log() {}, error() {}, warn() {} },
       spawn: (program) => { spawned.push(program); return native; },
@@ -114,9 +120,12 @@ for (const shown of [true, false]) {
     assert.deepEqual(show, [{ method: 'POST', url: '/api/engine/show-window', token: record.sourceToken, body: '{"window":"messages"}' }]);
     if (shown) {
       assert.equal(owner.exitCode, undefined);
+      // A click that only shows the open board loads no engine module, and its start never begins.
+      assert.deepEqual(loaded, []);
       assert.equal(starts, 0);
       assert.deepEqual(spawned, []);
     } else {
+      assert.deepEqual(loaded, ['./asb-engine.mjs']);
       assert.equal(starts, 1);
       assert.deepEqual(spawned, ['/opt/python3']);
       assert.deepEqual(native.stdin.written, [addressLine]);
@@ -124,20 +133,49 @@ for (const shown of [true, false]) {
   });
 }
 
+test('a launcher run that shows a running board loads no asb-engine.mjs', async (t) => {
+  // An injected loader records the call: the launcher must not ask for the engine module when the open board shows itself.
+  const home = await mkdtemp(path.join(os.tmpdir(), 'asb-launcher-lazy-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const fake = http.createServer((request, response) => {
+    request.resume();
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify(request.url === '/api/service' ? { service: true, pid: 4242 } : { shown: true }));
+  });
+  await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
+  t.after(() => fake.close());
+  await mkdir(path.join(home, 'asb'), { mode: 0o700 });
+  await writeFile(path.join(home, 'asb', 'service.json'), JSON.stringify({ schema: 1, pid: 4242, port: fake.address().port,
+    sourceToken: 'c'.repeat(64) }), { mode: 0o600 });
+  const owner = launcherProcess();
+  owner.platform = 'linux';
+  owner.env = { HOME: home, XDG_RUNTIME_DIR: home };
+  const loaded = [];
+  await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+    findRunningService: instance.findRunningService, requestInstance: instance.requestInstance,
+    loadEngine: async (specifier) => { loaded.push(specifier); return { startEngine: async () => engine }; },
+    registerAppIcon: async () => assert.fail('A shown board registers no icon.'),
+    console: { log() {}, error() {}, warn() {} },
+    spawn: () => assert.fail('A shown board starts no window.'),
+  });
+  assert.deepEqual(loaded, []);
+  assert.equal(owner.exitCode, undefined);
+});
+
 test('a failed board check keeps the engine, registers nothing, opens no window, and exits 3', async () => {
   const owner = launcherProcess();
   owner.platform = 'linux';
   owner.env = { ASB_PYTHON: '/bin/false' };
   const steps = [];
   const errors = [];
-  await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+  await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
     startEngine: async () => { steps.push('engine'); return engine; },
     cachedBoardCheck: async ({ env }) => { steps.push(['board', env.ASB_PYTHON]); return { ok: false, python: null, versions: null, reason: 'Python 3 does not run.' }; },
     registerAppIcon: async () => assert.fail('An engine-only run registers no icon.'),
     console: { log() {}, error(message) { errors.push(message); }, warn() {} },
     spawn: () => assert.fail('No window may start.'),
   });
-  assert.deepEqual(steps, ['engine', ['board', '/bin/false']]);
+  assert.deepEqual(steps, [['board', '/bin/false'], 'engine']);
   assert.deepEqual(errors, ['ASB runs without its window on this system: Python 3 does not run. The engine runs for the phone and your other machines. '
     + 'Run asb doctor for details.']);
   assert.equal(owner.exitCode, 3);
@@ -152,7 +190,7 @@ for (const platform of ['linux', 'win32']) test(`on ${platform} the launcher pic
   const watch = timers();
   const native = fakeWindow();
   let spawned;
-  await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  await runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => { calls.push('startEngine'); return engine; },
     startWindowsEngine: async () => { calls.push('startWindowsEngine'); return engine; },
     registerAppIcon: async () => { calls.push('registerAppIcon'); return {}; },
@@ -175,7 +213,7 @@ test('a failed board check on Windows keeps the engine, opens no window, and exi
   owner.platform = 'win32';
   owner.env = {};
   const errors = [];
-  await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+  await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
     startEngine: async () => assert.fail('Windows starts the engine through its tray.'),
     startWindowsEngine: async () => engine,
     cachedBoardCheck: async () => ({ ok: false, python: null, versions: null, reason: 'Python 3 is not installed.' }),
@@ -193,7 +231,7 @@ test('another system gets the launcher error and exit 1', () => {
   owner.platform = 'darwin';
   owner.exit = (code) => { throw new Error(`exit ${code}`); };
   const errors = [];
-  assert.throws(() => vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  assert.throws(() => runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => assert.fail('No engine starts.'), startWindowsEngine: async () => assert.fail('No engine starts.'),
     registerAppIcon: async () => assert.fail('No icon.'), console: { log() {}, warn() {}, error: (message) => errors.push(message) },
     spawn: () => assert.fail('No window may start.'),
@@ -210,7 +248,7 @@ test('an engine that cannot start after the window started stops the window, pri
   const native = fakeWindow(null);
   const spawned = Promise.withResolvers();
   const watch = timers();
-  const launch = vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  const launch = runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: () => engineStart.promise,
     registerAppIcon: async () => assert.fail('A system install registers no icon.'),
     console: { log() {}, warn() {}, error: (message) => errors.push(message) },
@@ -241,7 +279,7 @@ test('the window starts before the engine is ready and gets the address when the
   const printed = [];
   const native = fakeWindow();
   const watch = timers();
-  const launch = vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+  const launch = runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
     startEngine: () => { started.push('engine'); return engineStart.promise; },
     cachedBoardCheck: () => { started.push('board'); return boardStart.promise; }, forgetBoardCheck() {},
     registerAppIcon: async () => {},
@@ -249,7 +287,7 @@ test('the window starts before the engine is ready and gets the address when the
     spawn: (program) => { spawned.push(program); return native; },
   });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(started, ['engine', 'board']);
+  assert.deepEqual(started, ['board', 'engine']);
   assert.deepEqual(spawned, []);
   // The good board check starts the window while the engine still starts: it has no address yet.
   boardStart.resolve({ ok: true, python: '/opt/python3' });
@@ -278,7 +316,7 @@ test('a window that ends before the engine is ready keeps its exit code, clears 
   const forgotten = [];
   const printed = [];
   const watch = timers();
-  const launch = vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  const launch = runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     forgetBoardCheck: () => forgotten.push('forgotten'),
     startEngine: () => engineStart.promise, registerAppIcon: async () => {},
     console: { log: (message) => printed.push(message), error() {}, warn() {} },
@@ -302,7 +340,7 @@ test('an engine that cannot start before the board check ends opens no window', 
   owner.platform = 'linux';
   owner.env = { ASB_SYSTEM_INSTALL: '1' };
   const errors = [];
-  await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => { throw new Error('ASB cannot start its engine. See /x/engine.log.'); },
     cachedBoardCheck: () => new Promise(() => {}),
     registerAppIcon: async () => assert.fail('The engine did not start.'),
@@ -310,6 +348,22 @@ test('an engine that cannot start before the board check ends opens no window', 
     spawn: () => assert.fail('The engine did not start.'),
   });
   assert.deepEqual(errors, ['ASB cannot start its engine. See /x/engine.log.']);
+  assert.equal(owner.exitCode, 1);
+});
+
+test('a failed asb-engine.mjs import ends the launcher with the engine-start message and exit 1', async () => {
+  const owner = launcherProcess();
+  owner.platform = 'linux';
+  owner.env = { ASB_SYSTEM_INSTALL: '1' };
+  const errors = [];
+  await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+    loadEngine: async () => { throw new Error('Cannot find module ./asb-engine.mjs'); },
+    cachedBoardCheck: () => new Promise(() => {}),
+    registerAppIcon: async () => assert.fail('The engine did not start.'),
+    console: { log() {}, warn() {}, error: (message) => errors.push(message) },
+    spawn: () => assert.fail('The engine did not start.'),
+  });
+  assert.deepEqual(errors, ['ASB cannot start: Cannot find module ./asb-engine.mjs']);
   assert.equal(owner.exitCode, 1);
 });
 
@@ -323,7 +377,7 @@ test('an engine that cannot start while the board check runs prints one message,
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
   t.after(() => process.off('unhandledRejection', onUnhandled));
-  await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+  await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
     startEngine: async () => { throw new Error('ASB cannot start its engine. See /x/engine.log.'); },
     cachedBoardCheck: () => board.promise,
     registerAppIcon: async () => assert.fail('The engine did not start.'),
@@ -346,7 +400,7 @@ for (const exitCode of [0, 1]) test(`launcher exit ${exitCode} stops its synthet
   // The synthetic window prints the line that it reads from its stdin pipe and then stays alive.
   const synthetic = `let text = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (chunk) => { text += chunk; })
     ; process.stdin.on('data', () => { if (text.includes('\\n')) process.stdout.write('line:' + text); }); setInterval(() => {}, 1000)`;
-  const launch = vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  const launch = runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => engine, registerAppIcon: async () => {},
     console: { log() {}, error() {}, warn() {} },
     spawn: (_program, args, options) => {
@@ -374,7 +428,7 @@ test('icon registration failure keeps its message and still launches the window'
   const errors = [];
   const printed = [];
   t.after(() => { if (native?.exitCode === null && native?.signalCode === null) native.kill('SIGKILL'); });
-  const launch = vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  const launch = runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => engine,
     registerAppIcon: async () => { throw new Error('Synthetic registration failure'); },
     console: { log(message) { printed.push(message); }, error(message) { errors.push(message); }, warn(message) { printed.push(message); } },
@@ -402,7 +456,7 @@ test('a stop during the board check cannot launch a window later', async () => {
   const starting = Promise.withResolvers();
   const checking = Promise.withResolvers();
   const started = Promise.withResolvers();
-  const launch = vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+  const launch = runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
     startEngine: () => { started.resolve(); return starting.promise; }, registerAppIcon: async () => {},
     cachedBoardCheck: () => checking.promise, forgetBoardCheck() {},
     console: { log() {}, error() {}, warn() {} }, spawn: () => assert.fail('The launcher already stopped.'),
@@ -424,7 +478,7 @@ test('a stop during engine startup stops the window that already started, and th
   const native = fakeWindow(null);
   const watch = timers();
   const printed = [];
-  const launch = vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  const launch = runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: () => starting.promise, registerAppIcon: async () => {},
     console: { log: (message) => printed.push(message), error() {}, warn() {} },
     spawn: () => { spawned.resolve(); return native; },
@@ -447,7 +501,7 @@ test('30 s after the address line the launcher ends stdin, lets the board run, a
   const watch = timers();
   const forgotten = [];
   const native = fakeWindow(null);
-  await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  await runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     forgetBoardCheck: () => forgotten.push('forgotten'),
     startEngine: async () => engine, registerAppIcon: async () => {}, console: { log() {}, error() {}, warn() {} },
     spawn: () => native,
@@ -482,7 +536,7 @@ async function openWindowsBoard() {
   const watch = timers();
   const native = fakeWindow(null);
   let options;
-  await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  await runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startWindowsEngine: async () => engine, console: { log() {}, error() {}, warn() {} },
     spawn: (program, args, given) => { options = JSON.parse(JSON.stringify(given)); return native; },
   });
@@ -519,7 +573,7 @@ test('a window that exits by itself clears the 30 s timer, so that the launcher 
   const watch = timers();
   const native = fakeWindow(null);
   native.kill = () => assert.fail('The window exited first.');
-  await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
+  await runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath, ...boardFakes,
     startEngine: async () => engine, registerAppIcon: async () => {}, console: { log() {}, error() {}, warn() {} },
     spawn: () => native,
   });
@@ -537,7 +591,7 @@ async function openBoard({ forgetBoardCheck, warnings = [], windowEvent }) {
   const native = fakeWindow(null);
   const watch = timers();
   const asked = [];
-  await vm.runInNewContext(launcher, { ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+  await runLauncher({ ...pick(watch), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
     startEngine: async () => engine, registerAppIcon: async () => {}, forgetBoardCheck,
     cachedBoardCheck: async (options) => { asked.push(options); return { ok: true, python: '/opt/python3' }; },
     console: { log() {}, error() {}, warn: (message) => warnings.push(message) }, spawn: () => native,
@@ -611,7 +665,7 @@ test('with the real saved check, a good start skips the probe and a board error 
     owner.env = { ASB_SYSTEM_INSTALL: '1', ASB_PYTHON: python, XDG_CACHE_HOME: cache };
     const native = fakeWindow(null);
     let program;
-    await vm.runInNewContext(launcher, { ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
+    await runLauncher({ ...pick(timers()), process: owner, URL, launcherUrl: launcherUrl.href, fileURLToPath,
       startEngine: async () => engine, registerAppIcon: async () => {},
       cachedBoardCheck: realCachedBoardCheck, forgetBoardCheck: realForgetBoardCheck,
       console: { log() {}, error() {}, warn() {} }, spawn: (file) => { program = file; return native; },

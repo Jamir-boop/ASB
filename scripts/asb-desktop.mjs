@@ -5,7 +5,6 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cachedBoardCheck, forgetBoardCheck } from '../src/linux-system.mjs';
-import { startEngine, startWindowsEngine } from './asb-engine.mjs';
 import { registerAppIcon } from './asb-icon.mjs';
 
 let window;
@@ -45,7 +44,9 @@ async function start() {
     } catch {}
     if (stopping) return;
   }
-  const engine = windows ? startWindowsEngine() : startEngine();
+  // The engine module loads only here, so a click that shows a running board never loads it. The import starts at the same time as the
+  // board check, so its time stays overlapped.
+  const engine = import('./asb-engine.mjs').then(({ startEngine, startWindowsEngine }) => windows ? startWindowsEngine() : startEngine());
   // The board check runs while the engine starts. Its result comes before the icon registration, so that a run without the window writes nothing.
   // A good result is kept in the cache folder until the board fails (forgetBoard), so that most starts skip the Python probe.
   // A failed engine start ends the launcher at once, also while the check runs.
