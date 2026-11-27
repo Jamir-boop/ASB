@@ -194,7 +194,7 @@ async function collectWindows({ env, execFile, exists: present, node, platform, 
 
 // `firewall: false` leaves out the firewall part (asb setup step 0).
 export async function collect({ env = process.env, execFile = execFileAsync, read = readText, exists: present = exists, node,
-  find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform,
+  find = findRunningService, api = (runtime, route) => groupApi(runtime, route, { timeoutMs: 2000 }), firewall = true, platform = process.platform, userInfo = os.userInfo,
   claudeHook = () => readClaudeHook(env, platform), codexHook = () => readCodexHook(env, platform),
   kitty = (add, advice) => agyKittyDoctor(add, advice, { env, read }),
   agy = (add, advice) => agyHookDoctor(add, advice, { env, platform }) } = {}) {
@@ -249,11 +249,22 @@ export async function collect({ env = process.env, execFile = execFileAsync, rea
     : trayHost === false ? 'Tray host: none found. On GNOME, add the AppIndicator extension.' : 'Tray host: not checked (needs PyGObject and a session bus)');
   await bunCheck(add, env, platform);
   // Doctor only reads the two autostart files (plan 12.1). A file counts when it has the ASB marker.
-  const marked = async (file, marker) => (await read(file).catch(() => '')).split('\n').includes(marker);
-  const unit = await marked(unitPath(env), unitMarker);
-  const entry = await marked(autostartPath(env), autostartMarker);
+  const lines = async (file) => (await read(file).catch(() => '')).split('\n');
+  const unitLines = await lines(unitPath(env));
+  const unit = unitLines.includes(unitMarker);
+  const entry = (await lines(autostartPath(env))).includes(autostartMarker);
   const autostart = unit ? 'systemd user service' : entry ? 'XDG autostart' : '';
   add('autostart', 'Options', autostart ? 'ok' : 'info', `Autostart: ${autostart || 'not installed'}`);
+  if (platform === 'linux' && unit) {
+    if (unitLines.includes('PartOf=graphical-session.target')) {
+      add('service-unit', 'Options', 'info', 'Autostart: the ASB user service stops when the desktop session ends. Run asb service install to update it.');
+    }
+    const { username } = userInfo();
+    if (!await present(path.join('/var/lib/systemd/linger', username))) {
+      add('linger', 'Options', 'info', 'Linger: off. ASB stops when your last session ends. To keep it running for your other machines and phone, '
+        + `run: loginctl enable-linger ${shellText([username])}. After a restart, ASB still starts only after a login.`);
+    }
+  }
   const fallback = !(typeof env.XDG_RUNTIME_DIR === 'string' && path.posix.isAbsolute(env.XDG_RUNTIME_DIR));
   add('runtime', 'Options', fallback ? 'info' : 'ok', `Runtime folder: ${runtimeDir(env)}${fallback ? ' (XDG_RUNTIME_DIR is not set)' : ''}`);
   // Plan 15: the desktop file for the codex: and claude: links. A failed query or a missing xdg-mime means "no handler".
