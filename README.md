@@ -9,7 +9,7 @@
 ## What it does
 
 - **One board:** all your sessions in one window, with Pending attention, unread marks, pins, a drawer, and Done, Needs input, and Failed sounds.
-- **All your machines:** an optional machine group adds the sessions of your other computers.
+- **All your machines:** an optional machine group adds the sessions of your other computers. Away from home, the machines use ZeroTier or Tailscale when the home network does not answer. On Linux, turn on Linger (`loginctl enable-linger <user>`) so that ASB keeps running after your desktop session ends; after a restart, ASB starts only after a login.
 - **Your phone:** an optional Android app shows your sessions and notifications.
 - **Messages:** the Messages window shows the messages that your agents send each other on all machines, with their text. The optional ASB Bridge lets Codex, Claude Code, OpenCode, and Antigravity CLI sessions send messages to each other.
 - **Usage:** the Usage window shows the tokens and the API price of your Codex, Claude Code, OpenCode, Antigravity, Grok, and Pi agents on all machines, and the sessions that cost the most. ASB keeps this history with daily backups, also after the apps delete old transcripts. For the prices, the window downloads the LiteLLM price list (prices only) while you use it.

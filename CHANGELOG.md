@@ -4,6 +4,9 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Linux: the `asb.service` user service no longer stops when the desktop session ends (for example after a failed remote desktop session), so the phone and the other machines of the group still reach the PC. A new `asb-session.service` restarts the engine at the next login only when the display variables changed or the tray is not running. Run `asb service install` again to update an installed service.
+- `asb doctor` (Linux): it reports an old `asb.service` that still stops with the desktop session, and Linger off. Without Linger, ASB still stops when your last session ends: run `loginctl enable-linger <user>`. After a restart, ASB still starts only after a login.
+
 ## ASB 1.19.0 - 2026-11-26
 
 - Codex: the engine keeps the result of each compressed Codex log (`*.jsonl.zst`) in its reader positions. A new engine with the same `.zst` file reads only its last 64 bytes and does not decompress the log. On a home with 1,220 compressed logs, the first engine still reads them all; each later engine skips them.
