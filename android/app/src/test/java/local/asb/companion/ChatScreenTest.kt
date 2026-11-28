@@ -59,7 +59,7 @@ class ChatScreenTest {
 
     private val sample = """{"api":1,"threadId":"cl/1","turns":[""" +
         """{"role":"user","text":"Ask one","atMs":1795832380317,"cut":false},""" +
-        """{"role":"assistant","text":"Answer one","atMs":1795832381317,"cut":true},""" +
+        """{"role":"assistant","text":"Answer one…","atMs":1795832381317,"cut":true},""" +
         """{"role":"peer","name":"docs","text":"A message from docs","atMs":1795832382317,"cut":false}],"more":true}"""
 
     private fun reply(code: Int, error: String) = MockResponse().setResponseCode(code).setBody("""{"error":"$error"}""")
@@ -68,7 +68,8 @@ class ChatScreenTest {
         val chat = parseChat(AsbJson.parseToJsonElement(sample))!!
         assertEquals(listOf("user", "assistant", "peer"), chat.turns.map { it.role })
         assertEquals(ChatTurn("user", "", "Ask one", 1795832380317, false), chat.turns[0])
-        assertEquals(ChatTurn("assistant", "", "Answer one", 1795832381317, true), chat.turns[1])
+        // A cut turn keeps the engine text as it is: it ends with … already.
+        assertEquals(ChatTurn("assistant", "", "Answer one…", 1795832381317, true), chat.turns[1])
         assertEquals(ChatTurn("peer", "docs", "A message from docs", 1795832382317, false), chat.turns[2])
         assertTrue(chat.more)
         // More absent or a string is no reply.

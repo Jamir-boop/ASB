@@ -343,8 +343,8 @@ data class PairReply(
 data class ErrorReply(val error: String = "", val detail: String = "")
 
 /**
- * One turn of the chat view: `user`, `assistant`, or `peer` with the sender [name]. [text] is cut at [cut] (the screen ends it with
- * `…`). The text stays in memory only.
+ * One turn of the chat view: `user`, `assistant`, or `peer` with the sender [name]. [cut] is true when the engine cut the text; the
+ * text then ends with `…` already, and the screen shows it as it is. The text stays in memory only.
  */
 data class ChatTurn(val role: String, val name: String, val text: String, val atMs: Long, val cut: Boolean)
 

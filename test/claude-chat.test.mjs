@@ -117,3 +117,36 @@ test('the reader caches nothing and the module exports only functions', async (t
   assert.equal((await readClaudeChat(file)).turns[0].text, 'Second read.');
   assert.deepEqual(parseClaudeChat('not json\n\n'), []);
 });
+
+test('a record that makes no turn does not end the assistant group of one message.id', async (t) => {
+  const { file } = await fixture(t);
+  await writeFile(file, jsonl([
+    { type: 'assistant', timestamp: at(1), message: { id: 'm1', content: [{ type: 'text', text: 'A' }] } },
+    { type: 'user', timestamp: at(2), message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'RESULTMARK' }] } },
+    { type: 'attachment', timestamp: at(3), attachment: { type: 'hook_success', hookName: 'HOOKMARK' } },
+    { type: 'user', timestamp: at(4), isMeta: true, message: { content: 'METAMARK' } },
+    { type: 'assistant', timestamp: at(5), message: { id: 'm1', content: [{ type: 'text', text: 'B' },
+      { type: 'tool_use', name: 'SendMessage', input: { to: 'Phone', message: 'Send body.' } }] } },
+  ]));
+  const reply = await readClaudeChat(file);
+  assert.deepEqual(reply, { turns: [
+    { role: 'assistant', text: 'A\n\nB', atMs: atMs(1), cut: false },
+    { role: 'assistant', text: 'Send body.', atMs: atMs(1), cut: false },
+  ], more: false });
+  const text = JSON.stringify(reply);
+  for (const marker of ['RESULTMARK', 'HOOKMARK', 'METAMARK']) assert.ok(!text.includes(marker), marker);
+});
+
+test('a sidechain record makes no turn in any shape', async (t) => {
+  const { file } = await fixture(t);
+  await writeFile(file, jsonl([
+    { type: 'user', timestamp: at(1), message: { content: 'Main prompt.' } },
+    { type: 'user', isSidechain: true, timestamp: at(2), origin: { kind: 'peer', name: 'Phone', body: 'SIDEPEERMARK' }, message: { content: 'x' } },
+    { type: 'attachment', isSidechain: true, timestamp: at(3), attachment: { type: 'queued_command', origin: { kind: 'peer', name: 'Desk', body: 'SIDEATTACHMARK' } } },
+    { type: 'assistant', isSidechain: true, timestamp: at(4), message: { id: 'side', content: [{ type: 'text', text: 'SIDECHATMARK' }] } },
+    { type: 'assistant', timestamp: at(5), message: { id: 'm1', content: [{ type: 'text', text: 'Main reply.' }] } },
+  ]));
+  const reply = await readClaudeChat(file);
+  assert.deepEqual(reply.turns.map((turn) => [turn.role, turn.text]), [['user', 'Main prompt.'], ['assistant', 'Main reply.']]);
+  assert.ok(!JSON.stringify(reply).includes('SIDE'));
+});

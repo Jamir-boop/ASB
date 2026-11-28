@@ -38,35 +38,37 @@ export function parseClaudeChat(text = '') {
     let record;
     try { record = JSON.parse(line); } catch { continue; }
     if (!record || typeof record !== 'object') continue;
-    if (record.type === 'assistant' && record.isSidechain !== true) {
+    // A sidechain record is a subagent turn, in every shape.
+    if (record.isSidechain === true) continue;
+    if (record.type === 'assistant') {
       const content = record.message?.content;
       const sends = Array.isArray(content) ? content.filter((item) => item?.type === 'tool_use' && item.name === 'SendMessage'
         && typeof item.input?.to === 'string' && PHONE_TARGET.test(item.input.to) && typeof item.input.message === 'string')
         .map((item) => item.input.message) : [];
       const texts = partsOf(content);
       const id = typeof record.message?.id === 'string' ? record.message.id : '';
-      // Consecutive assistant records of one reply (same message.id) are one turn.
+      // Consecutive assistant records of one reply (same message.id) are one turn, also across records that make no turn.
       if (group && id && id === group.id) { group.texts.push(...texts); group.sends.push(...sends); }
       else { flush(); group = { id, texts, sends, atMs: recordAtMs(record) }; }
       continue;
     }
-    flush();
     if (record.type === 'attachment' && record.attachment?.type === 'queued_command' && record.attachment.origin?.kind === 'peer') {
       const turn = peerTurn(record.attachment.origin, record);
-      if (turn) turns.push(turn);
+      if (turn) { flush(); turns.push(turn); }
       continue;
     }
     if (record.type !== 'user') continue;
     if (record.origin?.kind === 'peer') {
       const turn = peerTurn(record.origin, record);
-      if (turn) turns.push(turn);
+      if (turn) { flush(); turns.push(turn); }
       continue;
     }
-    if (record.isMeta === true || record.isSidechain === true || record.isCompactSummary === true) continue;
+    if (record.isMeta === true || record.isCompactSummary === true) continue;
     const content = record.message?.content;
     if (Array.isArray(content) && content.some((item) => item?.type === 'tool_result')) continue;
     const prompt = partsOf(content).join('\n').replace(SYSTEM_REMINDER, '').trim();
     if (!prompt || LOCAL_COMMAND.test(prompt)) continue;
+    flush();
     turns.push({ role: 'user', text: prompt, atMs: recordAtMs(record) });
   }
   flush();

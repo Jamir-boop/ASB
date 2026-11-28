@@ -126,7 +126,7 @@ fun ChatScreen(api: AsbApi, engine: String, id: String, onBack: () -> Unit) {
     }
 }
 
-/** One turn: user on the right, assistant on the left, a peer on the left with its name above its text. A cut turn ends with … */
+/** One turn: user on the right, assistant on the left, a peer on the left with its name above its text. The engine text of a cut turn ends with … itself. */
 @Composable
 private fun ChatTurnRow(turn: ChatTurn, colors: ActivityColors) {
     val user = turn.role == "user"
@@ -135,7 +135,7 @@ private fun ChatTurnRow(turn: ChatTurn, colors: ActivityColors) {
             modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Column(Modifier.fillMaxWidth(.82f).background(if (user) colors.track else colors.rule, RoundedCornerShape(10.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
-            Text(if (turn.cut) turn.text + "…" else turn.text, fontSize = 13.sp, color = colors.text)
+            Text(turn.text, fontSize = 13.sp, color = colors.text)
         }
     }
 }
