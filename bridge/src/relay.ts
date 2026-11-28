@@ -14,11 +14,11 @@ import { bindingSchema, boundPeer, exactReceiptSchema, requestReceiver, sendBoun
 const homeSchema = z.object({ path: z.string().refine(isAbsolute), remoteClaude: z.enum(['auto', 'bridge', 'native']), hasRemoteControl: z.boolean() });
 const homesSchema = z.object({ machineId: z.string(), machineName: z.string(), homes: z.array(homeSchema) });
 const remoteSchema = z.object({ machineId: z.string().regex(/^[a-f0-9]{16}$/), machineName: z.string().min(1), online: z.boolean(),
-  sessionId: uuid, name: z.string(), agent: z.enum(['claude', 'codex']), status: z.string(), remoteControl: z.boolean() });
+  sessionId: uuid, name: z.string(), agent: z.enum(['claude', 'codex', 'phone']), status: z.string(), remoteControl: z.boolean() });
 const statuses = z.enum(['held', 'denied', 'expired', 'delivered', 'refused', 'dropped']);
 // The body of POST /deliver (plan 9.7); src/machine-relay.mjs checks the same rules in the engine.
 const senderSchema = z.strictObject({ machineId: z.string().regex(/^[a-f0-9]{16}$/), sessionId: uuid,
-  name: z.string().min(1).max(128).regex(/^[^\x00-\x1f\x7f-\x9f]*$/), mode: z.enum(['prompting', 'bypass', 'unknown']), agent: z.enum(['claude', 'codex']) });
+  name: z.string().min(1).max(128).regex(/^[^\x00-\x1f\x7f-\x9f]*$/), mode: z.enum(['prompting', 'bypass', 'unknown']), agent: z.enum(['claude', 'codex', 'phone']) });
 const messageSchema = z.strictObject({ msgId: uuid, text: z.string().min(1).max(maxLineLength), hopChain: z.array(z.string().regex(/^[a-f0-9]{24}$/)).max(32) });
 type Sender = z.infer<typeof senderSchema>;
 const deliverSchema = z.strictObject({
@@ -131,7 +131,8 @@ export function proxyPlan(homes: Home[], remote: RemotePeer[], reverse: ReverseN
     // A listed sender keeps its reverse row 30 minutes; a sender that is not listed yet keeps it 120 s.
     const reverseRows = reverse.filter(need => need.home === home.path).flatMap(need => {
       const listed = remote.find(peer => peer.machineId === need.machineId && peer.sessionId === need.sessionId);
-      return nowMs - need.atMs < (listed ? REVERSE_MS : UNLISTED_MS) ? [listed ?? need.peer] : [];
+      // A phone row keeps its phone rules even if a listing names the same session.
+      return nowMs - need.atMs < (listed ? REVERSE_MS : UNLISTED_MS) ? [need.peer.agent === 'phone' ? need.peer : listed ?? need.peer] : [];
     });
     const needed = new Set(reverseRows.map(peer => rowKey(home.path, peer.machineId, peer.sessionId)));
     const isNeeded = (peer: RemotePeer) => needed.has(rowKey(home.path, peer.machineId, peer.sessionId));
@@ -151,6 +152,15 @@ export function proxyName(machineName: string, name: string, taken: Iterable<str
   for (let number = 1; ; number++) {
     const suffix = number === 1 ? '' : `-${number}`;
     const candidate = clean(base.slice(0, 64 - suffix.length)) + suffix;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
+// A phone sender's reverse row keeps the case and has no machine prefix (contract P2a).
+export function phoneName(taken: Iterable<string>) {
+  const used = new Set(taken);
+  for (let number = 1; ; number++) {
+    const candidate = number === 1 ? 'Phone' : `Phone-${number}`;
     if (!used.has(candidate)) return candidate;
   }
 }
@@ -243,7 +253,7 @@ async function main() {
       if (token) keyPath = writePeerKey(real, child.pid, messagingSocketPath, token, procStart);
       const now = Date.now();
       const domain = pidDomain();
-      const record = { pid: child.pid, sessionId: peer.sessionId, cwd: '', name: proxyName(peer.machineName, peer.name, livePeers(home).map(item => item.name)),
+      const record = { pid: child.pid, sessionId: peer.sessionId, cwd: '', name: peer.agent === 'phone' ? phoneName(livePeers(home).map(item => item.name)) : proxyName(peer.machineName, peer.name, livePeers(home).map(item => item.name)),
         startedAt: now, procStart, peerProtocol: 1, ...(domain ? { pidDomain: domain } : {}), kind: 'interactive', entrypoint: 'asb-relay', messagingSocketPath,
         status: peer.status, statusUpdatedAt: now, peerFeatures: [] };
       const path = join(real, `${child.pid}.json`);
@@ -319,6 +329,8 @@ async function main() {
   };
 
   async function forward(row: Row, frame: Frame) {
+    // A Phone reverse row is write-only: its frames go nowhere, also not as receipts (contract P2a).
+    if (row.peer.agent === 'phone') return;
     if (frame.type === 'control' && frame.action !== 'peer_message_status') return;
     const sender = await findSender(row.home, frame.from);
     if (!sender) return;
@@ -352,8 +364,11 @@ async function main() {
       const key = rowKey(home, sender.machineId, sender.sessionId);
       const listed = remote.find(peer => peer.machineId === sender.machineId && peer.sessionId === sender.sessionId);
       const machineName = remote.find(peer => peer.machineId === sender.machineId)?.machineName ?? sender.machineId.slice(0, 8);
-      const peer = listed ?? { machineId: sender.machineId, machineName, online: true, sessionId: sender.sessionId,
-        name: sender.name, agent: sender.agent, status: 'idle', remoteControl: false };
+      const peer = listed
+        // Also when a listing names this session: the Phone row rules come from the sender, not from the listing.
+        ? (sender.agent === 'phone' ? { ...listed, agent: 'phone' as const } : listed)
+        : { machineId: sender.machineId, machineName, online: true, sessionId: sender.sessionId,
+          name: sender.name, agent: sender.agent, status: 'idle', remoteControl: false };
       needs.set(key, { home, machineId: sender.machineId, sessionId: sender.sessionId, atMs: Date.now(), peer });
       const existing = rows.get(key);
       if (existing) return existing;
