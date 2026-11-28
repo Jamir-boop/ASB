@@ -131,7 +131,8 @@ export function proxyPlan(homes: Home[], remote: RemotePeer[], reverse: ReverseN
     // A listed sender keeps its reverse row 30 minutes; a sender that is not listed yet keeps it 120 s.
     const reverseRows = reverse.filter(need => need.home === home.path).flatMap(need => {
       const listed = remote.find(peer => peer.machineId === need.machineId && peer.sessionId === need.sessionId);
-      return nowMs - need.atMs < (listed ? REVERSE_MS : UNLISTED_MS) ? [listed ?? need.peer] : [];
+      // A phone row keeps its phone rules even if a listing names the same session.
+      return nowMs - need.atMs < (listed ? REVERSE_MS : UNLISTED_MS) ? [need.peer.agent === 'phone' ? need.peer : listed ?? need.peer] : [];
     });
     const needed = new Set(reverseRows.map(peer => rowKey(home.path, peer.machineId, peer.sessionId)));
     const isNeeded = (peer: RemotePeer) => needed.has(rowKey(home.path, peer.machineId, peer.sessionId));

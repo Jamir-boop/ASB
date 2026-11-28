@@ -61,6 +61,11 @@ test('a phone reverse row is named Phone, then Phone-2, with no machine prefix',
   expect(phoneName(['Phone', 'Phone-2'])).toBe('Phone-3');
   // The case stays; the other names do not hide it.
   expect(phoneName(['phone', 'beta-codex-task'])).toBe('Phone');
+  // A listing that names the same session does not take the phone rules away from its reverse row.
+  const phone = { ...remotePeer('claude', false), machineId: 'a'.repeat(16), agent: 'phone' as const, name: 'Phone' };
+  const plan = proxyPlan([home('/native', 'native', true)], [{ ...phone, agent: 'claude' as const }],
+    [{ home: '/native', machineId: phone.machineId, sessionId: phone.sessionId, atMs: Date.now(), peer: phone }]);
+  expect(plan.get('/native')).toEqual([phone]);
 });
 
 test('a forwarded message gets a refused receipt only when it was not sent', async () => {
