@@ -475,17 +475,22 @@ test('the group sessions reply carries the card under the member\'s own answer s
   const file = path.join(home, 'group.json');
   // The self member's certificate fingerprint starts with its machine ID (the group rules).
   const selfPrint = `${MACHINE}${'f'.repeat(48)}`;
-  await saveGroup(file, { schema: 1, groupId: 'abc'.repeat(5) + 'd', self: { machineId: MACHINE, name: 'synthetic-pc' },
-    members: [{ machineId: MACHINE, name: 'synthetic-pc', certFingerprint: selfPrint, addresses: [{ kind: 'lan', address: '192.168.0.1' }], port: 4630, addedBy: MACHINE, addedAtMs: 1 }],
-    removed: [], phones: [{ deviceId: 'a'.repeat(12), name: 'Phone', tokenHash: 'e'.repeat(64), addedBy: MACHINE, addedAtMs: 1 }], removedPhones: [] });
   const timers = { setTimeout: () => ({ unref() {} }), clearTimeout: () => {} };
   const gateway = { credentials: async () => ({ fingerprint: selfPrint }), status: async () => ({ running: false }),
     identity: async () => MACHINE, referenceScopes: async () => () => SCOPE,
     answerReady: () => state.answer, approveReady: () => false };
-  const group = createMachineGroup({ file, gateway: () => gateway, server: () => server, timers, now: () => nowMs,
-    request: async () => ({ status: 200, body: {} }) });
-  await group.start();
-  t.after(() => group.stop());
+  const makeGroup = async (phones) => {
+    await saveGroup(file, { schema: 1, groupId: 'abc'.repeat(5) + 'd', self: { machineId: MACHINE, name: 'synthetic-pc' },
+      members: [{ machineId: MACHINE, name: 'synthetic-pc', certFingerprint: selfPrint, addresses: [{ kind: 'lan', address: '192.168.0.1' }], port: 4630, addedBy: MACHINE, addedAtMs: 1 }],
+      removed: [], phones, removedPhones: [] });
+    const instance = createMachineGroup({ file, gateway: () => gateway, server: () => server, timers, now: () => nowMs,
+      request: async () => ({ status: 200, body: {} }) });
+    await instance.start();
+    t.after(() => instance.stop());
+    return instance;
+  };
+  const phone = { deviceId: 'a'.repeat(12), name: 'Phone', tokenHash: 'e'.repeat(64), addedBy: MACHINE, addedAtMs: 1 };
+  const group = await makeGroup([phone]);
   // The export comes from the first dashboard scan (the merge fills it), as on the engine.
   const dashboard = await server.dashboardForRequest({ force: true });
   group.merge(dashboard, nowMs);
@@ -504,6 +509,12 @@ test('the group sessions reply carries the card under the member\'s own answer s
   state.answer = false;
   const noCard = JSON.parse((await group.peer.sessions('')).body);
   assert.equal(noCard.rows.find((item) => item.id === row.id).phoneRequest, undefined);
+  // No paired phone in the group: the reply has no card either, with the switch on.
+  state.answer = true;
+  const noPhone = await makeGroup([]);
+  noPhone.merge(dashboard, nowMs);
+  const withoutPhone = JSON.parse((await noPhone.peer.sessions('')).body);
+  assert.equal(withoutPhone.rows.find((item) => item.id === row.id).phoneRequest, undefined);
 });
 
 test('the relay sends one bound phone message through /deliver-bound on its own loopback server', async (t) => {

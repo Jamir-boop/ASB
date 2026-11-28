@@ -1839,6 +1839,40 @@ test('a wrap-up ask and its reply labels never go to the positions file, with th
   }
 });
 
+test('a pending wrap-up keeps a tail record on the switch off; on the switch on the saved record is not used', async (t) => {
+  const home = path.join(await temporaryDirectory(t), 'MARKERFOLDER');
+  // A wrap-up with an ask and its result (the pending question lasts until the next turn), then filler under the tail, so one tail
+  // read sees the whole log.
+  const lines = [claudePrompt(NOW_MS - 600_000),
+    claudeTool(NOW_MS - 590_000, 'wrap', 'mcp__ccd_turn__wrap_up', { recap: 'MARKERRECAP',
+      ask: 'MARKERWRAPASK which way?', actions: [{ label: 'MARKERREPLYLABEL' }] }),
+    claudeResult(NOW_MS - 589_000, 'wrap'), ...claudeFiller(NOW_MS - 500_000, 8 * 1024)];
+  const claude = await claudeSource(home, { wrap: lines }, 64 * 1024);
+  const file = path.join(home, 'cache', 'readers', 'positions.json');
+  // The switch off: one full read saves a tail record for the pending wrap-up, and the record holds no ask or label text.
+  await fs.rm(file, { force: true });
+  const first = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS, text: false });
+  assert.equal(first.claudeThreads.length, 1);
+  const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+  const parts = (record) => record.signals === 'state' ? [record.state] : [record.state, record.signals];
+  const record = saved.claudeTail.records.find((item) => parts(item).some((part) => (part.pending || []).some(([, tool]) => tool === 'AskUserQuestion')));
+  assert.ok(record, 'a tail record for the pending wrap-up');
+  assert.ok(validClaudeTailRecord(record));
+  const recordText = JSON.stringify(record);
+  for (const marker of ['MARKERWRAPASK', 'MARKERREPLYLABEL', 'MARKERRECAP']) assert.equal(recordText.includes(marker), false, marker);
+  // A new engine with the switch off resumes from the record and reads only its guard bytes.
+  const resumed = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS, text: false });
+  assert.equal(resumed.claudeTailStats.taken, 1);
+  assert.ok(resumed.claudeBytes <= 128, `resumed bytes ${resumed.claudeBytes}`);
+  // The switch on: the saved record is not used for the pending question (the card text needs the full read), so the reader reads
+  // the whole transcript, not just the guard bytes, and the rows are the same.
+  const on = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS, text: true });
+  assert.ok(on.claudeBytes > resumed.claudeBytes * 8, `the full read ${on.claudeBytes} against ${resumed.claudeBytes}`);
+  assert.ok(on.claudeBytes >= (await fs.stat(claude.paths.wrap)).size, `a whole-transcript read: ${on.claudeBytes}`);
+  assert.deepEqual(on.claudeThreads.map((thread) => [thread.externalId, thread.questionPending, thread.pendingToolCount]),
+    resumed.claudeThreads.map((thread) => [thread.externalId, thread.questionPending, thread.pendingToolCount]));
+});
+
 test('no question, prompt, message, or tool text goes to the positions file, with the question-text switch off and on', async (t) => {
   const home = path.join(await temporaryDirectory(t), 'MARKERFOLDER');
   const lines = [claudePrompt(NOW_MS - 600_000), ...claudeTitles(NOW_MS - 599_000), claudeReply(NOW_MS - 598_000), claudeMessage(NOW_MS - 580_000),

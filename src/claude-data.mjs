@@ -1317,11 +1317,8 @@ export function claudeTailRecords() {
     const { state, signals, signature, offset, guard, atMs } = entry;
     if (!entry.tailResult || !state || !Buffer.isBuffer(guard) || !finiteNumber(atMs)) continue;
     if (newest.get(filePath)?.atMs > atMs) continue;
-    // A log with a pending wrap-up keeps no tail record: a record holds no ask text, and a switch change must not leave a record
-    // that would show the question without it.
-    if (signals.pendingTools.some((tool) => tool.title !== toolUseTitle({ name: tool.tool }) || String(tool.id).startsWith('wrap-up:'))
-      || (state.pendingToolsById && [...state.pendingToolsById.values()].some((tool) => tool.title !== toolUseTitle({ name: tool.tool })
-        || String(tool.id).startsWith('wrap-up:')))) continue;
+    if (signals.pendingTools.some((tool) => tool.title !== toolUseTitle({ name: tool.tool }))
+      || (state.pendingToolsById && [...state.pendingToolsById.values()].some((tool) => tool.title !== toolUseTitle({ name: tool.tool })))) continue;
     const encodedState = encodeClaudeTailSignals(state);
     const encodedSignals = encodeClaudeTailSignals(signals);
     newest.set(filePath, { ...signature, atMs, offset, guard, guardBytes: guard.length, maxBytes: Number(cacheKey.slice(split + 1)),
@@ -1337,8 +1334,8 @@ async function savedClaudeTail(filePath, signature, maxBytes) {
   const record = claudeTailPositions.take(filePath);
   if (!record || !validClaudeTailRecord(record) || record.maxBytes !== maxBytes || !sameFileSignature(record, signature)) return null;
   const visiblePart = record.signals === 'state' ? record.state : record.signals;
-  // With the text switch on, a pending question needs the full read, because no record holds question text. A record never holds a
-  // pending wrap-up (claudeTailRecords skips it), so a wrap-up question always takes the full read.
+  // With the text switch on, a pending question needs the full read, because no record holds question text. A wrap-up question is
+  // a pending AskUserQuestion, so it takes the full read too, and its card text comes from that read.
   if (keepQuestionText && visiblePart.pending.some(([, tool]) => tool === 'AskUserQuestion')) return null;
   const guard = await readClaudeGuard(filePath, record.size, record.guardBytes);
   if (!guard || claudeTailPositions.digest(guard) !== record.guard) return null;

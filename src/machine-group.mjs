@@ -539,22 +539,22 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
           ? { approve, recent: approve && recent } : null;
         const requests = new Map();
         // Open records can change between dashboard scans. Add them only to the peer reply, not the cached export.
-        // A next-step card is not an open record: it goes with the export rows, under its own switch.
-        if (answer) {
+        if (answer && phones.length && asb?.hasOpenPhoneRequests?.()) {
           for (const row of localRows) {
             const record = row[CLAUDE_QUESTION];
             if (!row.remote && !row.remoteCache && !row.archived && record && (record.kind === 'question' || approve)) requests.set(row.id, record);
           }
         }
+        // The next-step cards need this member's answer switch and a paired phone in the group: with neither, the export has none.
+        // The row symbols live on the dashboard rows, not on the picked export rows, so the card comes from `localRows`.
+        const cards = answer && phones.length
+          ? new Map(localRows.filter((row) => row[NEXT_STEP]).map((row) => [row.id, row[NEXT_STEP]])) : new Map();
         const payload = phoneAnswers ? { ...data, phoneAnswers } : data;
         const flags = JSON.stringify(phoneAnswers);
         if (exported.flags !== flags) {
           exported.cached = exportBody(payload);
           exported.flags = flags;
         }
-        // The next-step cards exist only while this member's answer switch is on: the reply rows carry them like a phone request.
-        // The row symbols live on the dashboard rows, not on the picked export rows, so the card comes from `localRows`.
-        const cards = answer ? new Map(localRows.filter((row) => row[NEXT_STEP]).map((row) => [row.id, row[NEXT_STEP]])) : new Map();
         const current = requests.size || cards.size
           ? exportBody({ ...payload, rows: data.rows.map((row) => ({ ...row,
             ...(requests.has(row.id) ? { phoneRequest: requests.get(row.id) } : cards.has(row.id) ? { phoneRequest: cards.get(row.id) } : {}) })) })
