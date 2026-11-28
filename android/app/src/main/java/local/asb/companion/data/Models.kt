@@ -182,6 +182,10 @@ data class Thread(
     // A local OpenCode row that a live TUI shows now; it still opens, in kitty. An older engine sends none.
     val inTerminal: Boolean = false,
     val globalId: String = "",
+    // The composer: sent only while the PC switch Send messages from phones is ready; a false value has a code in
+    // [messageReason]. An older engine sends neither field, and the app shows no composer.
+    val canMessage: Boolean? = null,
+    val messageReason: String = "",
 ) {
     /** The ID that is the same on every engine of a machine group; older PCs send no globalId. */
     val key: String get() = globalId.ifEmpty { id }
@@ -351,6 +355,8 @@ data class Hello(
     val addresses: List<Endpoint> = emptyList(),
     val machineId: String = "",
     val engines: List<Engine> = emptyList(),
+    /** The PC switch Send messages from phones is ready; an older PC sends none. */
+    val message: Boolean = false,
 )
 
 /** Another ASB engine of the paired PC's machine group (hello `engines`); the phone token is the same on all. */
@@ -377,9 +383,11 @@ data class ErrorReply(val error: String = "", val detail: String = "")
 
 /**
  * One turn of the chat view: `user`, `assistant`, or `peer` with the sender [name]. [cut] is true when the engine cut the text; the
- * text then ends with `…` already, and the screen shows it as it is. The text stays in memory only.
+ * text then ends with `…` already, and the screen shows it as it is. [fromPhone] marks a peer turn that the owner sent from the
+ * phone. The text stays in memory only.
  */
-data class ChatTurn(val role: String, val name: String, val text: String, val atMs: Long, val cut: Boolean)
+data class ChatTurn(val role: String, val name: String, val text: String, val atMs: Long, val cut: Boolean,
+                    val fromPhone: Boolean = false)
 
 /** The newest turns of a session's chat, oldest first; [more] means older turns exist that the reply does not hold. */
 data class ChatReply(val turns: List<ChatTurn>, val more: Boolean)
@@ -398,7 +406,8 @@ internal fun parseChat(value: JsonElement): ChatReply? {
         // A peer turn names its sender; a turn from anyone else with no name still shows.
         val name = jsonString(turn["name"]).orEmpty()
         if (role == "peer" && name.isEmpty()) return@mapNotNull null
-        ChatTurn(role, name, text, atMs, cut)
+        val fromPhone = (turn["fromPhone"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: false
+        ChatTurn(role, name, text, atMs, cut, fromPhone)
     } ?: return null
     val more = (root["more"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: return null
     return ChatReply(turns, more)
