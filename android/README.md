@@ -237,6 +237,16 @@ app action as a line `On the PC: <label>`, and the line
 With `live: false` the card shows only the question and its `unavailable` line
 (default `Open the session on the PC to answer.`). A 409 or 429 reply shows the
 PC's `error` text on the card.
+While the PC sends `canMessage: true` for the row (hello `message`), the chat screen
+has a message field at the bottom (4,000 code points) with Send. States: Sending;
+`Sent.` (or `Sent. The session reads it during its current work.` for a working
+row), then the chat reads again at once and after 2 s; `Not sent. Retry.` after a
+network error, a timeout, or a 5xx (Retry keeps the draft and its message ID); a 400,
+404, 409, 413, or 429 shows the PC's `error` text and keeps the draft. An edit makes
+a new message ID. `canMessage: false` shows `Open the session on the PC to send a message.`
+(`not-live`) or `The ASB message relay is not running on the PC.` (`relay`). A turn
+with `fromPhone: true` shows on the user side as `You, from the phone`, without its
+first line. The draft stays in screen memory only.
 Under the Messages status bar, a tap on the status list or its `Show meanings`
 button shows what each status means under its word (the PC tooltip sentences); a
 second tap or `Hide meanings` hides them. TalkBack reads the sentence with each
