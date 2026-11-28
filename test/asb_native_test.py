@@ -652,6 +652,28 @@ class WidgetCheck(unittest.TestCase):
                          {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": False, "message": False,
                           "answer": False, "approve": False})
 
+    def test_phone_message_key_is_saved_only_to_an_engine_that_has_it(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
+        editor.render_status(status, True)
+        editor.loaded, editor.active, editor.loading = True, True, False
+        editor.request_phone = Mock()
+        editor.apply_settings()
+        body = editor.request_phone.call_args.args[2]
+        self.assertEqual(body, {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": False,
+                                "answer": False, "approve": False})
+        self.assertNotIn("message", body)
+        # An engine with the field gets the switch value.
+        editor.render_status({**status, "message": False}, True)
+        editor.apply_settings()
+        self.assertEqual(editor.request_phone.call_args.args[2],
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": False,
+                          "answer": False, "approve": False, "message": False})
+
     def test_phone_answer_switch_needs_the_text_switch_and_saves_with_the_form(self):
         preferences = asb.Adw.Window(application=self.application)
         preferences.closed = False
@@ -683,7 +705,7 @@ class WidgetCheck(unittest.TestCase):
         editor.request_phone = Mock()
         editor.apply_settings()
         self.assertEqual(editor.request_phone.call_args.args[2],
-                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "message": False,
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True,
                           "answer": True, "approve": False})
 
     def test_phone_approve_switch_needs_the_answer_switch_and_saves_with_the_form(self):
@@ -731,7 +753,7 @@ class WidgetCheck(unittest.TestCase):
         editor.request_phone = Mock()
         editor.apply_settings()
         self.assertEqual(editor.request_phone.call_args.args[2],
-                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "message": False,
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True,
                           "answer": True, "approve": True})
 
     def test_phone_claude_hook_status_lines_under_the_answer_switch(self):

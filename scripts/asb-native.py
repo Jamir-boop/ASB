@@ -6331,8 +6331,9 @@ class PhoneEditor(Gtk.Box):
         body = {"enabled": self.enabled.get_active(),
                 "bindAddresses": [address for address, check in self.address_checks.items() if check.get_active()],
                 "port": int(self.port.get_value()), "sendText": self.send_text.get_active(),
-                "message": self.message_row.get_active() and self.send_text.get_active(),
                 "answer": self.answer.get_active(), "approve": self.approve.get_active()}
+        if self.message_supported:
+            body["message"] = self.message_row.get_active() and self.send_text.get_active()
         self.stop_pairing()
         self.request_phone("/api/phone/settings", "POST", body)
 
