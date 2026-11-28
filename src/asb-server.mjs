@@ -269,16 +269,19 @@ export function createAsbServer({
       if (reason === 'rate-limited') return { status: 429, body: { error: 'Too many answers. Try again in a minute.' } };
       return { status: 409, body: { error: 'Cannot send now. Answer on the PC.' } };
     };
+    // One message ID for this answer: the binding and the message carry the same ID, and relay.js refuses a mismatch as
+    // target-changed (`boundFrames` in bridge/src/outbound.ts).
+    const msgId = randomUUID();
     // 4. Live: the row's own binding proves a live inbox now.
     let bound = null;
-    try { bound = await bindTarget({ reference: thread.reference, msgId: randomUUID(), remainingMs: 10_000 }); }
+    try { bound = await bindTarget({ reference: thread.reference, msgId, remainingMs: 10_000 }); }
     catch { bound = null; }
     if (bound?.ok !== true) return notSent('target-unavailable');
     // 5. Relay: it can run now.
     if (!(relayRunning || (() => machineRelay?.running?.() === true))()) { answeringNextStep.delete(requestId); return nextStepNoRelay; }
     // 6. Deliver: one `/deliver-bound`, and the mark stays for an unknown outcome (the text can have gone out).
     const sender = { machineId: machineIdForAnswer(), sessionId: phoneSessionId(device.id), name: 'Phone', mode: 'unknown', agent: 'phone' };
-    const message = { msgId: randomUUID(), text: phoneAnswerText(card.ask, device.name, reply), hopChain: [] };
+    const message = { msgId, text: phoneAnswerText(card.ask, device.name, reply), hopChain: [] };
     let outcome;
     try { outcome = await machineRelay.deliverBoundPhone(bound.binding, sender, message); }
     catch (error) {

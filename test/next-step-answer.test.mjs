@@ -76,6 +76,17 @@ const phoneSessionId = (deviceId) => {
   return `${text.slice(0, 8)}-${text.slice(8, 12)}-${text.slice(12, 16)}-${text.slice(16, 20)}-${text.slice(20, 32)}`;
 };
 
+// The rules that relay.js `deliverBound` checks before its write (bridge/src/relay.ts 366-400, bridge/src/outbound.ts `boundFrames`,
+// `boundPeer`, `sendBound`): the first frame's ID is the binding's ID (so the message and the binding agree), the binding is not
+// expired, and its bound fields are a live record's. A refusal is `not-sent` with the code that the route maps.
+function deliverBoundRefusal(binding, message, nowMs = Date.now()) {
+  if (!binding || !message || binding.msgId !== message.msgId) return 'target-changed';
+  if (!Number.isInteger(binding.pid) || binding.pid <= 0 || typeof binding.procStart !== 'string' || !binding.procStart
+    || typeof binding.messagingSocketPath !== 'string' || !binding.messagingSocketPath) return 'target-changed';
+  if (!Number.isInteger(binding.expiresAtMs) || nowMs >= binding.expiresAtMs) return 'binding-expired';
+  return null;
+}
+
 // One made-up engine with one next-step row: the binder proves a live inbox, the relay records each `/deliver-bound` frame.
 async function rowFixture(t, options = {}) {
   const nowMs = options.nowMs ?? Date.now();
@@ -90,6 +101,9 @@ async function rowFixture(t, options = {}) {
     deliverBoundPhone: async (binding, sender, message) => {
       // One turn of the loop between the bind and the write, so a second POST can reach the in-flight check in between.
       await new Promise((resolve) => setImmediate(resolve));
+      // The rules of relay.js `deliverBound`: a mismatched binding and message, or an expired binding, is refused, not written.
+      const refusal = deliverBoundRefusal(binding, message);
+      if (refusal) return { outcome: 'not-sent', reason: refusal };
       // A not-sent result wrote nothing: only a real write is a frame here.
       if (state.outcome !== 'not-sent') frames.push({ binding, sender, message });
       return state.outcome === 'not-sent' ? { outcome: 'not-sent', reason: state.reason } : { outcome: state.outcome };
@@ -218,6 +232,21 @@ test('the answer route runs the contract replies and sends one frame with the ex
   // The same request again: 409 Already answered, and no second frame.
   assert.deepEqual([(await f.answer([{ selected: ['Stop here'] }])).status, (await (await f.answer([{ selected: ['Stop here'] }])).json()).error,
     f.frames.length], [409, 'Already answered.', 1]);
+});
+
+test('one answer uses one message ID for its binding and its message, as relay.js requires', async (t) => {
+  t.after(() => useClaudeQuestionText(false));
+  useClaudeQuestionText(true);
+  // The old code made a second ID for the message: relay.js `deliverBound` refused that as target-changed, so the route answered
+  // the not-live 409 while the card showed live. The fake relay here makes the real check, so two IDs would fail this test.
+  const f = await rowFixture(t);
+  assert.equal((await f.answer([{ selected: ['Go on'] }])).status, 200);
+  assert.equal(f.frames.length, 1);
+  const { binding, message } = f.frames[0];
+  assert.equal(binding.msgId, message.msgId);
+  // The binding and the message of the write also agree with the binding request that made the live check.
+  const live = f.bindings.filter((request) => request.msgId === binding.msgId);
+  assert.equal(live.length, 1);
 });
 
 test('the frame text follows the contract for a quote, a newline, a tab, 300 characters, and the device names', async (t) => {
@@ -460,7 +489,12 @@ test('the group sessions reply carries the card under the member\'s own answer s
   const registry = new AppSourceRegistry({ homeDir: source.homeDir, env: {}, platform: 'linux', discoverPersonal: false });
   const store = createClaudeQuestions();
   const state = { answer: true, frames: [] };
-  const machineRelay = { running: () => true, deliverBoundPhone: async (binding, sender, message) => { state.frames.push(message); return { outcome: 'submitted' }; } };
+  const machineRelay = { running: () => true, deliverBoundPhone: async (binding, sender, message) => {
+    const refusal = deliverBoundRefusal(binding, message);
+    if (refusal) return { outcome: 'not-sent', reason: refusal };
+    state.frames.push(message);
+    return { outcome: 'submitted' };
+  } };
   const server = createSwitchboardServer({ sourceToken: TOKEN, pendingStatePath: false, palettePath: '', dashboardWatchPaths: [],
     sourceRegistry: registry, claudeQuestions: store, answerEnabled: () => state.answer, phonePaired: async () => true,
     machineIdentity: () => ({ machineId: MACHINE, machineName: 'synthetic-pc' }), referenceScopes: () => () => SCOPE, machineRelay,
@@ -531,9 +565,13 @@ test('the relay sends one bound phone message through /deliver-bound on its own 
     const chunks = [];
     request.on('data', (chunk) => chunks.push(chunk));
     request.on('end', () => {
-      requests.push({ url: request.url, headers: request.headers, body: Buffer.concat(chunks).toString() });
+      const body = Buffer.concat(chunks).toString();
+      requests.push({ url: request.url, headers: request.headers, body });
+      // The rules of relay.js `deliverBound`: a mismatched binding and message is refused as target-changed, not written.
+      const value = JSON.parse(body);
+      const refusal = deliverBoundRefusal(value.binding, value.message);
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ outcome: 'submitted' }));
+      response.end(JSON.stringify(refusal ? { outcome: 'not-sent', reason: refusal } : { outcome: 'submitted' }));
     });
   });
   await new Promise((resolve) => relayServer.listen(0, '127.0.0.1', resolve));
@@ -555,13 +593,17 @@ test('the relay sends one bound phone message through /deliver-bound on its own 
   const binding = { registryHome: '/synthetic/claude/sessions', runtimeSessionId: '22222222-2222-4222-8222-222222222222', pid: 4242, procStart: '100',
     messagingSocketPath: '/tmp/synthetic.sock', msgId: '33333333-3333-4333-8333-333333333333', hostSessionId: LOCAL, expiresAtMs: Date.now() + 10_000 };
   const sender = { machineId: MACHINE, sessionId: phoneSessionId('a'.repeat(12)), name: 'Phone', mode: 'unknown', agent: 'phone' };
-  const message = { msgId: '44444444-4444-4444-8444-444444444444', text: '[Sent from the owner\'s phone (Phone) through ASB.]\nGo on', hopChain: [] };
+  // The message carries the binding's ID: relay.js `boundFrames` refuses a mismatch.
+  const message = { msgId: binding.msgId, text: '[Sent from the owner\'s phone (Phone) through ASB.]\nGo on', hopChain: [] };
   assert.deepEqual(await supervisor.deliverBoundPhone(binding, sender, message), { outcome: 'submitted' });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, '/deliver-bound');
   assert.equal(requests[0].headers.authorization, `Bearer ${'e'.repeat(64)}`);
   const body = JSON.parse(requests[0].body);
-  assert.deepEqual([body.binding.msgId, body.sender.agent, body.message.msgId], [binding.msgId, 'phone', message.msgId]);
+  assert.deepEqual([body.binding.msgId, body.sender.agent, body.message.msgId], [binding.msgId, 'phone', binding.msgId]);
+  // A message with another ID: the fake relay refuses it as target-changed, the same as relay.js `boundFrames`.
+  assert.deepEqual(await supervisor.deliverBoundPhone(binding, sender, { ...message, msgId: '55555555-5555-4555-8555-555555555555' }),
+    { outcome: 'not-sent', reason: 'target-changed' });
   // A relay that is not running: the route maps the error to the relay reply.
   await supervisor.stop();
   await assert.rejects(() => supervisor.deliverBoundPhone(binding, sender, message), (error) => error.code === 'relay-unavailable');
