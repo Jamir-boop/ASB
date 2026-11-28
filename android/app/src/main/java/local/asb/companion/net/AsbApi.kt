@@ -61,7 +61,14 @@ sealed class AsbError(message: String) : Exception(message) {
 }
 
 /** What the PC did with an answer. Sent means that the hook on the PC has it, not that Claude took it: a PC answer can win. */
-enum class AnswerReply { Sent, Closed, Off, Refused }
+sealed class AnswerReply {
+    data object Sent : AnswerReply()
+    data object Closed : AnswerReply()
+    data object Off : AnswerReply()
+    data object Refused : AnswerReply()
+    /** A 409 or 429 of a next-step answer: the server text, shown as it is. */
+    data class Text(val message: String) : AnswerReply()
+}
 
 /** The phone's answer to an approval request: allow once or deny. */
 enum class Decision { Allow, Deny }
@@ -202,7 +209,8 @@ class AsbApi(
     }
 
     /** Answers the open question [requestId] of row [id] on [engine]; other errors than the mapped replies are thrown. */
-    suspend fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, engine: String): AnswerReply {
+    suspend fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, engine: String,
+                       nextStep: Boolean = false): AnswerReply {
         val body = buildJsonObject {
             put("requestId", requestId)
             putJsonArray("answers") {
@@ -212,7 +220,7 @@ class AsbApi(
                 }
             }
         }
-        return postAnswer(id, body, engine)
+        return postAnswer(id, body, engine, nextStep)
     }
 
     /** Allows or denies the open approval [requestId] of row [id] on [engine]; [note] goes only with a deny and only when not blank. */
@@ -225,14 +233,17 @@ class AsbApi(
         return postAnswer(id, body, engine)
     }
 
-    private suspend fun postAnswer(id: String, body: JsonObject, engine: String): AnswerReply {
+    private suspend fun postAnswer(id: String, body: JsonObject, engine: String, nextStep: Boolean = false): AnswerReply {
         if (id.isEmpty() || id == "." || id == "..") throw AsbError.Server("Invalid session ID.")
         return try {
-            request("threads", id, "answer", body = body.toString(), only = engine)
+            request("threads", id, "answer", body = body.toString(), only = engine, keepThrottled = nextStep)
             AnswerReply.Sent
         } catch (cause: AsbError.Server) {
             when (cause.code) {
-                409 -> AnswerReply.Closed
+                // A next-step answer has more 409 causes than a closed one (already answered, no live session), and its
+                // 429 has its own words: the PC's text fits them all. The hook kinds keep their mapping.
+                409 -> if (nextStep) AnswerReply.Text(cause.message ?: "") else AnswerReply.Closed
+                429 -> if (nextStep) AnswerReply.Text(cause.message ?: "") else throw cause
                 400 -> AnswerReply.Refused
                 404 -> if (cause.message == ROUTE_NOT_AVAILABLE) AnswerReply.Off else AnswerReply.Closed
                 else -> throw cause
@@ -367,6 +378,7 @@ class AsbApi(
         probe: Boolean = false,
         query: Map<String, String> = emptyMap(),
         notFound: String? = null,
+        keepThrottled: Boolean = false,
     ): Reply = withContext(Dispatchers.IO) {
         // A POST names its engine, because remote row IDs differ per engine.
         val targets = if (only != null || body != null) listOfNotNull(target(only.orEmpty())) else getOrder()
@@ -420,7 +432,8 @@ class AsbApi(
                 if (authenticated && !probe) onNotPaired()
                 throw AsbError.NotPaired
             }
-            response.code == 429 -> throw AsbError.Throttled
+            // A next-step reply keeps its 429 text for the caller.
+            response.code == 429 && !keepThrottled -> throw AsbError.Throttled
             response.code == 404 && notFound != null -> throw AsbError.Server(notFound)
             response.code in 200..299 || (allowNotModified && response.code == 304) -> response
             else -> {

@@ -66,6 +66,8 @@ data class ApprovalCard(val requestId: String, val note: String = "", val status
         AnswerReply.Closed -> copy(status = CardStatus.Closed, note = "")
         AnswerReply.Off -> copy(status = CardStatus.Off)
         AnswerReply.Refused -> copy(status = CardStatus.Refused)
+        // Only a next-step question reply carries the PC's text, never an approval.
+        is AnswerReply.Text -> copy(status = CardStatus.Refused)
     }
 
     /** The muted state line under the buttons' row, or null. */

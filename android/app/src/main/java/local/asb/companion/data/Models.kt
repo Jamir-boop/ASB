@@ -199,8 +199,20 @@ data class QuestionItem(
     val allowOther: Boolean = true,
 )
 
+/**
+ * An open question of a row. [kind] is `next-step` for a Claude Desktop Code turn that ended with a question; other kinds
+ * have no kind. [live] is false while the PC cannot take the answer now: the card then shows only [unavailable].
+ * [appActions] are the steps that the PC offers to do itself, shown as plain lines.
+ */
 @Serializable
-data class PhoneQuestion(val requestId: String, val questions: List<QuestionItem>)
+data class PhoneQuestion(
+    val requestId: String,
+    val questions: List<QuestionItem>,
+    val kind: String = "",
+    val live: Boolean = true,
+    val unavailable: String = "",
+    val appActions: List<String> = emptyList(),
+)
 
 /** One answer item, in the order of the questions: the chosen labels, exactly as received, and the typed text. */
 data class PhoneAnswer(val selected: List<String>, val other: String? = null)
@@ -209,10 +221,27 @@ private val requestIdPattern = Regex("[0-9a-f]{32}")
 
 private fun jsonString(value: JsonElement?): String? = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
 
-/** The question of a row, or null when it breaks a rule; the card selects by label, so the labels of a question are unique. */
+/** The app action labels of a next-step question, or null when the array breaks a rule; each limit is the engine's. */
+private fun parseAppActions(value: JsonElement): List<String>? {
+    val list = value as? JsonArray ?: return null
+    if (list.size > 8) return null
+    val labels = list.map { entry ->
+        val text = jsonString(entry)?.trim() ?: return null
+        if (text.isEmpty() || text.codePointCount(0, text.length) > 200) return null
+        text
+    }
+    return labels.takeIf { it.distinct().size == it.size }
+}
+
+/**
+ * The question of a row, or null when it breaks a rule; the card selects by label, so the labels of a question are unique.
+ * A bad `kind`, `live`, `unavailable`, or `appActions` value drops only that field, never the card.
+ */
 internal fun parseQuestion(value: JsonElement): PhoneQuestion? {
     val root = value as? JsonObject ?: return null
     val requestId = jsonString(root["requestId"])?.takeIf { requestIdPattern.matches(it) } ?: return null
+    val kind = jsonString(root["kind"]).orEmpty()
+    val nextStep = kind == "next-step"
     val list = (root["questions"] as? JsonArray)?.takeIf { it.size in 1..4 } ?: return null
     val questions = list.map { entry ->
         val item = entry as? JsonObject ?: return null
@@ -220,7 +249,8 @@ internal fun parseQuestion(value: JsonElement): PhoneQuestion? {
         val header = item["header"]?.let { jsonString(it) ?: return null } ?: ""
         val multiSelect = item["multiSelect"]?.let { (it as? JsonPrimitive)?.takeIf { p -> !p.isString }?.booleanOrNull ?: return null } ?: false
         val allowOther = item["allowOther"]?.let { (it as? JsonPrimitive)?.takeIf { p -> !p.isString }?.booleanOrNull ?: return null } ?: true
-        val options = (item["options"] as? JsonArray)?.takeIf { it.size in 1..8 }?.map { option ->
+        // A next-step question may have no reply labels: then only Other answers it.
+        val options = (item["options"] as? JsonArray)?.takeIf { if (nextStep) it.size <= 8 else it.size in 1..8 }?.map { option ->
             val fields = option as? JsonObject ?: return null
             val label = jsonString(fields["label"])?.takeIf { it.isNotEmpty() } ?: return null
             QuestionOption(label, fields["description"]?.let { jsonString(it) ?: return null } ?: "")
@@ -228,7 +258,10 @@ internal fun parseQuestion(value: JsonElement): PhoneQuestion? {
         if (options.distinctBy { it.label }.size != options.size) return null
         QuestionItem(text, header, options, multiSelect, allowOther)
     }
-    return PhoneQuestion(requestId, questions)
+    val live = root["live"]?.let { jsonBoolean(it) } ?: true
+    val unavailable = jsonString(root["unavailable"]).orEmpty()
+    val appActions = root["appActions"]?.let { parseAppActions(it) } ?: emptyList()
+    return PhoneQuestion(requestId, questions, kind, live, unavailable, appActions)
 }
 
 /** A malformed question is null, so it cannot fail its row. */
