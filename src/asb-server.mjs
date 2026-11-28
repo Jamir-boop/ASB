@@ -125,6 +125,7 @@ export function createAsbServer({
   // The open phone questions and approvals (src/claude-questions.mjs); the answer switch (questions), the approve switch (approvals),
   // and the paired phones decide if a client waits.
   claudeQuestions = null, answerEnabled = () => false, approveEnabled = () => false, phonePaired = async () => false,
+  messageReady = () => false,
   phoneSeenWithin = async () => false, claudeHookStatus = null, codexHookStatus = null, answerAgy = null, approveAgy = null, watchAgy = null,
   claudeWaitMs = MAX_WAIT_MS, claudeQuestionTickMs = 5_000, claudeQuestionReloadMs = 30_000, ...snapshotOptions
 } = {}) {
@@ -291,6 +292,82 @@ export function createAsbServer({
     if (outcome?.outcome === 'not-sent') return notSent(outcome.reason);
     return { status: 200, body: { answered: true } };
   }
+  // The messages of phones on the way out (contract P2): once per (thread, messageId), a rate of 6 a minute per device, a live
+  // inbox and a running relay, then one `/deliver-bound` with the Phone sender. No text is kept: only the pair and its reply.
+  const sentMessages = new Map();
+  const messageRate = new Map();
+  const MESSAGE_LIVE = { status: 409, body: { error: 'Open the session on the PC to send a message.' } };
+  const MESSAGE_RATE = { status: 429, body: { error: 'Too many messages. Try again in a minute.' } };
+  const MESSAGE_NOT_ROW = { status: 409, body: { error: 'This session cannot get messages from the phone.' } };
+  const MESSAGE_NO_RELAY = { status: 409, body: { error: 'Cannot send now: the ASB message relay is not running on the PC.' } };
+  const invalidMessage = { status: 400, body: { error: 'Invalid message.' } };
+  const MESSAGE_TEXT = /^[^\x00-\x08\x0b-\x1f\x7f]*$/;
+  // The message record of one pair, pruned to 10 minutes and at most 256 pairs. In flight: `inFlight: true`; done: the stored reply.
+  const messageRecord = (key) => {
+    const atMs = now();
+    for (const [kept, record] of sentMessages) if (atMs - record.atMs >= 10 * 60_000) sentMessages.delete(kept);
+    while (sentMessages.size > 256) sentMessages.delete(sentMessages.keys().next().value);
+    return sentMessages.get(key) ?? null;
+  };
+  async function messageThread(threadId, body, headers = {}) {
+    // 1. Switch: the loopback route checks it too (the gateway already does).
+    if (!messageReady()) return { status: 404, body: { error: 'Route is not available.' } };
+    // The body: exactly `{ messageId, text }`, 32 lowercase hex, and after trim 1 to 4000 code points with no control character but
+    // a newline and a tab. Above 4000 code points: 413; any other bad shape: 400.
+    if (!exactKeys(body, ['messageId', 'text']) || typeof body.messageId !== 'string' || !/^[0-9a-f]{32}$/.test(body.messageId)
+      || typeof body.text !== 'string' || !MESSAGE_TEXT.test(body.text)) return invalidMessage;
+    const text = body.text.trim();
+    const points = [...text].length;
+    if (points > 4000) return { status: 413, body: { error: 'The message is too long.' } };
+    if (points < 1) return invalidMessage;
+    // 2. Row: a local `claude-desktop-code` row takes a phone message; a member row (`m:`) does not in P2.
+    const thread = threadId === null ? null : await findThreadForAction(threadId);
+    if (!thread || thread.remote || thread.provider !== 'claude-desktop-code' || thread.surface !== 'app') return MESSAGE_NOT_ROW;
+    // 3. Once, keyed by (thread ID, messageId). The mark is set before the next await, so two concurrent POSTs give one relay call;
+    // it goes on a check failure or not-sent. The same ID on another row is a new pair.
+    const key = `${thread.id}\0${body.messageId}`;
+    const known = messageRecord(key);
+    if (known) return known.inFlight ? { status: 409, body: { error: 'This message is being sent.' } } : known.reply;
+    sentMessages.set(key, { atMs: now(), inFlight: true, reply: null });
+    const fail = (reply) => { sentMessages.delete(key); return reply; };
+    const send = (status, value) => {
+      const reply = { status, body: value };
+      sentMessages.set(key, { atMs: now(), inFlight: false, reply });
+      return reply;
+    };
+    // 4. Rate: at most 6 messages per minute per device ID (sliding 60 s); a message counts when it reaches the relay call.
+    const device = answerDevice(headers);
+    const atMs = now();
+    const times = (messageRate.get(device.id) ?? []).filter((at) => at > atMs - 60_000);
+    messageRate.set(device.id, times);
+    while (messageRate.size > 256) messageRate.delete(messageRate.keys().next().value);
+    if (times.length >= 6) return fail(MESSAGE_RATE);
+    const msgId = randomUUID();
+    // 5. Live: the row's own binding proves a live inbox now.
+    let bound = null;
+    try { bound = await bindTarget({ reference: thread.reference, msgId, remainingMs: 10_000 }); }
+    catch { bound = null; }
+    if (bound?.ok !== true) return fail(MESSAGE_LIVE);
+    // 6. Relay: it can run now.
+    if (!(relayRunning || (() => machineRelay?.running?.() === true))()) return fail(MESSAGE_NO_RELAY);
+    times.push(now());
+    messageRate.set(device.id, times);
+    // 7. Deliver: one `/deliver-bound`, and the mark stays for an unknown outcome (the text can have gone out).
+    const sender = { machineId: machineIdForAnswer(), sessionId: phoneSessionId(device.id), name: 'Phone', mode: 'unknown', agent: 'phone' };
+    const message = { msgId, text: phoneMessageText(device.name, text), hopChain: [] };
+    let outcome;
+    try { outcome = await machineRelay.deliverBoundPhone(bound.binding, sender, message); }
+    catch (error) {
+      // A refused request before any write is a relay that cannot run; an unknown error can have sent the text, so keep the mark.
+      return [400, 401, 404].includes(error?.status) ? fail(MESSAGE_NO_RELAY) : send(200, { sent: true });
+    }
+    if (outcome?.outcome === 'not-sent') {
+      if (outcome.reason === 'target-unavailable' || outcome.reason === 'target-changed') return fail(MESSAGE_LIVE);
+      if (outcome.reason === 'rate-limited') return fail(MESSAGE_RATE);
+      return fail({ status: 409, body: { error: 'Cannot send now. Try again on the PC.' } });
+    }
+    return send(200, { sent: true });
+  }
   async function answerThread(threadId, body, localOnly = false, headers = {}) {
     // A question body `{ requestId, answers }`, or an approval body `{ requestId, decision, note? }`.
     const kind = exactKeys(body, ['requestId', 'answers']) ? 'question'
@@ -344,13 +421,17 @@ export function createAsbServer({
     const text = hex.join('');
     return `${text.slice(0, 8)}-${text.slice(8, 12)}-${text.slice(12, 16)}-${text.slice(16, 20)}-${text.slice(20, 32)}`;
   };
-  // The frame text of one next-step answer (contract, Delivery): one line from the phone, then the reply. The ask keeps one line,
-  // cut to 200 code points; the device name loses control characters, brackets, and newlines, and is cut to 64; the reply as it is.
+  // The device name of one phone frame: control characters, brackets, and newlines removed, cut to 64 code points, and `phone`
+  // when empty (contract, Delivery).
+  const phoneDeviceName = (deviceName) => [...String(deviceName || '').replace(/[\x00-\x1f\x7f-\x9f[\]]/g, '')].slice(0, 64).join('') || 'phone';
+  // The frame text of one next-step answer (contract, Delivery): one line from the phone, then the reply. The ask keeps one line
+  // and is cut to 200 code points; the reply as it is.
   const phoneAnswerText = (ask, deviceName, reply) => {
     const flat = [...String(ask || '').replace(/[\n\t]/g, ' ').trim()].slice(0, 200).join('');
-    const name = [...String(deviceName || '').replace(/[\x00-\x1f\x7f-\x9f[\]]/g, '')].slice(0, 64).join('') || 'phone';
-    return `[Sent from the owner's phone (${name}) through ASB. It answers your question: "${flat}"]\n${reply}`;
+    return `[Sent from the owner's phone (${phoneDeviceName(deviceName)}) through ASB. It answers your question: "${flat}"]\n${reply}`;
   };
+  // The frame text of one phone message (contract P2, network): one line from the phone, then the text as it is.
+  const phoneMessageText = (deviceName, text) => `[Sent from the owner's phone (${phoneDeviceName(deviceName)}) through ASB.]\n${text}`;
   const server = http.createServer(async (request, response) => {
     let url;
     try { url = new URL(request.url, 'http://127.0.0.1'); }
@@ -397,9 +478,12 @@ export function createAsbServer({
     const claudeWaitRoute = Boolean(claudeQuestions) && ['/api/agent/wait', '/api/agent/claude-wait'].includes(url.pathname);
     const claudePoll = claudeQuestions ? url.pathname.match(/^\/api\/agent\/(?:claude-)?wait\/([0-9a-f]{32})$/) : null;
     const answerMatch = claudeQuestions ? url.pathname.match(/^\/api\/threads\/([^/]+)\/answer$/) : null;
+    // The phone message route of P2; its switch is checked in the handler (off: 404 `Route is not available.`).
+    const messageMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/message$/);
+    const messageRoute = Boolean(messageMatch);
     const actionRoute = /^\/api\/threads\/[^/]+\/open$/.test(url.pathname) || Boolean(localAction) || unreadSettingsRoute
       || (sourcesRoute && request.method !== 'GET') || Boolean(removeSourceMatch) || phoneActionRoute || paletteRoute || agentUiRoute || engineStopRoute || showWindowRoute || resolveRoute || resolveBoundRoute || listReferencesRoute || sendMemberRoute
-      || claudeWaitRoute || Boolean(claudePoll) || Boolean(answerMatch)
+      || claudeWaitRoute || Boolean(claudePoll) || Boolean(answerMatch) || messageRoute
       || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute) || usageImportRoute || Boolean(usageBackupAction);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
     const readApiRoute = url.pathname === '/api/dashboard' || Boolean(chatRoute) || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
@@ -834,8 +918,8 @@ export function createAsbServer({
           // sendText (the message text switch), answer (the answer switch), and approve (the approve switch) are optional: without
           // them the saved values stay.
           const settingsFields = url.pathname === '/api/phone/settings'
-            && exactKeys(body, ['bindAddresses', 'enabled', 'port'], ['answer', 'approve', 'sendText'])
-            && ['sendText', 'answer', 'approve'].every((name) => body[name] === undefined || typeof body[name] === 'boolean');
+            && exactKeys(body, ['bindAddresses', 'enabled', 'port'], ['answer', 'approve', 'message', 'sendText'])
+            && ['sendText', 'answer', 'approve', 'message'].every((name) => body[name] === undefined || typeof body[name] === 'boolean');
           if (url.pathname === '/api/phone/settings' ? !settingsFields : fields !== '') {
             sendJson(response, 400, { error: 'Invalid phone action.' });
             return;
@@ -1159,6 +1243,22 @@ export function createAsbServer({
         const result = await answerThread(threadId, body, false, request.headers);
         sendJson(response, result.status, result.body);
       } catch { sendJson(response, 500, { error: 'Cannot save the answer.' }); }
+      return;
+    }
+
+    if (messageRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      let body;
+      try { body = await readBody(request, 64 * 1024); } catch (error) {
+        sendJson(response, error.statusCode === 413 ? 413 : 400, { error: error.statusCode === 413 ? 'Request body too large.' : 'Invalid message.' });
+        return;
+      }
+      let threadId = null;
+      try { threadId = decodeURIComponent(messageMatch[1]); } catch {}
+      try {
+        const result = await messageThread(threadId, body, request.headers);
+        sendJson(response, result.status, result.body);
+      } catch { sendJson(response, 500, { error: 'Cannot send the message.' }); }
       return;
     }
 

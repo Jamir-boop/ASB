@@ -26,7 +26,7 @@ import { cacheDir, findExecutable, stateDir } from './platform-paths.mjs';
 import { rowReference, shortReference } from './session-references.mjs';
 import { MEMBER_MESSAGE_KEYS, rowKeyLookup } from './machine-peers.mjs';
 import { CLI_SESSION_IDS, bindLocalTarget, bindMemberTarget, memberTarget, notSentMessage, referencesForList, resolveSessionReference } from './session-targets.mjs';
-import { readLiveClaudeRegistry, liveClaudeProcessesChanged } from './claude-registry.mjs';
+import { readLiveClaudeRegistry, liveClaudeProcessesChanged, readLiveClaudeRegistryFolder } from './claude-registry.mjs';
 import { spawn } from 'node:child_process';
 import { findOpenCodeKittyWindow, focusOpenCodeKittyWindow, openCodeTerminalSessions, openCodeWindowTitle } from './opencode-kitty.mjs';
 
@@ -1185,6 +1185,32 @@ export function createSwitchboardServer(options = {}) {
   // give the reference context of its rows; without one the cached dashboard gives it.
   const defaultBinder = async (request, context) => bindMemberTarget(request,
     context || await referenceContext(await server.dashboardForRequest()), { ...boundIo, targetHomes });
+  // The live inbox check of P2 `canMessage`, without a binder call per row: the set of live `hostSessionId`s of Desktop records that
+  // have a messaging socket, from ONE read of the private registries of the enabled Desktop sources per scan; a send checks again
+  // with the binder.
+  const liveDesktopInboxes = async (sources, machine) => {
+    const readFolder = options.readClaudeRegistryFolder
+      ?? ((root) => readLiveClaudeRegistryFolder(root, { windows: platform === 'win32' }));
+    const live = new Set();
+    if (machine.machineId) {
+      const seen = new Set();
+      for (const source of sources) {
+        if (!source.enabled || source.provider !== 'claude-desktop-code') continue;
+        const folder = path.join(path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR), 'sessions');
+        const records = await readFolder(folder).catch(() => null);
+        if (!records) continue;
+        const root = await fs.realpath(folder).catch(() => null);
+        if (!root || seen.has(root)) continue;
+        seen.add(root);
+        for (const record of records) {
+          // The same records that the binder accepts for a Desktop row: a Desktop entrypoint by hostSessionId, with a messaging socket.
+          if (['claude-desktop', 'claude-desktop-3p'].includes(record.entrypoint)
+            && typeof record.hostSessionId === 'string' && typeof record.messagingSocketPath === 'string') live.add(record.hostSessionId);
+        }
+      }
+    }
+    return live;
+  };
   const nextStepBinder = typeof options.bindMemberTarget === 'function' ? options.bindMemberTarget : defaultBinder;
   // The homes where the receiving engine looks for the target of an exact member send: a CLI or Desktop Code session
   // only in its own source home, a Codex task in the homes that the relay serves.
@@ -1281,6 +1307,8 @@ export function createSwitchboardServer(options = {}) {
     bindMemberTarget: nextStepBinder,
     scannedMachineId: () => options.machineIdentity?.().machineId || '',
     relayRunning: () => options.machineRelay?.running?.() === true,
+    // The phone message switch (contract P2); the engine passes the gateway's `messageReady`.
+    messageReady: () => options.messageReady?.() === true,
     readSourcesRevision: async () => appSourcesRevision(await registry.read()),
     readSources: async () => registeredLoad ? registry.read() : [],
     claudeHookStatus: async () => registeredLoad ? claudeHookStatus(hookTargets(await registry.read()),
@@ -1363,6 +1391,21 @@ export function createSwitchboardServer(options = {}) {
         } });
       }
       options.machineGroup?.merge(loaded);
+      // The phone message field of P2 (contract, Row field): every row, only while the message switch is ready (an old app shows no
+      // composer). Both keys are removed at each scan first: a row can be reused between scans, so an old value must not stay.
+      // `not-live` comes from ONE read of the private registries per scan, not from a binder call per row.
+      const messageRows = options.messageReady?.() === true;
+      const inboxes = messageRows ? await liveDesktopInboxes(sources || [], machine) : null;
+      const relayReady = messageRows && options.machineRelay?.running?.() === true;
+      for (const row of loaded.threads) {
+        delete row.canMessage;
+        delete row.messageReason;
+        if (!messageRows) continue;
+        const local = !row.remote && row.provider === 'claude-desktop-code' && row.surface === 'app';
+        const reason = !local ? 'unsupported' : !inboxes.has(row.externalId) ? 'not-live' : !relayReady ? 'relay' : '';
+        row.canMessage = !reason;
+        if (reason) row.messageReason = reason;
+      }
       if (loaded.threads.some((row) => row[OFFLINE_MEMBER])) Object.defineProperty(loaded, 'nextStatusCheckAtMs',
         { value: Math.min(loaded.nextStatusCheckAtMs || Infinity, Date.now() + 30_000), configurable: true });
       const dashboard = await tracker.observe(loaded, options.machineGroup?.memberIds?.());
