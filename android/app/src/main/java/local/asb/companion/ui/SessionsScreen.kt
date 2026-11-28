@@ -1943,11 +1943,24 @@ private fun QuestionCardPanel(
     var card by remember(rowId, question.requestId) { mutableStateOf(QuestionCard(question)) }
     val keyboard = LocalSoftwareKeyboardController.current
     val enabled = !closed && !card.locked
+    val nextStep = question.kind == "next-step"
     Column(
         Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(10.dp)).background(hexColor(group))
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // A next-step question that the PC cannot take now shows only its words and why: no control that can only fail.
+        if (nextStepBlocked(question)) {
+            question.questions.forEach { item ->
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (item.header.isNotEmpty()) Text(item.header, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+                    Text(item.question, fontSize = 13.sp, lineHeight = TITLE_LINE_HEIGHT.sp, fontWeight = FontWeight.Bold, color = text)
+                }
+            }
+            Text(nextStepUnavailable(question), fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp,
+                color = muted, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            return@Column
+        }
         question.questions.forEachIndexed { index, item ->
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 if (item.header.isNotEmpty()) Text(item.header, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
@@ -1987,8 +2000,14 @@ private fun QuestionCardPanel(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
             )
         }
+        // The steps that the agent can do itself on the PC, as plain lines: they are not choices.
+        if (nextStep) {
+            for (line in nextStepActionLines(question)) Text(line, fontSize = 11.sp,
+                lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+            Text(NEXT_STEP_HELP, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted)
+        }
         card.note(offline, closed)?.let {
-            Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted, maxLines = 1,
+            Text(it, fontSize = 11.sp, lineHeight = CAPTION_LINE_HEIGHT.sp, color = muted, maxLines = 2,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         }
         val answers = card.answers(question)
@@ -1997,7 +2016,7 @@ private fun QuestionCardPanel(
                 if (answers != null) {
                     keyboard?.hide()
                     card = card.sending()
-                    viewModel.answer(rowId, card.requestId, answers) { reply ->
+                    viewModel.answer(rowId, card.requestId, answers, nextStep) { reply ->
                         card = card.replied(reply)
                         // The banner says the result after the inspector closes.
                         if (reply != null && answerBanner(reply) != null) onDone()

@@ -204,8 +204,9 @@ class SessionsViewModel(
      * Sends [answers] to the open question [requestId] of row [id] on the engine on screen. [done] gets the reply before the board
      * refresh, or null after an error (the row error shows it, as for the other actions).
      */
-    fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, done: (AnswerReply?) -> Unit) =
-        sendAnswer(id, done, ::answerBanner) { api.answer(id, requestId, answers, it) }
+    fun answer(id: String, requestId: String, answers: List<PhoneAnswer>, nextStep: Boolean = false,
+               done: (AnswerReply?) -> Unit) =
+        sendAnswer(id, done, ::answerBanner) { api.answer(id, requestId, answers, it, nextStep) }
 
     /** Allows or denies the open approval [requestId] of row [id], as [answer] does for a question; [plan] picks the banner words. */
     fun decide(id: String, requestId: String, decision: Decision, note: String?, plan: Boolean, done: (AnswerReply?) -> Unit) =
@@ -312,7 +313,8 @@ class SessionsViewModel(
 fun answerBanner(reply: AnswerReply): String? = when (reply) {
     AnswerReply.Sent -> "Answer sent"
     AnswerReply.Closed -> "Answered on the PC"
-    AnswerReply.Off, AnswerReply.Refused -> null
+    // A next-step refusal stays on its card, in the PC's words, so the user can read it there.
+    AnswerReply.Off, AnswerReply.Refused, is AnswerReply.Text -> null
 }
 
 /** The banner after a decision that ends the approval card, in the words of its kind. */
