@@ -591,8 +591,10 @@ class WidgetCheck(unittest.TestCase):
             rows.append(row)
             row = row.get_next_sibling()
         self.assertEqual([row.get_title() for row in rows], ["Allow phone access", "Port", "Send message text to phones",
-                                                             "Answer questions from phones", "Approve requests from phones"])
+                                                             "Send messages from phones", "Answer questions from phones",
+                                                             "Approve requests from phones"])
         self.assertIs(rows[2], editor.send_text)
+        self.assertIs(rows[3], editor.message_row)
         self.assertIn("also on the other machines of the group", editor.send_text.get_subtitle())
         status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
         editor.render_status(status, True)
@@ -604,13 +606,82 @@ class WidgetCheck(unittest.TestCase):
         editor.render_status({**status, "sendText": True}, True)
         self.assertTrue(editor.send_text.get_active())
 
+    def test_phone_message_switch_needs_the_text_switch_and_saves_with_the_form(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        self.assertIs(editor.send_text.get_next_sibling(), editor.message_row)
+        self.assertEqual(editor.message_row.get_title(), "Send messages from phones")
+        self.assertEqual(editor.message_row.get_subtitle(),
+                         "A paired phone can send a message into an open Claude Desktop Code session. The session gets it as a message from "
+                         "your phone. Off by default.")
+        self.assertEqual(editor.message_row.get_subtitle_lines(), 0)
+        status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
+        # An older engine without the message field: off and insensitive.
+        editor.render_status(status, True)
+        self.assertFalse(editor.message_row.get_active())
+        self.assertFalse(editor.message_row.get_sensitive())
+        editor.send_text.set_active(True)
+        self.assertFalse(editor.message_row.get_sensitive())
+        # The field comes from the engine: sensitive while the text switch is on.
+        editor.form_loaded = None
+        editor.render_status({**status, "sendText": True, "message": False}, True)
+        self.assertFalse(editor.message_row.get_active())
+        self.assertTrue(editor.message_row.get_sensitive())
+        editor.message_row.set_active(True)
+        # An unsaved edit stays; turning the text switch off clears it and makes it insensitive.
+        editor.render_status({**status, "sendText": True, "message": False}, True)
+        self.assertTrue(editor.message_row.get_active())
+        editor.send_text.set_active(False)
+        self.assertFalse(editor.message_row.get_active())
+        self.assertFalse(editor.message_row.get_sensitive())
+        # The saved value loads with an unedited form, and a saved message without sendText stays off.
+        editor.form_loaded = None
+        editor.render_status({**status, "sendText": True, "message": True}, True)
+        self.assertTrue(editor.message_row.get_active())
+        self.assertTrue(editor.message_row.get_sensitive())
+        editor.form_loaded = None
+        editor.render_status({**status, "sendText": False, "message": True}, True)
+        self.assertFalse(editor.message_row.get_active())
+        editor.loaded, editor.active = True, True
+        editor.request_phone = Mock()
+        editor.apply_settings()
+        self.assertEqual(editor.request_phone.call_args.args[2],
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": False, "message": False,
+                          "answer": False, "approve": False})
+
+    def test_phone_message_key_is_saved_only_to_an_engine_that_has_it(self):
+        preferences = asb.Adw.Window(application=self.application)
+        preferences.closed = False
+        self.addCleanup(preferences.destroy)
+        editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
+        preferences.set_content(editor)
+        status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
+        editor.render_status(status, True)
+        editor.loaded, editor.active, editor.loading = True, True, False
+        editor.request_phone = Mock()
+        editor.apply_settings()
+        body = editor.request_phone.call_args.args[2]
+        self.assertEqual(body, {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": False,
+                                "answer": False, "approve": False})
+        self.assertNotIn("message", body)
+        # An engine with the field gets the switch value.
+        editor.render_status({**status, "message": False}, True)
+        editor.apply_settings()
+        self.assertEqual(editor.request_phone.call_args.args[2],
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": False,
+                          "answer": False, "approve": False, "message": False})
+
     def test_phone_answer_switch_needs_the_text_switch_and_saves_with_the_form(self):
         preferences = asb.Adw.Window(application=self.application)
         preferences.closed = False
         self.addCleanup(preferences.destroy)
         editor = asb.PhoneEditor(SimpleNamespace(closed=False, base="http://127.0.0.1:1"), preferences)
         preferences.set_content(editor)
-        self.assertIs(editor.send_text.get_next_sibling(), editor.answer)
+        self.assertIs(editor.send_text.get_next_sibling(), editor.message_row)
+        self.assertIs(editor.message_row.get_next_sibling(), editor.answer)
         self.assertIn("asb agent claude-hook install", editor.answer.get_subtitle())
         status = {"enabled": False, "port": 4630, "bindAddresses": [], "running": False, "devices": [], "addresses": []}
         editor.render_status(status, True)
@@ -634,7 +705,8 @@ class WidgetCheck(unittest.TestCase):
         editor.request_phone = Mock()
         editor.apply_settings()
         self.assertEqual(editor.request_phone.call_args.args[2],
-                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "answer": True, "approve": False})
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True,
+                          "answer": True, "approve": False})
 
     def test_phone_approve_switch_needs_the_answer_switch_and_saves_with_the_form(self):
         preferences = asb.Adw.Window(application=self.application)
@@ -681,7 +753,8 @@ class WidgetCheck(unittest.TestCase):
         editor.request_phone = Mock()
         editor.apply_settings()
         self.assertEqual(editor.request_phone.call_args.args[2],
-                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True, "answer": True, "approve": True})
+                         {"enabled": False, "bindAddresses": [], "port": 4630, "sendText": True,
+                          "answer": True, "approve": True})
 
     def test_phone_claude_hook_status_lines_under_the_answer_switch(self):
         home = os.path.expanduser("~")
