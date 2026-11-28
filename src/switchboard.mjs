@@ -1391,17 +1391,20 @@ export function createSwitchboardServer(options = {}) {
         } });
       }
       options.machineGroup?.merge(loaded);
-      // The phone message field of P2: every row, only while the message switch is ready (an old app shows no composer). `not-live`
-      // comes from ONE read of the private registries per scan, not from a binder call per row.
-      if (options.messageReady?.() === true) {
-        const inboxes = await liveDesktopInboxes(sources || [], machine);
-        const relayReady = options.machineRelay?.running?.() === true;
-        for (const row of loaded.threads) {
-          const local = !row.remote && row.provider === 'claude-desktop-code' && row.surface === 'app';
-          const reason = !local ? 'unsupported' : !inboxes.has(row.externalId) ? 'not-live' : !relayReady ? 'relay' : '';
-          row.canMessage = !reason;
-          if (reason) row.messageReason = reason;
-        }
+      // The phone message field of P2 (contract, Row field): every row, only while the message switch is ready (an old app shows no
+      // composer). Both keys are removed at each scan first: a row can be reused between scans, so an old value must not stay.
+      // `not-live` comes from ONE read of the private registries per scan, not from a binder call per row.
+      const messageRows = options.messageReady?.() === true;
+      const inboxes = messageRows ? await liveDesktopInboxes(sources || [], machine) : null;
+      const relayReady = messageRows && options.machineRelay?.running?.() === true;
+      for (const row of loaded.threads) {
+        delete row.canMessage;
+        delete row.messageReason;
+        if (!messageRows) continue;
+        const local = !row.remote && row.provider === 'claude-desktop-code' && row.surface === 'app';
+        const reason = !local ? 'unsupported' : !inboxes.has(row.externalId) ? 'not-live' : !relayReady ? 'relay' : '';
+        row.canMessage = !reason;
+        if (reason) row.messageReason = reason;
       }
       if (loaded.threads.some((row) => row[OFFLINE_MEMBER])) Object.defineProperty(loaded, 'nextStatusCheckAtMs',
         { value: Math.min(loaded.nextStatusCheckAtMs || Infinity, Date.now() + 30_000), configurable: true });

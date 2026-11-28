@@ -52,7 +52,8 @@ async function fixture(t, options = {}) {
     provider: 'claude-desktop-code', providerLabel: 'Claude Desktop Code', surface: 'app', state: 'idle', title: `Synthetic ${index}`,
     sourceId: 'claude-desktop-code', sourceName: 'claude-desktop-code', updatedAtMs: 1_000 + index });
   const rows = options.rows ?? [desktop(1), desktop(2)];
-  const state = { relay: options.relay !== false, bind: options.bind !== false, outcome: 'submitted', reason: undefined, reads: 0, slowMs: 0 };
+  const state = { relay: options.relay !== false, bind: options.bind !== false, outcome: 'submitted', reason: undefined, reads: 0, slowMs: 0,
+    message: options.message !== false };
   const frames = [];
   const bindings = [];
   const machineRelay = {
@@ -73,9 +74,11 @@ async function fixture(t, options = {}) {
     state.reads += 1;
     return inboxIds.map((hostSessionId) => ({ entrypoint: 'claude-desktop', hostSessionId, messagingSocketPath: `/synthetic/${hostSessionId}.sock` }));
   };
+  const singleton = { generatedAtMs: Date.now(), providers: [], threads: rows };
   const server = createSwitchboardServer({ sourceToken: TOKEN, pendingStatePath: false, palettePath: '', dashboardWatchPaths: [],
     sourceRegistry: registry, machineIdentity: () => ({ machineId: MACHINE, machineName: 'synthetic-pc' }), referenceScopes: () => () => SCOPE,
-    machineRelay, messageReady: () => options.message !== false, readClaudeRegistryFolder: liveInboxRead,
+    machineRelay, messageReady: () => state.message, readClaudeRegistryFolder: liveInboxRead,
+    onMessage: (on) => { state.message = on; },
     bindMemberTarget: async (request) => {
       bindings.push(request);
       if (!state.bind) return { ok: false, code: 'not-live' };
@@ -85,6 +88,8 @@ async function fixture(t, options = {}) {
     },
     loadDashboard: async (loadOptions) => {
       const loaded = await loadSwitchboardDashboard({ ...loadOptions, loadCodex: async () => ({ threads: [] }), loadOpenCode: async () => ({ threads: [] }) });
+      // `options.reuse`: the same row objects at every scan, as a reused cache row or a member export gives them.
+      if (options.reuse) { singleton.threads = rows; return singleton; }
       Object.defineProperty(loaded, 'threads', { value: rows.map((row) => ({ ...row })), configurable: true });
       return loaded;
     } });
@@ -390,4 +395,26 @@ test('the settings route takes the message switch and refuses it without message
   assert.equal((await post({ ...baseBody, sendText: true, message: true })).status, 200);
   const status = await (await fetch(`${base}/api/phone`, { headers: { 'x-asb-source-token': TOKEN } })).json();
   assert.deepEqual([status.sendText, status.message], [true, true]);
+});
+
+// The P2 feature on one server, with the same row objects at every scan (a reused cache row, a member export): the switch off
+// clears both fields of those rows, and a row that gains or loses a reason never keeps the old text.
+test('reused rows never keep canMessage or messageReason', async (t) => {
+  const f = await fixture(t, { reuse: true, relay: false });
+  // On, the relay down: the live row can message, the row without an inbox says not-live.
+  const first = await f.rowsOf('?force=1');
+  assert.deepEqual(first.map((row) => [row.canMessage, row.messageReason]), [[false, 'relay'], [false, 'not-live']]);
+  // The relay up: the same rows, and no row keeps an old reason.
+  f.state.relay = true;
+  assert.deepEqual((await f.rowsOf('?force=1')).map((row) => [row.canMessage, row.messageReason]), [[true, undefined], [false, 'not-live']]);
+  // The switch off on the same server and rows (the gateway's onMessage calls it): no row has either field at the next scan.
+  f.state.message = false;
+  f.server.invalidateDashboard('phone-message');
+  for (const row of await f.rowsOf('?force=1')) assert.deepEqual([row.id, 'canMessage' in row, 'messageReason' in row], [row.id, false, false]);
+  // On again with the relay down: relay; relay up: true with no reason.
+  f.state.message = true;
+  f.state.relay = false;
+  assert.deepEqual((await f.rowsOf('?force=1')).map((row) => [row.canMessage, row.messageReason]), [[false, 'relay'], [false, 'not-live']]);
+  f.state.relay = true;
+  assert.deepEqual((await f.rowsOf('?force=1')).map((row) => [row.canMessage, row.messageReason]), [[true, undefined], [false, 'not-live']]);
 });

@@ -202,6 +202,28 @@ test('a scan saves the private list: 0600 in 0700, with the version, machine, re
   assert.equal('generatedAtMs' in saved.list, false);
 });
 
+// A list from a build that saved the message field of every row: the stale read serves it, and the next save drops both keys.
+test('the saved last list never carries canMessage or messageReason', async (t) => {
+  const root = await stateFolder(t);
+  // Saved 60 s ago, so the first scan may write again (a save inside 30 s of the last one is held).
+  const record = (list) => ({ version: 1, machineId: MACHINE, sourcesRevision: REVISION, savedAtMs: now() - 60_000, list });
+  const withMessage = (rows) => rows.map((row) => ({ ...row, canMessage: false, messageReason: 'relay' }));
+  const listed = dashboard().threads.filter((row) => !row.remote);
+  const saved = record({ threads: withMessage(listed), messages: [], pinnedOrder: ['local-1'], refreshIntervalMs: 5_000, persistentUnread: true,
+    summary: { needs: 1, working: 1, total: 2 } });
+  await saveFile(root, saved);
+  // A loaded list from the old build is still read (no `.bad` move). The scan carries the field (the P2 row build), and the saved
+  // list leaves both keys out.
+  const { instance } = await snapshot(t, root, { load: async () => ({ ...dashboard(), threads: withMessage(dashboard().threads) }) });
+  await instance.loadSharedDashboard({ force: true });
+  // The file is there already (the old record); wait for the next save, which leaves both keys out.
+  await until(async () => !(await readFile(fileFor(root), 'utf8').catch(() => '')).includes('canMessage'));
+  const kept = JSON.parse(await readFile(fileFor(root), 'utf8'));
+  assert.equal(kept.machineId, MACHINE);
+  for (const row of kept.list.threads) assert.deepEqual(['canMessage' in row, 'messageReason' in row], [false, false]);
+  await assert.rejects(stat(`${fileFor(root)}.bad`), { code: 'ENOENT' });
+});
+
 test('the save stays off the scan path: the scan ends before the write is tried', async (t) => {
   const root = await stateFolder(t);
   const { instance, file } = await snapshot(t, root);
