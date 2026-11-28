@@ -25,6 +25,7 @@ import local.asb.companion.data.ActivityMessages
 import local.asb.companion.data.ActivityThread
 import local.asb.companion.data.ActivityUsage
 import local.asb.companion.data.AsbJson
+import local.asb.companion.data.ChatReply
 import local.asb.companion.data.Dashboard
 import local.asb.companion.data.Endpoint
 import local.asb.companion.data.Engine
@@ -38,6 +39,7 @@ import local.asb.companion.data.USAGE_PERIODS
 import local.asb.companion.data.endpointLabel
 import local.asb.companion.data.orderEndpoints
 import local.asb.companion.data.otherEngines
+import local.asb.companion.data.parseChat
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.EventListener
@@ -66,6 +68,9 @@ enum class Decision { Allow, Deny }
 
 // The gateway text of a route that the PC switches turned off; every other 404 means the row is gone.
 const val ROUTE_NOT_AVAILABLE = "Route is not available."
+
+// The gateway text of a row that has no chat to show (a member row, another provider, an unknown ID).
+const val NO_CHAT = "No chat for this session."
 
 // An engine without the activity routes answers 404.
 const val OLDER_ENGINE = "This PC runs an older ASB. Update ASB on the PC to see messages and usage."
@@ -278,6 +283,38 @@ class AsbApi(
         }
         // A large reply takes tens of milliseconds to parse.
         return withContext(Dispatchers.Default) { decode<ActivityUsage>(body) }
+    }
+
+    /** What the chat route gave: [Shown] with the reply, or the reason there is none. */
+    sealed interface ChatResult {
+        data class Shown(val reply: ChatReply) : ChatResult
+        /** The PC switch Send message text to phones is off. */
+        data object Off : ChatResult
+        /** The row has no readable chat. */
+        data object NoChat : ChatResult
+        data object Failed : ChatResult
+    }
+
+    /**
+     * The newest [limit] turns of the chat of row [id] on [engine]. 404 `Route is not available.` is the PC switch off; 404
+     * `No chat for this session.` is a row with no chat; every other error is Failed. The reply stays in memory.
+     */
+    suspend fun chat(id: String, engine: String, limit: Int = 30): ChatResult {
+        if (id.isEmpty() || id == "." || id == "..") return ChatResult.NoChat
+        val body = try {
+            request("threads", id, "chat", query = mapOf("limit" to limit.coerceIn(1, 30).toString()), only = engine).body
+        } catch (cause: AsbError.Server) {
+            return when {
+                cause.code != 404 -> ChatResult.Failed
+                cause.message == ROUTE_NOT_AVAILABLE -> ChatResult.Off
+                cause.message == NO_CHAT -> ChatResult.NoChat
+                else -> ChatResult.Failed
+            }
+        } catch (_: AsbError) {
+            return ChatResult.Failed
+        }
+        val reply = try { parseChat(AsbJson.parseToJsonElement(body)) } catch (_: SerializationException) { null }
+        return if (reply != null) ChatResult.Shown(reply) else ChatResult.Failed
     }
 
     private data class Reply(val code: Int, val body: String, val etag: String?, val engine: String = "")

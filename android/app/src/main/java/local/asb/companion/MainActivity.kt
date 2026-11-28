@@ -71,6 +71,7 @@ import local.asb.companion.notify.LiveService
 import local.asb.companion.notify.LiveUpdate
 import local.asb.companion.notify.Notifier
 import local.asb.companion.ui.AsbTheme
+import local.asb.companion.ui.ChatScreen
 import local.asb.companion.ui.EndpointList
 import local.asb.companion.ui.MessagesScreen
 import local.asb.companion.ui.UsageScreen
@@ -182,7 +183,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { VERIFY, SESSIONS, CONNECTION, MESSAGES, USAGE }
+private enum class Screen { VERIFY, SESSIONS, CONNECTION, MESSAGES, CHAT, USAGE }
 
 @Composable
 private fun PairedApp(
@@ -201,6 +202,8 @@ private fun PairedApp(
     var serverName by rememberSaveable(deviceId) { mutableStateOf(store.serverName) }
     // The session that Show messages selected; it keeps its seat in Messages.
     var messagesSeat by rememberSaveable(deviceId) { mutableStateOf<String?>(null) }
+    // The row that Chat selected.
+    var chatRow by rememberSaveable(deviceId) { mutableStateOf<String?>(null) }
     // A tap that comes while another screen shows opens the app as before, with no inspector.
     LaunchedEffect(questionTap) {
         if (questionTap != null && screen != Screen.VERIFY && screen != Screen.SESSIONS) onQuestionTapDone()
@@ -247,6 +250,8 @@ private fun PairedApp(
         val engine = sessionsModel.state.collectAsStateWithLifecycle().value.engine
         if (screen == Screen.MESSAGES) {
             MessagesScreen(api, engine, messagesSeat, onSelect = { messagesSeat = it }, onBack = { screen = Screen.SESSIONS })
+        } else if (screen == Screen.CHAT && chatRow != null) {
+            ChatScreen(api, engine, chatRow!!, onBack = { screen = Screen.SESSIONS })
         } else if (screen == Screen.USAGE) {
             UsageScreen(api, engine, onBack = { screen = Screen.SESSIONS })
         } else if (screen == Screen.CONNECTION) {
@@ -270,6 +275,7 @@ private fun PairedApp(
             SessionsScreen(sessionsModel, serverName, cardTextScale = app.textScale, backgroundCounts = app.backgroundCounts,
                 onSettings = { screen = Screen.CONNECTION },
                 onMessages = { messagesSeat = it; screen = Screen.MESSAGES },
+                onChat = { chatRow = it; screen = Screen.CHAT },
                 onUsage = { screen = Screen.USAGE },
                 onPairAgain = unpair,
                 questionTap = questionTap,

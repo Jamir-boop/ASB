@@ -342,6 +342,35 @@ data class PairReply(
 @Serializable
 data class ErrorReply(val error: String = "", val detail: String = "")
 
+/**
+ * One turn of the chat view: `user`, `assistant`, or `peer` with the sender [name]. [text] is cut at [cut] (the screen ends it with
+ * `…`). The text stays in memory only.
+ */
+data class ChatTurn(val role: String, val name: String, val text: String, val atMs: Long, val cut: Boolean)
+
+/** The newest turns of a session's chat, oldest first; [more] means older turns exist that the reply does not hold. */
+data class ChatReply(val turns: List<ChatTurn>, val more: Boolean)
+
+private val chatRoles = setOf("user", "assistant", "peer")
+
+/** The reply of the chat route; a turn that breaks a rule is dropped, not the reply. */
+internal fun parseChat(value: JsonElement): ChatReply? {
+    val root = value as? JsonObject ?: return null
+    val turns = (root["turns"] as? JsonArray)?.mapNotNull { entry ->
+        val turn = entry as? JsonObject ?: return@mapNotNull null
+        val role = jsonString(turn["role"])?.takeIf { it in chatRoles } ?: return@mapNotNull null
+        val text = jsonString(turn["text"]) ?: return@mapNotNull null
+        val atMs = (turn["atMs"] as? JsonPrimitive)?.let(::floorMillis) ?: return@mapNotNull null
+        val cut = (turn["cut"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: return@mapNotNull null
+        // A peer turn names its sender; a turn from anyone else with no name still shows.
+        val name = jsonString(turn["name"]).orEmpty()
+        if (role == "peer" && name.isEmpty()) return@mapNotNull null
+        ChatTurn(role, name, text, atMs, cut)
+    } ?: return null
+    val more = (root["more"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: return null
+    return ChatReply(turns, more)
+}
+
 private val hexColor = Regex("#[0-9a-fA-F]{6}")
 
 // Port of luminance.
