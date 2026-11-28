@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hopChain, inbox, peers, processStart, sendFrames, socketPath, userFrame, type Frame } from '../src/claude';
 import { outboundServer, type ExactReceipt } from '../src/outbound';
-import { engineCaller, forwardOutcome, proxyName, proxyPlan, receiptParts, type ExactEntry, type Home, type RemotePeer } from '../src/relay';
+import { engineCaller, forwardOutcome, phoneName, proxyName, proxyPlan, receiptParts, type ExactEntry, type Home, type RemotePeer } from '../src/relay';
 // Linux only: the engine starts the relay only on Linux and Windows, and this test uses Unix sockets and the `cat` placeholder from PATH.
 const linux = test.skipIf(process.platform !== 'linux');
 
@@ -53,6 +53,14 @@ test('proxy names carry the machine, use safe characters, stay at 64 characters,
   const long = proxyName('beta', 'y'.repeat(100), ['beta-' + 'y'.repeat(59)]);
   expect(long).toBe(`beta-${'y'.repeat(57)}-2`);
   expect(long).toHaveLength(64);
+});
+
+test('a phone reverse row is named Phone, then Phone-2, with no machine prefix', () => {
+  expect(phoneName([])).toBe('Phone');
+  expect(phoneName(['Phone'])).toBe('Phone-2');
+  expect(phoneName(['Phone', 'Phone-2'])).toBe('Phone-3');
+  // The case stays; the other names do not hide it.
+  expect(phoneName(['phone', 'beta-codex-task'])).toBe('Phone');
 });
 
 test('a forwarded message gets a refused receipt only when it was not sent', async () => {
@@ -441,6 +449,83 @@ linux.each([false, true])('/deliver-bound writes one frame to the bound record o
     await first.close();
     await second.close();
     await third.close();
+    engine.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+linux('/deliver-bound with a phone sender writes a Phone row frame with no from-mode, and a frame on that row is dropped', async () => {
+  const root = mkdtempSync('/tmp/asb-relay-phone-');
+  mkdirSync(join(root, 'claude', 'sessions'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, 's'), { mode: 0o700 });
+  const home1 = join(root, 'claude');
+  const sends: any[] = [];
+  const receipts: any[] = [];
+  const engine = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    if (request.headers.get('x-asb-source-token') !== SOURCE_TOKEN) return new Response(null, { status: 403 });
+    const path = new URL(request.url).pathname;
+    if (path === '/api/relay/homes') return Response.json({ machineId: 'a'.repeat(16), machineName: 'alpha',
+      homes: [{ path: home1, remoteClaude: 'auto', hasRemoteControl: false }] });
+    if (path === '/api/relay/remote-peers') return Response.json({ peers: [] });
+    if (path === '/api/relay/receipt') { receipts.push(await request.json()); return Response.json({ sent: true }); }
+    sends.push(await request.json());
+    return Response.json({ ok: true, outcome: 'socket-written' });
+  } });
+  const target = await agent(home1, join(root, 's'), 'cli-one', 'cli');
+  const row = peers(home1).find(peer => peer.entrypoint !== 'asb-relay')!;
+  let relay: Relay | undefined;
+  try {
+    relay = await startRelay(engine.port!, join(root, 'relay'));
+    const phone = (sessionId = randomUUID()) => ({ machineId: 'a'.repeat(16), sessionId, name: 'Phone', mode: 'unknown', agent: 'phone' });
+    const binding = (id: string) => ({ registryHome: realpathSync(join(home1, 'sessions')), runtimeSessionId: target.sessionId,
+      pid: row.pid, procStart: row.procStart, messagingSocketPath: row.messagingSocketPath, msgId: id, expiresAtMs: Date.now() + 10_000 });
+    const deliverBound = (body: unknown) => fetch(`http://127.0.0.1:${relay!.port}/deliver-bound`, { method: 'POST',
+      headers: { authorization: `Bearer ${relay!.token}` }, body: JSON.stringify(body) });
+
+    const firstId = randomUUID();
+    const first = phone();
+    expect(await (await deliverBound({ binding: binding(firstId), sender: first, message: { msgId: firstId, text: 'yes', hopChain: [] } })).json())
+      .toEqual({ outcome: 'submitted' });
+    const frame = await until(() => target.frames.find(item => item.type === 'user' && item.msg_id === firstId));
+    const firstRow = await until(() => proxyRows(home1).find(item => item.sessionId === first.sessionId));
+    if (frame.type !== 'user') throw new Error('Expected a user frame');
+    expect(firstRow.name).toBe('Phone');
+    expect(frame.message.content).toContain('from-name="Phone"');
+    expect(frame.message.content).not.toContain('from-mode=');
+    expect(frame.message.content).toContain('\nyes\n');
+
+    // A second phone sender in the same home: the next name, with its own row.
+    const secondId = randomUUID();
+    const second = phone();
+    expect(await (await deliverBound({ binding: binding(secondId), sender: second, message: { msgId: secondId, text: 'no', hopChain: [] } })).json())
+      .toEqual({ outcome: 'submitted' });
+    const secondRow = await until(() => proxyRows(home1).find(item => item.sessionId === second.sessionId));
+    expect(secondRow.name).toBe('Phone-2');
+    const secondFrame = await until(() => target.frames.find(item => item.type === 'user' && item.msg_id === secondId));
+    expect(secondFrame.type === 'user' && secondFrame.message.content).toContain('from-name="Phone-2"');
+    const sentBefore = sends.length;
+
+    // A frame that arrives on a Phone row is dropped: no forward, no receipt, nothing sent anywhere.
+    await sendFrames(home1, firstRow, [userFrame(firstRow, target.address, 'cli-one', target.sessionId, randomUUID(), 'answer', 'prompting', null, [])]);
+    await sendFrames(home1, firstRow, [{ msgV: 1, type: 'control', msg_id: randomUUID(), from: target.address, session_id: first.sessionId,
+      action: 'peer_message_status', orig_msg_id: firstId, status: 'delivered' }]);
+    await Bun.sleep(300);
+    expect(sends).toHaveLength(sentBefore);
+    expect(receipts).toEqual([]);
+
+    // A non-phone reverse row still forwards as before: the target writes to it and the engine gets the send.
+    const claudeId = randomUUID();
+    const claudeSender = { machineId: 'b'.repeat(16), sessionId: randomUUID(), name: 'codex-task', mode: 'prompting', agent: 'codex' };
+    expect(await (await deliverBound({ binding: binding(claudeId), sender: claudeSender,
+      message: { msgId: claudeId, text: 'plain', hopChain: [] } })).json()).toEqual({ outcome: 'submitted' });
+    const claudeRow = await until(() => proxyRows(home1).find(item => item.sessionId === claudeSender.sessionId));
+    expect(claudeRow.name).toBe('b'.repeat(8) + '-codex-task');
+    await sendFrames(home1, claudeRow, [userFrame(claudeRow, target.address, 'cli-one', target.sessionId, randomUUID(), 'the reply', 'bypass', null, [])]);
+    const forwarded = await until(() => sends.find(send => send.message?.text === 'the reply'));
+    expect(forwarded).toMatchObject({ machineId: claudeSender.machineId, targetSessionId: claudeSender.sessionId });
+  } finally {
+    relay?.child.kill('SIGKILL');
+    await target.close();
     engine.stop(true);
     rmSync(root, { recursive: true, force: true });
   }
