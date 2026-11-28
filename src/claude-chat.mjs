@@ -10,7 +10,8 @@ const MAX_NAME = 128;
 const MAX_REPLY_BYTES = 256 * 1024;
 const PHONE_TARGET = /^Phone(-[0-9a-z]+)?( \[[0-9a-f]+\])?$/;
 const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
-const LOCAL_COMMAND = /^\s*<(?:local-command-caveat|command-name|local-command-stdout)>/;
+const NOT_A_PROMPT = /^<(?:task-notification|bash-input|bash-stdout|bash-stderr|scheduled-task|side-sessions-event|command-name|command-message|command-args|local-command-)/;
+const ENVELOPE_TAG = /^<cross-session-message\b([^>]*)>/;
 
 const recordAtMs = (record) => {
   const atMs = Date.parse(record?.timestamp);
@@ -21,6 +22,16 @@ const partsOf = (content) => typeof content === 'string' ? [content] : Array.isA
 const peerTurn = (origin, record) => {
   const name = [...String(origin?.name ?? '').trim()].slice(0, MAX_NAME).join('');
   return name ? { role: 'peer', name, text: String(origin?.body ?? ''), atMs: recordAtMs(record) } : null;
+};
+// An older-shape peer envelope: the sender from `from-name` (else `from`) and only the body, never the envelope itself.
+const envelopeTurn = (prompt, record) => {
+  const tag = prompt.match(ENVELOPE_TAG);
+  if (!tag) return null;
+  const attributes = new Map([...tag[1].matchAll(/([\w-]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
+  const name = [...String(attributes.get('from-name') || attributes.get('from') || '').trim()].slice(0, MAX_NAME).join('');
+  const end = prompt.lastIndexOf('</cross-session-message>');
+  const body = end >= tag[0].length ? prompt.slice(tag[0].length, end).trim() : '';
+  return name ? { role: 'peer', name, text: body, atMs: recordAtMs(record) } : null;
 };
 
 // The turns of one transcript text, oldest first, before the limit and the size cut. Pure: no I/O.
@@ -58,7 +69,9 @@ export function parseClaudeChat(text = '') {
       continue;
     }
     if (record.type !== 'user') continue;
-    if (record.origin?.kind === 'peer') {
+    // A record with an origin: only a human origin is a user turn (the peer shape is the idle peer message; other kinds make no turn).
+    if (record.origin && record.origin.kind !== 'human') {
+      if (record.origin.kind !== 'peer') continue;
       const turn = peerTurn(record.origin, record);
       if (turn) { flush(); turns.push(turn); }
       continue;
@@ -67,7 +80,12 @@ export function parseClaudeChat(text = '') {
     const content = record.message?.content;
     if (Array.isArray(content) && content.some((item) => item?.type === 'tool_result')) continue;
     const prompt = partsOf(content).join('\n').replace(SYSTEM_REMINDER, '').trim();
-    if (!prompt || LOCAL_COMMAND.test(prompt)) continue;
+    if (!prompt || NOT_A_PROMPT.test(prompt)) continue;
+    if (!record.origin && prompt.startsWith('<cross-session-message')) {
+      const turn = envelopeTurn(prompt, record);
+      if (turn) { flush(); turns.push(turn); }
+      continue;
+    }
     flush();
     turns.push({ role: 'user', text: prompt, atMs: recordAtMs(record) });
   }

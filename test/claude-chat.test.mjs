@@ -150,3 +150,35 @@ test('a sidechain record makes no turn in any shape', async (t) => {
   assert.deepEqual(reply.turns.map((turn) => [turn.role, turn.text]), [['user', 'Main prompt.'], ['assistant', 'Main reply.']]);
   assert.ok(!JSON.stringify(reply).includes('SIDE'));
 });
+
+test('only typed prompts are user turns: origins, skipped tags, and older-shape peer envelopes', async (t) => {
+  const { file } = await fixture(t);
+  const envelope = (attributes, body) => `<cross-session-message ${attributes}>\n${body}\n</cross-session-message>`;
+  await writeFile(file, jsonl([
+    { type: 'user', timestamp: at(1), origin: { kind: 'human' }, message: { content: 'Typed human prompt.' } },
+    { type: 'user', timestamp: at(2), message: { content: 'Typed older prompt.' } },
+    { type: 'user', timestamp: at(3), origin: { kind: 'human' }, message: { content: '<pasted_content>[Image #1]</pasted_content>' } },
+    { type: 'user', timestamp: at(4), origin: { kind: 'task-notification' }, message: { content: '<task-notification>TASKMARK</task-notification>' } },
+    { type: 'user', timestamp: at(5), origin: { kind: 'task-notification' }, message: { content: '<scheduled-task>SCHEDULEDMARK</scheduled-task>' } },
+    { type: 'user', timestamp: at(6), origin: { kind: 'plugin' }, message: { content: '<command-message>PLUGINMARK</command-message>' } },
+    { type: 'user', timestamp: at(7), origin: { kind: 'human' }, message: { content: '<bash-input>BASHTYPEMARK</bash-input>' } },
+    { type: 'user', timestamp: at(8), origin: { kind: 'human' }, message: { content: '<command-name>/compact</command-name> COMMANDTYPEMARK' } },
+    { type: 'user', timestamp: at(9), message: { content: '<side-sessions-event>SIDEEVENTMARK</side-sessions-event>' } },
+    { type: 'user', timestamp: at(10), message: { content: '<local-command-stdout>STDOUTTYPEMARK</local-command-stdout>' } },
+    { type: 'user', timestamp: at(11), origin: { kind: 'something-else' }, message: { content: 'UNKNOWNORIGINMARK' } },
+    { type: 'user', timestamp: at(12), message: { content: envelope('from="agent:abc" from-name="Desk Peer" from-session="abc"', 'ENVELOPEBODYMARK') } },
+    { type: 'user', timestamp: at(13), message: { content: envelope('from-session="abc"', 'NONAMEMARK') } },
+  ]));
+  const reply = await readClaudeChat(file);
+  assert.deepEqual(reply, { turns: [
+    { role: 'user', text: 'Typed human prompt.', atMs: atMs(1), cut: false },
+    { role: 'user', text: 'Typed older prompt.', atMs: atMs(2), cut: false },
+    { role: 'user', text: '<pasted_content>[Image #1]</pasted_content>', atMs: atMs(3), cut: false },
+    { role: 'peer', name: 'Desk Peer', text: 'ENVELOPEBODYMARK', atMs: atMs(12), cut: false },
+  ], more: false });
+  const text = JSON.stringify(reply);
+  for (const marker of ['TASKMARK', 'SCHEDULEDMARK', 'PLUGINMARK', 'BASHTYPEMARK', 'COMMANDTYPEMARK', 'SIDEEVENTMARK',
+    'STDOUTTYPEMARK', 'UNKNOWNORIGINMARK', 'NONAMEMARK', 'from-session', 'from-name', 'cross-session-message']) {
+    assert.ok(!text.includes(marker), marker);
+  }
+});
