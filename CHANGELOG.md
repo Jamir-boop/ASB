@@ -4,6 +4,7 @@ ASB has its own release series. The retained Agent Mission Control releases are 
 
 ## Unreleased
 
+- Phone: with **Send message text to phones** on, the Android app shows the chat of a Claude Desktop Code session on the paired PC (read only): the newest 30 typed prompts, assistant replies, and messages from other sessions, each cut at 2,000 characters, read again every 5 s while the screen is open. New routes `GET /api/threads/<id>/chat` and `GET /phone/v1/threads/<id>/chat`. The engine reads the transcript tail on each request and keeps nothing.
 - Linux: the `asb.service` user service no longer stops when the desktop session ends (for example after a failed remote desktop session), so the phone and the other machines of the group still reach the PC. A new `asb-session.service` restarts the engine at the next login only when the display variables changed or the tray is not running. Run `asb service install` again to update an installed service.
 - `asb doctor` (Linux): it reports an old `asb.service` that still stops with the desktop session, and Linger off. Without Linger, ASB still stops when your last session ends: run `loginctl enable-linger <user>`. After a restart, ASB still starts only after a login.
 

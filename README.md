@@ -96,6 +96,10 @@ While **Approve requests from phones** is on and the paired PC has seen a phone 
 
 The first command of a new session can get no card. The first command after a time with no working session can reach the phone up to 30 s late, or not at all. Unlisted threads and subagent threads get no card. If two requests from one session overlap, only the newer one stays on the phone. The older one goes to the normal approval path. Until the phone app update that alerts again for a new request, a second card can come with no alert. The time with the screen off is not proven. The hook adds about 190 ms per Bash approval when it does not hold the command. A command over 4,000 characters gets no card. Codex app: the hook ran in the app's own build (`0.171.0-alpha.13`) with a loopback model fixture. The live app UI was not tested. Not tested end to end on Windows.
 
+## See a Claude Desktop Code chat on the phone
+
+With **Send message text to phones** on (Preferences > Phone, off by default), the Android app has a **Chat** button in the panel of a Claude Desktop Code session on the paired PC. It shows the newest 30 turns of that session: the prompts that you typed, the assistant text, and the messages from other sessions, each cut at 2,000 characters. It shows no tool input or output, thinking, system reminders, images, or subagent turns. The screen reads the chat again every 5 seconds while it is open. Sessions of other apps, and sessions on other machines of the group, have no chat view yet. Update the phone app: the Chat button is in the app from this build on.
+
 ## Antigravity CLI
 
 ASB lists Antigravity CLI (agy) sessions from the records of an agy hook and shows their state. A live row in a kitty with remote control opens by focusing its kitty window. ASB counts each agy subagent on the card of the session that started it and does not show a separate card. agy hooks do not give the parent session, so ASB uses this rule: a new conversation that starts in the agy process of one working session is a subagent of that session.

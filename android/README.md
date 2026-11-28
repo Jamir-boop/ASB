@@ -220,6 +220,16 @@ body shows six lines; `Show more` shows the rest and `Show less` folds it again.
 TalkBack names each button for its message (`Show more of the message from docs
 at 14:05`). When message text goes off on
 the PC, the open thread hides its text at the next report.
+With `sendText: true`, the panel of a local Claude Desktop Code row (not an `m:`
+row of another machine) has a `Chat` button next to `Show messages`. The chat
+screen loads `/phone/v1/threads/<id>/chat` (30 turns) every 5 seconds while it is
+on screen and stops when it leaves: user turns on the right, assistant and peer
+turns on the left, a peer turn with its name. With `more: true` the top shows
+`Older turns are not shown.` A 404 `Route is not available.` clears the turns and
+shows `Turn on Send message text to phones on the PC to see the chat.`; a 404
+`No chat for this session.` shows `This session has no chat to show.`; another
+error keeps the last turns and shows `Cannot load the chat. Retrying.` The turns
+stay in screen memory only.
 Under the Messages status bar, a tap on the status list or its `Show meanings`
 button shows what each status means under its word (the PC tooltip sentences); a
 second tap or `Hide meanings` hides them. TalkBack reads the sentence with each
