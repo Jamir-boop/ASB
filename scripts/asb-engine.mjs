@@ -152,7 +152,8 @@ export async function runEngine({ env = process.env, platform = process.platform
   // The answer path of the phone (contract, Delivery): with no other member, the relay runs while the answer switch and one Desktop
   // source are on. The group change and the first start check the switch; the phone switch change calls relay.check().
   const relay = createRelaySupervisor({ group, port, sourceToken, env, platform, bindTarget: (request) => server.bindMemberTarget(request),
-    forAnswers: async () => gateway.answerReady() === true && await server.enabledDesktopSource().catch(() => false) });
+    // The answer path (P2a) and the message path (P2) both write into a local Desktop session.
+    forAnswers: async () => (gateway.answerReady() === true || gateway.messageReady() === true) && await server.enabledDesktopSource().catch(() => false) });
   const gateway = createPhoneGateway({ localPort: port, asbVersion, platform, env, execFile,
     peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint),
       resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint),
@@ -162,12 +163,15 @@ export async function runEngine({ env = process.env, platform = process.platform
     onSendText: (on) => { if (useClaudeQuestionText(on)) server.invalidateDashboard('phone-text'); },
     // Only a saved change closes the open phone questions or approvals; a listener restart keeps them for the phone.
     onAnswer: (on) => { if (!on) claudeQuestions.closeAll('question'); relay.check(); },
-    onApprove: (on) => { if (!on) claudeQuestions.closeAll('approval'); } });
+    onApprove: (on) => { if (!on) claudeQuestions.closeAll('approval'); },
+    // A message switch change starts or stops the relay, and the rows gain or lose `canMessage`.
+    onMessage: () => { relay.check(); server.invalidateDashboard('phone-message'); } });
   const positions = createReaderPositions({ file: readerPositionsPath(env, platform), key: () => gateway.readerPositionsKey(), platform });
   let machineId = '';
   let referenceScopes = null;
   const server = createSwitchboardServer({ sourceToken, phoneGateway: gateway, claudeQuestions, answerEnabled: () => gateway.answerReady() === true,
-    approveEnabled: () => gateway.approveReady() === true, machineGroup: group, machineRelay: relay, serviceMode: true, platform, env,
+    approveEnabled: () => gateway.approveReady() === true, messageReady: () => gateway.messageReady() === true,
+    machineGroup: group, machineRelay: relay, serviceMode: true, platform, env,
     readerPositions: positions, savedListFile: path.join(stateDir(env, platform), 'last-list.json'),
     savedListMachineId: () => machineId, onScanDone: trim.scanEnded, usageLedgerFile: usageLedgerPath(env, platform), usageBackupFile: usageBackupPath(env, platform),
     playSound: createSoundPlayer({ platform }),

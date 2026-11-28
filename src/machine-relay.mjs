@@ -228,7 +228,7 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   spawn = spawnProcess, request = peerRequest, log = (line) => console.error(line), now = Date.now,
   catPath = platform === 'win32' ? path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'findstr.exe') : '',
   firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); }, outbox = null,
-  // The answer path of the phone (contract, Delivery): the relay also runs with no other member while this is true.
+  // The phone paths (contracts P2a and P2): the relay also runs with no other member while this is true.
   forAnswers = () => false }) {
   const relayJs = path.join(root, 'bridge', 'dist', 'relay.js');
   let child = null;
@@ -320,10 +320,10 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   }
 
   async function wanted() {
-    // A phone answer needs the relay with no other member: it writes into a local Desktop session.
-    let answers = false;
-    if (!others().length) { try { answers = await forAnswers() === true; } catch { answers = false; } }
-    const ready = ['linux', 'win32'].includes(platform) && Boolean(runtimeDir(env, platform)) && (others().length > 0 || answers)
+    // A phone answer or message needs the relay with no other member: it writes into a local Desktop session.
+    let phone = false;
+    if (!others().length) { try { phone = await forAnswers() === true; } catch { phone = false; } }
+    const ready = ['linux', 'win32'].includes(platform) && Boolean(runtimeDir(env, platform)) && (others().length > 0 || phone)
       && await isFile(relayJs) && await isFile(catPath || await findExecutable('cat', { platform, env }));
     const bun = ready && await findBun({ platform, env });
     bunMissing = ready && !bun;

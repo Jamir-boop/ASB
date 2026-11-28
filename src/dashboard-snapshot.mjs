@@ -60,7 +60,7 @@ const savedListText = (dashboard) => {
     if (row.pending === true) summary.needs += 1;
     if (row.state === 'working') summary.working += 1;
   }
-  return contentText({ ...dashboard, threads,
+  return contentText({ ...dashboard, threads: threads.map(({ canMessage: _canMessage, messageReason: _messageReason, ...row }) => row),
     ...(dashboard.messages && { messages: dashboard.messages.filter(({ from, to }) => ids.has(from) && ids.has(to)) }),
     ...(dashboard.pinnedOrder && { pinnedOrder: dashboard.pinnedOrder.filter((id) => !id.startsWith('m:')) }),
     ...(dashboard.localRefreshIntervalMs && { refreshIntervalMs: dashboard.localRefreshIntervalMs }),

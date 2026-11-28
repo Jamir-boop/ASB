@@ -19,9 +19,15 @@ const recordAtMs = (record) => {
 };
 const partsOf = (content) => typeof content === 'string' ? [content] : Array.isArray(content)
   ? content.filter((item) => item?.type === 'text' && typeof item.text === 'string').map((item) => item.text) : [];
+// A phone message of ASB (contract P2): a Phone or Phone-N sender whose text starts with the fixed phone line.
+const PHONE_NAME = /^Phone(-[0-9]+)?$/;
+const PHONE_LINE = "[Sent from the owner's phone (";
 const peerTurn = (origin, record) => {
   const name = [...String(origin?.name ?? '').trim()].slice(0, MAX_NAME).join('');
-  return name ? { role: 'peer', name, text: String(origin?.body ?? ''), atMs: recordAtMs(record) } : null;
+  if (!name) return null;
+  const text = String(origin?.body ?? '');
+  return { role: 'peer', name, text, atMs: recordAtMs(record),
+    ...(PHONE_NAME.test(name) && text.startsWith(PHONE_LINE) ? { fromPhone: true } : {}) };
 };
 // An older-shape peer envelope: the sender from `from-name` (else `from`) and only the body, never the envelope itself.
 const envelopeTurn = (prompt, record) => {

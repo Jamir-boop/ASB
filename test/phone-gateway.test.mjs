@@ -114,7 +114,7 @@ test('phone defaults keep the listener off and paths use HOME when XDG_CONFIG_HO
   assert.equal(phoneSettingsPath({ HOME: store.home, XDG_CONFIG_HOME: '' }), path.join(store.home, '.config/asb/phone.json'));
   assert.equal(phoneTlsDir({ HOME: store.home }), path.join(store.home, '.config/asb/phone-tls'));
   assert.equal(PHONE_API_VERSION, 1);
-  assert.deepEqual(await gateway.start(), { enabled: false, bindAddresses: [], port: 4630, sendText: false, answer: false, approve: false, addresses: [], listening: [], running: false,
+  assert.deepEqual(await gateway.start(), { enabled: false, bindAddresses: [], port: 4630, sendText: false, answer: false, approve: false, message: false, addresses: [], listening: [], running: false,
     error: '', warning: '', fingerprint: '', devices: [], pairing: { expiresAtMs: 0 } });
   await assert.rejects(gateway.createPairing(), { statusCode: 400, message: 'Turn on phone access first.' });
   await assert.rejects(stat(store.settingsPath), { code: 'ENOENT' });
@@ -221,7 +221,7 @@ gatewayTest('bearer authentication needs the exact token and hello reports the p
   const machineId = (await gateway.status()).fingerprint.slice(0, 16);
   assert.match(machineId, /^[0-9a-f]{16}$/);
   assert.deepEqual(response.json, { api: 1, asbVersion: '1.8.1', deviceId: paired.deviceId, serverName: 'Test PC & lab',
-    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [], sendText: false, answer: false, approve: false });
+    addresses: [{ kind: 'lan', address: '127.0.0.1' }], port, machineId, engines: [], sendText: false, answer: false, approve: false, message: false });
   // Hook states are only in the loopback GET /api/phone, which the gateway never forwards.
   assert.equal(Object.hasOwn(response.json, 'codexHook'), false);
   assert.ok(!response.text.includes('claudeHook') && !response.text.includes(os.homedir()) && !response.text.includes(os.tmpdir()));
@@ -240,7 +240,7 @@ gatewayTest('hello lists the group engines with the live values of this engine, 
   const engines = [{ ...self, addresses: [{ kind: 'lan', address: '127.0.0.1' }], port }, other];
   const paired = (await pair()).json;
   const own = await request('/phone/v1/hello', { token: paired.token });
-  assert.deepEqual(Object.keys(own.json), ['api', 'asbVersion', 'deviceId', 'serverName', 'addresses', 'port', 'machineId', 'engines', 'sendText', 'answer', 'approve']);
+  assert.deepEqual(Object.keys(own.json), ['api', 'asbVersion', 'deviceId', 'serverName', 'addresses', 'port', 'machineId', 'engines', 'sendText', 'answer', 'approve', 'message']);
   assert.deepEqual([own.json.machineId, own.json.engines], [fingerprint.slice(0, 16), engines]);
   const shared = await request('/phone/v1/hello', { token: sharedToken });
   assert.equal(shared.status, 200);
@@ -1485,6 +1485,22 @@ gatewayTest('a group phone token works on the phone routes, and pairing and revo
   assert.equal((await request('/phone/v1/hello', { host: '127.0.0.2', token: before.token })).status, 401);
 });
 
+gatewayTest('the group member copy carries the phone entry and the phones switch only, never the message file', async (t) => {
+  const { group, request, pair, gateway, settingsPath, port } = await peerFixture(t);
+  const paired = (await pair('Pixel')).json;
+  await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.2'], port, sendText: true, message: true });
+  // The message file is on this PC next to phone.json, and the member copy has only the device entry (deviceId, name, tokenHash and times).
+  assert.equal((await stat(path.join(path.dirname(settingsPath), 'phone-message.json'))).mode & 0o777, 0o600);
+  await group.invite();
+  const phones = (await group.status()).phones;
+  assert.deepEqual(phones.map((item) => [item.deviceId, item.name]), [[paired.deviceId, 'Pixel']]);
+  assert.equal(Object.keys(phones[0]).sort().join(','), 'deviceId,name');
+  assert.equal(JSON.stringify(await group.peer.group()).includes('phone-message'), false);
+  // The member routes carry no message file or switch: a phone token is not a member certificate (401), and neither reply names it.
+  assert.equal((await request('/peer/v1/group', { host: '127.0.0.2', token: paired.token })).status, 401);
+  assert.equal((await request('/peer/v1/hello', { host: '127.0.0.2', token: paired.token })).text.includes('phone-message'), false);
+});
+
 gatewayTest('the member route /peer/v1/bridge gives the reply of peer.bridge to members only, and is 404 without it', async (t) => {
   let calls = 0;
   const relay = { bridge: async () => { calls += 1; return { status: 200, body: { api: 1, apps: [] } }; } };
@@ -1560,4 +1576,125 @@ gatewayTest('the session chat route refuses a reply above 2 MiB', async (t) => {
   big = true;
   const refused = await request(chat, { token });
   assert.deepEqual([refused.status, refused.json, refused.headers.etag], [502, { error: 'The ASB reply is too large.' }, undefined]);
+});
+
+// The 1.19.0 validSettings rules, copied from `git show v1.19.0:src/phone-gateway.mjs` as the downgrade fixture: an older ASB
+// accepts the phone.json that this build writes with the message switch on, so the pairing stays.
+const OLD_SWITCHES = ['sendText', 'answer', 'approve'];
+const oldControls = /[\x00-\x1f\x7f-\x9f]/;
+const oldFields = (value, names) => value !== null && typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).sort().join(',') === [...names].sort().join(',');
+const oldValidAddresses = (value) => Array.isArray(value) && value.length <= 8
+  && value.every((address) => typeof address === 'string') && new Set(value).size === value.length;
+function validSettings119(value) {
+  return (value?.schema === 1 ? oldFields(value, ['schema', 'enabled', 'bindAddress', 'port', 'devices']) && typeof value.bindAddress === 'string'
+    : oldFields(value, ['schema', 'enabled', 'bindAddresses', 'port', 'devices', ...OLD_SWITCHES.filter((name) => Object.hasOwn(Object(value), name))])
+      && OLD_SWITCHES.every((name) => value[name] === undefined || typeof value[name] === 'boolean')
+      && value.schema === 2 && oldValidAddresses(value.bindAddresses))
+    && typeof value.enabled === 'boolean' && Number.isInteger(value.port) && value.port >= 1024 && value.port <= 65535
+    && Array.isArray(value.devices) && value.devices.length <= 8 && value.devices.every((device) =>
+      oldFields(device, ['id', 'name', 'tokenSha256', 'createdAtMs', 'lastSeenAtMs'])
+      && typeof device.id === 'string' && /^[a-f0-9]{12}$/.test(device.id)
+      && typeof device.name === 'string' && Array.from(device.name).length >= 1 && Array.from(device.name).length <= 64 && !oldControls.test(device.name)
+      && typeof device.tokenSha256 === 'string' && /^[a-f0-9]{64}$/.test(device.tokenSha256)
+      && Number.isSafeInteger(device.createdAtMs) && device.createdAtMs >= 0
+      && Number.isSafeInteger(device.lastSeenAtMs) && device.lastSeenAtMs >= 0)
+    && new Set(value.devices.map((device) => device.id)).size === value.devices.length
+    && new Set(value.devices.map((device) => device.tokenSha256)).size === value.devices.length;
+}
+
+const messagePath = (store) => path.join(path.dirname(store.settingsPath), 'phone-message.json');
+
+gatewayTest('the message switch keeps phone.json byte-identical and its own file, and an older ASB still reads the pairing', async (t) => {
+  const changes = [];
+  const { gateway, request, pair, settingsPath, port } = await fixture(t, { gateway: { onMessage: (on) => changes.push(on) } });
+  const token = (await pair()).json.token;
+  const base = { enabled: true, bindAddresses: ['127.0.0.1'], port };
+  const file = path.join(path.dirname(settingsPath), 'phone-message.json');
+  const info = await request('/phone/v1/hello', { token });
+  assert.deepEqual([(await gateway.status()).message, info.json.message, gateway.messageReady()], [false, false, false]);
+  await gateway.updateSettings({ ...base, sendText: true });
+  const before = await readFile(settingsPath);
+  assert.equal(gateway.messageReady(), false);
+  // On: the own file, 0600 and schema 1; phone.json keeps its exact bytes, so the older ASB reads it as it is.
+  assert.equal((await gateway.updateSettings({ ...base, message: true })).message, true);
+  assert.equal(gateway.messageReady(), true);
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { schema: 1, message: true });
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.deepEqual(await readFile(settingsPath), before);
+  assert.equal(validSettings119(JSON.parse(before.toString('utf8'))), true, 'the 1.19.0 rules accept phone.json with message on');
+  assert.deepEqual(changes, [true]);
+  assert.equal((await request('/phone/v1/hello', { token })).json.message, true);
+  // A save without the field keeps it.
+  assert.equal((await gateway.updateSettings({ ...base })).message, true);
+  // Off: the file goes.
+  assert.equal((await gateway.updateSettings({ ...base, message: false })).message, false);
+  await assert.rejects(stat(file), { code: 'ENOENT' });
+  assert.equal(gateway.messageReady(), false);
+  assert.deepEqual(changes, [true, false]);
+  assert.deepEqual(await readFile(settingsPath), before);
+  // On again needs message text; the message switch does not depend on answer or approve.
+  await assert.rejects(gateway.updateSettings({ ...base, message: 1 }), { statusCode: 400, message: 'Invalid phone settings.' });
+  assert.equal((await gateway.updateSettings({ ...base, message: true })).message, true);
+  assert.equal((await gateway.status()).answer, false);
+  // sendText off turns message off, and removes the file.
+  const off = await gateway.updateSettings({ ...base, sendText: false });
+  assert.deepEqual([off.sendText, off.message, gateway.messageReady()], [false, false, false]);
+  await assert.rejects(stat(file), { code: 'ENOENT' });
+  assert.deepEqual(changes, [true, false, true, false], 'each saved change fires onMessage');
+  // The message switch alone needs message text.
+  await assert.rejects(gateway.updateSettings({ ...base, message: true }), { statusCode: 400, message: 'Turn on message text first.' });
+});
+
+gatewayTest('a missing, bad, or unreadable phone-message.json is off, moves nothing to .bad, and an old phone.json still loads', async (t) => {
+  const store = await storage(t);
+  await mkdir(path.dirname(store.settingsPath), { recursive: true });
+  await writeFile(store.settingsPath, JSON.stringify(settings({ sendText: true })), { mode: 0o600 });
+  const file = messagePath(store);
+  for (const raw of ['{', 'null', '[]', '{"schema":1,"message":false}', '{"schema":2,"message":true}', '{"schema":1,"message":"yes"}',
+    '{"schema":1,"message":true,"extra":1}']) {
+    await writeFile(file, raw, { mode: 0o600 });
+    const gateway = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+    const status = await gateway.status();
+    assert.deepEqual([status.message, status.warning], [false, ''], raw);
+    await assert.rejects(stat(`${file}.bad`), { code: 'ENOENT' }, raw);
+    await assert.rejects(stat(`${store.settingsPath}.bad`), { code: 'ENOENT' }, raw);
+    await gateway.stop();
+  }
+  // An unreadable file (a folder) is off too, with no .bad.
+  await rm(file, { force: true });
+  await mkdir(file);
+  const unreadable = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+  assert.equal((await unreadable.status()).message, false);
+  await assert.rejects(stat(`${store.settingsPath}.bad`), { code: 'ENOENT' });
+  await unreadable.stop();
+  await rm(file, { recursive: true, force: true });
+  // The saved valid file loads as on.
+  await writeFile(file, JSON.stringify({ schema: 1, message: true }), { mode: 0o600 });
+  const on = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+  assert.equal((await on.status()).message, true);
+  await on.stop();
+  // An older-ASB phone.json (no switch keys) still loads with no .bad, and message stays off.
+  const old = settings({ enabled: true, bindAddresses: ['127.0.0.1'], port: 4630 });
+  await writeFile(store.settingsPath, JSON.stringify(old), { mode: 0o600 });
+  await rm(file, { force: true });
+  const loaded = createPhoneGateway({ localPort: 12345, asbVersion: '1.8.1', ...store, listAddresses: () => [] });
+  const status = await loaded.status();
+  assert.deepEqual([status.warning, status.message, status.sendText], ['', false, false]);
+  await loaded.stop();
+});
+
+gatewayTest('the message switch is this PC\'s own: it is never in phone.json, the status, or the member copy', async (t) => {
+  const { gateway, request, pair, settingsPath, port } = await fixture(t);
+  const token = (await pair()).json.token;
+  await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: true, message: true });
+  const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(Object.hasOwn(saved, 'message'), false, 'phone.json has no message key');
+  const text = JSON.stringify(await gateway.status());
+  assert.equal(text.includes('phone-message'), false);
+  // The hello carries only the boolean that the route needs; the file and its path are never sent.
+  const hello = await request('/phone/v1/hello', { token });
+  assert.equal(hello.json.message, true);
+  assert.equal(hello.text.includes('phone-message'), false);
+  assert.equal(JSON.stringify(JSON.parse(await readFile(`${path.dirname(settingsPath)}/phone-message.json`, 'utf8'))).includes(token), false);
 });
