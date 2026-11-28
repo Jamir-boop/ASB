@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createPeerPoller, exportBody, exportLocalSessions, MAX_ACTIVITY_BYTES, mergePeerRows, peerRequest, validActivity } from './machine-peers.mjs';
 import { phoneSettingsPath, privateIPv4, tailscaleIPv4 } from './phone-gateway.mjs';
-import { CLAUDE_QUESTION, localMachineName } from './switchboard.mjs';
+import { CLAUDE_QUESTION, localMachineName, NEXT_STEP } from './switchboard.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
 
 export const GROUP_SCHEMA = 1;
@@ -539,7 +539,8 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
           ? { approve, recent: approve && recent } : null;
         const requests = new Map();
         // Open records can change between dashboard scans. Add them only to the peer reply, not the cached export.
-        if (answer && phones.length && asb?.hasOpenPhoneRequests?.()) {
+        // A next-step card is not an open record: it goes with the export rows, under its own switch.
+        if (answer) {
           for (const row of localRows) {
             const record = row[CLAUDE_QUESTION];
             if (!row.remote && !row.remoteCache && !row.archived && record && (record.kind === 'question' || approve)) requests.set(row.id, record);
@@ -551,8 +552,13 @@ export function createMachineGroup({ file = groupPath(), gateway, server = () =>
           exported.cached = exportBody(payload);
           exported.flags = flags;
         }
-        const current = requests.size ? exportBody({ ...payload,
-          rows: data.rows.map((row) => requests.has(row.id) ? { ...row, phoneRequest: requests.get(row.id) } : row) }) : exported.cached;
+        // The next-step cards exist only while this member's answer switch is on: the reply rows carry them like a phone request.
+        // The row symbols live on the dashboard rows, not on the picked export rows, so the card comes from `localRows`.
+        const cards = answer ? new Map(localRows.filter((row) => row[NEXT_STEP]).map((row) => [row.id, row[NEXT_STEP]])) : new Map();
+        const current = requests.size || cards.size
+          ? exportBody({ ...payload, rows: data.rows.map((row) => ({ ...row,
+            ...(requests.has(row.id) ? { phoneRequest: requests.get(row.id) } : cards.has(row.id) ? { phoneRequest: cards.get(row.id) } : {}) })) })
+          : exported.cached;
         return ifNoneMatch === current.etag ? { status: 304, etag: current.etag, body: '' } : { status: 200, ...current };
       },
       answer: async (value) => {

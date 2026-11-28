@@ -90,6 +90,19 @@ export function exportBody(exported) {
   return { body, etag: `"${sha256(JSON.stringify(content))}"` };
 }
 
+// The next-step card of a member row: the same fields as a local card, strict, or null. A bad field drops only the card.
+function checkedNextStep(value) {
+  if (typeof value?.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId) || typeof value.live !== 'boolean') return null;
+  // The card's request ID must be the next-step ID of a card, not any 32 hex characters.
+  if (value.kind !== 'next-step') return null;
+  if (value.unavailable !== undefined && (typeof value.unavailable !== 'string' || value.unavailable.length > 200)) return null;
+  if (!Array.isArray(value.appActions) || value.appActions.length > 8
+    || !value.appActions.every((label) => typeof label === 'string' && [...label].length >= 1 && [...label].length <= 200)) return null;
+  const questions = checkedQuestions(value.questions);
+  return questions ? { kind: 'next-step', requestId: value.requestId, questions, live: value.live, appActions: value.appActions,
+    ...(value.unavailable !== undefined ? { unavailable: value.unavailable } : {}) } : null;
+}
+
 // Optional content from newer members. A bad request does not drop the row.
 function checkedPhoneRequest(value) {
   if (typeof value?.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)) return null;
@@ -100,6 +113,8 @@ function checkedPhoneRequest(value) {
   } else if (kind === 'approval') {
     const approval = checkedApproval(value.approval);
     if (approval) return { kind, requestId, approval };
+  } else if (kind === 'next-step') {
+    return checkedNextStep(value);
   }
   return null;
 }

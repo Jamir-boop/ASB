@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, promises as fs, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -437,6 +438,12 @@ function applyClaudeLifecycle(lifecycle, event, timestampMs) {
       if (tool?.type === 'tool_use' && tool.name === WRAP_UP_TOOL && tool.id) {
         rememberBounded(lifecycle.wrapUps, String(tool.id),
           typeof tool.input?.ask === 'string' && tool.input.ask.trim() !== '', MAX_ASB_SESSION_COUNT);
+        // The ask text of the phone answer, in memory only, only while the phone text switch is on.
+        if (keepQuestionText) {
+          const text = wrapUpText(tool.input);
+          if (text) rememberBounded(wrapUpTexts, flatId(String(tool.id)), text, MAX_ASB_SESSION_COUNT);
+          else wrapUpTexts.delete(flatId(String(tool.id)));
+        }
       }
     }
   }
@@ -517,16 +524,46 @@ function pendingQuestionText(item) {
   return text ? flatId(text) : '';
 }
 
+// The wrap-up text for the phone: the ask cut to 2000 code points, the reply labels of `actions` items with no `action`, and the
+// app action labels of items with an `action`. Same limits as a question: labels 1 to 200 code points after trim, unique, at most 8.
+// Nothing else of the input is kept.
+const WRAP_UP_ASK_CHARS = 2000;
+const WRAP_UP_LABELS = 8;
+const wrapUpLabel = (value) => typeof value === 'string' && value.trim() !== '' && Array.from(value.trim()).length <= 200
+  ? flatId(value.trim()) : '';
+function wrapUpText(input) {
+  const ask = typeof input?.ask === 'string' ? [...input.ask.trim()].slice(0, WRAP_UP_ASK_CHARS).join('') : '';
+  const actions = Array.isArray(input?.actions) ? input.actions : [];
+  const pick = (withAction) => actions.filter((item) => item && typeof item === 'object' && (item.action !== undefined) === withAction)
+    .map((item) => wrapUpLabel(item.label)).filter(Boolean).filter((label, index, list) => list.indexOf(label) === index).slice(0, WRAP_UP_LABELS);
+  return ask ? { ask, replies: pick(false), appActions: pick(true) } : null;
+}
+
+// The open next-step question of a Claude Desktop Code thread, or null: `{ requestId, kind, questions, appActions, ask }`, with the
+// ask text in memory only (only while the phone text switch is on). The latest pending `wrap-up:<id>` is the open question.
+export function nextStepQuestion(thread) {
+  const tool = (thread?.pendingTools || []).find((item) => item.tool === 'AskUserQuestion' && String(item.id).startsWith('wrap-up:'));
+  // The ask text is in this module's memory only, never in the signals: the pending tool stays textless.
+  const text = tool && wrapUpTexts.get(flatId(String(tool.id).slice('wrap-up:'.length)));
+  if (!text) return null;
+  const requestId = createHash('sha256').update(`next-step\0${thread.cliSessionId}\0${String(tool.id).slice('wrap-up:'.length)}`).digest('hex').slice(0, 32);
+  return { requestId, kind: 'next-step', appActions: text.appActions, ask: text.ask,
+    questions: [{ question: text.ask, header: '', options: text.replies.map((label) => ({ label, description: '' })), multiSelect: false, allowOther: true }] };
+}
+
 // The phone text switch. A change drops the cached reads of transcripts with a pending AskUserQuestion, so the next read keeps
 // the question text (on) or no text (off). Returns true when the value changed.
 export function useClaudeQuestionText(on) {
   if (keepQuestionText === (on === true)) return false;
   keepQuestionText = on === true;
   questionTextGeneration += 1;
+  // A wrap-up question is a pending AskUserQuestion too, so this drops its read with the others.
   const asks = (tools) => [...(tools || [])].some((tool) => tool.tool === 'AskUserQuestion');
   for (const [key, cached] of [...claudeJsonlSignalCache]) {
     if (asks(cached.state?.pendingToolsById?.values()) || asks(cached.signals?.pendingTools)) claudeJsonlSignalCache.delete(key);
   }
+  // The wrap-up texts belong to one value of the switch: a change drops them, and a read after a change makes them again.
+  wrapUpTexts.clear();
   return true;
 }
 
@@ -562,6 +599,10 @@ function handleResultEvent(signals, event, timestampMs) {
   }
 }
 
+// The ask text, replies, and app actions of each wrap-up, by tool_use ID. Memory only (never a saved record), only while the
+// phone text switch is on; the pending key of the wrap-up goes with it.
+const wrapUpTexts = new Map();
+
 function applyClaudeSignalLine(signals, line, lifecycleOnly = false) {
   let event;
   try {
@@ -583,7 +624,11 @@ function applyClaudeSignalLine(signals, line, lifecycleOnly = false) {
   }
   const lifecycle = signals.lifecycle;
   if (lifecycle.eventAtMs === timestampMs && lifecycle.kind === 'task_started') {
-    for (const id of signals.pendingToolsById.keys()) if (id.startsWith('wrap-up:')) signals.pendingToolsById.delete(id);
+    // The pending wrap-ups and their texts go with the task that ended.
+    for (const id of signals.pendingToolsById.keys()) if (id.startsWith('wrap-up:')) {
+      signals.pendingToolsById.delete(id);
+      wrapUpTexts.delete(id.slice('wrap-up:'.length));
+    }
   }
   // A wrap-up with a question ends the turn, and the chat waits for the answer like a pending AskUserQuestion.
   // The key has a prefix, so no tool result deletes it: only the next turn, a cancel, a failure, or a result does.
@@ -1272,8 +1317,11 @@ export function claudeTailRecords() {
     const { state, signals, signature, offset, guard, atMs } = entry;
     if (!entry.tailResult || !state || !Buffer.isBuffer(guard) || !finiteNumber(atMs)) continue;
     if (newest.get(filePath)?.atMs > atMs) continue;
-    if (signals.pendingTools.some((tool) => tool.title !== toolUseTitle({ name: tool.tool }))
-      || (state.pendingToolsById && [...state.pendingToolsById.values()].some((tool) => tool.title !== toolUseTitle({ name: tool.tool })))) continue;
+    // A log with a pending wrap-up keeps no tail record: a record holds no ask text, and a switch change must not leave a record
+    // that would show the question without it.
+    if (signals.pendingTools.some((tool) => tool.title !== toolUseTitle({ name: tool.tool }) || String(tool.id).startsWith('wrap-up:'))
+      || (state.pendingToolsById && [...state.pendingToolsById.values()].some((tool) => tool.title !== toolUseTitle({ name: tool.tool })
+        || String(tool.id).startsWith('wrap-up:')))) continue;
     const encodedState = encodeClaudeTailSignals(state);
     const encodedSignals = encodeClaudeTailSignals(signals);
     newest.set(filePath, { ...signature, atMs, offset, guard, guardBytes: guard.length, maxBytes: Number(cacheKey.slice(split + 1)),
@@ -1289,6 +1337,8 @@ async function savedClaudeTail(filePath, signature, maxBytes) {
   const record = claudeTailPositions.take(filePath);
   if (!record || !validClaudeTailRecord(record) || record.maxBytes !== maxBytes || !sameFileSignature(record, signature)) return null;
   const visiblePart = record.signals === 'state' ? record.state : record.signals;
+  // With the text switch on, a pending question needs the full read, because no record holds question text. A record never holds a
+  // pending wrap-up (claudeTailRecords skips it), so a wrap-up question always takes the full read.
   if (keepQuestionText && visiblePart.pending.some(([, tool]) => tool === 'AskUserQuestion')) return null;
   const guard = await readClaudeGuard(filePath, record.size, record.guardBytes);
   if (!guard || claudeTailPositions.digest(guard) !== record.guard) return null;

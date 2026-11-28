@@ -1813,6 +1813,32 @@ test('a Claude tail record with an extra key, a long field, a control character,
   assert.equal(validClaudeTailRecord(record), true);
 });
 
+test('a wrap-up ask and its reply labels never go to the positions file, with the question-text switch off and on', async (t) => {
+  const home = path.join(await temporaryDirectory(t), 'MARKERFOLDER');
+  // A wrap-up with an ask and reply labels, its result that ends the turn, and filler; the log is over the tail.
+  const lines = [claudePrompt(NOW_MS - 600_000),
+    claudeTool(NOW_MS - 590_000, 'wrap', 'mcp__ccd_turn__wrap_up', { recap: 'MARKERRECAP',
+      ask: 'MARKERWRAPASK which way?', actions: [{ label: 'MARKERREPLYLABEL' }, { label: 'MARKERAPPLABEL', action: 'go' }] }),
+    claudeResult(NOW_MS - 589_000, 'wrap'), ...claudeFiller(NOW_MS - 500_000, 64 * 1024)];
+  const claude = await claudeSource(home, { wrap: lines }, 64 * 1024);
+  const file = path.join(home, 'cache', 'readers', 'positions.json');
+  for (const on of [false, true]) {
+    await fs.rm(file, { force: true });
+    const run = await engine({ file, key: KEY, claudeOnly: claude.options, nowMs: NOW_MS, text: on });
+    assert.equal(run.claudeThreads.length, 1);
+    const text = await fs.readFile(file, 'latin1');
+    for (const marker of ['MARKERWRAPASK', 'MARKERREPLYLABEL', 'MARKERAPPLABEL', 'MARKERRECAP', 'MARKERFOLDER', home, path.basename(home)]) {
+      assert.equal(text.includes(marker), false, `${marker} (switch ${on})`);
+    }
+    // The tail record holds the pending wrap-up as an ID, a name, and a time (the row shows it on a full read only).
+    const value = JSON.parse(text);
+    for (const record of value.claudeTail.records) {
+      assert.ok(validClaudeTailRecord(record));
+      assert.equal(JSON.stringify(record).includes('wrap-up:'), false);
+    }
+  }
+});
+
 test('no question, prompt, message, or tool text goes to the positions file, with the question-text switch off and on', async (t) => {
   const home = path.join(await temporaryDirectory(t), 'MARKERFOLDER');
   const lines = [claudePrompt(NOW_MS - 600_000), ...claudeTitles(NOW_MS - 599_000), claudeReply(NOW_MS - 598_000), claudeMessage(NOW_MS - 580_000),

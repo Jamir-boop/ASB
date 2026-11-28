@@ -149,7 +149,10 @@ export async function runEngine({ env = process.env, platform = process.platform
   // Decision B: the group reads the gateway and the server lazily, so it is made first.
   const group = createMachineGroup({ gateway: () => gateway, server: () => server, asbVersion, ...readAsbBuild(),
     onChange: () => { server.invalidateDashboard('peer-sessions', { hard: false }); relay.check(); } });
-  const relay = createRelaySupervisor({ group, port, sourceToken, env, platform, bindTarget: (request) => server.bindMemberTarget(request) });
+  // The answer path of the phone (contract, Delivery): with no other member, the relay runs while the answer switch and one Desktop
+  // source are on. The group change and the first start check the switch; the phone switch change calls relay.check().
+  const relay = createRelaySupervisor({ group, port, sourceToken, env, platform, bindTarget: (request) => server.bindMemberTarget(request),
+    forAnswers: async () => gateway.answerReady() === true && await server.enabledDesktopSource().catch(() => false) });
   const gateway = createPhoneGateway({ localPort: port, asbVersion, platform, env, execFile,
     peer: { ...group.peer, peers: () => relay.peerPeers(), deliver: (value, fingerprint) => relay.peerDeliver(value, fingerprint),
       resolveExact: (value, fingerprint) => relay.peerResolveExact(value, fingerprint), deliverExact: (value, fingerprint) => relay.peerDeliverExact(value, fingerprint),
@@ -158,7 +161,7 @@ export async function runEngine({ env = process.env, platform = process.platform
     // The question text lives in the reader only while the text switch is on; a change rebuilds the rows.
     onSendText: (on) => { if (useClaudeQuestionText(on)) server.invalidateDashboard('phone-text'); },
     // Only a saved change closes the open phone questions or approvals; a listener restart keeps them for the phone.
-    onAnswer: (on) => { if (!on) claudeQuestions.closeAll('question'); },
+    onAnswer: (on) => { if (!on) claudeQuestions.closeAll('question'); relay.check(); },
     onApprove: (on) => { if (!on) claudeQuestions.closeAll('approval'); } });
   const positions = createReaderPositions({ file: readerPositionsPath(env, platform), key: () => gateway.readerPositionsKey(), platform });
   let machineId = '';

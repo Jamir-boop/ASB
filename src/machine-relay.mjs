@@ -47,7 +47,7 @@ const optionalText = (value, max) => value === undefined || text(value, 0, max);
 
 const validSender = (sender) => keys(sender, ['machineId', 'sessionId', 'name', 'mode', 'agent']) && hex16(sender.machineId) && uuid(sender.sessionId)
   && text(sender.name, 1, 128) && !CONTROLS.test(sender.name) && ['prompting', 'bypass', 'unknown'].includes(sender.mode)
-  && ['claude', 'codex'].includes(sender.agent);
+  && ['claude', 'codex', 'phone'].includes(sender.agent);
 const validMessage = (message) => keys(message, ['msgId', 'text', 'hopChain']) && uuid(message.msgId) && text(message.text, 1, 1_048_576)
   && Array.isArray(message.hopChain) && message.hopChain.length <= 32
   && message.hopChain.every((token) => typeof token === 'string' && /^[a-f0-9]{24}$/.test(token));
@@ -227,7 +227,9 @@ function memberOutcome({ status, body }) {
 export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, env = process.env, platform = process.platform,
   spawn = spawnProcess, request = peerRequest, log = (line) => console.error(line), now = Date.now,
   catPath = platform === 'win32' ? path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'findstr.exe') : '',
-  firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); }, outbox = null }) {
+  firstLineMs = 10_000, stopMs = 2_000, bindTarget = async () => { throw new Error('No exact binder.'); }, outbox = null,
+  // The answer path of the phone (contract, Delivery): the relay also runs with no other member while this is true.
+  forAnswers = () => false }) {
   const relayJs = path.join(root, 'bridge', 'dist', 'relay.js');
   let child = null;
   let relay = null;
@@ -318,7 +320,10 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
   }
 
   async function wanted() {
-    const ready = ['linux', 'win32'].includes(platform) && Boolean(runtimeDir(env, platform)) && others().length > 0
+    // A phone answer needs the relay with no other member: it writes into a local Desktop session.
+    let answers = false;
+    if (!others().length) { try { answers = await forAnswers() === true; } catch { answers = false; } }
+    const ready = ['linux', 'win32'].includes(platform) && Boolean(runtimeDir(env, platform)) && (others().length > 0 || answers)
       && await isFile(relayJs) && await isFile(catPath || await findExecutable('cat', { platform, env }));
     const bun = ready && await findBun({ platform, env });
     bunMissing = ready && !bun;
@@ -478,6 +483,14 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
         return [400, 401, 404].includes(error?.status) ? reply('not-sent', 'relay-unavailable') : reply('unknown');
       }
     },
+    // The phone answer (contract, Delivery): one bound write with a phone sender, through POST /deliver-bound. The caller maps
+    // the outcome and the reasons; a thrown error with a status is a relay that refused the request before any write.
+    async deliverBoundPhone(binding, sender, message) {
+      if (!relay) throw relayError('The message relay is not running.');
+      const answer = await relayRequest('/deliver-bound', { method: 'POST', body: { binding, sender, message }, timeoutMs: RELAY_DELIVER_MS });
+      if (!validBoundReply(answer)) throw relayError('The message relay sent an invalid reply.');
+      return answer;
+    },
     // GET /api/relay/homes.
     async homes(sources) {
       return { machineId: selfId(), machineName: group.selfName(), homes: await relayHomes(sources, { env }) };
@@ -491,6 +504,8 @@ export function createRelaySupervisor({ group, port, sourceToken, root = ROOT, e
     // control POST. No v1 request. `sent` says that the request went out.
     async sendReceipt(body) {
       if (!validReceiptBody(body)) return INVALID;
+      // The receipt of a phone answer names this machine as its sender: there is no member to send it to.
+      if (body.machineId === selfId()) return { status: 200, body: { sent: false } };
       const state = others().find((item) => item.member.machineId === body.machineId);
       if (!state?.online) return { status: 200, body: { sent: false } };
       try {
