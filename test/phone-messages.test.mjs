@@ -15,6 +15,14 @@ import { createSwitchboardServer, loadSwitchboardDashboard } from '../src/switch
 import { createRelaySupervisor } from '../src/machine-relay.mjs';
 import { parseClaudeChat } from '../src/claude-chat.mjs';
 
+async function freePort() {
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
 const TOKEN = 'c'.repeat(64);
 const MACHINE = '0123456789abcdef';
 const SCOPE = 'ab'.repeat(16);
@@ -272,7 +280,7 @@ test('the gateway sets both device headers on the message proxy and drops any co
   const gateway = createPhoneGateway({ localPort: local.address().port, asbVersion: 'test', settingsPath: path.join(home, 'phone.json'),
     tlsDir: path.join(home, 'tls'), listAddresses: () => [{ address: '127.0.0.1', interface: 'lo', kind: 'lan' }], hostName: 'synthetic-pc' });
   await gateway.start();
-  const port = 46_590 + Math.floor(Math.random() * 200);
+  const port = await freePort();
   messageReady = await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: true, message: true });
   assert.equal(gateway.messageReady(), true, messageReady.error);
   t.after(() => gateway.stop());
