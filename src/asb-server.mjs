@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -9,7 +9,7 @@ import { DashboardSnapshot } from './dashboard-snapshot.mjs';
 import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, parseBooleanSearchParam, readJsonBody, sendJson, serveStatic,
   threadNotFound } from './local-http.mjs';
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
-import { CLAUDE_QUESTION, MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
+import { CLAUDE_QUESTION, MUTE_DURATIONS_MS, NEXT_STEP, QUESTION_TEXT } from './switchboard.mjs';
 import { answersFor, checkedDecision, MAX_WAIT_MS, PROVIDERS } from './claude-questions.mjs';
 import { claudeChatFile, readClaudeChat } from './claude-chat.mjs';
 import { CLI_SESSION_IDS } from './session-targets.mjs';
@@ -70,8 +70,11 @@ function questionListText(dashboard, phoneRequest) {
   const { generatedAtMs: _, performance: __, ...rest } = dashboard;
   return JSON.stringify({ ...rest, threads: dashboard.threads.map((row) => {
     const request = phoneRequest(row);
-    const field = !request ? {} : request.kind === 'question' ? { question: { requestId: request.requestId, questions: request.questions } }
-      : { approval: { requestId: request.requestId, ...request.approval } };
+    const field = !request ? {} : request.kind === 'next-step'
+      ? { question: { requestId: request.requestId, kind: 'next-step', live: request.live, questions: request.questions, appActions: request.appActions,
+        ...(request.live ? {} : { unavailable: request.unavailable }) } }
+      : request.kind === 'question' ? { question: { requestId: request.requestId, questions: request.questions } }
+        : { approval: { requestId: request.requestId, ...request.approval } };
     return row[QUESTION_TEXT] || request ? { ...row, ...(row[QUESTION_TEXT] ? { questionText: row[QUESTION_TEXT] } : {}), ...field } : row;
   }), summary: { ...(rest.summary || {}) } });
 }
@@ -115,6 +118,8 @@ export function createAsbServer({
   markUnreadThread = null, markReadThread = null, setUnreadSettings = null, pinThread = null, discardThread = null, drawerThread = null, muteThread = null,
   listSources = null, updateSource = null, removeSource = null, sourceToken = '', phoneGateway = null, machineGroup = null, serviceMode = false, onStop = null,
   machineRelay = null, bridgeCoverage = null, activityMessages = null, activityUsage = null, panelMachines = null, readSources = async () => [], resolveSession = null, resolveBound = null, listReferences = null, sendMember = null,
+  // The binder and the machine ID of one next-step answer (contract, Answer); the switchboard gives its own, from the rows.
+  bindMemberTarget = null, scannedMachineId = null, relayRunning = null,
   appVersion = '', rootDir = '', sourcesPath = '', maxUsageImportBytes = 64 * 1024 * 1024, readSourcesRevision = async () => null,
   palettePath = '', publicDir = DEFAULT_PUBLIC_DIR, now = Date.now,
   // The open phone questions and approvals (src/claude-questions.mjs); the answer switch (questions), the approve switch (approvals),
@@ -191,16 +196,99 @@ export function createAsbServer({
     questionTimer.unref?.();
   };
   const findThreadForAction = async (threadId, force = false) => (await dashboardForRequest({ force })).threads?.find((thread) => thread.id === threadId) || null;
-  const answerSwitch = (kind) => kind === 'question' ? answerEnabled() : approveEnabled();
+  // A next-step question uses the answer switch, like a question.
+  const answerSwitch = (kind) => kind === 'approval' ? approveEnabled() : answerEnabled();
+  // The open phone request of a row: its hook record, else the row's next-step card while the answer switch is on.
   const phoneRequest = (row) => {
     const record = row[CLAUDE_QUESTION];
-    return record && (!row.remote || answerSwitch(record.kind)) ? record : null;
+    if (record) return !row.remote || answerSwitch(record.kind) ? record : null;
+    // A next-step card of a local row, from the build; a member row's card is its own record above.
+    return row[NEXT_STEP]?.kind === 'next-step' && answerEnabled() ? row[NEXT_STEP] : null;
+  };
+  // The next-step card of a row, for the answer route: a local row's symbol, or a member's card. An open hook record takes the row
+  // (contract, Row field: the card exists only without one), so its answer route wins.
+  const nextStepCard = (row) => {
+    const hook = row[CLAUDE_QUESTION];
+    if (hook && hook.kind !== 'next-step') return null;
+    const next = row[NEXT_STEP] || hook;
+    return next?.kind === 'next-step' ? next : null;
   };
   const phoneApprovalRecentlySeen = async () => approveEnabled() && await phoneSeenWithin(60_000);
   const closedAnswer = { status: 409, body: { error: 'This question is closed.' } };
   const invalidAnswer = { status: 400, body: { error: 'Invalid answer.' } };
   const agyUnavailable = { status: 409, body: { error: 'Cannot answer in agy now. Answer on the PC.' } };
-  async function answerThread(threadId, body, localOnly = false) {
+  // The reply of one next-step answer, or null: exactly one selected label of the card, or `other` with 1 to 4000 code points
+  // after trim and no control character but a newline and a tab. Both, neither, or an unknown label is invalid.
+  const nextStepReply = (questions, answers) => {
+    if (!Array.isArray(answers) || answers.length !== 1) return null;
+    const item = answers[0];
+    if (!item || typeof item !== 'object' || Array.isArray(item) || !Object.keys(item).every((key) => ['selected', 'other'].includes(key))
+      || !Array.isArray(item.selected) || new Set(item.selected).size !== item.selected.length) return null;
+    const options = Array.isArray(questions?.[0]?.options) ? questions[0].options : [];
+    if (!item.selected.every((label) => typeof label === 'string' && options.some((option) => option.label === label))) return null;
+    const other = item.other === undefined ? null : item.other;
+    if (other !== null && typeof other !== 'string') return null;
+    if (item.selected.length && other !== null) return null;
+    if (item.selected.length === 1 && other === null) return item.selected[0];
+    if (!item.selected.length && other !== null) {
+      const text = other.trim();
+      const points = [...text];
+      return points.length >= 1 && points.length <= 4000 && !/[\x00-\x08\x0b-\x1f\x7f]/.test(text) ? text : null;
+    }
+    return null;
+  };
+  // The device of an answer: the two headers of the phone gateway (the gateway sets them itself, so a copy from the phone is gone),
+  // or the loopback device.
+  const answerDevice = (headers) => {
+    const id = /^[A-Za-z0-9-]{1,64}$/.test(String(headers['x-asb-phone-device-id'] || '')) ? String(headers['x-asb-phone-device-id']) : 'loopback';
+    let name = 'phone';
+    const raw = headers['x-asb-phone-device-name'];
+    if (typeof raw === 'string') {
+      try {
+        const text = decodeURIComponent(raw);
+        if (typeof text === 'string') name = text;
+      } catch {}
+    }
+    return { id, name };
+  };
+  // The checks of one next-step answer (contract, Answer), in order: once, live, relay, then one write through /deliver-bound. The
+  // in-flight mark is kept for 10 minutes (at most 256), and goes away only when nothing was sent.
+  const answeringNextStep = new Map();
+  const nextStepLive = { status: 409, body: { error: 'Open the session on the PC to answer.' } };
+  const nextStepNoRelay = { status: 409, body: { error: 'Cannot send now: the ASB message relay is not running on the PC.' } };
+  async function answerNextStep(thread, card, reply, requestId, device) {
+    // Once: the mark is set before any await, so two concurrent POSTs give exactly one relay call. It is kept for 10 minutes.
+    const atMs = now();
+    for (const [key, keptAtMs] of answeringNextStep) if (atMs - keptAtMs >= 10 * 60_000) answeringNextStep.delete(key);
+    if (answeringNextStep.has(requestId)) return { status: 409, body: { error: 'Already answered.' } };
+    answeringNextStep.set(requestId, atMs);
+    while (answeringNextStep.size > 256) answeringNextStep.delete(answeringNextStep.keys().next().value);
+    const notSent = (reason) => {
+      answeringNextStep.delete(requestId);
+      if (reason === 'target-unavailable' || reason === 'target-changed') return nextStepLive;
+      if (reason === 'rate-limited') return { status: 429, body: { error: 'Too many answers. Try again in a minute.' } };
+      return { status: 409, body: { error: 'Cannot send now. Answer on the PC.' } };
+    };
+    // 4. Live: the row's own binding proves a live inbox now.
+    let bound = null;
+    try { bound = await bindTarget({ reference: thread.reference, msgId: randomUUID(), remainingMs: 10_000 }); }
+    catch { bound = null; }
+    if (bound?.ok !== true) return notSent('target-unavailable');
+    // 5. Relay: it can run now.
+    if (!(relayRunning || (() => machineRelay?.running?.() === true))()) { answeringNextStep.delete(requestId); return nextStepNoRelay; }
+    // 6. Deliver: one `/deliver-bound`, and the mark stays for an unknown outcome (the text can have gone out).
+    const sender = { machineId: machineIdForAnswer(), sessionId: phoneSessionId(device.id), name: 'Phone', mode: 'unknown', agent: 'phone' };
+    const message = { msgId: randomUUID(), text: phoneAnswerText(card.ask, device.name, reply), hopChain: [] };
+    let outcome;
+    try { outcome = await machineRelay.deliverBoundPhone(bound.binding, sender, message); }
+    catch (error) {
+      // A refused request before any write is a relay that cannot run; an unknown error can have sent the text.
+      return [400, 401, 404].includes(error?.status) ? notSent('relay-unavailable') : { status: 200, body: { answered: true } };
+    }
+    if (outcome?.outcome === 'not-sent') return notSent(outcome.reason);
+    return { status: 200, body: { answered: true } };
+  }
+  async function answerThread(threadId, body, localOnly = false, headers = {}) {
     // A question body `{ requestId, answers }`, or an approval body `{ requestId, decision, note? }`.
     const kind = exactKeys(body, ['requestId', 'answers']) ? 'question'
       : exactKeys(body, ['requestId', 'decision'], ['note']) ? 'approval' : '';
@@ -210,6 +298,15 @@ export function createAsbServer({
     const thread = await findThreadForAction(threadId, kind === 'approval' && !memberRow);
     if (!thread) return localOnly || memberRow ? closedAnswer : { status: 404, body: { error: 'Thread not found' } };
     if (localOnly && thread.remote) return closedAnswer;
+    // A next-step question: the answer is the reply text, and its checks run in the contract order. A member's card goes to the
+    // member's own route, which runs the same checks with its own switch, liveness, relay, and in-flight list.
+    const nextStep = kind === 'question' && answerEnabled() ? nextStepCard(thread) : null;
+    if (nextStep && nextStep.requestId === body.requestId) {
+      const reply = nextStepReply(nextStep.questions, body.answers);
+      if (!reply) return invalidAnswer;
+      if (thread.remote) return machineGroup?.answerMember?.(thread, body) ?? closedAnswer;
+      return answerNextStep(thread, nextStep, reply, body.requestId, answerDevice(headers));
+    }
     const open = answerSwitch(kind) ? thread[CLAUDE_QUESTION] : null;
     if (open?.kind !== kind || open.requestId !== body.requestId) return closedAnswer;
     const { requestId, ...decision } = body;
@@ -234,6 +331,23 @@ export function createAsbServer({
     }
     return claudeQuestions.answer(requestId, answer) ? { status: 200, body: { answered: true } } : closedAnswer;
   }
+  // The one binder of the next-step answer: the engine's own (from the rows), a test's, or none.
+  const bindTarget = typeof bindMemberTarget === 'function' ? bindMemberTarget : async () => ({ ok: false, code: 'target-unavailable' });
+  const machineIdForAnswer = () => String(scannedMachineId?.() || '');
+  const phoneSessionId = (deviceId) => {
+    const hex = createHash('sha256').update(`phone\0${deviceId}`).digest('hex').slice(0, 32).split('');
+    hex[12] = '4';
+    hex[16] = '8';
+    const text = hex.join('');
+    return `${text.slice(0, 8)}-${text.slice(8, 12)}-${text.slice(12, 16)}-${text.slice(16, 20)}-${text.slice(20, 32)}`;
+  };
+  // The frame text of one next-step answer (contract, Delivery): one line from the phone, then the reply. The ask keeps one line,
+  // cut to 200 code points; the device name loses control characters, brackets, and newlines, and is cut to 64; the reply as it is.
+  const phoneAnswerText = (ask, deviceName, reply) => {
+    const flat = [...String(ask || '').replace(/[\n\t]/g, ' ').trim()].slice(0, 200).join('');
+    const name = [...String(deviceName || '').replace(/[\x00-\x1f\x7f-\x9f[\]]/g, '')].slice(0, 64).join('') || 'phone';
+    return `[Sent from the owner's phone (${name}) through ASB. It answers your question: "${flat}"]\n${reply}`;
+  };
   const server = http.createServer(async (request, response) => {
     let url;
     try { url = new URL(request.url, 'http://127.0.0.1'); }
@@ -1039,7 +1153,7 @@ export function createAsbServer({
       let threadId = null;
       try { threadId = decodeURIComponent(answerMatch[1]); } catch {}
       try {
-        const result = await answerThread(threadId, body);
+        const result = await answerThread(threadId, body, false, request.headers);
         sendJson(response, result.status, result.body);
       } catch { sendJson(response, 500, { error: 'Cannot save the answer.' }); }
       return;

@@ -403,8 +403,8 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
   }
 
   // maxBytes: the reply is read whole, and a longer reply is refused with 502.
-  function proxy(request, response, target, body, dashboard, maxBytes = 0) {
-    const headers = { host: `127.0.0.1:${localPort}` };
+  function proxy(request, response, target, body, dashboard, maxBytes = 0, extra = null) {
+    const headers = { host: `127.0.0.1:${localPort}`, ...extra };
     const gzipAccepted = dashboard && acceptsGzip(request.headers['accept-encoding']);
     if (gzipAccepted) headers['accept-encoding'] = 'gzip';
     if (request.method === 'POST') Object.assign(headers, { origin: `http://127.0.0.1:${localPort}`, 'content-type': 'application/json' });
@@ -654,7 +654,9 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
         const query = [url.searchParams.get('force') === '1' ? 'force=1' : '', settings.sendText === true ? 'text=1' : ''].filter(Boolean).join('&');
         const target = dashboard ? `/api/dashboard${query ? `?${query}` : ''}`
           : unread ? '/api/settings/unread' : `/api/threads/${match[1]}/${match[2]}`;
-        proxy(request, response, target, body, dashboard);
+        // The answer route sets the paired phone itself, so the engine frames the reply with its name; any copies from the phone are dropped.
+        proxy(request, response, target, body, dashboard, 0, match?.[2] === 'answer'
+          ? { 'x-asb-phone-device-id': device.id, 'x-asb-phone-device-name': encodeURIComponent(device.name) } : null);
       }
     } catch (cause) {
       if (!response.destroyed) reject(cause.statusCode === 413 ? 413 : 500,

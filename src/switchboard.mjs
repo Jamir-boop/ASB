@@ -1,9 +1,10 @@
 import path from 'node:path';
 import os from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadCodexDashboard, applyBridgeWaits, invalidateCodexData, discoverCodexStateDatabase, querySqliteJson, retainCodexDataScopes, SESSION_MESSAGE_WINDOW_MS } from './codex-data.mjs';
-import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData, openClaudeThread, PERMISSION_WAIT, retainClaudeDataSources } from './claude-data.mjs';
+import { DEFAULT_CLAUDE_PROJECTS_DIR, defaultClaudeAppDir, invalidateClaudeData, nextStepQuestion, openClaudeThread, PERMISSION_WAIT, retainClaudeDataSources } from './claude-data.mjs';
 import { loadSwitchboardClaudeThreads, claudeRemoteDeepLink, claudeRemoteStatus,
   invalidateClaudeRemoteData, isClaudeRemoteCacheEvent, shutdownClaudeRemoteParser } from './claude-remote-data.mjs';
 import { normalizeDashboardThreads } from './insights.mjs';
@@ -85,6 +86,9 @@ const OPENCODE_QUESTION_SESSIONS = Symbol('ASB pending OpenCode question session
 // The open phone request of a row (`{ kind: 'question', requestId, questions }`, `{ kind: 'approval', requestId, approval }`, or null),
 // read live from the store: only `/api/dashboard?text=1` sends it.
 export const CLAUDE_QUESTION = Symbol('ASB open Claude question');
+// The open next-step question of a local Claude Desktop Code row (`{ requestId, kind: 'next-step', live, questions, appActions }`):
+// read live from the reader at the dashboard build, and by the answer route.
+export const NEXT_STEP = Symbol('ASB next-step question');
 export const ACTION_AT = Symbol('ASB required action timestamp');
 const SOURCE_DIR = Symbol('ASB session store');
 // A CLI row that more than one source lists, with no single source of origin.
@@ -308,7 +312,11 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
     generatedAtMs: nowMs,
     providers,
     threads: roots.map((thread) => {
-      const kept = rowCache?.get(thread.id);
+      // A next-step card holds a live flag that a scan reads again: such a row is built at each scan, never reused. Its own switch
+      // (the answer switch) is read at the reply text time (src/asb-server.mjs), so the flag never holds text in a cached list.
+      const nextStep = thread.provider === 'claude-desktop-code' && thread.source !== 'claude-remote-cache' && thread.surface !== 'cli'
+        && thread.awaitingUserInput && !pendingToolStale(thread, nowMs) ? nextStepQuestion(thread) : null;
+      const kept = nextStep ? undefined : rowCache?.get(thread.id);
       // A remote cache row has a clock skew rule with no status time, so it is always built.
       // The copy ends 1 ms before the earliest status time, so a time with a fraction of a millisecond cannot keep a row past a rule change.
       if (kept && thread.source !== 'claude-remote-cache' && nowMs >= kept.builtAtMs && nowMs + 1 < kept.validUntilMs
@@ -412,6 +420,7 @@ export function buildSwitchboardDashboard(threads, providers = [], nowMs = Date.
       // Only this engine's reference binder reads these IDs; row JSON (dashboard API, phone, members) never has them.
       if (thread.provider === 'claude-desktop-code' && thread.source !== 'claude-remote-cache') Object.defineProperty(row, CLI_SESSION_IDS,
         { value: [thread.cliSessionId, ...(thread.priorCliSessionIds || [])].filter((id) => typeof id === 'string' && id) });
+      if (nextStep) Object.defineProperty(row, NEXT_STEP, { value: nextStep, configurable: true, writable: true });
       if (row[CLI_SESSION_IDS] && row.questionPending && (thread.pendingTools || []).some((tool) => tool.tool === 'AskUserQuestion')) {
         Object.defineProperty(row, QUESTION_SESSIONS, { value: row[CLI_SESSION_IDS] });
       }
@@ -1172,6 +1181,11 @@ export function createSwitchboardServer(options = {}) {
   const receiverClaim = async (source, appId) => (await querySqliteJson(path.join(source.dataDir, 'plugin-state', 'asb-bridge', `${appId}.sqlite`),
     'select pid, proc_start from receiver where singleton = 1;').catch(() => []))[0] ?? null;
   const boundIo = { platform, now: Date.now, pid: process.pid, registry: privateRegistry, claudeRoot, receiverClaim };
+  // The binder of one next-step answer: the engine's own from the cached rows, or the server option (a test's). The caller can
+  // give the reference context of its rows; without one the cached dashboard gives it.
+  const defaultBinder = async (request, context) => bindMemberTarget(request,
+    context || await referenceContext(await server.dashboardForRequest()), { ...boundIo, targetHomes });
+  const nextStepBinder = typeof options.bindMemberTarget === 'function' ? options.bindMemberTarget : defaultBinder;
   // The homes where the receiving engine looks for the target of an exact member send: a CLI or Desktop Code session
   // only in its own source home, a Codex task in the homes that the relay serves.
   const targetHomes = async (type, source) => ['claude-cli', 'claude-local'].includes(type) ? [path.dirname(source.projectsDir || DEFAULT_CLAUDE_PROJECTS_DIR)]
@@ -1263,6 +1277,10 @@ export function createSwitchboardServer(options = {}) {
     appVersion: APP_VERSION,
     rootDir: ROOT_DIR,
     sourcesPath: registry.configPath,
+    // The next-step answer (contract, Answer): the binder, the machine ID of the scans, and the relay state.
+    bindMemberTarget: nextStepBinder,
+    scannedMachineId: () => options.machineIdentity?.().machineId || '',
+    relayRunning: () => options.machineRelay?.running?.() === true,
     readSourcesRevision: async () => appSourcesRevision(await registry.read()),
     readSources: async () => registeredLoad ? registry.read() : [],
     claudeHookStatus: async () => registeredLoad ? claudeHookStatus(hookTargets(await registry.read()),
@@ -1314,6 +1332,23 @@ export function createSwitchboardServer(options = {}) {
         // A shared CLI row keeps the earlier reasons; it gets no reference and sends no scope tag, so a member cannot make one.
         Object.assign(row, row[SHARED_CLI] && reference.reference ? { referenceUnavailable: 'ambiguous-source' } : reference,
           scopeTag && !row[SHARED_CLI] ? { referenceScope: scopeTag } : {}, sessionReference ? { sessionReference } : {});
+      }
+      // The next-step card of a local Desktop row: whether the answer can go out now, read at each build (contract, Row field).
+      // The flag is set whenever a card exists, so a member reply and a switch change see the same check; the row's `question`
+      // field is still sent only while the answer switch is on.
+      if (loaded.threads.some((row) => row[NEXT_STEP])) {
+        const context = await referenceContext(loaded);
+        const relayReady = options.machineRelay?.running?.() === true;
+        const boundTo = (row) => nextStepBinder({ reference: row.reference, msgId: randomUUID(), remainingMs: 0 }, context).catch(() => null);
+        for (const row of loaded.threads) {
+          const card = row[NEXT_STEP];
+          if (!card) continue;
+          // The same live inbox check as the binder: one binding with no message.
+          const bound = typeof row.reference === 'string' && row.reference ? await boundTo(row) : null;
+          const inbox = bound?.ok === true;
+          card.live = inbox && relayReady;
+          card.unavailable = inbox ? 'Answer on the PC: the ASB message relay is not running.' : 'Open the session on the PC to answer.';
+        }
       }
       // Before the merge, the rows are local only: they set the scan interval of this engine.
       const localRefreshIntervalMs = switchboardRefreshInterval(loaded);
@@ -1433,6 +1468,8 @@ export function createSwitchboardServer(options = {}) {
   server.bridgeReport = () => bridgeCoverage ? bridgeCoverage.report() : Promise.resolve({ status: 404, body: { error: 'Route is not available.' } });
   // The member route GET /peer/v1/activity (src/phone-gateway.mjs): local records only, no text.
   server.activityMember = (period) => activityMessages.memberReply(period);
+  // The relay start rule of the phone answer (contract, Delivery): at least one local Claude Desktop Code source is enabled.
+  server.enabledDesktopSource = async () => (await registry.read().catch(() => [])).some((source) => source.enabled && source.provider === 'claude-desktop-code');
   // The engine starts the background usage ledger after its group, and saves the ledger first when it stops.
   server.usageLedger = { start: () => { usage?.start(); backup?.start(); },
     stop: async () => { await backup?.stop(); await (usage?.stop() ?? Promise.resolve()); },
