@@ -1977,9 +1977,11 @@ class PhoneChecks(unittest.TestCase):
         editor.devices_shown = None
         editor.pairing_uri, editor.expires_at, editor.pair_device_ids, editor.matrix = "", 0, set(), None
         for name in ("settings", "apply", "pair", "retry", "message", "status_label", "fingerprint", "enabled",
-                     "address_list", "address_note", "port", "send_text", "answer", "approve", "hook_status", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
+                     "address_list", "address_note", "port", "send_text", "message_row", "answer", "approve", "hook_status", "devices", "empty", "pairing", "qr", "link", "copy", "qr_help"):
             setattr(editor, name, Mock())
+        editor.message_supported = True
         editor.send_text.get_active.return_value = False
+        editor.message_row.get_active.return_value = False
         editor.answer.get_active.return_value = False
         editor.approve.get_active.return_value = False
         editor.devices.get_first_child.return_value = None
@@ -2232,25 +2234,65 @@ class PhoneChecks(unittest.TestCase):
 
     def test_phone_form_values_keep_unsaved_edits_and_else_follow_the_server(self):
         status = self.status(port=4631, bindAddresses=["192.168.50.4", "10.147.17.4"])
-        server = (True, 4631, ["192.168.50.4", "10.147.17.4"], False, False, False)
-        self.assertEqual(asb.phone_form_values(None, (False, 4630, [], False, False, False), status), server)
-        self.assertEqual(asb.phone_form_values((True, 4630, ["10.147.17.4", "192.168.50.4"], False, False, False),
-                                               (True, 4630, ["192.168.50.4", "10.147.17.4"], False, False, False), status), server)
-        edited = (True, 4632, ["192.168.50.4"], False, False, False)
-        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], False, False, False), edited, status), edited)
-        # A status without sendText, answer, or approve loads off; a changed switch alone is an unsaved edit.
+        server = (True, 4631, ["192.168.50.4", "10.147.17.4"], False, False, False, False)
+        self.assertEqual(asb.phone_form_values(None, (False, 4630, [], False, False, False, False), status), server)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["10.147.17.4", "192.168.50.4"], False, False, False, False),
+                                               (True, 4630, ["192.168.50.4", "10.147.17.4"], False, False, False, False), status), server)
+        edited = (True, 4632, ["192.168.50.4"], False, False, False, False)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], False, False, False, False), edited, status), edited)
+        # A status without sendText, message, answer, or approve loads off; a changed switch alone is an unsaved edit.
         self.assertNotIn("sendText", status)
+        self.assertNotIn("message", status)
         self.assertNotIn("answer", status)
         self.assertNotIn("approve", status)
-        texted = (True, 4630, ["192.168.50.4", "10.147.17.4"], True, False, False)
-        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], False, False, False), texted, status), texted)
-        answered = (True, 4630, ["192.168.50.4", "10.147.17.4"], True, True, False)
-        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], True, False, False), answered, status), answered)
-        approved = (True, 4630, ["192.168.50.4", "10.147.17.4"], True, True, True)
-        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], True, True, False), approved, status), approved)
+        texted = (True, 4630, ["192.168.50.4", "10.147.17.4"], True, False, False, False)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], False, False, False, False), texted, status), texted)
+        messaging = (True, 4630, ["192.168.50.4", "10.147.17.4"], True, False, False, True)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], True, False, False, False), messaging, status), messaging)
+        answered = (True, 4630, ["192.168.50.4", "10.147.17.4"], True, True, False, False)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], True, False, False, False), answered, status), answered)
+        approved = (True, 4630, ["192.168.50.4", "10.147.17.4"], True, True, True, False)
+        self.assertEqual(asb.phone_form_values((True, 4630, ["192.168.50.4", "10.147.17.4"], True, True, False, False), approved, status), approved)
         self.assertEqual(asb.phone_form_values(None, None, self.status(sendText=True))[3], True)
+        self.assertEqual(asb.phone_form_values(None, None, self.status(sendText=True, message=True))[6], True)
         self.assertEqual(asb.phone_form_values(None, None, self.status(sendText=True, answer=True))[4], True)
         self.assertEqual(asb.phone_form_values(None, None, self.status(sendText=True, answer=True, approve=True))[5], True)
+
+    def test_phone_message_switch_follows_the_text_switch_and_the_engine_field(self):
+        editor = self.editor()
+        editor.send_text.set_active = Mock()
+        editor.message_row.set_active = Mock()
+        editor.message_row.set_sensitive = Mock()
+        editor.answer.set_active = Mock()
+        editor.answer.set_sensitive = Mock()
+        editor.message_supported, editor.message_row.get_active.return_value = False, True
+        editor.send_text.get_active.return_value = True
+        # An engine without the message field: the row is off and insensitive.
+        editor.send_text_changed()
+        editor.message_row.set_sensitive.assert_called_with(False)
+        editor.message_supported, editor.send_text.get_active.return_value = True, False
+        editor.send_text_changed()
+        editor.message_row.set_active.assert_called_with(False)
+        editor.message_row.set_sensitive.assert_called_with(False)
+        editor.message_row.set_active.reset_mock()
+        editor.send_text.get_active.return_value = True
+        editor.send_text_changed()
+        editor.message_row.set_sensitive.assert_called_with(True)
+        self.assertFalse(editor.message_row.set_active.called)
+        # render_status loads the message value and keeps it only with the text switch on.
+        gtk = SimpleNamespace(CheckButton=Mock(), Align=SimpleNamespace(CENTER=0),
+                              AccessibleProperty=SimpleNamespace(LABEL=0, DESCRIPTION=1, KEY_SHORTCUTS=3))
+        editor.address_list.get_first_child.return_value = None
+        editor.devices.get_first_child.return_value = None
+        with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=Mock())}):
+            editor.form_loaded = None
+            editor.render_status(self.status(sendText=True, message=True), True)
+        editor.message_row.set_active.assert_called_with(True)
+        self.assertTrue(editor.message_supported)
+        with patch.dict(SCOPE, {"Gtk": gtk, "Adw": SimpleNamespace(ActionRow=Mock())}):
+            editor.form_loaded = None
+            editor.render_status(self.status(sendText=False, message=True), True)
+        editor.message_row.set_active.assert_called_with(False)
 
     def test_claude_hook_text_names_the_questions_only_entry(self):
         home = "/home/made-up"
@@ -2419,7 +2461,7 @@ class PhoneChecks(unittest.TestCase):
             editor.apply_settings()
             editor.request_phone.assert_called_with("/api/phone/settings", "POST",
                 {"enabled": False, "bindAddresses": ["192.168.50.4", "100.101.102.103"], "port": 4631, "sendText": True,
-                 "answer": True, "approve": True})
+                 "message": False, "answer": True, "approve": True})
             editor.revoke_device("a/b")
             editor.request_phone.assert_called_with("/api/phone/devices/a%2Fb/revoke", "POST", {})
             editor.pair_phone()
