@@ -295,11 +295,16 @@ test('the gateway sets both device headers on the message proxy and drops any co
   assert.equal(decodeURIComponent(sent.headers['x-asb-phone-device-name']), 'Test phone');
   // A switch change to off gives 404 at the route, before and after the token, and nothing reaches the PC.
   await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, message: false });
+  const route = `/phone/v1/threads/${encodeURIComponent(LOCAL)}/message`;
   const calls = upstream.length;
-  const off = await call(`/phone/v1/threads/${encodeURIComponent(LOCAL)}/message`, { method: 'POST',
-    headers: { authorization: `Bearer ${paired.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  assert.deepEqual([off.status, JSON.parse(off.text)], [404, { error: 'Route is not available.' }]);
+  for (const token of [undefined, paired.token]) {
+    const off = await call(route, { method: 'POST', ...(token ? { headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } } : {}),
+      body: JSON.stringify(body) });
+    assert.deepEqual([off.status, JSON.parse(off.text)], [404, { error: 'Route is not available.' }]);
+  }
   assert.equal(upstream.length, calls);
+  // Only POST reaches it.
+  assert.equal((await call(route, { headers: { authorization: `Bearer ${paired.token}` } })).status, 404);
   // No member route and no GET.
   assert.equal((await call(`/peer/v1/threads/${encodeURIComponent(LOCAL)}/message`, { method: 'POST',
     headers: { authorization: `Bearer ${paired.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 404);
