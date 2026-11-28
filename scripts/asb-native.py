@@ -6078,7 +6078,8 @@ class PhoneEditor(Gtk.Box):
         self.send_text.set_subtitle_lines(0)
         self.answer = Adw.SwitchRow(title="Answer questions from phones", subtitle=
             "Questions of Claude Code sessions wait for an answer from a paired phone. "
-            "Needs the Claude Code hook (asb agent claude-hook install).", sensitive=False)
+            "Needs the Claude Code hook (asb agent claude-hook install). "
+            "It also sends your reply as a message into a Claude Desktop Code session that ended its turn with a question.", sensitive=False)
         self.answer.set_subtitle_lines(0)
         self.approve = Adw.SwitchRow(title="Approve requests from phones", subtitle=
             "A paired phone can allow or deny the tool requests and approve the plans of Claude Code sessions. The request on the PC stays. "
