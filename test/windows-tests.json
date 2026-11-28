@@ -45,5 +45,6 @@
   "test/usage-backup.test.mjs",
   "test/usage-backup-routes.test.mjs",
   "test/asb-usage.test.mjs",
-  "test/claude-messages.test.mjs"
+  "test/claude-messages.test.mjs",
+  "test/claude-chat.test.mjs"
 ]

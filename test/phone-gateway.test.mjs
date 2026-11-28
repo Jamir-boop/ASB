@@ -1504,3 +1504,60 @@ gatewayTest('the member route /peer/v1/bridge gives the reply of peer.bridge to 
   const missing = await old.peer('/peer/v1/bridge', { as: old.joiner });
   assert.deepEqual([missing.status, missing.json], [404, { error: 'Route is not available.' }]);
 });
+
+gatewayTest('the session chat route is off with message text, proxies a checked limit, and is absent for members', async (t) => {
+  const body = JSON.stringify({ api: 1, threadId: 'source:id', turns: [{ role: 'user', text: 'Synthetic chat.', atMs: 1, cut: false }], more: false });
+  const { gateway, request, pair, records, port } = await fixture(t, { reply: (request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(body);
+  } });
+  const token = (await pair()).json.token;
+  const chat = '/phone/v1/threads/source%3Aid/chat';
+  const base = { enabled: true, bindAddresses: ['127.0.0.1'], port };
+  // Off (the default): 404 at the match, before and after the token check, and nothing reaches the PC.
+  assert.deepEqual([(await request(chat)).status, (await request(chat)).json], [404, { error: 'Route is not available.' }]);
+  assert.deepEqual([(await request(chat, { token })).status, (await request(chat, { token })).json], [404, { error: 'Route is not available.' }]);
+  assert.deepEqual(records, []);
+  await gateway.updateSettings({ ...base, sendText: true });
+  const reply = await request(`${chat}?limit=7`, { token });
+  assert.deepEqual([reply.status, reply.json], [200, JSON.parse(body)]);
+  assert.deepEqual(records.map((record) => [record.method, record.url]), [['GET', '/api/threads/source%3Aid/chat?limit=7']]);
+  records.length = 0;
+  assert.equal((await request(chat, { token })).text, body);
+  assert.deepEqual(records.map((record) => record.url), ['/api/threads/source%3Aid/chat']);
+  records.length = 0;
+  for (const query of ['?limit=0', '?limit=31', '?limit=8&limit=9', '?limit=', '?extra=1', '?limit=7&extra=1']) {
+    assert.deepEqual([(await request(`${chat}${query}`, { token })).status, (await request(`${chat}${query}`, { token })).json],
+      [400, { error: 'Invalid query.' }], query);
+  }
+  assert.equal((await request(chat)).status, 401);
+  assert.equal((await request(chat, { method: 'POST', token, body: {} })).status, 405);
+  assert.deepEqual(records, []);
+  // No member route and no other chat path.
+  for (const route of ['/peer/v1/threads/x/chat', '/peer/v1/chat', '/peer/v1/threads/x/chat', '/phone/v1/chat', '/phone/v1/threads/x/chat/y',
+    '/phone/v1/threads//chat', `/phone/v1/threads/${'x'.repeat(513)}/chat`, '/api/threads/x/chat']) {
+    assert.equal((await request(route, { token })).status, 404, route);
+  }
+  // The switch can go off after the token check is passed: the route answers 404 again.
+  await gateway.updateSettings({ ...base, sendText: false });
+  assert.deepEqual([(await request(chat, { token })).status, (await request(chat, { token })).json], [404, { error: 'Route is not available.' }]);
+  assert.deepEqual(records, []);
+});
+
+gatewayTest('the session chat route refuses a reply above 2 MiB', async (t) => {
+  let big = false;
+  const { gateway, request, pair, records, port } = await fixture(t, { reply: (request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(big ? JSON.stringify({ api: 1, turns: [{ role: 'user', text: 'x'.repeat(2 * 1024 * 1024), atMs: 1, cut: false }] })
+      : '{"api":1,"turns":[],"more":false}');
+  } });
+  const token = (await pair()).json.token;
+  await gateway.updateSettings({ enabled: true, bindAddresses: ['127.0.0.1'], port, sendText: true });
+  const chat = '/phone/v1/threads/source%3Aid/chat';
+  assert.equal((await request(chat, { token })).status, 200);
+  assert.deepEqual(records.map((record) => record.url), ['/api/threads/source%3Aid/chat']);
+  records.length = 0;
+  big = true;
+  const refused = await request(chat, { token });
+  assert.deepEqual([refused.status, refused.json, refused.headers.etag], [502, { error: 'The ASB reply is too large.' }, undefined]);
+});

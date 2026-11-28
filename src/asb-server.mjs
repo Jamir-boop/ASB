@@ -11,6 +11,8 @@ import { acceptsGzip, DEFAULT_PUBLIC_DIR, exactKeys, gzipHead, gzipWithTail, par
 import { USAGE_PERIODS } from './usage-aggregation.mjs';
 import { CLAUDE_QUESTION, MUTE_DURATIONS_MS, QUESTION_TEXT } from './switchboard.mjs';
 import { answersFor, checkedDecision, MAX_WAIT_MS, PROVIDERS } from './claude-questions.mjs';
+import { claudeChatFile, readClaudeChat } from './claude-chat.mjs';
+import { CLI_SESSION_IDS } from './session-targets.mjs';
 
 const gzipAsync = promisify(gzip);
 
@@ -259,6 +261,7 @@ export function createAsbServer({
     // The activity reads (contract 2); each exists only when the engine gives its service.
     const activityRoute = url.pathname.match(/^\/api\/activity\/(messages|thread|usage)$/)?.[1];
     const activityReady = activityRoute === 'usage' ? Boolean(activityUsage) : Boolean(activityRoute) && Boolean(activityMessages);
+    const chatRoute = url.pathname.match(/^\/api\/threads\/([^/]{1,512})\/chat$/)?.[1];
     const panelRoute = Boolean(panelMachines) && url.pathname === '/api/panel';
     const usageExportRoute = typeof activityUsage?.exportAll === 'function' && url.pathname === '/api/usage/export';
     const usageImportRoute = typeof activityUsage?.importAll === 'function' && url.pathname === '/api/usage/import';
@@ -282,7 +285,7 @@ export function createAsbServer({
       || claudeWaitRoute || Boolean(claudePoll) || Boolean(answerMatch)
       || Boolean(groupRoute?.[1]) || Boolean(bridgeRoute?.[1]) || ['send', 'receipt'].includes(relayRoute) || usageImportRoute || Boolean(usageBackupAction);
     const staticRoutes = ['/', '/switchboard.html', '/switchboard.js', '/switchboard.css', '/icon.svg'];
-    const readApiRoute = url.pathname === '/api/dashboard' || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
+    const readApiRoute = url.pathname === '/api/dashboard' || Boolean(chatRoute) || panelRoute || eventRoute || (sourcesRoute && request.method === 'GET') || phoneReadRoute || agentStatusRoute
       || Boolean(groupRoute && !groupRoute[1]) || Boolean(bridgeRoute && !bridgeRoute[1]) || ['homes', 'remote-peers'].includes(relayRoute) || activityReady || usageExportRoute || usageBackupRoute;
     const readRoute = readApiRoute || staticRoutes.includes(url.pathname);
     if (usageBackupRoute || usageBackupAction) response.setHeader('Cache-Control', 'no-store');
@@ -995,6 +998,34 @@ export function createAsbServer({
           detail: error instanceof Error ? error.message : String(error),
         });
       }
+      return;
+    }
+
+    if (chatRoute) {
+      response.setHeader('Cache-Control', 'no-store');
+      let threadId = null;
+      try { threadId = decodeURIComponent(chatRoute); } catch {}
+      const limit = url.searchParams.getAll('limit');
+      if (threadId === null || [...url.searchParams.keys()].some((name) => name !== 'limit') || limit.length > 1
+        || (limit.length && (!/^[1-9][0-9]?$/.test(limit[0]) || Number(limit[0]) > 30))) {
+        sendJson(response, 400, { error: 'Invalid query.' });
+        return;
+      }
+      const noChat = () => sendJson(response, 404, { error: 'No chat for this session.' });
+      try {
+        const thread = await findThreadForAction(threadId);
+        // Only a local Claude Desktop Code chat has a transcript to show. Its profile files the folder, else the default folder.
+        const sessionIds = thread?.[CLI_SESSION_IDS];
+        if (thread?.provider !== 'claude-desktop-code' || thread.remote || thread.remoteCache || thread.surface === 'cli' || !sessionIds?.length) {
+          noChat();
+          return;
+        }
+        const sources = await readSources();
+        const source = (Array.isArray(sources) ? sources : []).find((item) => item.id === thread.sourceId);
+        const file = await claudeChatFile(source?.projectsDir, sessionIds);
+        if (!file) { noChat(); return; }
+        sendJson(response, 200, { api: 1, threadId: thread.id, ...await readClaudeChat(file, limit.length ? { limit: Number(limit[0]) } : {}) });
+      } catch { noChat(); }
       return;
     }
 

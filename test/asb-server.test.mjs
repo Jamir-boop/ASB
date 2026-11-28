@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -689,4 +689,47 @@ test('the panel appends the current saved accent on every read', async (t) => {
   assert.equal((await post('/api/palette', JSON.stringify(changed))).status, 200);
   const second = await (await fetch(`${base}/api/panel`)).text();
   assert.equal(second, JSON.stringify({ ...panelSummary({ threads: [] }, []), accent: '#abcdef' }));
+});
+
+test('the chat route gives the contract body for a local Claude Desktop Code row and the contract 404 for every other row', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asb-chat-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const projectsDir = path.join(dir, 'projects'), folder = path.join(projectsDir, 'synthetic-project');
+  await mkdir(folder, { recursive: true });
+  const sessionId = '00000000-0000-4000-8000-000000000042';
+  const missingId = '00000000-0000-4000-8000-000000000099';
+  await writeFile(path.join(folder, `${sessionId}.jsonl`), `${JSON.stringify({ type: 'user', timestamp: '2026-11-01T00:00:01.000Z',
+    message: { content: 'Made-up prompt.' } })}\n${JSON.stringify({ type: 'assistant', timestamp: '2026-11-01T00:00:02.000Z',
+    message: { id: 'm1', content: [{ type: 'text', text: 'Made-up reply.' }] } })}\n`);
+  const { CLI_SESSION_IDS } = await import('../src/session-targets.mjs');
+  const row = (id, extra) => Object.defineProperty({ id, provider: 'claude-desktop-code', ...extra }, CLI_SESSION_IDS, { value: [sessionId] });
+  const threads = [row(`claude-desktop-code:local_${sessionId}`, { externalId: `local_${sessionId}`, sourceId: 'claude-desktop-code' }),
+    row('cli:other', { externalId: sessionId, sourceId: 'claude-desktop-code', surface: 'cli' }),
+    { id: 'codex:one', provider: 'codex', externalId: 'one', sourceId: 'codex' },
+    { id: 'm:0123456789abcdef:one', provider: 'claude-desktop-code', remote: true },
+    Object.defineProperty({ id: 'claude-desktop-code:missing', provider: 'claude-desktop-code', externalId: `local_${missingId}`,
+      sourceId: 'claude-desktop-code' }, CLI_SESSION_IDS, { value: [missingId] })];
+  const { base } = await serve(t, {
+    dashboardWatchPaths: [], loadDashboard: async () => ({ providers: [], threads }),
+    readSources: async () => [{ id: 'claude-desktop-code', provider: 'claude-desktop-code', projectsDir },
+      { id: 'codex', provider: 'codex', dataDir: dir }],
+  });
+  const id = `claude-desktop-code:local_${sessionId}`;
+  const get = (threadId, query = '') => fetch(`${base}/api/threads/${encodeURIComponent(threadId)}/chat${query}`);
+  const reply = await get(id, '?limit=1');
+  assert.equal(reply.status, 200);
+  assert.deepEqual(await reply.json(), { api: 1, threadId: id, more: true,
+    turns: [{ role: 'assistant', text: 'Made-up reply.', atMs: Date.parse('2026-11-01T00:00:02.000Z'), cut: false }] });
+  assert.deepEqual(await (await get(id)).json(), { api: 1, threadId: id, more: false, turns: [
+    { role: 'user', text: 'Made-up prompt.', atMs: Date.parse('2026-11-01T00:00:01.000Z'), cut: false },
+    { role: 'assistant', text: 'Made-up reply.', atMs: Date.parse('2026-11-01T00:00:02.000Z'), cut: false }] });
+  for (const threadId of ['codex:one', 'm:0123456789abcdef:one', 'claude-desktop-code:missing', 'unknown-id', 'cli:other']) {
+    const missing = await get(threadId);
+    assert.deepEqual([missing.status, await missing.json()], [404, { error: 'No chat for this session.' }], threadId);
+  }
+  for (const query of ['?limit=0', '?limit=31', '?limit=05', '?limit=', '?limit=1&limit=2', '?limit=1&extra=1', '?extra=1']) {
+    assert.equal((await get(id, query)).status, 400, query);
+  }
+  assert.equal((await fetch(`${base}/api/threads/${encodeURIComponent(id)}/chat`, { method: 'POST' })).status, 405);
+  assert.equal((await fetch(`${base}/api/threads/${encodeURIComponent(id)}/chat`, { headers: { Origin: 'https://example.com' } })).status, 403);
 });

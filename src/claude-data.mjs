@@ -649,7 +649,7 @@ export function parseClaudeJsonlSignals(jsonlText = '') {
   return finishClaudeSignals(signals);
 }
 
-async function readTailText(filePath, maxBytes = DEFAULT_MAX_JSONL_BYTES, fileStat = null) {
+export async function readTailText(filePath, maxBytes = DEFAULT_MAX_JSONL_BYTES, fileStat = null) {
   const handle = await fs.open(filePath, 'r');
   try {
     const stat = fileStat || await handle.stat();

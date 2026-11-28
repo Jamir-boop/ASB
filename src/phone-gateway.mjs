@@ -116,6 +116,15 @@ function threadQuery(params) {
   return new URLSearchParams([...params]).toString();
 }
 
+// The query of the chat route, rebuilt from a checked limit only; null for any other query, '' with no limit.
+function chatQuery(params) {
+  const names = [...params.keys()];
+  if (new Set(names).size !== names.length || names.some((name) => name !== 'limit')) return null;
+  if (!params.has('limit')) return '';
+  const value = params.get('limit');
+  return /^[1-9][0-9]?$/.test(value) && Number(value) <= 30 ? `?limit=${value}` : null;
+}
+
 const validAddresses = (value) => Array.isArray(value) && value.length <= 8
   && value.every((address) => typeof address === 'string') && new Set(value).size === value.length;
 
@@ -546,8 +555,10 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
     // Contract 3: the two activity reads always, and the thread only when the PC owner turns on message text.
     const activity = url.pathname.match(settings.sendText === true ? /^\/phone\/v1\/activity\/(messages|usage|thread)$/
       : /^\/phone\/v1\/activity\/(messages|usage)$/)?.[1];
-    if (!pairRoute && !hello && !dashboard && !unread && !(match && (match[2] !== 'answer' || answerReady())) && !activity) { reject(404, 'Route is not available.'); return; }
-    const method = hello || dashboard || activity ? 'GET' : 'POST';
+    // The chat of one session reads message text, so it has the same switch as the thread, at the match and after the token check.
+    const chat = url.pathname.match(settings.sendText === true ? /^\/phone\/v1\/threads\/([^/]{1,512})\/chat$/ : /$^/)?.[1];
+    if (!pairRoute && !hello && !dashboard && !unread && !chat && !(match && (match[2] !== 'answer' || answerReady())) && !activity) { reject(404, 'Route is not available.'); return; }
+    const method = hello || dashboard || activity || chat ? 'GET' : 'POST';
     if (request.method !== method) { response.setHeader('allow', method); reject(405, 'Method not allowed.'); return; }
     try {
       let device;
@@ -607,6 +618,12 @@ export function createPhoneGateway({ localPort, asbVersion, settingsPath = phone
           engines: (peer?.engines() || []).map((engine) => engine.machineId === machineId
             ? { ...engine, addresses: listening(), port: settings.port } : engine), sendText: settings.sendText === true,
           answer: settings.answer === true, approve: settings.approve === true });
+      } else if (chat) {
+        // The switch can go off while the phone waits for its token check.
+        if (settings.sendText !== true) { reject(404, 'Route is not available.'); return; }
+        const query = chatQuery(url.searchParams);
+        if (query === null) { reject(400, 'Invalid query.'); return; }
+        proxy(request, response, `/api/threads/${chat}/chat${query}`, body, false, 2 * 1024 * 1024);
       } else if (activity === 'thread') {
         // The switch can go off while the phone waits for its token check.
         if (settings.sendText !== true) { reject(404, 'Route is not available.'); return; }
