@@ -230,6 +230,13 @@ shows `Turn on Send message text to phones on the PC to see the chat.`; a 404
 `No chat for this session.` shows `This session has no chat to show.`; another
 error keeps the last turns and shows `Cannot load the chat. Retrying.` The turns
 stay in screen memory only.
+A question with `kind: "next-step"` (a Claude Desktop Code next-step question) uses
+the question card with its reply labels and Other (up to 4,000 characters), each
+app action as a line `On the PC: <label>`, and the line
+`The agent gets this as a message from your phone. For risky steps it can still ask on the PC.`
+With `live: false` the card shows only the question and its `unavailable` line
+(default `Open the session on the PC to answer.`). A 409 or 429 reply shows the
+PC's `error` text on the card.
 Under the Messages status bar, a tap on the status list or its `Show meanings`
 button shows what each status means under its word (the PC tooltip sentences); a
 second tap or `Hide meanings` hides them. TalkBack reads the sentence with each
