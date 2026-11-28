@@ -18,8 +18,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -36,16 +39,22 @@ import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import local.asb.companion.data.ChatReply
 import local.asb.companion.data.ChatTurn
+import local.asb.companion.data.Thread
 import local.asb.companion.net.AsbApi
 import local.asb.companion.net.AsbError
+import local.asb.companion.net.MessageReply
 
 /** The words of the states of the chat screen; Off, NoChat, and Failed as the contract names them. */
 const val CHAT_OFF = "Turn on Send message text to phones on the PC to see the chat."
 const val CHAT_NONE = "This session has no chat to show."
 const val CHAT_FAILED = "Cannot load the chat. Retrying."
 const val CHAT_OLDER = "Older turns are not shown."
+
+/** The label of a phone turn on the user side. */
+const val PHONE_TURN_LABEL = "You, from the phone"
 
 /** The poll period of the chat screen while it shows. */
 const val CHAT_POLL_MS = 5_000L
@@ -65,9 +74,12 @@ internal fun chatStateAfter(state: ChatState, result: AsbApi.ChatResult): ChatSt
     AsbApi.ChatResult.Failed -> ChatState(reply = state.reply, failed = true)
 }
 
-/** The chats of [load] now and then every [CHAT_POLL_MS] until the collection stops, as the screen shows and leaves. */
-internal fun chatPolls(load: suspend () -> AsbApi.ChatResult): Flow<ChatState> = flow {
-    var state = ChatState()
+/**
+ * The chats of [load] now and then every [CHAT_POLL_MS] until the collection stops, as the screen shows and leaves. [initial]
+ * keeps the turns of a read before a restarted poll (after a send), so a failed read there keeps them too.
+ */
+internal fun chatPolls(initial: ChatState = ChatState(), load: suspend () -> AsbApi.ChatResult): Flow<ChatState> = flow {
+    var state = initial
     while (true) {
         state = chatStateAfter(state, load())
         emit(state)
@@ -77,20 +89,26 @@ internal fun chatPolls(load: suspend () -> AsbApi.ChatResult): Flow<ChatState> =
 
 /**
  * The chat view of a Claude Desktop Code session: turns oldest first, a poll every [CHAT_POLL_MS] while the screen shows, and the
- * text in screen state only (no saved state, no file, no log).
+ * text in screen state only (no saved state, no file, no log). [row] is the dashboard row of the session, which offers the
+ * composer while its `canMessage` is true; a null row (the row left the board) shows no composer.
  */
 @Composable
-fun ChatScreen(api: AsbApi, engine: String, id: String, onBack: () -> Unit) {
+fun ChatScreen(api: AsbApi, engine: String, id: String, row: Thread?, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val colors = activityColors()
     var state by remember(id) { mutableStateOf(ChatState()) }
+    var composer by remember(id) { mutableStateOf(Composer()) }
+    // A send restarts the poll: once at once, and once more after 2 s.
+    var pollKey by remember(id) { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     // The first reply opens at its newest turn; a later poll keeps the place.
     var opened by remember(id) { mutableStateOf(false) }
-    LaunchedEffect(api, engine, id, lifecycle) {
+    val latest = rememberUpdatedState(state)
+    LaunchedEffect(api, engine, id, lifecycle, pollKey) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            chatPolls { api.chat(id, engine) }.collect { next ->
+            chatPolls(latest.value) { api.chat(id, engine) }.collect { next ->
                 state = next
                 val turns = next.reply?.turns
                 if (turns != null && turns.isNotEmpty() && !opened) {
@@ -101,6 +119,7 @@ fun ChatScreen(api: AsbApi, engine: String, id: String, onBack: () -> Unit) {
             }
         }
     }
+    val working = row?.state == "working"
     Scaffold(contentWindowInsets = SafeContentInsets, topBar = { ActivityTopBar("Chat", onBack) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).background(colors.background)) {
             val notice = when {
@@ -114,7 +133,8 @@ fun ChatScreen(api: AsbApi, engine: String, id: String, onBack: () -> Unit) {
                     .semantics { liveRegion = LiveRegionMode.Polite })
             }
             state.reply?.let { reply ->
-                LazyColumn(state = list, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                LazyColumn(state = list, modifier = Modifier.weight(1f), contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (reply.more) item(key = "more") {
                         Text(CHAT_OLDER, fontSize = 12.sp, color = colors.muted, modifier = Modifier.fillMaxWidth(),
                             textAlign = TextAlign.Center)
@@ -122,20 +142,46 @@ fun ChatScreen(api: AsbApi, engine: String, id: String, onBack: () -> Unit) {
                     itemsIndexed(reply.turns, key = { index, _ -> "turn$index" }) { _, turn -> ChatTurnRow(turn, colors) }
                 }
             }
+            val canMessage = row?.canMessage
+            when {
+                canMessage == true -> MessageComposer(composer, working, onType = { text -> composer = composer.type(text) },
+                    onSend = {
+                        if (composer.canSend()) {
+                            val attempt = composer
+                            composer = composer.sending()
+                            scope.launch {
+                                val reply = api.sendMessage(id, attempt.messageId, attempt.draft, engine)
+                                composer = composer.replied(reply)
+                                if (reply == MessageReply.Sent) refreshAfterSend { pollKey++ }
+                                // The field and its state line are the composer's; the chat itself reads again.
+                            }
+                        }
+                    })
+                // An older PC sends no canMessage field: no composer and no line.
+                canMessage == false -> messageReasonLine(row.messageReason)?.let {
+                    Text(it, fontSize = 12.sp, color = colors.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite })
+                }
+            }
         }
     }
 }
 
-/** One turn: user on the right, assistant on the left, a peer on the left with its name above its text. The engine text of a cut turn ends with … itself. */
+/** The text of a turn that the owner sent from the phone: without its first line, the `[Sent from the owner's phone ...]` line. */
+internal fun phoneTurnText(text: String): String = text.substringAfter("\n", "")
+
+/** One turn: user on the right, assistant on the left, a peer on the left with its name above its text. A turn that the owner sent from the phone shows on the user side as `You, from the phone`. The engine text of a cut turn ends with … itself. */
 @Composable
 private fun ChatTurnRow(turn: ChatTurn, colors: ActivityColors) {
-    val user = turn.role == "user"
+    val user = turn.role == "user" || turn.fromPhone
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
-        if (turn.role == "peer") Text(turn.name, fontSize = 11.sp, color = colors.muted,
+        if (turn.fromPhone) Text(PHONE_TURN_LABEL, fontSize = 11.sp, color = colors.muted,
+            modifier = Modifier.padding(end = 4.dp, bottom = 2.dp))
+        else if (turn.role == "peer") Text(turn.name, fontSize = 11.sp, color = colors.muted,
             modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Column(Modifier.fillMaxWidth(.82f).background(if (user) colors.track else colors.rule, RoundedCornerShape(10.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp).semantics(mergeDescendants = true) {}) {
-            Text(turn.text, fontSize = 13.sp, color = colors.text)
+            Text(if (turn.fromPhone) phoneTurnText(turn.text) else turn.text, fontSize = 13.sp, color = colors.text)
         }
     }
 }

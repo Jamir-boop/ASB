@@ -73,6 +73,15 @@ sealed class AnswerReply {
 /** The phone's answer to an approval request: allow once or deny. */
 enum class Decision { Allow, Deny }
 
+/** What the PC did with a message from the phone. Sent is the relay's `submitted` or `unknown`; the turn is the proof. */
+sealed interface MessageReply {
+    data object Sent : MessageReply
+    /** A network error, a timeout, a 5xx, or a bad reply: the draft stays and Retry sends it again with its messageId. */
+    data object Failed : MessageReply
+    /** A 400, 404, 409, 413, or 429: the server `error` text, shown as it is, and the draft stays. */
+    data class Refused(val message: String) : MessageReply
+}
+
 // The gateway text of a route that the PC switches turned off; every other 404 means the row is gone.
 const val ROUTE_NOT_AVAILABLE = "Route is not available."
 
@@ -329,6 +338,26 @@ class AsbApi(
     }
 
     private data class Reply(val code: Int, val body: String, val etag: String?, val engine: String = "")
+
+    /**
+     * Sends [text] as a message into the open session [id] on [engine], keyed by [messageId]. A 400, 404, 409, 413, and 429 keep
+     * the server text; every other error is Failed. The text goes only in the request body, never to a log or a file.
+     */
+    suspend fun sendMessage(id: String, messageId: String, text: String, engine: String): MessageReply {
+        if (id.isEmpty() || id == "." || id == "..") return MessageReply.Refused("Invalid session ID.")
+        val body = buildJsonObject { put("messageId", messageId); put("text", text) }
+        return try {
+            request("threads", id, "message", body = body.toString(), only = engine, keepThrottled = true)
+            MessageReply.Sent
+        } catch (cause: AsbError.Server) {
+            when (cause.code) {
+                400, 404, 409, 413, 429 -> MessageReply.Refused(cause.message ?: "")
+                else -> MessageReply.Failed
+            }
+        } catch (_: AsbError) {
+            MessageReply.Failed
+        }
+    }
 
     /** One engine to try: "" is the paired PC; another engine has its own addresses, port, and pin. */
     private class Target(val id: String, val endpoints: List<Endpoint>, val port: Int, val client: OkHttpClient)

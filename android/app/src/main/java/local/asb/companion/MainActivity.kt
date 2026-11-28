@@ -247,11 +247,14 @@ private fun PairedApp(
             onUnpair()
         }
         // Messages and Usage ask the engine of the dashboard on screen, so their seat IDs are its row IDs.
-        val engine = sessionsModel.state.collectAsStateWithLifecycle().value.engine
+        val sessionState = sessionsModel.state.collectAsStateWithLifecycle().value
+        val engine = sessionState.engine
         if (screen == Screen.MESSAGES) {
             MessagesScreen(api, engine, messagesSeat, onSelect = { messagesSeat = it }, onBack = { screen = Screen.SESSIONS })
         } else if (screen == Screen.CHAT && chatRow != null) {
-            ChatScreen(api, engine, chatRow!!, onBack = { screen = Screen.SESSIONS })
+            // The dashboard row gives the composer its canMessage and its state; a row that leaves the board drops the composer.
+            val chatThread = sessionState.dashboard?.threads?.firstOrNull { it.id == chatRow }
+            ChatScreen(api, engine, chatRow!!, chatThread, onBack = { screen = Screen.SESSIONS })
         } else if (screen == Screen.USAGE) {
             UsageScreen(api, engine, onBack = { screen = Screen.SESSIONS })
         } else if (screen == Screen.CONNECTION) {
