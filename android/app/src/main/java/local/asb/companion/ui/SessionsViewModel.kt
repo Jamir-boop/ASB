@@ -52,6 +52,8 @@ data class UiState(
     val engine: String = "",
     /** The time of the last good dashboard read (0 before the first); the Offline band shows its age. */
     val lastUpdateMs: Long = 0,
+    /** The PC switch for message text on the engine on screen; null before a read or from an older PC. */
+    val sendText: Boolean? = null,
 )
 
 class SessionsViewModel(
@@ -115,6 +117,17 @@ class SessionsViewModel(
             }
         } finally {
             pollMutex.unlock()
+        }
+    }
+
+    /** Reads the PC switch for message text of the engine on screen, for the Chat button of the row panel. */
+    fun refreshSendText() {
+        if (state.value.revoked) return
+        viewModelScope.launch {
+            try {
+                val value = api.messageText(state.value.engine)
+                mutableState.update { it.copy(sendText = value) }
+            } catch (_: AsbError) {}
         }
     }
 

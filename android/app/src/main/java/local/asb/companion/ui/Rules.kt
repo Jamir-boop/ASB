@@ -396,6 +396,10 @@ fun viewOnlyTone(row: Thread): String = when {
     else -> "rest"
 }
 
+/** The row panel shows `Chat` only for a local Claude Desktop Code row while the PC switch for message text is on. */
+fun chatOffered(row: Thread, sendText: Boolean?): Boolean =
+    sendText == true && row.provider == "claude-desktop-code" && !row.id.startsWith("m:")
+
 /** One row panel control: its state, and the action a change runs, or null when the change is not offered. */
 data class PanelControl(val on: Boolean, val action: String?)
 

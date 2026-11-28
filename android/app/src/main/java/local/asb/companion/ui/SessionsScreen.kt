@@ -239,6 +239,7 @@ fun SessionsScreen(
     backgroundCounts: Boolean,
     onSettings: () -> Unit,
     onMessages: (String?) -> Unit,
+    onChat: (String) -> Unit,
     onUsage: () -> Unit,
     onPairAgain: () -> Unit,
     questionTap: QuestionTap? = null,
@@ -509,6 +510,10 @@ fun SessionsScreen(
     BackHandler(enabled = !state.revoked && backClears(searching, state.filter)) { closeSearch() }
     LaunchedEffect(inspector, inspectorRow) {
         if (inspector != null && inspectorRow == null) inspector = null
+    }
+    // The Chat button of the panel reads the PC switch for message text.
+    LaunchedEffect(inspector, state.engine) {
+        if (inspector != null) viewModel.refreshSendText()
     }
     // A notification tap opens the inspector of its row after the next dashboard read, only while that row of the list on
     // screen has an open question. The panel anchors at the top left of the safe area, as the card can be off screen.
@@ -1023,8 +1028,10 @@ fun SessionsScreen(
         serverName = serverName,
         viewModel = viewModel,
         windowSize = IntSize(constraints.maxWidth, constraints.maxHeight),
+        sendText = state.sendText,
         onOpen = { inspector = null; viewModel.action(inspectorRow.id, "open") },
         onShowMessages = { inspector = null; onMessages(inspectorRow.id) },
+        onChat = { inspector = null; onChat(inspectorRow.id) },
         onDismiss = { inspector = null },
     )
     // Created after the inspector popup, so its window is above the panel; only while a message shows, so it takes no taps.
@@ -1658,7 +1665,8 @@ private val INSPECTOR_MARGIN = 16.dp
 private fun SessionInspector(
     row: Thread, point: Offset, busy: Boolean, error: String?, offline: Boolean, nowMs: Long, workingNowMs: Long,
     serverName: String, viewModel: SessionsViewModel,
-    windowSize: IntSize, onOpen: () -> Unit, onShowMessages: () -> Unit, onDismiss: () -> Unit,
+    windowSize: IntSize, sendText: Boolean?, onOpen: () -> Unit, onShowMessages: () -> Unit, onChat: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
     val context = LocalContext.current
@@ -1796,6 +1804,17 @@ private fun SessionInspector(
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Text("Show messages", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
                             overflow = TextOverflow.Ellipsis)
+                    }
+                    // The chat of the session itself, for a local Claude Desktop Code row while the PC sends message text.
+                    if (chatOffered(row, sendText)) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = onChat, shape = buttonShape,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, hexColor(palette.divider)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = hexColor(palette.accent)),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                            Text("Chat", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     // As the board Copy Absolute: the asb:1/ reference of the row, or a disabled button with the reason.
